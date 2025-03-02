@@ -1,0 +1,4 @@
+*.pyc
+*/__pycache__/*
+src/model/rest/DraftRetriever/target/*
+exp/*
