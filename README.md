@@ -1,7 +1,7 @@
 # DuoDecoding
-[![arXiv.2502.19280](https://img.shields.io/badge/arXiv-2502.19280-red)](https://arxiv.org/abs/2502.19279) [![Hugging Face Paper Page](https://img.shields.io/badge/🤗%20Paper%20Page-2502.19279-yellow)](https://huggingface.co/papers/2502.19279)
+[![arXiv.2503.00784](https://img.shields.io/badge/arXiv-2503.00784-red)](https://arxiv.org/abs/2503.00784) [![Hugging Face Paper Page](https://img.shields.io/badge/🤗%20Paper%20Page-2503.00784-yellow)](https://huggingface.co/papers/2503.00784)
 
-This repo contains the implementation for the paper Hardware-aware Heterogeneous Speculative Decoding with Dynamic Multi-Sequence Drafting. We propose deploying the draft model on CPU, which shifts drafting computational overhead to CPU and enables parallel decoding.
+This repo contains the implementation for the paper [Hardware-aware Heterogeneous Speculative Decoding with Dynamic Multi-Sequence Drafting](https://arxiv.org/abs/2503.00784). We propose deploying the draft model on CPU, which shifts drafting computational overhead to CPU and enables parallel decoding.
 
 ## Setup
 
@@ -64,5 +64,13 @@ This repo builds upon the following excellent repos: [llama-cpp-python](https://
 ## Citation
 Please cite our paper if you find the repo helpful:
 ```bibtex
-
+@misc{lv2025duodecodinghardwareawareheterogeneousspeculative,
+      title={DuoDecoding: Hardware-aware Heterogeneous Speculative Decoding with Dynamic Multi-Sequence Drafting}, 
+      author={Kai Lv and Honglin Guo and Qipeng Guo and Xipeng Qiu},
+      year={2025},
+      eprint={2503.00784},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2503.00784}, 
+}
 ```
