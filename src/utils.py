@@ -46,21 +46,21 @@ def model_zoo(args):
     }
 
     zoo = {
-        "llama-2-7b": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/Llama-2-7b-hf",
-        "deepseek-1.3b": "deepseek-ai/deepseek-coder-1.3b-base",
-        "deepseek-6.7b": "deepseek-ai/deepseek-coder-6.7b-base",
-        "llama-68m-q5-gguf": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-68m.Q5_K_M.gguf",
-        "llama-68m-q8-gguf": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-68m.Q8_0.gguf",
-        "llama-68m-fp16": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-68m.fp16.bin",
-        "llama-68m": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-68m",
-        "llama-160m-q5-gguf": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-160m.q5_k_m.gguf",
-        "llama-160m": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/llama-160m",
-        "vicuna-68m-q5-gguf": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/vicuna-68m.Q5_K_M.gguf",
-        "vicuna-68m": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/vicuna-68m",
-        "vicuna-7b-v1.5": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/vicuna-7b-v1.5",
-        "vicuna-7b-v1.3": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/vicuna-7b-v1.3",
-        "llama-2-7b-chat": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/Llama-2-7b-chat-hf",
-        "llama-68m-chat-q5-gguf": "/cpfs02/llm/shared/public/lvkai/workspace/sd/data/Llama-68M-Chat-v1-Q5_K_M.gguf",
+        "llama-2-7b": "llama/Llama-2-7b-chat-hf",
+        "deepseek-1.3b": "",
+        "deepseek-6.7b": "",
+        "llama-68m-q5-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q5_0.gguf",
+        "llama-68m-q8-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q8_0.gguf",
+        "llama-68m-fp16": "llama/llama-68m-gguf-series/llama-68m-chat-v1.fp16.gguf",
+        "llama-68m": "llama/llama-68m",
+        "llama-160m-q5-gguf": "llama/llama-160m-q5-gguf/llama-160m.Q5_0.gguf",
+        "llama-160m": "llama/llama-160m",
+        "vicuna-68m-q5-gguf": "",
+        "vicuna-68m": "",
+        "vicuna-7b-v1.5": "",
+        "vicuna-7b-v1.3": "",
+        "llama-2-7b-chat": "llama/Llama-2-7b-chat-hf",
+        "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
     }
 
     args.vocab_size = vocab_size[args.draft_model]
@@ -75,7 +75,7 @@ def parse_arguments():
     parser.add_argument(
         "--data_path",
         type=str,
-        default="/cpfs02/llm/shared/public/lvkai/workspace/sd/DuoDecoding/data",
+        default="./data",
     )
 
     parser.add_argument("--draft_model", type=str, default="codellama-7b")
@@ -103,15 +103,9 @@ def parse_arguments():
         default=1234,
         help="set a random seed, which can makes the result reproducible",
     )
-    parser.add_argument(
-        "--max_tokens", type=int, default=1024, help="max token number generated."
-    )
-    parser.add_argument(
-        "--temp", type=float, default=0.2, help="temperature for generating new tokens."
-    )
-    parser.add_argument(
-        "--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy."
-    )
+    parser.add_argument("--max_tokens", type=int, default=1024, help="max token number generated.")
+    parser.add_argument("--temp", type=float, default=0.2, help="temperature for generating new tokens.")
+    parser.add_argument("--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy.")
     parser.add_argument(
         "--top_p",
         type=float,
@@ -162,7 +156,7 @@ def parse_arguments():
     parser.add_argument(
         "--datastore-path",
         type=str,
-        default="/cpfs02/llm/shared/public/lvkai/workspace/sd/DuoDecoding/src/model/rest/datastore/datastore_chat_large.idx",
+        default="./datastore",
         help="The path of the datastore for retrival.",
     )
     parser.add_argument(
@@ -205,9 +199,7 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
     return logits
 
 
-def norm_logits(
-    logits: torch.Tensor, temperature: float, top_k: float, top_p: float
-) -> torch.Tensor:
+def norm_logits(logits: torch.Tensor, temperature: float, top_k: float, top_p: float) -> torch.Tensor:
     """
 
     Args:
@@ -231,9 +223,7 @@ def norm_logits(
     return probs
 
 
-def norm_numpy_logits(
-    logits: np.ndarray, temperature: float, top_k: float, top_p: float
-) -> np.ndarray:
+def norm_numpy_logits(logits: np.ndarray, temperature: float, top_k: float, top_p: float) -> np.ndarray:
     assert logits.ndim == 2
     if temperature == 0:
         idx = logits.argmax(axis=1)
