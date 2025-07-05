@@ -276,13 +276,19 @@ class Decoding(ABC):
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
         target_model_cache.vocab_size = self.vocab_size
-
+        local_decode_time = 0
+        prefill_time = 0
+        loop_index = 0
         while prefix.shape[1] < max_tokens:
+            begin_time = time.time()
             prefix_len = prefix.shape[1]
-
+            prefill_begin = time.time()
             x = approx_model_cache.generate(prefix.to(draft_device), self.args.gamma)
 
             _ = target_model_cache.generate(x.to(target_device), 1)
+            prefill_end = time.time()
+            if loop_index == 0:
+                prefill_time += prefill_end - prefill_begin  # record prefill time
 
             if self.accelerator.is_main_process:
                 # self.draft_forward_times += self.args.gamma
@@ -327,8 +333,18 @@ class Decoding(ABC):
                 target_model_cache.rollback(n + 2)
 
             prefix = torch.cat((prefix, t), dim=1)
-
-        return prefix, local_accepted_tokens, local_total_tokens, local_draft_forwards, local_target_forwards
+            end_time = time.time()
+            local_decode_time += end_time - begin_time  # record decode time
+            loop_index += 1
+        local_decode_time -= prefill_time  # remove prefill time from decode time
+        return (
+            prefix,
+            local_accepted_tokens,
+            local_total_tokens,
+            local_draft_forwards,
+            local_target_forwards,
+            local_decode_time,
+        )
 
     # def run_speculative_decoding(self, prefix):
     #     final_results = []

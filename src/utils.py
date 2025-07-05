@@ -46,6 +46,7 @@ def model_zoo(args):
         "llama-3.2-1b": 32000,
         "llama-2-13b": 32000,
         "tiny-vicuna-1b": 32000,
+        "vicuna-13b-v1.5": 32000,
     }
 
     zoo = {
@@ -67,6 +68,7 @@ def model_zoo(args):
         "llama-3.2-1b": "llama/llama-3.2-1b",
         "llama-2-13b": "llama/Llama-2-13b-hf",
         "tiny-vicuna-1b": "vicuna/tiny-vicuna-1b",
+        "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
     }
 
     args.vocab_size = vocab_size[args.draft_model]

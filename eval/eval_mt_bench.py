@@ -14,6 +14,8 @@ from fastchat.model import get_conversation_template
 
 total_tokens, accepted_tokens = 0, 0
 
+total_decode_tim = 0
+
 
 def read_results(file_path):
     f = open(file_path)
@@ -157,6 +159,7 @@ class EvalMTBench(Decoding):
                             local_total_tokens,
                             local_draft_forwards,
                             local_target_forwards,
+                            local_decode_time,
                         ) = output_ids
                         accepted_tokens += local_accepted_tokens
                         total_tokens += local_total_tokens
@@ -242,9 +245,12 @@ class EvalMTBench(Decoding):
                             local_total_tokens,
                             local_draft_forwards,
                             local_target_forwards,
+                            local_decode_time,
                         ) = output_ids
                         accepted_tokens += local_accepted_tokens
                         total_tokens += local_total_tokens
+                        global total_decode_time
+                        total_decode_time += local_decode_time
                     torch.cuda.synchronize()
                     end_time = time.time()
 
@@ -300,6 +306,7 @@ class EvalMTBench(Decoding):
 
             speed = torch.sum(num_tokens) / torch.sum(wall_times)
             speed_std = torch.std(num_tokens / wall_times)
+
             self.color_print(
                 f"Generating speed of category {k}: {speed.float().item():.2f} with std {speed_std.float().item()} token / second",
                 2,
@@ -307,12 +314,19 @@ class EvalMTBench(Decoding):
 
         total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(torch.tensor(total_wall_time))
         total_speed_std = torch.std(torch.tensor(total_num_token) / torch.tensor(total_wall_time))
+        speed_by_decode_time = (
+            torch.sum(torch.tensor(total_num_token)) / total_decode_time if total_decode_time > 0 else 0
+        )
         self.color_print(
             f"Average generating speed: {total_speed.float().item():.2f} with std {total_speed_std.float().item()} token / second",
             2,
         )
         self.color_print(
             f"Total tokens: {total_tokens}, Accepted tokens: {accepted_tokens}, Acceptence rate: {accepted_tokens / total_tokens if total_tokens != 0 else 'total_tokens is zero!'}",
+            2,
+        )
+        self.color_print(
+            f"Decode Time: {total_decode_time:.2f} seconds, Generating speed by decode time: {speed_by_decode_time:.2f} token / second",
             2,
         )
 
