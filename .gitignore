@@ -8,3 +8,4 @@ llama-2-13b-download.log
 备忘录.md
 *.log
 test.ipynb
+vicuna/*
