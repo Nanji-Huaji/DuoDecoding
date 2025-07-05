@@ -3,3 +3,8 @@
 src/model/rest/DraftRetriever/target/*
 exp/*
 llama/*
+experiment.log
+llama-2-13b-download.log
+备忘录.md
+*.log
+test.ipynb

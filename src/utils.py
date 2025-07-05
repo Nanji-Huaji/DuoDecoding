@@ -43,24 +43,30 @@ def model_zoo(args):
         "llama-543m-q5-gguf": 32000,
         "llama-2-7b-chat": 32000,
         "llama-68m-chat-q5-gguf": 32000,
+        "llama-3.2-1b": 32000,
+        "llama-2-13b": 32000,
+        "tiny-vicuna-1b": 32000,
     }
 
     zoo = {
-        "llama-2-7b": "llama/Llama-2-7b-chat-hf",
-        "deepseek-1.3b": "",
-        "deepseek-6.7b": "",
+        "llama-2-7b": "llama/Llama-2-7b-hf",
+        "deepseek-1.3b": "deepseek-1.3b还没部署",
+        "deepseek-6.7b": "deepseek-6.7b还没部署",
         "llama-68m-q5-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q5_0.gguf",
         "llama-68m-q8-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q8_0.gguf",
         "llama-68m-fp16": "llama/llama-68m-gguf-series/llama-68m-chat-v1.fp16.gguf",
         "llama-68m": "llama/llama-68m",
-        "llama-160m-q5-gguf": "llama/llama-160m-q5-gguf/llama-160m.Q5_0.gguf",
+        "llama-160m-q5-gguf": "llama/llama-160m-q5-gguf",
         "llama-160m": "llama/llama-160m",
-        "vicuna-68m-q5-gguf": "",
-        "vicuna-68m": "",
-        "vicuna-7b-v1.5": "",
-        "vicuna-7b-v1.3": "",
+        "vicuna-68m-q5-gguf": "llama/vicuna-68m.Q5_K_M-gguf/vicuna-68m.Q5_K_M.gguf",
+        "vicuna-68m": "llama/vicuna-68m",
+        "vicuna-7b-v1.5": "vicuna-7b-v1.5还没部署",
+        "vicuna-7b-v1.3": "vicuna-7b-v1.3还没部署",
         "llama-2-7b-chat": "llama/Llama-2-7b-chat-hf",
         "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
+        "llama-3.2-1b": "llama/llama-3.2-1b",
+        "llama-2-13b": "llama/Llama-2-13b-hf",
+        "tiny-vicuna-1b": "llama/tiny-vicuna-1b",
     }
 
     args.vocab_size = vocab_size[args.draft_model]

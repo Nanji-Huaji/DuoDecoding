@@ -12,6 +12,8 @@ from src.utils import seed_everything, parse_arguments
 from src.engine import Decoding
 from fastchat.model import get_conversation_template
 
+total_tokens, accepted_tokens = 0, 0
+
 
 def read_results(file_path):
     f = open(file_path)
@@ -43,11 +45,10 @@ class EvalMTBench(Decoding):
             self.model_id = "vicuna"
         elif "vicuna" in self.args.draft_model and "vicuna" in self.args.target_model:
             self.model_id = "vicuna"
-        elif (
-            "Llama-3.1" in self.args.draft_model
-            and "Llama-3.1" in self.args.target_model
-        ):
+        elif "Llama-3.1" in self.args.draft_model and "Llama-3.1" in self.args.target_model:
             self.model_id = "llama-3.1"
+        elif "vicuna" in self.args.target_model:  # Not sure whether it works
+            self.model_id = "vicuna"
         else:
             raise NotImplementedError
 
@@ -69,6 +70,7 @@ class EvalMTBench(Decoding):
 
     @torch.no_grad()
     def eval(self):
+        global total_tokens, accepted_tokens
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -87,9 +89,7 @@ class EvalMTBench(Decoding):
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
-        out_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
-        )
+        out_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl")
         out_f = open(out_path, "a")
 
         # warmup
@@ -145,19 +145,25 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
+                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
+                    if isinstance(output_ids, tuple):
+                        (
+                            output_ids,
+                            local_accepted_tokens,
+                            local_total_tokens,
+                            local_draft_forwards,
+                            local_target_forwards,
+                        ) = output_ids
+                        accepted_tokens += local_accepted_tokens
+                        total_tokens += local_total_tokens
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
-                    )
+                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -224,19 +230,25 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
+                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
+                    if isinstance(output_ids, tuple):
+                        (
+                            output_ids,
+                            local_accepted_tokens,
+                            local_total_tokens,
+                            local_draft_forwards,
+                            local_target_forwards,
+                        ) = output_ids
+                        accepted_tokens += local_accepted_tokens
+                        total_tokens += local_total_tokens
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
-                    )
+                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -293,14 +305,14 @@ class EvalMTBench(Decoding):
                 2,
             )
 
-        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(
-            torch.tensor(total_wall_time)
-        )
-        total_speed_std = torch.std(
-            torch.tensor(total_num_token) / torch.tensor(total_wall_time)
-        )
+        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(torch.tensor(total_wall_time))
+        total_speed_std = torch.std(torch.tensor(total_num_token) / torch.tensor(total_wall_time))
         self.color_print(
             f"Average generating speed: {total_speed.float().item():.2f} with std {total_speed_std.float().item()} token / second",
+            2,
+        )
+        self.color_print(
+            f"Total tokens: {total_tokens}, Accepted tokens: {accepted_tokens}, Acceptence rate: {accepted_tokens / total_tokens if total_tokens != 0 else 'total_tokens is zero!'}",
             2,
         )
 
