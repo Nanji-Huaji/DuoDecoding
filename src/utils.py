@@ -74,6 +74,8 @@ def model_zoo(args):
     args.vocab_size = vocab_size[args.draft_model]
     args.draft_model = zoo[args.draft_model]
     args.target_model = zoo[args.target_model]
+    if hasattr(args, "smallest_model") and args.smallest_model and args.smallest_model in zoo:
+        args.smallest_model = zoo[args.smallest_model]
 
 
 def parse_arguments():
@@ -88,6 +90,12 @@ def parse_arguments():
 
     parser.add_argument("--draft_model", type=str, default="codellama-7b")
     parser.add_argument("--target_model", type=str, default="codellama-70b")
+    parser.add_argument(
+        "--smallest_model",
+        type=str,
+        default="vicuna-68m",
+        help="the smallest model for tridecoding.",
+    )
 
     parser.add_argument(
         "--exp_name",

@@ -56,6 +56,8 @@ class Decoding(ABC):
         self.color_print(f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}", 3)
         self.color_print(f"draft model: {self.args.draft_model}", 3)
         self.color_print(f"target model: {self.args.target_model}", 3)
+        if self.args.smallest_model is not None:
+            self.color_print(f"smallest model: {self.args.smallest_model}", 3)
         if self.args.eval_mode == "small":
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
@@ -209,6 +211,31 @@ class Decoding(ABC):
             self.datastore = draftretriever.Reader(
                 index_file_path=self.args.datastore_path,
             )
+        elif self.args.eval_mode == "tridec":
+            self.smallest_model = AutoModelForCausalLM.from_pretrained(
+                self.args.smallest_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                self.args.draft_model,
+                device_map="balanced_low_0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.target_model = AutoModelForCausalLM.from_pretrained(
+                self.args.target_model,
+                device_map="balanced_low_0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
 
         self.vocab_size = self.args.vocab_size
 
@@ -254,11 +281,19 @@ class Decoding(ABC):
         max_tokens = prefix_len + self.args.max_tokens
 
         x = prefix
-
+        local_decoding_time = 0
+        local_prefill_time = 0
+        loop_index = 0
         while x.shape[1] < max_tokens:
+            begin_time = time.time()
             x = model.generate(x, 1)
-
-        return x
+            loop_index += 1
+            end_time = time.time()
+            if loop_index == 0:
+                local_prefill_time += end_time - begin_time  # record prefill time
+            local_decoding_time += end_time - begin_time  # record decode times
+        local_decoding_time -= local_prefill_time  # remove prefill time from decode time
+        return x, local_decoding_time
 
     @torch.no_grad()
     def speculative_decoding(self, prefix):
@@ -345,27 +380,6 @@ class Decoding(ABC):
             local_target_forwards,
             local_decode_time,
         )
-
-    # def run_speculative_decoding(self, prefix):
-    #     final_results = []
-
-    #     with ThreadPoolExecutor(max_workers=8) as executor:
-    #         future_to_prefix = executor.submit(self.speculative_decoding, prefix)
-    #         print(f"Running speculative decoding with prefix: {prefix}")
-    #         for future in as_completed([future_to_prefix]):
-    #             try:
-    #                 result_prefix, accepted_tokens, total_tokens, draft_forwards, target_forwards = future.result()
-    #                 self.total_accepted_token_num += accepted_tokens
-    #                 self.total_token_num += total_tokens
-    #                 self.total_draft_forward_times += draft_forwards
-    #                 self.total_target_forward_times += target_forwards
-    #                 final_results.append(result_prefix)
-    #                 print(
-    #                     f"Speculative decoding completed with {accepted_tokens} accepted tokens out of {total_tokens} total tokens."
-    #                 )
-    #             except Exception as e:
-    #                 print(f"Error during speculative decoding: {e}")
-    #     return final_results
 
     @torch.no_grad()
     def pld_forward(self, prefix):
@@ -865,3 +879,112 @@ class Decoding(ABC):
         """print content with color. Some color numbers are listed: Gray: 0, Red: 1, Green: 2, Yellow: 3, Blue: 4."""
         if self.accelerator.is_main_process:
             print(f"\033[9{color_number}m{content}\033[0m")
+
+    @torch.no_grad()
+    def tridecoding(self, prefix):
+        """
+        Three-layer speculative decoding
+        """
+        local_accepted_tokens = 0
+        local_total_tokens = 0
+        local_draft_forwards = 0
+        local_target_forwards = 0
+
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+        smallest_device = self.smallest_model.device
+        small_device = self.draft_model.device
+        target_device = self.target_model.device
+        smallest_model_cache = KVCacheModel(self.smallest_model, self.args.temp, self.args.top_k, self.args.top_p)
+        smallest_model_cache.vocab_size = self.vocab_size
+        small_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
+        small_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
+        target_model_cache.vocab_size = self.vocab_size
+        local_decode_time = 0
+        loop_index = 0
+        gamma1 = self.args.gamma
+        gamma2 = self.args.gamma
+
+        while prefix.shape[1] < max_tokens:
+            begin_time = time.time()
+            prefix_len = prefix.shape[1]
+
+            # --- Generation ---
+            draft1_tokens = smallest_model_cache.generate(prefix.to(smallest_device), gamma1)
+            local_draft_forwards += gamma1
+            draft2_tokens = small_model_cache.generate(draft1_tokens.to(small_device), gamma2)
+            local_draft_forwards += gamma2
+            _ = target_model_cache.generate(draft2_tokens.to(target_device), 1)
+            local_target_forwards += 1
+            # --- Verification ---
+            accepted_len = 0
+            p_smallest = smallest_model_cache._prob_history
+            p_small = small_model_cache._prob_history
+            p_target = target_model_cache._prob_history
+
+            final_prefix = prefix
+            rejection_handled = False
+            for i in range(gamma1 + gamma2):
+                current_pos = prefix_len + i
+
+                if i < gamma1:
+                    verifier_probs = p_small.to(smallest_device)[:, current_pos - 1, :]
+                    drafter_probs = p_smallest[:, current_pos - 1, :]
+                    j = draft1_tokens[:, current_pos]
+                else:
+                    verifier_probs = p_target.to(small_device)[:, current_pos - 1, :]
+                    drafter_probs = p_small[:, current_pos - 1, :]
+                    j = draft2_tokens[:, current_pos]
+                p_verifier_j = verifier_probs[:, j].squeeze()
+                p_drafter_j = drafter_probs[:, j].squeeze()
+                r = torch.rand(1, device=j.device).squeeze()
+                if r * p_drafter_j > p_verifier_j:
+                    residual_prob = max_fn(verifier_probs - drafter_probs)
+
+                    if residual_prob.sum() < 1e-9:
+                        next_token = sample(verifier_probs)
+                    else:
+                        next_token = sample(residual_prob)
+
+                    final_prefix = torch.cat([draft2_tokens[:, :current_pos].to(next_token.device), next_token], dim=1)
+                    rejection_handled = True
+                    break
+                else:
+                    accepted_len += 1
+
+            if not rejection_handled:
+                last_pos_probs = p_target[:, -2, :]
+                next_token = sample(last_pos_probs)
+                final_prefix = torch.cat([draft2_tokens.to(next_token.device), next_token], dim=1)
+                accepted_len += 1
+            prefix = final_prefix
+
+            local_total_tokens += gamma1 + gamma2
+            local_accepted_tokens += accepted_len
+            self.num_acc_tokens.append(accepted_len)
+
+            # --- Rollback ---
+            # 对三个模型应用不同的回滚策略
+            new_len = prefix.shape[1]
+
+            # 对于 small 和 target 模型，回滚到新的前缀长度是安全的
+            small_model_cache.rollback(new_len)
+            target_model_cache.rollback(new_len)
+
+            # 少回滚一个 token，让其缓存长度为 new_len - 1，避免 IndexError
+            if new_len > 0:
+                smallest_model_cache.rollback(new_len - 1)
+            else:
+                smallest_model_cache.rollback(0)  # 如果 prefix 是空的，回滚到0
+
+            end_time = time.time()
+            local_decode_time += end_time - begin_time
+            loop_index += 1
+        return (
+            prefix,
+            local_accepted_tokens,
+            local_total_tokens,
+            local_draft_forwards,
+            local_target_forwards,
+            local_decode_time,
+        )

@@ -14,7 +14,7 @@ from fastchat.model import get_conversation_template
 
 total_tokens, accepted_tokens = 0, 0
 
-total_decode_tim = 0
+total_decode_time = 0
 
 
 def read_results(file_path):
@@ -72,7 +72,7 @@ class EvalMTBench(Decoding):
 
     @torch.no_grad()
     def eval(self):
-        global total_tokens, accepted_tokens
+        global total_tokens, accepted_tokens, total_decode_time
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -87,6 +87,8 @@ class EvalMTBench(Decoding):
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":
             decoding = self.rest_forward
+        elif self.args.eval_mode == "tridec":
+            decoding = self.tridecoding
         else:
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
@@ -152,7 +154,7 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple):
+                    if isinstance(output_ids, tuple) and len(output_ids) == 6:
                         (
                             output_ids,
                             local_accepted_tokens,
@@ -163,6 +165,9 @@ class EvalMTBench(Decoding):
                         ) = output_ids
                         accepted_tokens += local_accepted_tokens
                         total_tokens += local_total_tokens
+                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
+                        output_ids, local_decode_time = output_ids
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
@@ -238,7 +243,7 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple):
+                    if isinstance(output_ids, tuple) and len(output_ids) == 6:
                         (
                             output_ids,
                             local_accepted_tokens,
@@ -249,7 +254,9 @@ class EvalMTBench(Decoding):
                         ) = output_ids
                         accepted_tokens += local_accepted_tokens
                         total_tokens += local_total_tokens
-                        global total_decode_time
+                        total_decode_time += local_decode_time
+                    elif isinstance(output_ids, tuple) and len(output_ids) == 2:
+                        output_ids, local_decode_time = output_ids
                         total_decode_time += local_decode_time
                     torch.cuda.synchronize()
                     end_time = time.time()
