@@ -298,7 +298,8 @@ class Decoding(ABC):
     @torch.no_grad()
     def autoregressive_sampling(self, prefix, enable_timing=True):
         """
-        自回归采样函数，采用与投机解码完全一致的精确计时方法。
+        自回归采样函数，用于测量真实的解码吞-吐-量。
+        计时方法经过修正，避免了逐个 token 同步带来的开销问题。
         """
         # 1. 选择模型
         if self.args.eval_mode == "small":
@@ -307,54 +308,63 @@ class Decoding(ABC):
             model = self.target_model
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
-
         # 2. 初始化模型和 KV 缓存
         device = model.device
         prefix = prefix.to(device)
         model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-        model.vocab_size = self.vocab_size  # 或者 self.args.vocab_size
-        # 3. 设置计时器 (与 speculative_decoding 完全相同)
+        model.vocab_size = self.vocab_size
+        # 3. 设置计时器
         use_cuda_events = enable_timing and device.type == "cuda"
         if use_cuda_events:
-            start_event = torch.cuda.Event(enable_timing=True)
-            end_event = torch.cuda.Event(enable_timing=True)
-
+            # 为 prefill 和 decode 阶段分别创建事件
+            prefill_start_event = torch.cuda.Event(enable_timing=True)
+            prefill_end_event = torch.cuda.Event(enable_timing=True)
+            decode_start_event = torch.cuda.Event(enable_timing=True)
+            decode_end_event = torch.cuda.Event(enable_timing=True)
         prefill_time = 0.0
         decode_time = 0.0
-        loop_index = 0
-
         # 4. 生成循环
         x = prefix
-        max_tokens = x.shape[1] + self.args.max_tokens
-
-        while x.shape[1] < max_tokens:
-            # 开始计时
-            if use_cuda_events:
-                start_event.record()
-            elif enable_timing:
-                loop_begin_time = time.time()
+        max_len = x.shape[1] + self.args.max_tokens
+        
+        # --- Prefill 阶段 ---
+        # 这是处理输入提示并生成第一个 token 的过程
+        if use_cuda_events:
+            prefill_start_event.record()
+        elif enable_timing:
+            prefill_start_time = time.time()
+        # 生成第一个 token，这个操作包含了 prefill 的全部成本
+        x = model.generate(x, 1) 
+        if use_cuda_events:
+            prefill_end_event.record()
+        elif enable_timing:
+            prefill_time = time.time() - prefill_start_time
+            
+        generated_tokens_count = 1
+        # --- Decode 阶段 (吞吐量测量) ---
+        # 在循环外开始计时
+        if use_cuda_events:
+            decode_start_event.record()
+        elif enable_timing:
+            decode_start_time = time.time()
+        while x.shape[1] < max_len:
             # 核心操作：生成一个 token
+            # 在循环内部不再进行任何计时或同步操作
             x = model.generate(x, 1)
-            # 结束计时并计算时长
-            if use_cuda_events:
-                end_event.record()
-                torch.cuda.synchronize()  # 必须同步以获取准确的事件时间
-                loop_duration_s = start_event.elapsed_time(end_event) / 1000.0
-            elif enable_timing:
-                loop_duration_s = time.time() - loop_begin_time
-            # 根据循环索引，将时间累加到 prefill 或 decode
-            if enable_timing:
-                if loop_index == 0:
-                    prefill_time += loop_duration_s
-                else:
-                    decode_time += loop_duration_s
-
-            # 递增循环索引
-            loop_index += 1
-
+            generated_tokens_count += 1
+        # --- 结束计时 ---
+        # 循环结束后，我们确保所有排队的 CUDA 操作都已完成，然后计算总时间
+        if use_cuda_events:
+            decode_end_event.record()
+            torch.cuda.synchronize() # 关键：在所有操作完成后同步一次
+            prefill_time = prefill_start_event.elapsed_time(prefill_end_event) / 1000.0
+            decode_time = decode_start_event.elapsed_time(decode_end_event) / 1000.0
+        elif enable_timing:
+            decode_time = time.time() - decode_start_time
         # 5. 返回结果
         x = x.to("cpu")
-        # 函数返回的是纯解码时间，与投机解码的返回保持一致
+        # 注意：这里的 decode_time 是生成 (max_tokens - 1) 个 token 的总时间
+        # 你可以用它来计算吞吐量： (generated_tokens_count - 1) / decode_time
         return x, decode_time
 
     # @torch.no_grad()
