@@ -265,230 +265,61 @@ class Decoding(ABC):
     def postprocess(self, input_text, output_text):
         pass
 
-    # @torch.no_grad()
-    # def autoregressive_sampling(self, prefix):
-    #     if self.args.eval_mode == "small":
-    #         model = self.draft_model
-    #     elif self.args.eval_mode == "large":
-    #         model = self.target_model
-    #     else:
-    #         raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
-    #     prefix = prefix.to(model.device)
-    #     model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-    #     model.vocab_size = self.args.vocab_size
-
-    #     prefix_len = prefix.shape[1]
-    #     max_tokens = prefix_len + self.args.max_tokens
-
-    #     x = prefix
-    #     local_decoding_time = 0
-    #     local_prefill_time = 0
-    #     loop_index = 0
-    #     while x.shape[1] < max_tokens:
-    #         begin_time = time.time()
-    #         x = model.generate(x, 1)
-    #         loop_index += 1
-    #         end_time = time.time()
-    #         if loop_index == 0:
-    #             local_prefill_time += end_time - begin_time  # record prefill time
-    #         local_decoding_time += end_time - begin_time  # record decode times
-    #     local_decoding_time -= local_prefill_time  # remove prefill time from decode time
-    #     return x, local_decoding_time
-
     @torch.no_grad()
     def autoregressive_sampling(self, prefix, enable_timing=True):
-        """
-        自回归采样函数，用于测量真实的解码吞-吐-量。
-        计时方法经过修正，避免了逐个 token 同步带来的开销问题。
-        """
-        # 1. 选择模型
         if self.args.eval_mode == "small":
             model = self.draft_model
+            self.color_print("--- Running in SMALL mode ---", 3)
         elif self.args.eval_mode == "large":
             model = self.target_model
+            self.color_print("--- Running in LARGE mode ---", 3)
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
-        # 2. 初始化模型和 KV 缓存
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        self.color_print(f"Model: {type(model).__name__}, Parameters: {num_params / 1e9:.2f}B", 3)
+        #  初始化模型和 KV 缓存
         device = model.device
         prefix = prefix.to(device)
         model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
         model.vocab_size = self.vocab_size
-        # 3. 设置计时器
+        #  设置计时器
         use_cuda_events = enable_timing and device.type == "cuda"
+
         if use_cuda_events:
-            # 为 prefill 和 decode 阶段分别创建事件
-            prefill_start_event = torch.cuda.Event(enable_timing=True)
-            prefill_end_event = torch.cuda.Event(enable_timing=True)
             decode_start_event = torch.cuda.Event(enable_timing=True)
             decode_end_event = torch.cuda.Event(enable_timing=True)
-        prefill_time = 0.0
         decode_time = 0.0
-        # 4. 生成循环
+        #  生成循环
         x = prefix
         max_len = x.shape[1] + self.args.max_tokens
-        
-        # --- Prefill 阶段 ---
-        # 这是处理输入提示并生成第一个 token 的过程
-        if use_cuda_events:
-            prefill_start_event.record()
-        elif enable_timing:
-            prefill_start_time = time.time()
-        # 生成第一个 token，这个操作包含了 prefill 的全部成本
-        x = model.generate(x, 1) 
-        if use_cuda_events:
-            prefill_end_event.record()
-        elif enable_timing:
-            prefill_time = time.time() - prefill_start_time
-            
-        generated_tokens_count = 1
-        # --- Decode 阶段 (吞吐量测量) ---
-        # 在循环外开始计时
-        if use_cuda_events:
-            decode_start_event.record()
-        elif enable_timing:
-            decode_start_time = time.time()
-        while x.shape[1] < max_len:
-            # 核心操作：生成一个 token
-            # 在循环内部不再进行任何计时或同步操作
-            x = model.generate(x, 1)
-            generated_tokens_count += 1
-        # --- 结束计时 ---
-        # 循环结束后，我们确保所有排队的 CUDA 操作都已完成，然后计算总时间
-        if use_cuda_events:
-            decode_end_event.record()
-            torch.cuda.synchronize() # 关键：在所有操作完成后同步一次
-            prefill_time = prefill_start_event.elapsed_time(prefill_end_event) / 1000.0
-            decode_time = decode_start_event.elapsed_time(decode_end_event) / 1000.0
-        elif enable_timing:
-            decode_time = time.time() - decode_start_time
-        # 5. 返回结果
+        #  Prefill
+        x = model.generate(x, 1)
+        #  Decode
+        if x.shape[1] < max_len:
+            if use_cuda_events:
+                decode_start_event.record()
+            elif enable_timing:
+                decode_start_time = time.time()
+            while x.shape[1] < max_len:
+                x = model.generate(x, 1)
+            #  结束计时
+            if use_cuda_events:
+                decode_end_event.record()
+                torch.cuda.synchronize()
+                decode_time = decode_start_event.elapsed_time(decode_end_event) / 1000.0
+            elif enable_timing:
+                decode_time = time.time() - decode_start_time
+        else:
+            # 如果只生成一个 token，decode_time 为 0
+            if use_cuda_events:
+                torch.cuda.synchronize()
+            decode_time = 0.0
+
         x = x.to("cpu")
-        # 注意：这里的 decode_time 是生成 (max_tokens - 1) 个 token 的总时间
-        # 你可以用它来计算吞吐量： (generated_tokens_count - 1) / decode_time
         return x, decode_time
-
-    # @torch.no_grad()
-    # def speculative_decoding(self, prefix, enable_timing=True):
-    #     """
-    #     带有精确计时的投机解码函数。
-    #     Args:
-    #         prefix (torch.Tensor): 输入的token序列。
-    #         enable_timing (bool): 是否启用精确计时。设为False可禁用所有计时开销。
-    #     Returns:
-    #         A tuple containing:
-    #         - prefix (torch.Tensor): 生成的完整序列。
-    #         - local_accepted_tokens (int): 此轮接受的token总数。
-    #         - local_total_tokens (int): 此轮生成的草稿token总数。
-    #         - local_draft_forwards (int): draft model的前向传播次数。
-    #         - local_target_forwards (int): target model的前向传播次数。
-    #         - prefill_time (float): 预填充阶段的精确耗时（秒）。
-    #         - decode_time (float): 解码阶段的总精确耗时（秒）。
-    #     """
-    #     local_accepted_tokens = 0
-    #     local_total_tokens = 0
-    #     local_draft_forwards = 0
-    #     local_target_forwards = 0
-    #     max_tokens = prefix.shape[1] + self.args.max_tokens
-    #     draft_device = self.draft_model.device
-    #     target_device = self.target_model.device
-    #     # --- 计时器设置 ---
-    #     # 仅在启用计时且设备为CUDA时使用CUDA Events
-    #     use_cuda_events = enable_timing and draft_device.type == "cuda" and target_device.type == "cuda"
-    #     if use_cuda_events:
-    #         start_event = torch.cuda.Event(enable_timing=True)
-    #         end_event = torch.cuda.Event(enable_timing=True)
-    #     prefill_time = 0.0
-    #     decode_time = 0.0
-    #     # --- 计时器设置结束 ---
-    #     # 这里的模型和缓存初始化应该在调用函数之前完成，以避免重复创建
-    #     # 为保持与您原代码一致，暂时保留在此处
-    #     approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
-    #     approx_model_cache.vocab_size = self.vocab_size
-    #     target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
-    #     target_model_cache.vocab_size = self.vocab_size
-
-    #     loop_index = 0
-    #     while prefix.shape[1] < max_tokens:
-    #         # --- 开始计时循环 ---
-    #         if use_cuda_events:
-    #             start_event.record()
-    #         elif enable_timing:  # CPU Fallback
-    #             loop_begin_time = time.time()
-    #         # ---
-    #         # === 您的原始核心逻辑开始 ===
-    #         prefix_len = prefix.shape[1]
-    #         x = approx_model_cache.generate(prefix.to(draft_device), self.args.gamma)
-    #         _ = target_model_cache.generate(x.to(target_device), 1)
-    #         if self.accelerator.is_main_process:
-    #             local_draft_forwards += self.args.gamma
-    #             local_target_forwards += 1
-    #         n = prefix_len + self.args.gamma - 1
-    #         for i in range(self.args.gamma):
-    #             r = torch.rand(1, device=draft_device)
-    #             j = x[:, prefix_len + i]
-    #             # 注意：这里的概率张量可能非常大，频繁在设备间移动会很慢
-    #             # 最好确保它们从一开始就在同一个设备上
-    #             target_prob = target_model_cache._prob_history.to(draft_device)[:, prefix_len + i - 1, j]
-    #             approx_prob = approx_model_cache._prob_history[:, prefix_len + i - 1, j]
-
-    #             # 添加一个小的epsilon防止除以零
-    #             if r > target_prob / (approx_prob + 1e-9):
-    #                 n = prefix_len + i - 1
-    #                 break
-    #         self.num_acc_tokens.append(n - prefix_len + 1)
-    #         local_total_tokens += self.args.gamma
-    #         local_accepted_tokens += n - prefix_len + 1
-    #         assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-    #         prefix = x[:, : n + 1]
-    #         approx_model_cache.rollback(n + 1)
-    #         if n < prefix_len + self.args.gamma - 1:
-    #             t = sample(
-    #                 max_fn(
-    #                     target_model_cache._prob_history[:, n, : self.vocab_size].to(draft_device)
-    #                     - approx_model_cache._prob_history[:, n, : self.vocab_size]
-    #                 )
-    #             )
-    #             target_model_cache.rollback(n + 1)
-    #         else:
-    #             t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
-    #             target_model_cache.rollback(n + 2)
-    #         prefix = torch.cat((prefix, t), dim=1)
-    #         # === 您的原始核心逻辑结束 ===
-    #         # --- 结束计时并累加 ---
-    #         if use_cuda_events:
-    #             end_event.record()
-    #             # torch.cuda.synchronize() 是关键! 它会等待GPU完成所有在 start 和 end event 之间的任务
-    #             torch.cuda.synchronize()
-    #             loop_duration_ms = start_event.elapsed_time(end_event)
-    #             loop_duration_s = loop_duration_ms / 1000.0
-    #         elif enable_timing:  # CPU Fallback
-    #             loop_duration_s = time.time() - loop_begin_time
-    #         if enable_timing:
-    #             if loop_index == 0:
-    #                 # 第一次循环包含了对初始prompt的预填充，是特殊的一次性开销
-    #                 prefill_time += loop_duration_s
-    #             else:
-    #                 # 后续所有循环都是纯粹的解码步骤
-    #                 decode_time += loop_duration_s
-    #         # ---
-
-    #         loop_index += 1
-    #     prefix = prefix.to("cpu")  # 确保返回的prefix在CPU上
-    #     return (
-    #         prefix,
-    #         local_accepted_tokens,
-    #         local_total_tokens,
-    #         local_draft_forwards,
-    #         local_target_forwards,
-    #         decode_time,
-    #     )
 
     @torch.no_grad()
     def speculative_decoding(self, prefix, enable_timing=True):
-        """
-        带有精确计时、数值稳定性和性能优化的投机解码函数。
-        """
-        # ... (前面的代码保持不变) ...
         local_accepted_tokens = 0
         local_total_tokens = 0
         local_draft_forwards = 0
@@ -496,7 +327,7 @@ class Decoding(ABC):
         max_tokens = prefix.shape[1] + self.args.max_tokens
         draft_device = self.draft_model.device
         target_device = self.target_model.device
-        # ... (计时器设置保持不变) ...
+        # 计时器设置
         use_cuda_events = enable_timing and draft_device.type == "cuda" and target_device.type == "cuda"
         if use_cuda_events:
             start_event = torch.cuda.Event(enable_timing=True)
@@ -507,18 +338,15 @@ class Decoding(ABC):
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
         target_model_cache.vocab_size = self.vocab_size
-        # <<< MODIFICATION START: 性能优化 >>>
-        # 预先获取模型计算时使用的数据类型 (dtype)，通常是 float16 或 bfloat16
-        # 我们通过检查模型任意一个参数的dtype来确定
+        # 获取模型计算时使用的数据类型
         model_dtype = next(self.target_model.parameters()).dtype
 
-        # 在循环外创建常量张量，并确保 device 和 dtype 正确
-        # 这避免了在循环中反复创建张量和进行类型转换
+        # 创建常量张量
         ONE_TENSOR = torch.tensor(1.0, device=draft_device, dtype=model_dtype)
-        # <<< MODIFICATION END >>>
+
         loop_index = 0
         while prefix.shape[1] < max_tokens:
-            # ... (计时循环开始保持不变) ...
+            # 计时循环
             if use_cuda_events:
                 start_event.record()
             elif enable_timing:
@@ -546,13 +374,10 @@ class Decoding(ABC):
                     break
                 ratio = target_prob / approx_prob
 
-                # <<< MODIFICATION START: 使用预先创建的常量 >>>
-                # 现在这里的 min 操作非常快，因为它操作的是两个类型匹配的、已存在的GPU张量
                 if r > torch.min(ONE_TENSOR, ratio):
-                    # <<< MODIFICATION END >>>
                     n = prefix_len + i - 1
                     break
-            # ... (后续的统计、回滚和修正采样逻辑与之前的稳定版相同) ...
+
             accepted_count = n - prefix_len + 1
             self.num_acc_tokens.append(accepted_count)
             local_total_tokens += self.args.gamma
@@ -580,7 +405,7 @@ class Decoding(ABC):
 
             prefix = torch.cat((prefix, t), dim=1)
 
-            # ... (计时结束逻辑保持不变) ...
+            # 计时结束
             if use_cuda_events:
                 end_event.record()
                 torch.cuda.synchronize()
