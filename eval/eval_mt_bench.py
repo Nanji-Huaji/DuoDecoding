@@ -16,6 +16,11 @@ total_tokens, accepted_tokens = 0, 0
 
 total_decode_time = 0
 
+total_prefill_time = 0
+
+decode_time_list = []
+prefill_time_list = []
+
 
 def read_results(file_path):
     f = open(file_path)
@@ -72,7 +77,7 @@ class EvalMTBench(Decoding):
 
     @torch.no_grad()
     def eval(self):
-        global total_tokens, accepted_tokens, total_decode_time
+        global total_tokens, accepted_tokens, total_decode_time, total_prefill_time, decode_time_list, prefill_time_list
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -167,6 +172,8 @@ class EvalMTBench(Decoding):
                         total_tokens += local_total_tokens
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, local_decode_time = output_ids
+                    if isinstance(output_ids, tuple) and len(output_ids) == 3:
+                        output_ids, local_decode_time, local_prefill_time = output_ids
 
                     torch.cuda.synchronize()
                     end_time = time.time()
@@ -258,6 +265,12 @@ class EvalMTBench(Decoding):
                     elif isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, local_decode_time = output_ids
                         total_decode_time += local_decode_time
+                    elif isinstance(output_ids, tuple) and len(output_ids) == 3:
+                        output_ids, local_decode_time, local_prefill_time = output_ids
+                        total_decode_time += local_decode_time
+                        total_prefill_time += local_prefill_time
+                        decode_time_list.append(local_decode_time)
+                        prefill_time_list.append(local_prefill_time)
                     torch.cuda.synchronize()
                     end_time = time.time()
 
@@ -334,6 +347,20 @@ class EvalMTBench(Decoding):
         )
         self.color_print(
             f"Decode Time: {total_decode_time:.2f} seconds, Generating speed by decode time: {speed_by_decode_time:.2f} token / second",
+            2,
+        )
+        if total_prefill_time > 0:
+            self.color_print(
+                f"Prefill Time: {total_prefill_time:.2f} seconds, Decoding speed by using prefill time: {torch.sum(torch.tensor(total_num_token))  / (torch.sum(torch.tensor(total_wall_time)) - total_prefill_time):.2f} token / second",
+                2,
+            )
+
+        self.color_print(
+            f"Decode time: {total_decode_time:.2f} seconds, Prefill time: {total_prefill_time:.2f} seconds, wall time: {torch.sum(torch.tensor(total_wall_time)):.2f} seconds",
+        )
+
+        self.color_print(
+            f"Total tokens: {torch.sum(torch.tensor(total_num_token))}, Total wall time: {torch.sum(torch.tensor(total_wall_time)):.2f} seconds",
             2,
         )
 

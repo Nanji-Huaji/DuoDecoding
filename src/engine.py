@@ -266,57 +266,43 @@ class Decoding(ABC):
         pass
 
     @torch.no_grad()
-    def autoregressive_sampling(self, prefix, enable_timing=True):
+    def autoregressive_sampling(self, prefix):
         if self.args.eval_mode == "small":
             model = self.draft_model
-            self.color_print("--- Running in SMALL mode ---", 3)
         elif self.args.eval_mode == "large":
             model = self.target_model
-            self.color_print("--- Running in LARGE mode ---", 3)
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
-        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        self.color_print(f"Model: {type(model).__name__}, Parameters: {num_params / 1e9:.2f}B", 3)
-        #  初始化模型和 KV 缓存
-        device = model.device
-        prefix = prefix.to(device)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        prefix = prefix.to(model.device)
         model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-        model.vocab_size = self.vocab_size
-        #  设置计时器
-        use_cuda_events = enable_timing and device.type == "cuda"
+        model.vocab_size = self.args.vocab_size
 
-        if use_cuda_events:
-            decode_start_event = torch.cuda.Event(enable_timing=True)
-            decode_end_event = torch.cuda.Event(enable_timing=True)
-        decode_time = 0.0
-        #  生成循环
+        prefix_len = prefix.shape[1]
+        max_tokens = prefix_len + self.args.max_tokens
+
         x = prefix
-        max_len = x.shape[1] + self.args.max_tokens
-        #  Prefill
-        x = model.generate(x, 1)
-        #  Decode
-        if x.shape[1] < max_len:
-            if use_cuda_events:
-                decode_start_event.record()
-            elif enable_timing:
-                decode_start_time = time.time()
-            while x.shape[1] < max_len:
-                x = model.generate(x, 1)
-            #  结束计时
-            if use_cuda_events:
-                decode_end_event.record()
-                torch.cuda.synchronize()
-                decode_time = decode_start_event.elapsed_time(decode_end_event) / 1000.0
-            elif enable_timing:
-                decode_time = time.time() - decode_start_time
-        else:
-            # 如果只生成一个 token，decode_time 为 0
-            if use_cuda_events:
-                torch.cuda.synchronize()
-            decode_time = 0.0
 
-        x = x.to("cpu")
-        return x, decode_time
+        loop_idx = 0
+        prefill_times = []
+        decode_times = []
+        while x.shape[1] < max_tokens:
+            start_event.record(stream=torch.cuda.current_stream())
+            x = model.generate(x, 1)
+            end_event.record(stream=torch.cuda.current_stream())
+            torch.cuda.synchronize()
+            loop_duration_s = start_event.elapsed_time(end_event) / 1000.0
+            if loop_idx == 0:
+                prefill_times.append(loop_duration_s)
+            else:
+                decode_times.append(loop_duration_s)
+            loop_idx += 1
+        decode_time = sum(decode_times)
+        prefill_time = sum(prefill_times)
+        self.color_print(f"decode time: {decode_time:.2f} seconds, prefill time: {prefill_time}", 2)
+        return x, decode_time, prefill_time
 
     @torch.no_grad()
     def speculative_decoding(self, prefix, enable_timing=True):
@@ -428,6 +414,68 @@ class Decoding(ABC):
             local_target_forwards,
             decode_time,
         )
+
+    @torch.no_grad()
+    def speculative_decoding_simpletiming(self, prefix):
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+
+        draft_device = self.draft_model.device
+        target_device = self.target_model.device
+
+        approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
+        approx_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
+        target_model_cache.vocab_size = self.vocab_size
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        loop_idx = 0
+        while prefix.shape[1] < max_tokens:
+            prefix_len = prefix.shape[1]
+
+            x = approx_model_cache.generate(prefix.to(draft_device), self.args.gamma)
+
+            _ = target_model_cache.generate(x.to(target_device), 1)
+
+            if self.accelerator.is_main_process:
+                self.draft_forward_times += self.args.gamma
+                self.target_forward_times += 1
+
+            n = prefix_len + self.args.gamma - 1
+            for i in range(self.args.gamma):
+                r = torch.rand(1, device=draft_device)
+                j = x[:, prefix_len + i]
+
+                if r > (target_model_cache._prob_history.to(draft_device)[:, prefix_len + i - 1, j]) / (
+                    approx_model_cache._prob_history[:, prefix_len + i - 1, j]
+                ):
+                    n = prefix_len + i - 1
+                    break
+
+            self.num_acc_tokens.append(n - prefix_len + 1)
+
+            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+            prefix = x[:, : n + 1]
+
+            approx_model_cache.rollback(n + 1)
+
+            if n < prefix_len + self.args.gamma - 1:
+                # reject someone, sample from the pos n
+                t = sample(
+                    max_fn(
+                        target_model_cache._prob_history[:, n, : self.vocab_size].to(draft_device)
+                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
+                    )
+                )
+                target_model_cache.rollback(n + 1)
+            else:
+                # all approx model decoding accepted
+                t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
+                target_model_cache.rollback(n + 2)
+
+            prefix = torch.cat((prefix, t), dim=1)
+
+        return prefix
 
     @torch.no_grad()
     def pld_forward(self, prefix):
