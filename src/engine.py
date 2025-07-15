@@ -1,3 +1,8 @@
+import torch._dynamo
+
+torch._dynamo.config.suppress_errors = True
+
+
 import torch
 import json
 import torch.distributed as dist
@@ -25,6 +30,23 @@ from .model.rest.rest.model.rest_model import RestModel
 from .model.rest.rest.model.kv_cache import initialize_past_key_values
 import draftretriever
 
+from typing import TypedDict, List, Tuple, Optional
+
+
+from functools import reduce
+
+from .gpt_fast_model import Transformer
+
+from pathlib import Path
+
+
+class DecodingMetrics(TypedDict):
+    generated_tokens: int
+    prefilling_time: Optional[float]
+    decoding_time: Optional[float]
+    draft_model_accepted_tokens: Optional[int]
+    draft_model_proposed_tokens: Optional[int]
+
 
 class Decoding(ABC):
     def __init__(self, args):
@@ -33,13 +55,9 @@ class Decoding(ABC):
             rank = int(os.environ["RANK"])
             size = int(os.environ["WORLD_SIZE"])
             if "duodec" in args.eval_mode:
-                dist.init_process_group(
-                    "gloo", init_method="env://", rank=rank, world_size=size
-                )
+                dist.init_process_group("gloo", init_method="env://", rank=rank, world_size=size)
             else:
-                dist.init_process_group(
-                    "nccl", init_method="env://", rank=rank, world_size=size
-                )
+                dist.init_process_group("nccl", init_method="env://", rank=rank, world_size=size)
         self.accelerator = Accelerator()
 
         seed_everything(self.args.seed)
@@ -54,16 +72,20 @@ class Decoding(ABC):
 
     def load_model(self):
         # * load models according to different evaluation methods.
-        self.color_print(
-            f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}", 3
-        )
+        if self.args.draft_model is None or self.args.draft_model == "":
+            self.draft_model = "llama/llama-160m"
+        self.color_print(f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}", 3)
+        self.color_print(f"draft model: {self.args.draft_model}", 3)
+        self.color_print(f"target model: {self.args.target_model}", 3)
+        # if self.args.smallest_model is not None and self.args.eval_mode == "tridec":
+        #     self.color_print(f"smallest model: {self.args.smallest_model}", 3)
         if self.args.eval_mode == "small":
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
                 device_map="auto",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
         elif self.args.eval_mode == "large":
@@ -72,7 +94,7 @@ class Decoding(ABC):
                 device_map="auto",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
         elif self.args.eval_mode == "sd":
@@ -81,15 +103,16 @@ class Decoding(ABC):
                 device_map="cuda:0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
             self.target_model = AutoModelForCausalLM.from_pretrained(
                 self.args.target_model,
                 device_map="balanced_low_0",
+                # device_map="cuda:1",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
 
@@ -100,7 +123,7 @@ class Decoding(ABC):
                     device_map="cuda:0",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
             else:
@@ -109,7 +132,7 @@ class Decoding(ABC):
                     device_map="balanced_low_0",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
 
@@ -120,7 +143,7 @@ class Decoding(ABC):
                     device_map="cuda:0",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
                 self.draft_model_2 = AutoModelForCausalLM.from_pretrained(
@@ -128,7 +151,7 @@ class Decoding(ABC):
                     device_map=f"cuda:{torch.cuda.device_count()-1}",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
             else:
@@ -137,12 +160,15 @@ class Decoding(ABC):
                     device_map="auto",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
 
         elif self.args.eval_mode == "duodec":
             if self.accelerator.is_main_process:
+                print(
+                    f"duodec mode, loading draft model {self.args.draft_model} on rank {self.accelerator.process_index}"
+                )
                 self.draft_model = llama_cpp.Llama(
                     model_path=self.args.draft_model,
                     n_ctx=4096,
@@ -150,12 +176,15 @@ class Decoding(ABC):
                     n_threads=16,
                 )
             else:
+                print(
+                    f"duodec mode, loading target model {self.args.target_model} on rank {self.accelerator.process_index}"
+                )
                 self.target_model = AutoModelForCausalLM.from_pretrained(
                     self.args.target_model,
                     device_map="cuda:0",
                     torch_dtype=torch.bfloat16,
                     trust_remote_code=True,
-                    cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                    cache_dir="llama/.cache/huggingface",
                     local_files_only=True,
                 ).eval()
 
@@ -165,12 +194,10 @@ class Decoding(ABC):
                 device_map="cuda:0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
-            self.target_model.greedy_search_pld = greedy_search_pld.__get__(
-                self.target_model, type(self.target_model)
-            )
+            self.target_model.greedy_search_pld = greedy_search_pld.__get__(self.target_model, type(self.target_model))
         elif self.args.eval_mode == "lade":
             from .model.lade.utils import augment_all, config_lade
             from .model.lade.decoding import CONFIG_MAP
@@ -191,7 +218,7 @@ class Decoding(ABC):
                 device_map="cuda:0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
-                cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+                cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
         elif self.args.eval_mode == "rest":
@@ -205,6 +232,31 @@ class Decoding(ABC):
             self.datastore = draftretriever.Reader(
                 index_file_path=self.args.datastore_path,
             )
+        elif self.args.eval_mode == "tridec":
+            self.smallest_model = AutoModelForCausalLM.from_pretrained(
+                self.args.smallest_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                self.args.draft_model,
+                device_map="balanced_low_0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.target_model = AutoModelForCausalLM.from_pretrained(
+                self.args.target_model,
+                device_map="balanced_low_0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
 
         self.vocab_size = self.args.vocab_size
 
@@ -214,13 +266,53 @@ class Decoding(ABC):
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.args.target_model,
             trust_remote_code=True,
-            cache_dir="/nas/shared/public/llmeval/model_weights/hf_hub",
+            cache_dir="llama/.cache/huggingface",
             local_files_only=True,
         )
         self.tokenizer.padding_side = "right"
 
         # for llama models
         self.tokenizer.pad_token_id = 2
+
+    @staticmethod
+    def load_pth_model(
+        pth_file_path: Path, precision: torch.dtype, use_tp: bool, device: str = "cuda:0"
+    ) -> Transformer:
+        assert pth_file_path.exists(), f"Path {pth_file_path} does not exist!"
+        with torch.device("meta"):
+            model = Transformer.from_name(pth_file_path.parent.name)
+
+            checkpoint = torch.load(str(pth_file_path), mmap=True, weights_only=True)
+
+        if "model" in checkpoint and "stories" in str(pth_file_path):
+            checkpoint = checkpoint["model"]
+        model.load_state_dict(checkpoint, assign=True)
+
+        if use_tp:
+            from tp import apply_tp
+
+            print("Applying tensor parallel to model ...")
+            print("tp may not work well")
+            apply_tp(model)
+
+        model = model.to(device=device, dtype=precision)
+        return model.eval()
+
+    def load_model_gpt_fast(self):
+        if self.args.draft_model is None or self.args.draft_model == "":
+            self.draft_model = "llama/llama-160m"
+        self.color_print(f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}", 3)
+        self.color_print(f"draft model: {self.args.draft_model}", 3)
+        self.color_print(f"target model: {self.args.target_model}", 3)
+
+        if self.args.eval_mode == "small":
+            pass
+        elif self.args.eval_mode == "large":
+            pass
+        elif self.args.eval_mode == "sd":
+            pass
+        else:
+            raise NotImplementedError("GPT-Fast decoding is not implemented for this eval mode!")
 
     @abstractmethod
     def load_data(self):
@@ -234,47 +326,65 @@ class Decoding(ABC):
     def postprocess(self, input_text, output_text):
         pass
 
-    @torch.no_grad()
-    def autoregressive_sampling(self, prefix):
+    @torch.inference_mode()
+    def autoregressive_sampling(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
         if self.args.eval_mode == "small":
             model = self.draft_model
         elif self.args.eval_mode == "large":
             model = self.target_model
         else:
-            raise RuntimeError(
-                "Auto-Regressive Decoding can be used only in small / large eval mode!"
-            )
+            raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
         prefix = prefix.to(model.device)
         model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
         model.vocab_size = self.args.vocab_size
+
+        # start_event = torch.cuda.Event(enable_timing=True)
+        # end_event = torch.cuda.Event(enable_timing=True)
 
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 
         x = prefix
 
-        while x.shape[1] < max_tokens:
-            x = model.generate(x, 1)
+        def generate_next(tokens, _):
+            return model.generate(tokens, 1)
 
-        return x
+        # Generate tokens up to max_tokens by repeatedly applying generate_next
+        x = reduce(generate_next, range(max_tokens - x.shape[1]), x)
+
+        metrics = DecodingMetrics(
+            generated_tokens=x.shape[1] - prefix_len,
+            prefilling_time=0,
+            decoding_time=0,
+            draft_model_accepted_tokens=None,
+            draft_model_proposed_tokens=None,
+        )
+
+        return x, metrics
 
     @torch.no_grad()
-    def speculative_decoding(self, prefix):
+    def speculative_decoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
+        approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
         approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
+        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
         target_model_cache.vocab_size = self.vocab_size
 
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        prefilling_time = 0.0
+        decoding_time = []
+        loop_idx = 0
+
+        draft_model_proposed_tokens = 0
+        draft_model_accepted_tokens = 0
+
         while prefix.shape[1] < max_tokens:
+            start_event.record(stream=torch.cuda.current_stream())
             prefix_len = prefix.shape[1]
 
             x = approx_model_cache.generate(prefix.to(draft_device), self.args.gamma)
@@ -286,19 +396,19 @@ class Decoding(ABC):
                 self.target_forward_times += 1
 
             n = prefix_len + self.args.gamma - 1
+            draft_model_proposed_tokens += self.args.gamma
             for i in range(self.args.gamma):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    target_model_cache._prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (approx_model_cache._prob_history[:, prefix_len + i - 1, j]):
+                if r > (target_model_cache._prob_history.to(draft_device)[:, prefix_len + i - 1, j]) / (
+                    approx_model_cache._prob_history[:, prefix_len + i - 1, j]
+                ):
                     n = prefix_len + i - 1
                     break
 
             self.num_acc_tokens.append(n - prefix_len + 1)
+            draft_model_accepted_tokens += n - prefix_len + 1
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
@@ -309,23 +419,35 @@ class Decoding(ABC):
                 # reject someone, sample from the pos n
                 t = sample(
                     max_fn(
-                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
+                        target_model_cache._prob_history[:, n, : self.vocab_size].to(draft_device)
                         - approx_model_cache._prob_history[:, n, : self.vocab_size]
                     )
                 )
                 target_model_cache.rollback(n + 1)
             else:
                 # all approx model decoding accepted
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
+                t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
                 target_model_cache.rollback(n + 2)
 
             prefix = torch.cat((prefix, t), dim=1)
+            end_event.record(stream=torch.cuda.current_stream())
+            torch.cuda.synchronize()
+            if loop_idx == 0:
+                prefilling_time += start_event.elapsed_time(end_event) / 1000.0  # convert to seconds
+            else:
+                decoding_time.append(start_event.elapsed_time(end_event) / 1000.0)  # convert to seconds
+            loop_idx += 1
 
-        return prefix
+        decoding_time = sum(decoding_time)
+
+        metrics = DecodingMetrics(
+            generated_tokens=prefix.shape[1] - prefix_len,
+            prefilling_time=prefilling_time,
+            decoding_time=decoding_time,
+            draft_model_accepted_tokens=draft_model_accepted_tokens,
+            draft_model_proposed_tokens=draft_model_proposed_tokens,
+        )
+        return prefix, metrics
 
     @torch.no_grad()
     def pld_forward(self, prefix):
@@ -336,9 +458,7 @@ class Decoding(ABC):
             input_ids,
             attention_mask=attention_mask,
             # stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=len(input_ids[0]) + max_new_tokens)]),
-            stopping_criteria=StoppingCriteriaList(
-                [MaxLengthCriteria(max_length=max_tokens)]
-            ),
+            stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_tokens)]),
             draft_matching_window_size=3,
             draft_num_candidate_tokens=10,
             use_cache=True,
@@ -414,17 +534,15 @@ class Decoding(ABC):
         new_token = 0
 
         for idx in range(max_steps):
-            candidates, tree_candidates, draft_buffers = (
-                generate_candidates_and_draft_buffer(
-                    logits,
-                    input_ids,
-                    datastore,
-                    token_spans,
-                    top_p,
-                    temperature,
-                    max_num_draft=num_draft,
-                    device=model.base_model.device,
-                )
+            candidates, tree_candidates, draft_buffers = generate_candidates_and_draft_buffer(
+                logits,
+                input_ids,
+                datastore,
+                token_spans,
+                top_p,
+                temperature,
+                max_num_draft=num_draft,
+                device=model.base_model.device,
             )
             model.base_model.model.draft_mask = draft_buffers["draft_attn_mask"]
             logits, outputs = tree_decoding(
@@ -435,9 +553,7 @@ class Decoding(ABC):
                 input_ids,
                 draft_buffers["retrieve_indices"],
             )
-            best_candidate, accept_length = evaluate_posterior(
-                logits, candidates, temperature, top_p
-            )
+            best_candidate, accept_length = evaluate_posterior(logits, candidates, temperature, top_p)
             input_ids, logits, new_token = update_inference_inputs(
                 input_ids,
                 candidates,
@@ -463,15 +579,11 @@ class Decoding(ABC):
     def parallel_speculative_decoding(self, prefix):
         # parallel speculative decoding
         if self.accelerator.is_main_process:
-            model = KVCacheModel(
-                self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
-            )
+            model = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.vocab_size
             device = self.draft_model.device
         else:
-            model = KVCacheModel(
-                self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-            )
+            model = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.vocab_size
             device = self.target_model.device
 
@@ -491,9 +603,7 @@ class Decoding(ABC):
             input_ids = prefix.to(device)
             if self.accelerator.is_main_process:
                 x = model.generate(input_ids, self.args.gamma)
-                prob = model._prob_history[
-                    :, prefix_len - self.args.gamma - 1 : prefix_len, : self.vocab_size
-                ]
+                prob = model._prob_history[:, prefix_len - self.args.gamma - 1 : prefix_len, : self.vocab_size]
                 prob[:, 0, 0] = -1
                 prob[:, 0, 1 : self.args.gamma * 2] = x[
                     :, prefix_len - self.args.gamma + 1 : prefix_len + self.args.gamma
@@ -501,9 +611,7 @@ class Decoding(ABC):
                 self.draft_forward_times += self.args.gamma
             else:
                 x = model.generate(input_ids, 1)
-                prob = model._prob_history[
-                    :, prefix_len - self.args.gamma - 1 : prefix_len, : self.vocab_size
-                ]
+                prob = model._prob_history[:, prefix_len - self.args.gamma - 1 : prefix_len, : self.vocab_size]
                 prob = prob.to("cuda:1")
                 self.target_forward_times += 1
 
@@ -543,9 +651,7 @@ class Decoding(ABC):
                 else:
                     # accept the first token, change the mode
                     cur_mode = False
-                    prefix = torch.cat(
-                        (input_ids, draft_ids[:, -self.args.gamma :]), dim=1
-                    )
+                    prefix = torch.cat((input_ids, draft_ids[:, -self.args.gamma :]), dim=1)
                     num_acc_token += 1
 
             else:
@@ -559,9 +665,7 @@ class Decoding(ABC):
                         break
                 if n == self.args.gamma:
                     # accept all guess tokens
-                    prefix = torch.cat(
-                        (input_ids, draft_ids[:, -self.args.gamma :]), dim=1
-                    )
+                    prefix = torch.cat((input_ids, draft_ids[:, -self.args.gamma :]), dim=1)
                     num_acc_token += self.args.gamma
                 else:
                     # reject someone, change the mode
@@ -569,9 +673,7 @@ class Decoding(ABC):
                     cur_mode = True
                     t = sample(max_fn(target_prob[:, n, :] - draft_prob[:, n, :]))
 
-                    prefix = torch.cat(
-                        (input_ids[:, : prefix_len - self.args.gamma + n + 1], t), dim=1
-                    )
+                    prefix = torch.cat((input_ids[:, : prefix_len - self.args.gamma + n + 1], t), dim=1)
                     self.num_acc_tokens.append(num_acc_token + n)
                     num_acc_token = 0
                     # rollback both the large model and the small model kv cache
@@ -584,15 +686,11 @@ class Decoding(ABC):
     def duodecoding(self, prefix):
         # parallel speculative decoding
         if self.accelerator.is_main_process:
-            model = KVCacheCppModel(
-                self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
-            )
+            model = KVCacheCppModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.vocab_size
             device = "cpu"
         else:
-            model = KVCacheModel(
-                self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-            )
+            model = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.vocab_size
             device = self.target_model.device
             stop_signal = torch.ones(1, device="cpu")
@@ -629,9 +727,7 @@ class Decoding(ABC):
             if self.accelerator.is_main_process:  # draft model
                 input_ids = prefix.tolist()[0]
 
-                flatten_draft_k_seq_ids, draft_k_seq_prob, cur_k = model.generate_k_seq(
-                    input_ids, self.args.gamma
-                )
+                flatten_draft_k_seq_ids, draft_k_seq_prob, cur_k = model.generate_k_seq(input_ids, self.args.gamma)
                 # draft_prob = model._prob_history[:, prefix_len - prev_size:prefix_len, :self.vocab_size]
 
                 model.stop_signal[0] = 0.0
@@ -641,9 +737,7 @@ class Decoding(ABC):
                 # draft_prob_comm[0, 1:prev_size+1, :] = torch.from_numpy(draft_prob)
 
                 draft_prob_comm[0] = cur_k
-                draft_prob_comm[1 : self.args.gamma + 1] = torch.tensor(
-                    flatten_draft_k_seq_ids
-                )
+                draft_prob_comm[1 : self.args.gamma + 1] = torch.tensor(flatten_draft_k_seq_ids)
 
                 self.draft_forward_times += self.args.gamma
                 input_ids = prefix
@@ -651,12 +745,9 @@ class Decoding(ABC):
             else:  # target model
                 input_ids = prefix.to(device)
                 x = model.generate(input_ids, 1)
-                prob = model._prob_history[
-                    :, prefix_len - prev_size : prefix_len, : self.vocab_size
-                ]
+                prob = model._prob_history[:, prefix_len - prev_size : prefix_len, : self.vocab_size]
                 prob = prob.to(device)
                 self.target_forward_times += 1
-
 
             if self.accelerator.is_main_process:
                 dist.send(draft_prob_comm, dst=1)
@@ -669,39 +760,30 @@ class Decoding(ABC):
                 flatten_draft_k_seq_ids = draft_prob_comm[1 : self.args.gamma + 1]
 
                 # prev_size = self.args.gamma / prev_k
-                prev_ids_draft = prefix[
-                    :, prefix_len - prev_size + 1 : prefix_len
-                ]  # 两个进程的输入
+                prev_ids_draft = prefix[:, prefix_len - prev_size + 1 : prefix_len]  # 两个进程的输入
 
                 prev_prob_draft = []
 
                 cur_size = int(self.args.gamma / cur_k)
                 cur_ids_k_seq_draft = (
-                    torch.tensor(flatten_draft_k_seq_ids, dtype=torch.int)
-                    .reshape(cur_k, -1)
-                    .to(device)
+                    torch.tensor(flatten_draft_k_seq_ids, dtype=torch.int).reshape(cur_k, -1).to(device)
                 )  # [k, cur_size]
 
                 prob_target = prob
 
             else:
                 cur_ids_k_seq_draft = (
-                    torch.tensor(flatten_draft_k_seq_ids, dtype=torch.int)
-                    .reshape(cur_k, -1)
-                    .to(device)
+                    torch.tensor(flatten_draft_k_seq_ids, dtype=torch.int).reshape(cur_k, -1).to(device)
                 )
                 cur_size = int(self.args.gamma / cur_k)
             if cur_mode:
                 if not self.accelerator.is_main_process:
 
-                    flag, resampled_token_id, chosen_draft_tokens_seq_idx = (
-                        self.verify_first_token_for_k_seq(
-                            cur_ids_k_seq_draft,
-                            prev_prob_draft,
-                            prob_target[:, [-1], :],
-                        )
+                    flag, resampled_token_id, chosen_draft_tokens_seq_idx = self.verify_first_token_for_k_seq(
+                        cur_ids_k_seq_draft,
+                        prev_prob_draft,
+                        prob_target[:, [-1], :],
                     )
-
 
                     if flag == False:
                         # reject the first token in all k seq
@@ -720,9 +802,7 @@ class Decoding(ABC):
                         prefix = torch.cat(
                             (
                                 input_ids,
-                                cur_ids_k_seq_draft[
-                                    chosen_draft_tokens_seq_idx
-                                ].unsqueeze(dim=0),
+                                cur_ids_k_seq_draft[chosen_draft_tokens_seq_idx].unsqueeze(dim=0),
                             ),
                             dim=1,
                         )
@@ -734,18 +814,14 @@ class Decoding(ABC):
                     dist.recv(comm_tensor, src=1)
                     cur_mode = comm_tensor[0].item()
                     if cur_mode:
-                        prefix = torch.cat(
-                            (input_ids, comm_tensor[2:3].unsqueeze(dim=0)), dim=1
-                        )
+                        prefix = torch.cat((input_ids, comm_tensor[2:3].unsqueeze(dim=0)), dim=1)
                         # model.rollback(prefix_len)
                     else:
                         chosen_draft_tokens_seq_idx = comm_tensor[1].item()
                         prefix = torch.cat(
                             (
                                 input_ids,
-                                cur_ids_k_seq_draft[
-                                    chosen_draft_tokens_seq_idx
-                                ].unsqueeze(dim=0),
+                                cur_ids_k_seq_draft[chosen_draft_tokens_seq_idx].unsqueeze(dim=0),
                             ),
                             dim=1,
                         )
@@ -756,9 +832,9 @@ class Decoding(ABC):
                                 model.kv_cache[chosen_draft_tokens_seq_idx][0],
                                 model.kv_cache[chosen_draft_tokens_seq_idx][3],
                             )
-                            model._model.input_ids[
-                                : model.kv_cache[chosen_draft_tokens_seq_idx][2]
-                            ] = model.kv_cache[chosen_draft_tokens_seq_idx][1]
+                            model._model.input_ids[: model.kv_cache[chosen_draft_tokens_seq_idx][2]] = model.kv_cache[
+                                chosen_draft_tokens_seq_idx
+                            ][1]
 
             else:
                 if not self.accelerator.is_main_process:
@@ -771,12 +847,10 @@ class Decoding(ABC):
                             n = i
                             break
                     if n == prev_size - 1:
-                        flag, resampled_token_id, chosen_draft_tokens_seq_idx = (
-                            self.verify_first_token_for_k_seq(
-                                cur_ids_k_seq_draft,
-                                prev_prob_draft,
-                                prob_target[:, [-1], :],
-                            )
+                        flag, resampled_token_id, chosen_draft_tokens_seq_idx = self.verify_first_token_for_k_seq(
+                            cur_ids_k_seq_draft,
+                            prev_prob_draft,
+                            prob_target[:, [-1], :],
                         )
 
                         if flag == False:
@@ -794,9 +868,7 @@ class Decoding(ABC):
                             prefix = torch.cat(
                                 (
                                     input_ids,
-                                    cur_ids_k_seq_draft[
-                                        chosen_draft_tokens_seq_idx
-                                    ].unsqueeze(dim=0),
+                                    cur_ids_k_seq_draft[chosen_draft_tokens_seq_idx].unsqueeze(dim=0),
                                 ),
                                 dim=1,
                             )
@@ -808,9 +880,7 @@ class Decoding(ABC):
                         comm_tensor[1] = n
                         comm_tensor[2] = t
                         dist.send(comm_tensor, dst=0)
-                        prefix = torch.cat(
-                            (input_ids[:, : prefix_len - prev_size + n + 1], t), dim=1
-                        )
+                        prefix = torch.cat((input_ids[:, : prefix_len - prev_size + n + 1], t), dim=1)
                         model.rollback(prefix_len - prev_size + n + 1)
 
                 else:  # draft model
@@ -819,9 +889,7 @@ class Decoding(ABC):
                     n = comm_tensor[1].item()
                     t = comm_tensor[2].item()
                     if cur_mode == 0:
-                        prefix = torch.cat(
-                            (input_ids, cur_ids_k_seq_draft[n].unsqueeze(dim=0)), dim=1
-                        )
+                        prefix = torch.cat((input_ids, cur_ids_k_seq_draft[n].unsqueeze(dim=0)), dim=1)
 
                         if cur_k != 1:
                             llama_cpp.llama_state_set_data(
@@ -829,9 +897,7 @@ class Decoding(ABC):
                                 model.kv_cache[n][0],
                                 model.kv_cache[n][3],
                             )
-                            model._model.input_ids[: model.kv_cache[n][2]] = (
-                                model.kv_cache[n][1]
-                            )
+                            model._model.input_ids[: model.kv_cache[n][2]] = model.kv_cache[n][1]
 
                     else:  # reject someone
                         prefix = torch.cat(
@@ -848,9 +914,7 @@ class Decoding(ABC):
         return prefix
 
     @torch.no_grad()
-    def verify_first_token_for_k_seq(
-        self, draft_tokens_k_seq, draft_prob_k_seq, target_prob
-    ):
+    def verify_first_token_for_k_seq(self, draft_tokens_k_seq, draft_prob_k_seq, target_prob):
         flag = False  # if any accepted
         resampled_token_id = 0
         chosen_draft_tokens_seq_idx = 0

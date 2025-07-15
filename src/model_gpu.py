@@ -39,9 +39,7 @@ class KVCacheModel:
             if last_input_id.dim() == 1:
                 last_input_id = torch.unsqueeze(last_input_id, 0)
 
-            outputs = self._model(
-                last_input_id, past_key_values=self._past_key_values, use_cache=True
-            )
+            outputs = self._model(last_input_id, past_key_values=self._past_key_values, use_cache=True)
 
             not_cached_q = outputs.logits[:, :, : self.vocab_size]
 
@@ -49,9 +47,7 @@ class KVCacheModel:
                 not_cached_q = torch.unsqueeze(not_cached_q, 0)
 
             for i in range(not_cached_q.shape[-2]):
-                not_cached_q[:, i, :] = norm_logits(
-                    not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p
-                )
+                not_cached_q[:, i, :] = norm_logits(not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p)
 
             self._prob_history = torch.cat([self._prob_history, not_cached_q], dim=1)
 
@@ -80,17 +76,15 @@ class KVCacheModel:
 
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:
+        # output = self._generate_with_kvcache(input, gamma)
         output = self._generate_with_kvcache(input, gamma)
-        return output
-
-    @torch.no_grad()
-    def generate_cape(self, input_ids: torch.Tensor, gamma: int) -> torch.Tensor:
-        output = self._generate_with_kvcache(input_ids, gamma)
         return output
 
     @torch.no_grad()
     def rollback(self, end_pos: int):
         past_key_values_trimmed = []
+        if self._past_key_values is None:
+            return
         assert self._past_key_values
         for kv in self._past_key_values:
             k, v = kv

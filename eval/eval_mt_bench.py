@@ -11,6 +11,15 @@ import shortuuid
 from src.utils import seed_everything, parse_arguments
 from src.engine import Decoding
 from fastchat.model import get_conversation_template
+from typing import List, Tuple
+
+from src.engine import DecodingMetrics
+
+total_generated_tokens = 0
+total_prefilling_time = 0.0
+total_decoding_time = 0.0
+draft_model_proposed_tokens = 0
+draft_model_accepted_tokens = 0
 
 
 def read_results(file_path):
@@ -43,10 +52,7 @@ class EvalMTBench(Decoding):
             self.model_id = "vicuna"
         elif "vicuna" in self.args.draft_model and "vicuna" in self.args.target_model:
             self.model_id = "vicuna"
-        elif (
-            "Llama-3.1" in self.args.draft_model
-            and "Llama-3.1" in self.args.target_model
-        ):
+        elif "Llama-3.1" in self.args.draft_model and "Llama-3.1" in self.args.target_model:
             self.model_id = "llama-3.1"
         else:
             raise NotImplementedError
@@ -69,6 +75,9 @@ class EvalMTBench(Decoding):
 
     @torch.no_grad()
     def eval(self):
+
+        global total_generated_tokens, total_prefilling_time, total_decoding_time
+        global draft_model_proposed_tokens, draft_model_accepted_tokens
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -87,9 +96,11 @@ class EvalMTBench(Decoding):
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
-        out_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
-        )
+        use_compile = True
+        if use_compile:
+            self.target_model = torch.compile(self.target_model, dynamic=True)
+
+        out_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl")
         out_f = open(out_path, "a")
 
         # warmup
@@ -145,19 +156,17 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
+                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
+                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
+                        output_ids, _ = output_ids
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
-                    )
+                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -224,19 +233,28 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
+                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
+                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
+                        output_ids, metrics = output_ids
+                        total_generated_tokens += metrics["generated_tokens"]
+                        total_prefilling_time += metrics["prefilling_time"]
+                        total_decoding_time += metrics["decoding_time"]
+                        if "draft_model_accepted_tokens" in metrics.keys() and isinstance(
+                            metrics["draft_model_accepted_tokens"], int
+                        ):
+                            draft_model_accepted_tokens += metrics["draft_model_accepted_tokens"]
+                        if "draft_model_proposed_tokens" in metrics.keys() and isinstance(
+                            metrics["draft_model_proposed_tokens"], int
+                        ):
+                            draft_model_proposed_tokens += metrics["draft_model_proposed_tokens"]
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
-                    )
+                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -293,16 +311,38 @@ class EvalMTBench(Decoding):
                 2,
             )
 
-        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(
-            torch.tensor(total_wall_time)
-        )
-        total_speed_std = torch.std(
-            torch.tensor(total_num_token) / torch.tensor(total_wall_time)
-        )
+        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(torch.tensor(total_wall_time))
+        total_speed_std = torch.std(torch.tensor(total_num_token) / torch.tensor(total_wall_time))
         self.color_print(
             f"Average generating speed: {total_speed.float().item():.2f} with std {total_speed_std.float().item()} token / second",
             2,
         )
+
+        # Print debug information
+        self.color_print(
+            f"wall_time: {torch.sum(torch.tensor(total_wall_time))}, num_token: {torch.sum(torch.tensor(total_num_token))}",
+            2,
+        )
+
+        metrics_str = f"""
+        ------------- Evaluation Summary -------------
+        Evaluation Metrics:
+        - Total Generated Tokens: {total_generated_tokens}
+        - Total Prefilling Time: {total_prefilling_time:.2f} seconds
+        - Total Decoding Time: {total_decoding_time:.2f} seconds
+        """
+
+        if draft_model_proposed_tokens > 0:
+            metrics_str += f"""
+            - Draft Model Proposed Tokens: {draft_model_proposed_tokens}
+            - Draft Model Accepted Tokens: {draft_model_accepted_tokens}
+            - Draft Model Acceptance Rate: {draft_model_accepted_tokens / draft_model_proposed_tokens:.2%}
+            """
+        metrics_str += """
+        ------------- End of Evaluation Summary -------------
+        """
+
+        self.color_print(metrics_str, 2)
 
         # self.color_print(f"draft model forward times: {self.draft_forward_times}", 2)
 
