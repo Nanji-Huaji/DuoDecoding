@@ -152,6 +152,12 @@ def parse_arguments():
         type=int,
         default=10,
     )
+    parser.add_argument(
+        "--use-gpt_fast_model",
+        type=bool,
+        default=True,
+        help="Use gpt-fast model for decoding.",
+    )
     # end for lookahead decoding
 
     # for rest

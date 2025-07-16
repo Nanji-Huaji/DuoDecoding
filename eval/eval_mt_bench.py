@@ -38,21 +38,25 @@ def read_results(file_path):
 class EvalMTBench(Decoding):
     def __init__(self, args):
         super().__init__(args)
-
         # load relative resources
-        self.load_tokenizer()
+        if self.args.use_gpt_fast_model:
+            self.load_tokenizer_gpt_fast()
+            self.load_model_gpt_fast()
+        else:
+            self.load_tokenizer()
+            self.load_model()
+
         self.load_data()
-        self.load_model()
 
         print(self.args.target_model)
 
-        if "Llama-2" in self.args.draft_model and "Llama-2" in self.args.target_model:
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
             self.model_id = "llama-2-chat"
-        elif "Llama-2" in self.args.target_model:
+        elif "Llama-2" in str(self.args.target_model):
             self.model_id = "vicuna"
-        elif "vicuna" in self.args.draft_model and "vicuna" in self.args.target_model:
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
             self.model_id = "vicuna"
-        elif "Llama-3.1" in self.args.draft_model and "Llama-3.1" in self.args.target_model:
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
             self.model_id = "llama-3.1"
         else:
             raise NotImplementedError
@@ -96,9 +100,9 @@ class EvalMTBench(Decoding):
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
-        use_compile = True
-        if use_compile:
-            self.target_model = torch.compile(self.target_model, dynamic=True)
+        # use_compile = True
+        # if use_compile:
+        #     self.target_model = torch.compile(self.target_model, dynamic=True)
 
         out_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl")
         out_f = open(out_path, "a")

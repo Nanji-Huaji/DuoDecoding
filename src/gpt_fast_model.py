@@ -17,6 +17,12 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
 )
 
+from typing import Tuple
+
+from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+
+create_block_mask = torch.compile(create_block_mask)
+
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -218,6 +224,8 @@ class Transformer(nn.Module):
         super().__init__()
         self.config = config
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.tok_embeddings = nn.Embedding(config.vocab_size, config.dim)
         self.layers = nn.ModuleList(TransformerBlock(config) for _ in range(config.n_layer))
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
@@ -230,6 +238,9 @@ class Transformer(nn.Module):
         self.get_mask_mod = get_mask_mod
 
     def setup_caches(self, max_batch_size, max_seq_length):
+        # 获取模型设备
+        device = next(self.parameters()).device
+
         if self.max_seq_length >= max_seq_length and self.max_batch_size >= max_batch_size:
             return
         head_dim = self.config.dim // self.config.n_head
@@ -242,8 +253,11 @@ class Transformer(nn.Module):
             dtype = self.output.scales.dtype
         elif hasattr(self.output, "scales_and_zeros"):
             dtype = self.output.scales_and_zeros.dtype
+
         for b in self.layers:
             b.attention.kv_cache = KVCache(max_batch_size, max_seq_length, self.config.n_local_heads, head_dim, dtype)
+            # 将 KV 缓存移动到正确设备
+            b.attention.kv_cache = b.attention.kv_cache.to(device)
 
         self.freqs_cis = precompute_freqs_cis(
             self.config.block_size,
@@ -252,6 +266,10 @@ class Transformer(nn.Module):
             dtype,
             self.config.rope_scaling,
         )
+
+        # 确保 freqs_cis 在正确设备上
+        if hasattr(self, "freqs_cis") and self.freqs_cis is not None:
+            self.freqs_cis = self.freqs_cis.to(device)
 
     def forward(self, mask: BlockMask, idx: Tensor, input_pos: Optional[Tensor] = None) -> Tensor:
         assert self.freqs_cis is not None, "Caches must be initialized first"
@@ -268,6 +286,49 @@ class Transformer(nn.Module):
     @classmethod
     def from_name(cls, name: str):
         return cls(ModelArgs.from_name(name))
+
+    @torch.inference_mode()
+    def generate(self, prefix: torch.Tensor, gamma: int) -> torch.Tensor:
+        """
+        对 prefix 进行自回归解码，生成 gamma 个新的 token
+
+        Args:
+            prefix: 输入的前缀 tokens, shape [batch_size, seq_len]
+            gamma: 要生成的新 token 数量
+
+        Returns:
+            生成的完整序列，包含原始 prefix 和新生成的 tokens
+        """
+        batch_size, prefix_len = prefix.shape
+
+        # 设置缓存
+        total_len = prefix_len + gamma
+        self.setup_caches(batch_size, total_len)
+
+        # 移动到正确的设备
+        prefix = prefix.to(self.device)
+
+        if prefix_len == 1:
+            # 如果只有一个 token，直接开始解码
+            cur_token = prefix
+            input_pos = torch.arange(0, prefix_len, device=self.device)
+        else:
+            # 对 prefix 进行 prefill
+            input_pos = torch.arange(0, prefix_len, device=self.device)
+            cur_token = prefill(self, prefix, input_pos)
+            input_pos = torch.tensor([prefix_len], device=self.device)
+
+        # 解码新的 tokens
+        new_tokens, _ = decode_n_tokens(self, cur_token, input_pos, gamma, temperature=1.0, top_k=None)
+
+        # 组合结果
+        if new_tokens:
+            new_tokens_tensor = torch.cat(new_tokens, dim=1)
+            result = torch.cat([prefix, new_tokens_tensor], dim=1)
+        else:
+            result = prefix
+
+        return result
 
 
 class TransformerBlock(nn.Module):
@@ -411,3 +472,72 @@ def apply_rotary_emb(x: Tensor, freqs_cis: Tensor) -> Tensor:
 
     x_out2 = x_out2.flatten(3)
     return x_out2.type_as(x)
+
+
+def multinomial_sample_one_no_sync(probs_sort):  # Does multinomial sampling without a cuda synchronization
+    q = torch.empty_like(probs_sort).exponential_(1)
+    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
+
+
+def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    logits = logits / max(temperature, 1e-5)
+
+    if top_k is not None:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        pivot = v.select(-1, -1).unsqueeze(-1)
+        logits = torch.where(logits < pivot, -float("Inf"), logits)
+    probs = torch.nn.functional.softmax(logits, dim=-1)
+    return probs
+
+
+def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    probs = logits_to_probs(logits[:, -1], temperature, top_k)
+    idx_next = multinomial_sample_one_no_sync(probs)
+    return idx_next, probs
+
+
+def decode_one_token(
+    model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, block_mask: BlockMask, **sampling_kwargs
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # input_pos: [B, 1]
+    assert input_pos.shape[-1] == 1
+    block_index = input_pos // block_mask.BLOCK_SIZE[0]
+    mask = block_mask[:, :, block_index]
+    mask.mask_mod = block_mask.mask_mod
+    mask.seq_lengths = (1, model.max_seq_length)
+    logits = model(mask, x, input_pos)
+    return sample(logits, **sampling_kwargs)
+
+
+def decode_n_tokens(
+    model: Transformer,
+    cur_token: torch.Tensor,
+    input_pos: torch.Tensor,
+    num_new_tokens: int,
+    callback=lambda _: _,
+    **sampling_kwargs
+):
+    block_mask = create_block_mask(
+        causal_mask, 1, 1, model.max_seq_length, model.max_seq_length, device=cur_token.device
+    )
+    new_tokens, new_probs = [], []
+    for i in range(num_new_tokens):
+        next_token, next_prob = decode_one_token(model, cur_token, input_pos, block_mask, **sampling_kwargs)
+        input_pos += 1
+        new_tokens.append(next_token.clone())
+        callback(new_tokens[-1])
+        new_probs.append(next_prob.clone())
+        cur_token = next_token.clone()
+
+    return new_tokens, new_probs
+
+
+def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
+    # input_pos: [B, S]
+    mask = create_block_mask(causal_mask, 1, 1, input_pos.shape[0], model.max_seq_length, device=x.device)
+    logits = model(mask, x, input_pos)
+    return sample(logits, **sampling_kwargs)[0]
+
+
+def causal_mask(b, h, q, kv):
+    return q >= kv

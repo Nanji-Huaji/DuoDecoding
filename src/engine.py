@@ -39,6 +39,9 @@ from .gpt_fast_model import Transformer
 
 from pathlib import Path
 
+from .gpt_fast_tokenizer import get_tokenizer
+from .gptfastwarpper import GPTFastWrapper
+
 
 class DecodingMetrics(TypedDict):
     generated_tokens: int
@@ -257,8 +260,8 @@ class Decoding(ABC):
                 cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
-
         self.vocab_size = self.args.vocab_size
+        self.color_print("load_model is called", 3)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -273,11 +276,43 @@ class Decoding(ABC):
 
         # for llama models
         self.tokenizer.pad_token_id = 2
+        self.color_print("load_tokenizer is called", 3)
+
+    def _convert_to_pth_path(self):
+        if self.args.draft_model:
+            draft_path = Path(self.args.draft_model)
+            if draft_path.is_dir():
+                self.args.draft_model = draft_path / "model.pth"
+            else:
+                # 如果已经是文件路径，确保是 .pth 文件
+                if not str(draft_path).endswith(".pth"):
+                    self.args.draft_model = draft_path.parent / "model.pth"
+                else:
+                    self.args.draft_model = draft_path
+
+            # 验证文件是否存在
+            if not self.args.draft_model.exists():
+                raise FileNotFoundError(f"Draft model file not found: {self.args.draft_model}")
+
+        if self.args.target_model:
+            target_path = Path(self.args.target_model)
+            if target_path.is_dir():
+                self.args.target_model = target_path / "model.pth"
+            else:
+                # 如果已经是文件路径，确保是 .pth 文件
+                if not str(target_path).endswith(".pth"):
+                    self.args.target_model = target_path.parent / "model.pth"
+                else:
+                    self.args.target_model = target_path
+
+            # 验证文件是否存在
+            if not self.args.target_model.exists():
+                raise FileNotFoundError(f"Target model file not found: {self.args.target_model}")
 
     @staticmethod
     def load_pth_model(
         pth_file_path: Path, precision: torch.dtype, use_tp: bool, device: str = "cuda:0"
-    ) -> Transformer:
+    ) -> GPTFastWrapper:
         assert pth_file_path.exists(), f"Path {pth_file_path} does not exist!"
         with torch.device("meta"):
             model = Transformer.from_name(pth_file_path.parent.name)
@@ -296,7 +331,10 @@ class Decoding(ABC):
             apply_tp(model)
 
         model = model.to(device=device, dtype=precision)
-        return model.eval()
+
+        # 用包装器包装模型
+        wrapped_model = GPTFastWrapper(model.eval())
+        return wrapped_model
 
     def load_model_gpt_fast(self):
         if self.args.draft_model is None or self.args.draft_model == "":
@@ -305,14 +343,30 @@ class Decoding(ABC):
         self.color_print(f"draft model: {self.args.draft_model}", 3)
         self.color_print(f"target model: {self.args.target_model}", 3)
 
+        self._convert_to_pth_path()
+
+        self.color_print(f"Loading GPT-Fast models:\n{self.args.draft_model}\n{self.args.target_model}", 3)
+
         if self.args.eval_mode == "small":
-            pass
+            self.draft_model = self.load_pth_model(self.args.draft_model, precision=torch.bfloat16, use_tp=False)  # type: ignore
         elif self.args.eval_mode == "large":
-            pass
+            self.target_model = self.load_pth_model(self.args.target_model, precision=torch.bfloat16, use_tp=False)
         elif self.args.eval_mode == "sd":
-            pass
+            self.draft_model = self.load_pth_model(self.args.draft_model, precision=torch.bfloat16, use_tp=False)  # type: ignore
+            self.target_model = self.load_pth_model(self.args.target_model, precision=torch.bfloat16, use_tp=False)
         else:
             raise NotImplementedError("GPT-Fast decoding is not implemented for this eval mode!")
+        self.color_print("load_model_gpt_fast is called", 3)
+
+    def load_tokenizer_gpt_fast(self):
+        # * load tokenizers
+        if not isinstance(self.args.target_model, Path):
+            self._convert_to_pth_path()
+        model_name = self.args.target_model.parent.name
+        self.color_print(f"Loading tokenizer of {self.args.target_model}...", 3)
+        self.tokenizer = get_tokenizer(self.args.target_model, model_name)
+        self.color_print(f"gpt_fast tokenizer: {self.tokenizer}", 3)
+        self.color_print("load_tokenizer_gpt_Fast is called", 3)
 
     @abstractmethod
     def load_data(self):
@@ -334,30 +388,44 @@ class Decoding(ABC):
             model = self.target_model
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
-        prefix = prefix.to(model.device)
-        model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-        model.vocab_size = self.args.vocab_size
 
-        # start_event = torch.cuda.Event(enable_timing=True)
-        # end_event = torch.cuda.Event(enable_timing=True)
+        # 获取模型设备
+        if hasattr(model, "device"):
+            device = model.device
+        else:
+            device = next(model.parameters()).device
+
+        prefix = prefix.to(device)
+        model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
+        if isinstance(model, KVCacheModel) or isinstance(model, KVCacheCppModel):
+            model.vocab_size = self.args.vocab_size
 
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 
         x = prefix
 
-        def generate_next(tokens, _):
-            return model.generate(tokens, 1)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
 
-        # Generate tokens up to max_tokens by repeatedly applying generate_next
-        x = reduce(generate_next, range(max_tokens - x.shape[1]), x)
+        start_event.record(stream=torch.cuda.current_stream())
+        while x.shape[1] < max_tokens:
+            x = model.generate(x, 1)
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        decoding_time = start_event.elapsed_time(end_event) / 1000.0  # convert to seconds
 
         metrics = DecodingMetrics(
             generated_tokens=x.shape[1] - prefix_len,
             prefilling_time=0,
-            decoding_time=0,
+            decoding_time=decoding_time,
             draft_model_accepted_tokens=None,
             draft_model_proposed_tokens=None,
+        )
+
+        self.color_print(
+            f"decoding speed: {metrics['generated_tokens'] / metrics['decoding_time'] if metrics['decoding_time'] else 0} tokens/sec",
+            3,
         )
 
         return x, metrics
