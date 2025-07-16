@@ -1,4 +1,4 @@
-[submodule "src/gpt-fast"]
-	path = src/gpt-fast
+[submodule "src/gpt_fast"]
+	path = src/gpt_fast
 	url = https://github.com/Nanji-Huaji/gpt-fast.git
 	branch = duodecmodel
