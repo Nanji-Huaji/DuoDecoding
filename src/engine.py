@@ -245,9 +245,8 @@ class Decoding(ABC):
 
     def load_gpt_fast_tokenizer(self):
         tokenizer_path = find_tokenizer_path(self.args.target_model)
-        if not isinstance(self.args.target_model, Path):
-            self.args.target_model = Path(self.args.target_model)
-        self.tokenizer = get_tokenizer(tokenizer_path, self.args.target_model.parent)
+        model_path = convert_to_pth_path(self.args.target_model)
+        self.tokenizer = get_tokenizer(tokenizer_path, model_path.parent)
 
     def load_tokenizer(self):
         # * load tokenizers
