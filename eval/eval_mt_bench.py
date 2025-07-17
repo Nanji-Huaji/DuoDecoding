@@ -12,6 +12,7 @@ from src.utils import seed_everything, parse_arguments
 from src.engine import Decoding
 from fastchat.model import get_conversation_template
 
+
 total_tokens, accepted_tokens = 0, 0
 
 
@@ -32,10 +33,15 @@ class EvalMTBench(Decoding):
     def __init__(self, args):
         super().__init__(args)
 
+        if self.args.use_gpt_fast_model:
+            self.load_gpt_fast_tokenizer()
+            self.load_gpt_fast_model()
+        else:
+            self.load_tokenizer()
+            self.load_model()
         # load relative resources
-        self.load_tokenizer()
+
         self.load_data()
-        self.load_model()
 
         print(self.args.target_model)
 
@@ -71,6 +77,10 @@ class EvalMTBench(Decoding):
     @torch.no_grad()
     def eval(self):
         global total_tokens, accepted_tokens
+        if self.args.use_gpt_fast_model and self.args.eval_mode not in ["small", "large"]:
+            raise NotImplementedError(
+                "GPT-Fast model is only supported in small and large eval modes. Please set --use-gpt-fast-model to False."
+            )
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":

@@ -6,6 +6,11 @@ import torch.nn.functional as F
 import numpy as np
 
 
+from typing import List, Dict, Optional, TypedDict, Any
+
+from pathlib import Path
+
+
 def seed_everything(seed: int):
     "set all random seed for reproducible results."
     random.seed(seed)
@@ -171,6 +176,7 @@ def parse_arguments():
         default=64,
         help="The maximum number of draft tokens.",
     )
+    parser.add_argument("--use-gpt-fast-model", type=bool, default=True, help="Use GPT fast model for decoding.")
     # end for rest
 
     args = parser.parse_args()
@@ -254,3 +260,83 @@ def max_fn(x):
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
     return x_max / x_max_sum
+
+
+class DecodingMetrics(TypedDict):
+    """
+    Metrics for decoding.
+    """
+
+    token_generated: int
+    draft_tokens: int
+    draft_tokens_acc: int
+
+
+def convert_to_pth_path(model_path: str) -> Path:
+    """
+    Convert a model path to a .pth path.
+
+    Args:
+        model_path (str): The original model path, which can be a dir or a pth file.
+
+    Returns:
+        Path: The converted .pth path.
+
+    Raises:
+        FileNotFoundError: If the path doesn't exist or model.pth is not found in directory.
+        ValueError: If the path is neither a directory nor a .pth file.
+    """
+    path = Path(model_path)
+
+    if path.is_dir():
+        pth_file = path / "model.pth"
+        if pth_file.exists():
+            return pth_file
+        else:
+            raise FileNotFoundError(f"model.pth not found in directory: {model_path}")
+    elif path.is_file() and path.suffix == ".pth":
+        return path
+    elif not path.exists():
+        raise FileNotFoundError(f"Path does not exist: {model_path}")
+    else:
+        raise ValueError(f"Path is neither a directory nor a .pth file: {model_path}")
+
+
+def find_tokenizer_path(model_path: str | Path) -> Path:
+    """
+    Find the tokenizer path based on the model path.
+    Only supports .model files (SentencePiece format).
+    Args:
+        model_path: Path to model directory or tokenizer file
+    Returns:
+        Path: Path to the .model tokenizer file
+    Raises:
+        FileNotFoundError: If no .model tokenizer file is found
+        ValueError: If the input file is not a .model file
+    """
+    if isinstance(model_path, str):
+        model_path = Path(model_path)
+
+    # If it's already a .model file, return it
+    if model_path.is_file():
+        if model_path.suffix == ".model":
+            return model_path
+        elif model_path.suffix == ".pth":
+            # Look for tokenizer.model in the same directory
+            parent_dir = model_path.parent
+        else:
+            raise ValueError(f"Expected .model file, got: {model_path}")
+    elif model_path.is_dir():
+        parent_dir = model_path
+    else:
+        raise FileNotFoundError(f"Path does not exist: {model_path}")
+
+    # Only look for tokenizer.model file
+    tokenizer_path = parent_dir / "tokenizer.model"
+
+    if tokenizer_path.exists():
+        return tokenizer_path
+
+    raise FileNotFoundError(
+        f"tokenizer.model not found for: {model_path}. " f"Expected tokenizer.model in directory: {parent_dir}"
+    )

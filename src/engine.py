@@ -27,6 +27,18 @@ from .model.rest.rest.model.kv_cache import initialize_past_key_values
 import draftretriever
 
 
+from .gptfastwarpper import GPTFastWarpper
+from .gpt_fast.generate import _load_model
+
+from utils import convert_to_pth_path, find_tokenizer_path
+from .gpt_fast.tokenizer import get_tokenizer
+
+
+from pathlib import Path
+
+from .gpt_fast.model import Transformer
+
+
 class Decoding(ABC):
     def __init__(self, args):
         self.args = args
@@ -212,6 +224,31 @@ class Decoding(ABC):
 
         self.vocab_size = self.args.vocab_size
 
+    def load_gpt_fast_model(self):
+        # * load gpt-fast model
+        self.color_print(f"Loading gpt-fast model", 3)
+        if self.args.eval_mode == "small":
+            model_path = convert_to_pth_path(self.args.draft_model)
+            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            self.draft_model = model
+        elif self.args.eval_mode == "large":
+            model_path = convert_to_pth_path(self.args.target_model)
+            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            self.target_model = model
+        elif self.args.eval_mode == "sd":
+            draft_model_path = convert_to_pth_path(self.args.draft_model)
+            target_model_path = convert_to_pth_path(self.args.target_model)
+            self.draft_model = _load_model(draft_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            self.target_model = _load_model(target_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+        else:
+            raise NotImplementedError("GPT-Fast is only supported in small, large and sd eval mode!")
+
+    def load_gpt_fast_tokenizer(self):
+        tokenizer_path = find_tokenizer_path(self.args.target_model)
+        if not isinstance(self.args.target_model, Path):
+            self.args.target_model = Path(self.args.target_model)
+        self.tokenizer = get_tokenizer(tokenizer_path, self.args.target_model.parent)
+
     def load_tokenizer(self):
         # * load tokenizers
         self.color_print(f"Loading tokenizer of {self.args.target_model}...", 3)
@@ -247,9 +284,11 @@ class Decoding(ABC):
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
         prefix = prefix.to(model.device)
-        model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-        model.vocab_size = self.args.vocab_size
-
+        if not isinstance(model, Transformer):
+            model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
+            model.vocab_size = self.args.vocab_size
+        else:
+            model = GPTFastWarpper(model, self.args.temp, self.args.top_k, self.args.top_p)
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 
@@ -272,10 +311,14 @@ class Decoding(ABC):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
-        approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
-        target_model_cache.vocab_size = self.vocab_size
+        if not isinstance(self.draft_model, Transformer):
+            approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
+            approx_model_cache.vocab_size = self.vocab_size
+            target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
+            target_model_cache.vocab_size = self.vocab_size
+        # TODO: use gpt-fast model
+        else:
+            raise NotImplementedError("GPT-Fast model is not supported in speculative decoding!")
 
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
