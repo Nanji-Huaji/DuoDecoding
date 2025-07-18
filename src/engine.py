@@ -226,20 +226,23 @@ class Decoding(ABC):
 
     def load_gpt_fast_model(self):
         # * load gpt-fast model
+        # Get available CUDA devices count
+        cuda_device_count = torch.cuda.device_count()
+        use_tp: bool = True if cuda_device_count > 1 else False
         self.color_print(f"Loading gpt-fast model", 3)
         if self.args.eval_mode == "small":
             model_path = convert_to_pth_path(self.args.draft_model)
-            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
             self.draft_model = model
         elif self.args.eval_mode == "large":
             model_path = convert_to_pth_path(self.args.target_model)
-            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
             self.target_model = model
         elif self.args.eval_mode == "sd":
             draft_model_path = convert_to_pth_path(self.args.draft_model)
             target_model_path = convert_to_pth_path(self.args.target_model)
-            self.draft_model = _load_model(draft_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
-            self.target_model = _load_model(target_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=True)
+            self.draft_model = _load_model(draft_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
+            self.target_model = _load_model(target_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
         else:
             raise NotImplementedError("GPT-Fast is only supported in small, large and sd eval mode!")
 
@@ -287,7 +290,7 @@ class Decoding(ABC):
             model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.args.vocab_size
         else:
-            model = GPTFastWarpper(model, self.args.temp, self.args.top_k, self.args.top_p)
+            model = GPTFastWarpper(model, self.args.temp, self.args.top_k, max_seq_length=2048)
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 

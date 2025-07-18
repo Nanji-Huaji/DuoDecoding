@@ -173,7 +173,16 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    try:
+                        output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    except TypeError:
+                        # gpt-fast tokenizer 不支持 spaces_between_special_tokens 参数
+                        # 需要将 Tensor 转换为 list
+                        if isinstance(output_ids[0], torch.Tensor):
+                            token_ids = output_ids[0].tolist()
+                        else:
+                            token_ids = output_ids[0]
+                        output_text = self.tokenizer.decode(token_ids)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -187,14 +196,13 @@ class EvalMTBench(Decoding):
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
-
+        loop_idx = 0
         for question in tqdm.tqdm(
             self.data,
             total=len(self.data),
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(self.args.num_samples_per_task):
@@ -258,7 +266,16 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    try:
+                        output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    except TypeError:
+                        # gpt-fast tokenizer 不支持 spaces_between_special_tokens 参数
+                        # 需要将 Tensor 转换为 list
+                        if isinstance(output_ids[0], torch.Tensor):
+                            token_ids = output_ids[0].tolist()
+                        else:
+                            token_ids = output_ids[0]
+                        output_text = self.tokenizer.decode(token_ids)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
