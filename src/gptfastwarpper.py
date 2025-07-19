@@ -119,6 +119,8 @@ class GPTFastWarpper:
 
     def _reset_kvcache(self):
         """Reset the KV cache to the initial state."""
+        if self.input_pos is not None:
+            self.input_pos.zero_()
         self.cached_prompt = None
 
     def _init_generation(
@@ -128,20 +130,7 @@ class GPTFastWarpper:
         self.T = x.size(-1)
         self.T_new = self.T + max_new_tokens
         max_seq_length = min(self.T_new, self.model.config.block_size)
-
-        print(f"Debug: T={self.T}, T_new={self.T_new}, max_seq_length={max_seq_length}")
-        print(f"Debug: model.max_seq_length={getattr(self.model, 'max_seq_length', 'Not found')}")
-        print(f"Debug: model.config.block_size={self.model.config.block_size}")
-
-        # --- DEBUG START ---
-        print(f"[DEBUG] In _init_generation:")
-        print(f"  - Prompt length (T): {self.T}")
-        print(f"  - Max new tokens: {max_new_tokens}")
-        print(f"  - T_new (T + max_new_tokens): {self.T_new}")
-        print(f"  - model.config.block_size: {self.model.config.block_size}")
-        print(f"  - Calculated max_seq_length for mask and cache: {max_seq_length}")
-        # --- DEBUG END ---
-
+        self._reset_kvcache()
         self._init_kvcache(max_seq_length)
         aligned_max_seq_length = find_multiple(max_seq_length, 8)
 
@@ -167,13 +156,6 @@ class GPTFastWarpper:
         assert (
             self.kvcache_is_init and self.input_pos and (self.seq is not None) and (self.next_token is not None)
         ), "KV cache is not initialized. Call _init_generation first."
-        print(f"DEBUG: 进入 _generate_with_cache, input_pos={self.input_pos}, next_token={self.next_token}")
-        # --- 调试信息：进入函数时的状态 ---
-        print("\n" + "=" * 20 + " [Enter _generate_with_cache] " + "=" * 20)
-        print(f"  - Input prompt `x` shape: {x.shape}")
-        print(f"  - To generate `gamma`: {gamma} tokens")
-        print(f"  - `self.input_pos` before generation: {self.input_pos.item()}")
-        print(f"  - `self.next_token` to be decoded: {self.next_token.view(-1).tolist()}")
         if self.cached_prompt is not None:
             print(f"  - `self.cached_prompt` shape before generation: {self.cached_prompt.shape}")
         else:
@@ -199,22 +181,11 @@ class GPTFastWarpper:
             return self.seq[:, :start_pos]
 
         self.seq[:, start_pos:end_pos] = torch.cat(generated_tokens, dim=-1)
-        self.input_pos += gamma
+        # self.input_pos += gamma
         self.next_token = self.seq[:, self.input_pos.item()].view(self.batch_size, -1).to(torch.long)
         # 更新 cached_prompt
         new_full_sequence = self.seq[:, :end_pos]
         self.cached_prompt = new_full_sequence.clone()
-
-        # --- 调试信息：离开函数时的状态 ---
-        print("\n" + "-" * 20 + " [Exit _generate_with_cache] " + "-" * 20)
-        print(f"  - `self.input_pos` after generation: {self.input_pos.item()}")
-        print(f"  - Generated tokens placed in `self.seq` at slice [{start_pos}:{end_pos}]")
-        print(f"  - New `self.next_token` is: {self.next_token.view(-1).tolist()}")
-        print(f"  - [CRITICAL] `self.cached_prompt` has been UPDATED.")
-        print(f"  - New `self.cached_prompt` shape: {self.cached_prompt.shape}")
-        print(f"  - Returned sequence shape: {new_full_sequence.shape}")
-        print("=" * 60 + "\n")
-        # ------------------------------------
 
         return self.seq[:, :end_pos]
 
