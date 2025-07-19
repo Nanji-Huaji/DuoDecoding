@@ -9,3 +9,4 @@ llama-2-13b-download.log
 *.log
 test.ipynb
 vicuna/*
+.vscode/launch.json

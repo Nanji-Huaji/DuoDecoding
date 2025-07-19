@@ -4,8 +4,8 @@ from typing import Optional, Union, List, Dict, Any
 import os, sys
 from pathlib import Path
 
-from .gpt_fast.model import Transformer, KVCache
-from .gpt_fast.generate import decode_one_token, decode_n_tokens, causal_mask, create_block_mask, prefill
+from .gpt_fast.model import Transformer, KVCache, find_multiple
+from .gpt_fast.generate import decode_one_token, decode_n_tokens, causal_mask, create_block_mask, prefill, _prefill
 from .utils import norm_logits
 from .gpt_fast.generate import sample
 
@@ -52,12 +52,65 @@ class GPTFastWarpper:
         # 将 sampling_kwargs 存储起来以便传递
         self.sampling_kwargs = {"temperature": self.temperature, "top_k": self.top_k}
 
-    def _is_prefix(self, new_prompt: torch.Tensor) -> bool:
-        """检查 self.cached_prompt 是否是 new_prompt 的前缀。"""
-        if self.cached_prompt is None or new_prompt.size(-1) < self.cached_prompt.size(-1):
+        print(f"GPTFastWarpper initialized with device: {self.device}, max_seq_length: {self.max_seq_length}")
+
+    # def _is_prefix(self, new_prompt: torch.Tensor) -> bool:
+    #     """检查 self.cached_prompt 是否是 new_prompt 的前缀。"""
+    #     print("\n--- [DEBUG] Inside _is_prefix ---")
+
+    #     if self.cached_prompt is None or new_prompt.size(-1) < self.cached_prompt.size(-1):
+    #         print("Result: False (Reason: No cached_prompt available)")
+    #         print("--- End _is_prefix ---\n")
+    #         return False
+    #     # 检查两个 prompt 的形状是否兼容（除了序列长度）
+    #     if self.cached_prompt.ndim != new_prompt.ndim or self.cached_prompt.shape[:-1] != new_prompt.shape[:-1]:
+    #         print("Result: False (Reason: Shape mismatch)")
+    #         print("--- End _is_prefix ---\n")
+    #         return False
+
+    #     prefix_len = self.cached_prompt.size(-1)
+    #     # 使用你之前的修复，这是正确的
+    #     new_prompt_prefix = new_prompt[..., :prefix_len]
+    #     print(f"Cached prompt (shape {self.cached_prompt.shape}):")
+    #     print(self.cached_prompt)
+    #     print(f"New prompt (shape {new_prompt.shape}):")
+    #     print(new_prompt)
+    #     print(f"Sliced new prompt prefix to compare (shape {new_prompt_prefix.shape}):")
+    #     print(new_prompt_prefix)
+    #     are_equal = torch.equal(self.cached_prompt, new_prompt_prefix)
+
+    #     print(f"Result of torch.equal: {are_equal}")
+    #     print("--- End _is_prefix ---\n")
+
+    #     prefix_len = self.cached_prompt.size(-1)
+    #     # 正确的切片方式：对最后一个维度进行切片
+    #     return torch.equal(self.cached_prompt, new_prompt[..., :prefix_len])
+
+    def _is_prefix(self, x: torch.Tensor) -> bool:
+        print("\n--- [DEBUG] Inside _is_prefix ---")
+        if self.cached_prompt is None or self.cached_prompt.size(-1) == 0:
+            print("Result: False (Reason: No cached_prompt available)")
+            print("--- End _is_prefix ---")
+            return False
+        if self.cached_prompt.size(-1) > x.size(-1):
+            print("Result: False (Reason: New prompt is shorter than cache)")
+            print("--- End _is_prefix ---")
             return False
 
-        return torch.equal(self.cached_prompt, new_prompt[: self.cached_prompt.size(-1)])
+        # 关键修复：在比较前，将 self.cached_prompt 转换回 torch.long
+        cached_prompt_long = self.cached_prompt.to(torch.long)
+
+        # 取出 x 中与缓存长度相同的前缀部分
+        prefix_to_compare = x[:, : self.cached_prompt.size(-1)]
+
+        # 打印用于调试
+        print(f"Cached prompt (as long, shape {cached_prompt_long.shape})")
+        print(f"New prompt's prefix (shape {prefix_to_compare.shape})")
+        # 进行严格的逐元素比较
+        result = torch.equal(cached_prompt_long, prefix_to_compare)
+        print(f"Result of torch.equal: {result}")
+        print("--- End _is_prefix ---")
+        return result
 
     def _init_kvcache(self, max_seq_length: int):
         with torch.device(self.model.device):
@@ -75,13 +128,33 @@ class GPTFastWarpper:
         self.T = x.size(-1)
         self.T_new = self.T + max_new_tokens
         max_seq_length = min(self.T_new, self.model.config.block_size)
+
+        print(f"Debug: T={self.T}, T_new={self.T_new}, max_seq_length={max_seq_length}")
+        print(f"Debug: model.max_seq_length={getattr(self.model, 'max_seq_length', 'Not found')}")
+        print(f"Debug: model.config.block_size={self.model.config.block_size}")
+
+        # --- DEBUG START ---
+        print(f"[DEBUG] In _init_generation:")
+        print(f"  - Prompt length (T): {self.T}")
+        print(f"  - Max new tokens: {max_new_tokens}")
+        print(f"  - T_new (T + max_new_tokens): {self.T_new}")
+        print(f"  - model.config.block_size: {self.model.config.block_size}")
+        print(f"  - Calculated max_seq_length for mask and cache: {max_seq_length}")
+        # --- DEBUG END ---
+
         self._init_kvcache(max_seq_length)
+        aligned_max_seq_length = find_multiple(max_seq_length, 8)
+
         self.empty = torch.empty(batch_size, self.T_new, dtype=self.model.dtype, device=self.device)
+        x = x.to(torch.long)  # 确保 token id 是整数类型
         x = x.view(1, -1).repeat(batch_size, 1)
         self.empty[:, : self.T] = x
         self.seq = self.empty
-        input_pos = torch.arange(0, self.T, device=self.device)
-        self.next_token = prefill(self.model, x.view(batch_size, -1), input_pos, **sampling_kwargs).clone()
+        input_pos = torch.arange(0, self.T, device=self.device).to(self.device)
+        x = x.to(self.device)
+        self.next_token = _prefill(
+            self.model, x.view(batch_size, -1), input_pos, max_seq_length=aligned_max_seq_length, **sampling_kwargs
+        ).clone()
         self.seq[:, self.T] = self.next_token.squeeze()
         self.input_pos = torch.tensor([self.T], device=self.device, dtype=torch.int)
         self.cached_prompt = x
@@ -94,6 +167,19 @@ class GPTFastWarpper:
         assert (
             self.kvcache_is_init and self.input_pos and (self.seq is not None) and (self.next_token is not None)
         ), "KV cache is not initialized. Call _init_generation first."
+        print(f"DEBUG: 进入 _generate_with_cache, input_pos={self.input_pos}, next_token={self.next_token}")
+        # --- 调试信息：进入函数时的状态 ---
+        print("\n" + "=" * 20 + " [Enter _generate_with_cache] " + "=" * 20)
+        print(f"  - Input prompt `x` shape: {x.shape}")
+        print(f"  - To generate `gamma`: {gamma} tokens")
+        print(f"  - `self.input_pos` before generation: {self.input_pos.item()}")
+        print(f"  - `self.next_token` to be decoded: {self.next_token.view(-1).tolist()}")
+        if self.cached_prompt is not None:
+            print(f"  - `self.cached_prompt` shape before generation: {self.cached_prompt.shape}")
+        else:
+            print(f"  - `self.cached_prompt` before generation: None")
+        # ------------------------------------
+        x = x.to(torch.long)  # 确保 token id 是整数类型
         generated_tokens, _ = decode_n_tokens(
             self.model,
             self.next_token.view(self.batch_size, -1),
@@ -109,32 +195,74 @@ class GPTFastWarpper:
             )
         # 更新 seq 和 next_token
         if not generated_tokens:
+            print("[DEBUG] `decode_n_tokens` returned no tokens. Returning current sequence.")
             return self.seq[:, :start_pos]
 
         self.seq[:, start_pos:end_pos] = torch.cat(generated_tokens, dim=-1)
-        self.next_token = self.seq[:, self.input_pos.item()].view(self.batch_size, -1)
         self.input_pos += gamma
+        self.next_token = self.seq[:, self.input_pos.item()].view(self.batch_size, -1).to(torch.long)
+        # 更新 cached_prompt
+        new_full_sequence = self.seq[:, :end_pos]
+        self.cached_prompt = new_full_sequence.clone()
+
+        # --- 调试信息：离开函数时的状态 ---
+        print("\n" + "-" * 20 + " [Exit _generate_with_cache] " + "-" * 20)
+        print(f"  - `self.input_pos` after generation: {self.input_pos.item()}")
+        print(f"  - Generated tokens placed in `self.seq` at slice [{start_pos}:{end_pos}]")
+        print(f"  - New `self.next_token` is: {self.next_token.view(-1).tolist()}")
+        print(f"  - [CRITICAL] `self.cached_prompt` has been UPDATED.")
+        print(f"  - New `self.cached_prompt` shape: {self.cached_prompt.shape}")
+        print(f"  - Returned sequence shape: {new_full_sequence.shape}")
+        print("=" * 60 + "\n")
+        # ------------------------------------
+
         return self.seq[:, :end_pos]
 
     def generate(self, x: torch.Tensor, gamma: int, max_new_token: int = 128) -> torch.Tensor:
+        x = x.to(torch.long)  # 确保 token id 是整数类型
+        # --- 调试信息：进入 generate 方法 ---
+        print("\n" + "#" * 20 + " [Enter `generate` method] " + "#" * 20)
+        print(f"  - Input prompt `x` shape: {x.shape}")
+        if self.cached_prompt is not None:
+            print(f"  - Current `cached_prompt` shape: {self.cached_prompt.shape}")
+        else:
+            print(f"  - Current `cached_prompt` is None.")
+        # ------------------------------------
         if not self.kvcache_is_init or not self._is_prefix(x):
-            self._init_generation(x, max_new_token, batch_size=self.batch_size)
+            print(f"DEBUG: x 不是 cached_prompt 的前缀，重新初始化 KV cache")
+            print("\n  [Decision] Path 1: Initializing/Re-initializing cache.")
+            print(f"    - Reason: kvcache_is_init={self.kvcache_is_init}, is_prefix={self._is_prefix(x)}")
+            self._init_generation(x, max_new_token, batch_size=self.batch_size)  # gamma 好像应该 -1，但先不管
 
         elif self.cached_prompt is not None and x.size(-1) > self.cached_prompt.size(-1):
             # 如果 x 是 cached_prompt 的前缀
+            print("\n  [Decision] Path 2: Extending existing cache.")
             prev_len = self.cached_prompt.size(-1)
             new_part = x[:, prev_len:]
+            print(f"    - Extending from length {prev_len} to {x.size(-1)}. New part length: {new_part.size(-1)}")
+            print(f"    - New part tokens: {new_part.view(-1).tolist()}")
 
-            input_pos = torch.arange(prev_len, prev_len, device=self.device)
+            input_pos = torch.arange(prev_len, x.size(-1), device=self.device)
             next_token = prefill(self.model, new_part.view(1, -1), input_pos, **self.sampling_kwargs).clone()
+            if self.seq is None:
+                raise ValueError("KV cache is not initialized. Call _init_generation first.")
 
             self.seq[:, prev_len : x.size(-1)] = new_part
             self.seq[:, x.size(-1)] = next_token.squeeze()
             self.T = x.size(-1)
             self.input_pos = torch.tensor([self.T], device=self.device, dtype=torch.int)
             self.next_token = next_token
-            self.cached_prompt = x
-
+            self.cached_prompt = x.clone()
+            print("    - Extension prefill complete.")
+            print(f"    - `self.input_pos` is now: {self.input_pos.item()}")
+            print(f"    - `self.next_token` for generation is: {self.next_token.view(-1).tolist()}")
+            print(f"    - `self.cached_prompt` updated to new input `x`.")
+        else:
+            # 这种情况可能是 x 和 cached_prompt 完全相同，或者 x 比 cached_prompt 短 (逻辑错误)
+            print("\n  [Decision] Path 3: No re-init, no extension. Proceeding directly.")
+            if self.cached_prompt is not None:
+                print(f"    - `x` length ({x.size(-1)}) vs `cached_prompt` length ({self.cached_prompt.size(-1)})")
+                print("#" * 20 + " [Calling _generate_with_cache from `generate`] " + "#" * 20)
         return self._generate_with_cache(x, gamma)
 
     @torch.no_grad()
