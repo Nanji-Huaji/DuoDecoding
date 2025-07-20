@@ -114,6 +114,7 @@ class EvalMTBench(Decoding):
             n -= 1
             if n == 0:
                 break
+            print(f"Warm up for question {question['question_id']}")
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):

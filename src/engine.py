@@ -233,16 +233,20 @@ class Decoding(ABC):
         if self.args.eval_mode == "small":
             model_path = convert_to_pth_path(self.args.draft_model)
             model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
-            self.draft_model = model
+            model_wrapped = GPTFastWarpper(model, self.args.temp, self.args.top_k, max_seq_length=2048)
+            self.draft_model = model_wrapped
         elif self.args.eval_mode == "large":
             model_path = convert_to_pth_path(self.args.target_model)
             model = _load_model(model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
-            self.target_model = model
+            model_wrapped = GPTFastWarpper(model, self.args.temp, self.args.top_k, max_seq_length=2048)
+            self.target_model = model_wrapped
         elif self.args.eval_mode == "sd":
             draft_model_path = convert_to_pth_path(self.args.draft_model)
             target_model_path = convert_to_pth_path(self.args.target_model)
-            self.draft_model = _load_model(draft_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
-            self.target_model = _load_model(target_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
+            draft_model = _load_model(draft_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
+            target_model = _load_model(target_model_path, device="cuda:0", precision=torch.bfloat16, use_tp=use_tp)
+            self.draft_model = GPTFastWarpper(draft_model, self.args.temp, self.args.top_k, max_seq_length=2048)
+            self.target_model = GPTFastWarpper(target_model, self.args.temp, self.args.top_k, max_seq_length=2048)
         else:
             raise NotImplementedError("GPT-Fast is only supported in small, large and sd eval mode!")
 
@@ -286,11 +290,9 @@ class Decoding(ABC):
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
         prefix = prefix.to(model.device)
-        if not isinstance(model, Transformer):
+        if not isinstance(model, GPTFastWarpper):
             model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.args.vocab_size
-        else:
-            model = GPTFastWarpper(model, self.args.temp, self.args.top_k, max_seq_length=2048)
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 
