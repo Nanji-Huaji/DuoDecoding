@@ -89,8 +89,8 @@ def parse_arguments():
         default="./data",
     )
 
-    parser.add_argument("--draft_model", type=str, default="codellama-7b")
-    parser.add_argument("--target_model", type=str, default="codellama-70b")
+    parser.add_argument("--draft_model", type=str, default="vicuna-68m")
+    parser.add_argument("--target_model", type=str, default="tiny-vicuna-1b")
 
     parser.add_argument(
         "--exp_name",

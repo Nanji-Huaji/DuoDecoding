@@ -31,6 +31,8 @@ class GPTFastWarpper:
         max_seq_length: int = 2048,
         device: Union[str, torch.device] = "cuda:0",
         arg_max_token: int = 128,  # 由 duodecoding 传入的参数，表示每次生成的最大 token 数量，用于确定 KVCache大小和 empty tensor 的大小。
+        compile: bool = True,
+        compile_prefill: bool = False,
     ) -> None:
         self.model = model.to(device=device)
         self.temperature = temperature
@@ -54,7 +56,16 @@ class GPTFastWarpper:
 
         self.current_seq_capacity: int = 0  # 当前 KVCache 所对应的序列容量
 
-        print(f"GPTFastWarpper initialized with device: {self.device}, max_seq_length: {self.max_seq_length}")
+        if compile:
+            global decode_one_token, decode_n_tokens, prefill, _prefill
+            torch._inductor.config.triton.cudagraph_trees = False
+            decode_one_token = torch.compile(decode_one_token)
+
+            if compile_prefill:
+                prefill = torch.compile(prefill, fullgraph=True)
+                _prefill = torch.compile(_prefill, fullgraph=True)
+
+        # print(f"GPTFastWarpper initialized with device: {self.device}, max_seq_length: {self.max_seq_length}")
 
     def _is_prefix(self, x: torch.Tensor) -> bool:
         """
@@ -64,17 +75,11 @@ class GPTFastWarpper:
         如果 self.cached_prompt 为空，返回 False。
         """
         if self.cached_prompt is None:
-            print(f"  - `self.cached_prompt` is None, cannot check prefix.")
             return False
         if self.cached_prompt.size(-1) > x.size(-1):
             return False
-        # 比较前缀部分是否一致
         if torch.equal(self.cached_prompt, x[..., : self.cached_prompt.size(-1)]):
-            # print(f"  - `self.cached_prompt` is a prefix of x.")
             return True
-        else:
-            print(f"输入序列长度: {x.size(-1)}, cached_prompt 长度: {self.cached_prompt.size(-1)}")
-            print(f" - kv_len: ")
         return torch.equal(self.cached_prompt, x[..., : self.cached_prompt.size(-1)])
 
     def _init_kvcache(self, max_seq_length: int):
@@ -82,29 +87,18 @@ class GPTFastWarpper:
             self.model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
         self.kvcache_is_init = True
         self.current_seq_capacity = max(max_seq_length, self.current_seq_capacity)
-        print("======= KV cache initialized =======")
-        print(f"max_seq_length: {max_seq_length}, device: {self.device}")
-        print("======= KV cache init end =======")
 
     def _reset_kvcache(self):
         """Reset the KV cache to the initial state."""
-        print("======= Resetting KV cache =======")
         if self.input_pos is not None:
             self.input_pos = None
         self.model.reset_caches()
         self.cached_prompt = None
-        try:
-            print(
-                f"调用 reset_caches() 完毕，当前 K 缓存范数: {torch.linalg.norm(self.model.layers[0].attention.kv_cache.k_cache).item()}"
-            )
-        except Exception as e:
-            print(f"Error accessing k_cache norm after reset: {e}")
-        print("======= KV cache reset complete =======")
 
     def _init_generation(
         self, x: torch.Tensor, max_new_tokens: int = 128, batch_size: int = 1, **sampling_kwargs
     ) -> None:
-        """初始化生成过程所需的中间变量，一次性创建max_new_个新 token 的 KV cache 和 empty tensor"""
+        """初始化生成过程所需的中间变量，一次性创建max_new_tokens个新 token 的 KV cache 和 empty tensor"""
         self.T = x.size(-1)
         self.T_new = self.T + max_new_tokens
         max_seq_length = min(self.T_new, self.model.config.block_size)
@@ -113,7 +107,7 @@ class GPTFastWarpper:
         aligned_max_seq_length = find_multiple(max_seq_length, 8)
         aligned_capacity_seq_length = find_multiple(self.current_seq_capacity, 8)
 
-        self.empty = torch.empty(batch_size, self.T_new, dtype=self.model.dtype, device=self.device)
+        self.empty = torch.empty(batch_size, self.T_new, dtype=x.dtype, device=self.device)
         x = x.to(torch.long)  # 确保 token id 是整数类型
         x = x.view(1, -1).repeat(batch_size, 1)
         self.empty[:, : self.T] = x
@@ -135,12 +129,6 @@ class GPTFastWarpper:
         assert (
             self.kvcache_is_init and self.input_pos and (self.seq is not None) and (self.next_token is not None)
         ), "KV cache is not initialized. Call _init_generation first."
-        if self.cached_prompt is not None:
-            # print(f"  - `self.cached_prompt` shape before generation: {self.cached_prompt.shape}")
-            pass
-        else:
-            print(f"  - `self.cached_prompt` before generation: None")
-        # ------------------------------------
         x = x.to(torch.long)  # 确保 token id 是整数类型
         generated_tokens, _ = decode_n_tokens(
             self.model,
@@ -166,19 +154,17 @@ class GPTFastWarpper:
         # 更新 cached_prompt
         new_full_sequence = self.seq[:, :end_pos]
         self.cached_prompt = new_full_sequence.clone()
-
+        res = self.seq[:, :end_pos]
+        if torch.any(res > 32000):
+            print(f"Warning: Generated tokens contain values greater than 32000, which may indicate an issue.")
+            mask = res > 32000
+            res[mask] = 0
+            return res
         return self.seq[:, :end_pos]
 
     def generate(self, x: torch.Tensor, gamma: int, max_new_token: int = 128) -> torch.Tensor:
         x = x.to(torch.long)  # 确保 token id 是整数类型
-        if self.cached_prompt is not None:
-            pass
-        else:
-            print(f"  - Current `cached_prompt` is None.")
         if not self.kvcache_is_init or not self._is_prefix(x):
-            print(f"DEBUG: x 不是 cached_prompt 的前缀，重新初始化 KV cache")
-            print("\n  [Decision] Path 1: Initializing/Re-initializing cache.")
-            print(f"    - Reason: kvcache_is_init={self.kvcache_is_init}, is_prefix={self._is_prefix(x)}")
             self._init_generation(x, max_new_token, batch_size=self.batch_size)
 
         elif self.cached_prompt is not None and x.size(-1) > self.cached_prompt.size(-1):
@@ -197,7 +183,7 @@ class GPTFastWarpper:
             self.input_pos = torch.tensor([self.T], device=self.device, dtype=torch.int)
             self.next_token = next_token
             self.cached_prompt = x.clone()
-
+        res = self._generate_with_cache(x, gamma)
         return self._generate_with_cache(x, gamma)
 
     @torch.no_grad()

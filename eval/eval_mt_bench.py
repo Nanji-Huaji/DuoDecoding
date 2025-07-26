@@ -34,7 +34,8 @@ class EvalMTBench(Decoding):
         super().__init__(args)
 
         if self.args.use_gpt_fast_model:
-            self.load_gpt_fast_tokenizer()
+            # self.load_gpt_fast_tokenizer()
+            self.load_tokenizer()
             self.load_gpt_fast_model()
         else:
             self.load_tokenizer()
@@ -169,8 +170,6 @@ class EvalMTBench(Decoding):
                             local_draft_forwards,
                             local_target_forwards,
                         ) = output_ids
-                        accepted_tokens += local_accepted_tokens
-                        total_tokens += local_total_tokens
                     torch.cuda.synchronize()
                     end_time = time.time()
 
@@ -184,6 +183,11 @@ class EvalMTBench(Decoding):
                         else:
                             token_ids = output_ids[0]
                         output_text = self.tokenizer.decode(token_ids)
+                    except OverflowError:
+                        print(
+                            "OverflowError: output_ids contains values greater than 32000, which may indicate an issue."
+                        )
+                        pass
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
@@ -268,6 +272,12 @@ class EvalMTBench(Decoding):
                     end_time = time.time()
 
                     try:
+                        if torch.any(output_ids > 32000):
+                            print(
+                                f"Warning: Generated tokens contain values greater than 32000, which may indicate an issue."
+                            )
+                        mask = output_ids > 32000
+                        output_ids[mask] = 0
                         output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
                     except TypeError:
                         # gpt-fast tokenizer 不支持 spaces_between_special_tokens 参数
@@ -277,6 +287,13 @@ class EvalMTBench(Decoding):
                         else:
                             token_ids = output_ids[0]
                         output_text = self.tokenizer.decode(token_ids)
+                    except OverflowError:
+                        print(
+                            "OverflowError: output_ids contains values greater than 32000, which may indicate an issue."
+                        )
+                        output_ids_copy = output_ids.clone()
+                        output_ids_copy[output_ids_copy > 32000] = 0
+                        output_text = self.tokenizer.decode(output_ids_copy[0], spaces_between_special_tokens=False)
 
                     for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):

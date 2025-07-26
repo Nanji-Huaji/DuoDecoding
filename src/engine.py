@@ -39,6 +39,19 @@ from pathlib import Path
 from .gpt_fast.model import Transformer
 
 
+class TransformerTokenizerWrapper(transformers.PreTrainedTokenizer):
+    def __init__(self, tokenizer, model_path):
+        super().__init__()
+        self.tokenizer = tokenizer
+        self.model_path = model_path
+
+    def bos_id(self):
+        return self.tokenizer.bos_token_id
+
+    def eos_id(self):
+        return self.tokenizer.eos_token_id
+
+
 class Decoding(ABC):
     def __init__(self, args):
         self.args = args
@@ -268,6 +281,9 @@ class Decoding(ABC):
 
         # for llama models
         self.tokenizer.pad_token_id = 2
+        # if self.tokenizer.pad_token is None:
+        #     print("Tokenizer does not have a pad_token. Setting it to eos_token.")
+        #     self.tokenizer.pad_token = self.tokenizer.eos_token
 
     @abstractmethod
     def load_data(self):
