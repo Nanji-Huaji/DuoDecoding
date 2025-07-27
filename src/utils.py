@@ -176,8 +176,9 @@ def parse_arguments():
         default=64,
         help="The maximum number of draft tokens.",
     )
-    parser.add_argument("--use-gpt-fast-model", type=bool, default=True, help="Use GPT fast model for decoding.")
-    # end for rest
+    parser.add_argument("--use-gpt-fast-model", type=bool, default=False, help="Use GPT fast model for decoding.")
+    parser.add_argument("--compile", type=bool, default=True, help="Compile the model for faster inference.")
+    parser.add_argument("--use-vllm", type=bool, default=True, help="Use vLLM for decoding.")
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

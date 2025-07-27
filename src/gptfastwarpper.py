@@ -64,6 +64,7 @@ class GPTFastWarpper:
             if compile_prefill:
                 prefill = torch.compile(prefill, fullgraph=True)
                 _prefill = torch.compile(_prefill, fullgraph=True)
+                print("Prefill function compiled for faster inference.")
 
         # print(f"GPTFastWarpper initialized with device: {self.device}, max_seq_length: {self.max_seq_length}")
 

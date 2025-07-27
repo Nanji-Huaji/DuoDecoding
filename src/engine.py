@@ -37,6 +37,7 @@ from .gpt_fast.tokenizer import get_tokenizer
 from pathlib import Path
 
 from .gpt_fast.model import Transformer
+from .vllmwrapper import VLLMWrapper
 
 
 class TransformerTokenizerWrapper(transformers.PreTrainedTokenizer):
@@ -263,6 +264,45 @@ class Decoding(ABC):
         else:
             raise NotImplementedError("GPT-Fast is only supported in small, large and sd eval mode!")
 
+    def load_vllm_model(self):
+        if self.args.eval_mode == "small":
+            self.draft_model = VLLMWrapper(
+                self.args.draft_model,
+                self.tokenizer,
+                "http://localhost:8001/v1",
+                temperature=self.args.temp,
+                top_k=self.args.top_k,
+                top_p=self.args.top_p,
+            )
+        elif self.args.eval_mode == "large":
+            self.target_model = VLLMWrapper(
+                self.args.target_model,
+                self.tokenizer,
+                "http://localhost:8000/v1",
+                temperature=self.args.temp,
+                top_k=self.args.top_k,
+                top_p=self.args.top_p,
+            )
+        elif self.args.eval_mode == "sd":
+            self.draft_model = VLLMWrapper(
+                self.args.draft_model,
+                self.tokenizer,
+                "http://localhost:8001/v1",
+                temperature=self.args.temp,
+                top_k=self.args.top_k,
+                top_p=self.args.top_p,
+            )
+            self.target_model = VLLMWrapper(
+                self.args.target_model,
+                self.tokenizer,
+                "http://localhost:8000/v1",
+                temperature=self.args.temp,
+                top_k=self.args.top_k,
+                top_p=self.args.top_p,
+            )
+        else:
+            raise NotImplementedError("VLLM is only supported in small, large and sd eval mode!")
+
     def load_gpt_fast_tokenizer(self):
         tokenizer_path = find_tokenizer_path(self.args.target_model)
         model_path = convert_to_pth_path(self.args.target_model)
@@ -306,13 +346,13 @@ class Decoding(ABC):
         else:
             raise RuntimeError("Auto-Regressive Decoding can be used only in small / large eval mode!")
         prefix = prefix.to(model.device)
-        if not isinstance(model, GPTFastWarpper):
+        if not isinstance(model, GPTFastWarpper) and not isinstance(model, VLLMWrapper):
             model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
             model.vocab_size = self.args.vocab_size
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens
 
-        x = prefix
+        x = prefix.clone()
 
         while x.shape[1] < max_tokens:
             x = model.generate(x, 1)
