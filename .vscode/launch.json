@@ -23,21 +23,25 @@
             "program": "${workspaceFolder}/eval/eval_mt_bench.py",
             "args": [
                 "--eval_mode",
-                "large",
-                "--target_model",
-                "vicuna-13b-v1.5",
-                "--draft_model",
-                "vicuna-68m",
+                "tridecoding",
                 "--gamma",
                 "5",
                 "-n",
                 "1",
                 "-e",
                 "vicuna",
+                "--use-gpt_fast_model",
+                "false",
+                "--draft_model",
+                "vicuna-68m",
+                "--target_model",
+                "tiny-vicuna-1b",
                 "--max_tokens",
                 "128",
                 "--temp",
-                "0"
+                "0",
+                "--exp_name",
+                "tridecoding_expirement_${currentDate}_${currentTime}"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0"

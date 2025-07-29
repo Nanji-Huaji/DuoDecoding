@@ -74,6 +74,7 @@ def model_zoo(args):
     args.vocab_size = vocab_size[args.draft_model]
     args.draft_model = zoo[args.draft_model]
     args.target_model = zoo[args.target_model]
+    args.little_model = zoo[args.little_model] if hasattr(args, "little_model") else args.draft_model
 
 
 def parse_arguments():
@@ -155,7 +156,7 @@ def parse_arguments():
     parser.add_argument(
         "--use-gpt_fast_model",
         type=bool,
-        default=True,
+        default=False,
         help="Use gpt-fast model for decoding.",
     )
     # end for lookahead decoding
@@ -183,8 +184,26 @@ def parse_arguments():
     parser.add_argument(
         "--enable-compile",
         type=bool,
-        default=True,
+        default=False,
         help="Enable torch.compile for optimization.",
+    )
+    parser.add_argument(
+        "--little_model",
+        type=str,
+        default="vicuna-68m",
+        help="The little model for decoding.",
+    )
+    parser.add_argument(
+        "--gamma1",
+        type=int,
+        default=4,
+        help="The number of guesses for the first draft model.",
+    )
+    parser.add_argument(
+        "--gamma2",
+        type=int,
+        default=4,
+        help="The number of guesses for the second draft model.",
     )
 
     args = parser.parse_args()

@@ -15,11 +15,16 @@ from typing import List, Tuple
 
 from src.engine import DecodingMetrics
 
-total_generated_tokens = 0
-total_prefilling_time = 0.0
-total_decoding_time = 0.0
-draft_model_proposed_tokens = 0
-draft_model_accepted_tokens = 0
+decoding_metrics = DecodingMetrics(
+    little_forward_times=0,
+    draft_forward_times=0,
+    target_forward_times=0,
+    generated_tokens=0,
+    little_acceptance_rate=0.0,
+    draft_acceptance_rate=0.0,
+    wall_time=0.0,
+    throughput=0.0,
+)
 
 
 def read_results(file_path):
@@ -40,8 +45,9 @@ class EvalMTBench(Decoding):
         super().__init__(args)
         # load relative resources
         if self.args.use_gpt_fast_model:
-            self.load_tokenizer_gpt_fast()
-            self.load_model_gpt_fast()
+            self.load_tokenizer()
+            self.load_model()
+            self.color_print("Not implemented yet for gpt-fast model, use normal model for instead.", 1)
         else:
             self.load_tokenizer()
             self.load_model()
@@ -79,9 +85,7 @@ class EvalMTBench(Decoding):
 
     @torch.no_grad()
     def eval(self):
-
-        global total_generated_tokens, total_prefilling_time, total_decoding_time
-        global draft_model_proposed_tokens, draft_model_accepted_tokens
+        global decoding_metrics
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -96,6 +100,8 @@ class EvalMTBench(Decoding):
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":
             decoding = self.rest_forward
+        elif self.args.eval_mode == "tridecoding":
+            decoding = self.tridecoding
         else:
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
@@ -244,17 +250,10 @@ class EvalMTBench(Decoding):
                     output_ids = decoding(input_ids)
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, metrics = output_ids
-                        total_generated_tokens += metrics["generated_tokens"]
-                        total_prefilling_time += metrics["prefilling_time"]
-                        total_decoding_time += metrics["decoding_time"]
-                        if "draft_model_accepted_tokens" in metrics.keys() and isinstance(
-                            metrics["draft_model_accepted_tokens"], int
-                        ):
-                            draft_model_accepted_tokens += metrics["draft_model_accepted_tokens"]
-                        if "draft_model_proposed_tokens" in metrics.keys() and isinstance(
-                            metrics["draft_model_proposed_tokens"], int
-                        ):
-                            draft_model_proposed_tokens += metrics["draft_model_proposed_tokens"]
+                        for key in decoding_metrics.keys():
+                            if key in metrics and key not in ["little_acceptance_rate", "draft_acceptance_rate"]:
+                                decoding_metrics[key] += metrics[key]
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
@@ -331,17 +330,17 @@ class EvalMTBench(Decoding):
         metrics_str = f"""
         ------------- Evaluation Summary -------------
         Evaluation Metrics:
-        - Total Generated Tokens: {total_generated_tokens}
-        - Total Prefilling Time: {total_prefilling_time:.2f} seconds
-        - Total Decoding Time: {total_decoding_time:.2f} seconds
+        - eval_mode: {self.args.eval_mode}
+        - Little Model Forward Times: {decoding_metrics["little_forward_times"]}
+        - Draft Model Forward Times: {decoding_metrics["draft_forward_times"]}
+        - Target Model Forward Times: {decoding_metrics["target_forward_times"]}
+        - Little Model Acceptance Rate: {decoding_metrics["little_acceptance_rate"]:.2%}
+        - Draft Model Acceptance Rate: {decoding_metrics["draft_acceptance_rate"]:.2%}
+        - Wall Time: {decoding_metrics["wall_time"]:.2f} seconds
+        - Throughput: {decoding_metrics["throughput"]:.2f} tokens/second
+        - Total Generated Tokens: {decoding_metrics["generated_tokens"]}
         """
 
-        if draft_model_proposed_tokens > 0:
-            metrics_str += f"""
-            - Draft Model Proposed Tokens: {draft_model_proposed_tokens}
-            - Draft Model Accepted Tokens: {draft_model_accepted_tokens}
-            - Draft Model Acceptance Rate: {draft_model_accepted_tokens / draft_model_proposed_tokens:.2%}
-            """
         metrics_str += """
         ------------- End of Evaluation Summary -------------
         """
