@@ -33,8 +33,10 @@ class DecodingMetrics(TypedDict):
     draft_forward_times: int
     target_forward_times: int
     generated_tokens: int
-    little_acceptance_rate: float
-    draft_acceptance_rate: float
+    little_generated_tokens: int
+    draft_generated_tokens: int
+    little_accepted_tokens: int
+    draft_accepted_tokens: int
     wall_time: float
     throughput: float
 
@@ -303,8 +305,10 @@ class Decoding(ABC):
             draft_forward_times=0,
             target_forward_times=target_forward_times,
             generated_tokens=generated_tokens,
-            little_acceptance_rate=1.0,
-            draft_acceptance_rate=1.0,
+            little_generated_tokens=0,
+            draft_generated_tokens=0,
+            little_accepted_tokens=0,
+            draft_accepted_tokens=0,
             wall_time=elapsed_time,
             throughput=throughput,
         )
@@ -398,8 +402,10 @@ class Decoding(ABC):
             draft_forward_times=draft_forward_times,
             target_forward_times=target_forward_times,
             generated_tokens=generated_tokens,
-            little_acceptance_rate=1.0,
-            draft_acceptance_rate=total_accepted_tokens / total_drafted_tokens if total_drafted_tokens > 0 else 1.0,
+            little_generated_tokens=0,
+            draft_generated_tokens=total_drafted_tokens,
+            little_accepted_tokens=0,
+            draft_accepted_tokens=total_accepted_tokens,
             wall_time=elapsed_time,
             throughput=throughput,
         )
@@ -515,131 +521,219 @@ class Decoding(ABC):
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
         target_model_cache.vocab_size = self.vocab_size
+
+        # Metrics tracking
         little_forward_times = 0
         draft_forward_times = 0
         target_forward_times = 0
-        total_accepted_tokens = 0
-        total_little_drafted_tokens = 0
-        total_draft_drafted_tokens = 0
+        total_little_generated_tokens = 0
+        total_draft_generated_tokens = 0
+        total_little_accepted_tokens = 0
+        total_draft_accepted_tokens = 0
+
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         current_tokens = prefix.clone()
         start_event.record(stream=torch.cuda.current_stream())
+
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
+
+            # Calculate how many tokens we can still generate
+            remaining_tokens = max_tokens - prefix_len
+            if remaining_tokens <= 0:
+                break
+
+            # Adjust gamma values if necessary to not exceed max_tokens
+            actual_gamma1 = min(self.args.gamma1, remaining_tokens)
+            actual_gamma2 = min(self.args.gamma2, remaining_tokens - actual_gamma1)
+
             # Stage 1: little model generates gamma1 tokens
-            x1 = little_model_cache.generate(prefix.to(little_device), self.args.gamma1)
-            little_forward_times += self.args.gamma1
-            total_little_drafted_tokens += self.args.gamma1
+            x1 = little_model_cache.generate(prefix.to(little_device), actual_gamma1)
+            little_forward_times += actual_gamma1
+            total_little_generated_tokens += actual_gamma1
+
             # Stage 2: draft model processes little model output and generates gamma2 more tokens
-            x2 = draft_model_cache.generate(x1.to(draft_device), self.args.gamma2)
-            draft_forward_times += self.args.gamma2
-            total_draft_drafted_tokens += self.args.gamma2
+            x2 = draft_model_cache.generate(x1.to(draft_device), actual_gamma2)
+            draft_forward_times += actual_gamma2
+            total_draft_generated_tokens += actual_gamma2
+
             # Stage 3: target model verifies all draft tokens
             _ = target_model_cache.generate(x2.to(target_device), 1)
             target_forward_times += 1
+
             if self.accelerator.is_main_process:
-                self.little_forward_times += self.args.gamma1
-                self.draft_forward_times += self.args.gamma2
+                self.little_forward_times += actual_gamma1
+                self.draft_forward_times += actual_gamma2
                 self.target_forward_times += 1
+
             # Verification phase: verify tokens sequentially from left to right
-            total_candidates = self.args.gamma1 + self.args.gamma2
+            total_candidates = actual_gamma1 + actual_gamma2
             n = prefix_len + total_candidates - 1
+
+            # Get the actual sequence length for verification
+            seq_len = x2.shape[1]
+
+            # Track accepted tokens for this iteration
+            little_accepted_this_iter = 0
+            draft_accepted_this_iter = 0
+
             # Verify tokens one by one
             for i in range(total_candidates):
                 pos = prefix_len + i
+
+                # Skip if position is beyond sequence length
+                if pos >= seq_len:
+                    n = pos - 1
+                    break
+
                 r = torch.rand(1, device=target_device)
                 j = x2[:, pos]
-                # Determine which model to compare against
-                if i < self.args.gamma1:
-                    # Compare little model vs draft model
-                    p_draft = draft_model_cache._prob_history.to(target_device)[:, pos - 1, j]
-                    p_little = little_model_cache._prob_history.to(target_device)[:, pos - 1, j]
 
+                # Check bounds for probability history access
+                prob_pos = pos - 1  # Position in probability history (0-indexed relative to sequence)
+
+                # Determine which model to compare against
+                if i < actual_gamma1:
+                    # Compare little model vs draft model
+                    # Check bounds for both models
+                    draft_hist_size = draft_model_cache._prob_history.shape[1]
+                    little_hist_size = little_model_cache._prob_history.shape[1]
+
+                    if prob_pos >= draft_hist_size or prob_pos >= little_hist_size:
+                        n = pos - 1
+                        break
+
+                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    p_little = little_model_cache._prob_history.to(target_device)[:, prob_pos, j]
                     # Add small epsilon to avoid division by zero
                     eps = 1e-10
                     ratio = p_draft / (p_little + eps)
                     ratio = torch.clamp(ratio, 0, 100)  # Clamp to reasonable range
-
                     if r > ratio:
                         n = pos - 1
                         break
+                    else:
+                        # This little model token is accepted
+                        little_accepted_this_iter += 1
                 else:
                     # Compare draft model vs target model
-                    p_target = target_model_cache._prob_history.to(target_device)[:, pos - 1, j]
-                    p_draft = draft_model_cache._prob_history.to(target_device)[:, pos - 1, j]
+                    # Check bounds for both models
+                    target_hist_size = target_model_cache._prob_history.shape[1]
+                    draft_hist_size = draft_model_cache._prob_history.shape[1]
 
+                    if prob_pos >= target_hist_size or prob_pos >= draft_hist_size:
+                        n = pos - 1
+                        break
+
+                    p_target = target_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
                     # Add small epsilon to avoid division by zero
                     eps = 1e-10
                     ratio = p_target / (p_draft + eps)
                     ratio = torch.clamp(ratio, 0, 100)  # Clamp to reasonable range
-
                     if r > ratio:
                         n = pos - 1
                         break
-            self.num_acc_tokens.append(n - prefix_len + 1)
-            this_step_accepted_tokens = n - prefix_len + 1
-            total_accepted_tokens += this_step_accepted_tokens
+                    else:
+                        # This draft model token is accepted
+                        draft_accepted_this_iter += 1
+
+            # Count accepted tokens based on final n
+            final_accepted_tokens = n - prefix_len + 1
+            if final_accepted_tokens > 0:
+                # Count how many are from little model vs draft model
+                little_accepted_count = min(final_accepted_tokens, actual_gamma1)
+                draft_accepted_count = max(0, final_accepted_tokens - actual_gamma1)
+
+                total_little_accepted_tokens += little_accepted_count
+                total_draft_accepted_tokens += draft_accepted_count
+
+            self.num_acc_tokens.append(final_accepted_tokens)
+
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x2[:, : n + 1]
+
+            # Check if we've reached max_tokens after accepting tokens
+            if prefix.shape[1] >= max_tokens:
+                prefix = prefix[:, :max_tokens]  # Truncate to exact length
+                break
+
             # Rollback all caches to accepted position
             little_model_cache.rollback(n + 1)
             draft_model_cache.rollback(n + 1)
+
             # Sample next token based on rejection point
             if n < prefix_len + total_candidates - 1:
                 # Some tokens were rejected, sample from the appropriate distribution
-                if n < prefix_len + self.args.gamma1 - 1:
+                if n < prefix_len + actual_gamma1 - 1:
                     # Rejection happened in little model stage, sample from draft - little
-                    draft_probs = draft_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
-                    little_probs = little_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
-
-                    # Ensure non-negative probabilities
-                    diff_probs = torch.clamp(draft_probs - little_probs, min=0.0)
-                    # Add small epsilon to ensure valid probability distribution
-                    diff_probs = diff_probs + 1e-10
-                    diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
-
-                    t = sample(diff_probs)
+                    # Check bounds before accessing
+                    if n < draft_model_cache._prob_history.shape[1] and n < little_model_cache._prob_history.shape[1]:
+                        draft_probs = draft_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
+                        little_probs = little_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
+                        # Ensure non-negative probabilities
+                        diff_probs = torch.clamp(draft_probs - little_probs, min=0.0)
+                        # Add small epsilon to ensure valid probability distribution
+                        diff_probs = diff_probs + 1e-10
+                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
+                        t = sample(diff_probs)
+                    else:
+                        # Fallback: sample from target model
+                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
+                        t = sample(target_probs)
                 else:
                     # Rejection happened in draft model stage, sample from target - draft
-                    target_probs = target_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
-                    draft_probs = draft_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
-
-                    # Ensure non-negative probabilities
-                    diff_probs = torch.clamp(target_probs - draft_probs, min=0.0)
-                    # Add small epsilon to ensure valid probability distribution
-                    diff_probs = diff_probs + 1e-10
-                    diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
-
-                    t = sample(diff_probs)
+                    # Check bounds before accessing
+                    if n < target_model_cache._prob_history.shape[1] and n < draft_model_cache._prob_history.shape[1]:
+                        target_probs = target_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
+                        draft_probs = draft_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
+                        # Ensure non-negative probabilities
+                        diff_probs = torch.clamp(target_probs - draft_probs, min=0.0)
+                        # Add small epsilon to ensure valid probability distribution
+                        diff_probs = diff_probs + 1e-10
+                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
+                        t = sample(diff_probs)
+                    else:
+                        # Fallback: sample from target model
+                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
+                        t = sample(target_probs)
                 target_model_cache.rollback(n + 1)
             else:
                 # All tokens accepted, sample from target model
                 target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
                 t = sample(target_probs)
                 target_model_cache.rollback(n + 2)
-            prefix = torch.cat((prefix, t), dim=1)
+
+            # Only add the new token if we haven't reached max_tokens
+            if prefix.shape[1] < max_tokens:
+                prefix = torch.cat((prefix, t), dim=1)
+
+            # Final check to ensure we don't exceed max_tokens
+            if prefix.shape[1] >= max_tokens:
+                prefix = prefix[:, :max_tokens]  # Truncate to exact length
+                break
+
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
+
         metrics = DecodingMetrics(
             little_forward_times=little_forward_times,
             draft_forward_times=draft_forward_times,
             target_forward_times=target_forward_times,
             generated_tokens=generated_tokens,
-            little_acceptance_rate=(
-                total_accepted_tokens / total_little_drafted_tokens if total_little_drafted_tokens > 0 else 1.0
-            ),
-            draft_acceptance_rate=(
-                total_accepted_tokens / total_draft_drafted_tokens if total_draft_drafted_tokens > 0 else 1.0
-            ),
+            little_generated_tokens=total_little_generated_tokens,
+            draft_generated_tokens=total_draft_generated_tokens,
+            little_accepted_tokens=total_little_accepted_tokens,
+            draft_accepted_tokens=total_draft_accepted_tokens,
             wall_time=elapsed_time,
             throughput=throughput,
         )
-        # self.color_print(f"Tridecoding metrics: {json.dumps(metrics, indent=2)}", 3)
-        # self.color_print(f"generate content: {self.tokenizer.decode(prefix[0])}", 3)
+
+        self.color_print(f"decoding metrics: {json.dumps(metrics, indent=2)}", 3)
         return prefix, metrics
 
     @torch.no_grad()

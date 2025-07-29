@@ -20,8 +20,10 @@ decoding_metrics = DecodingMetrics(
     draft_forward_times=0,
     target_forward_times=0,
     generated_tokens=0,
-    little_acceptance_rate=0.0,
-    draft_acceptance_rate=0.0,
+    little_generated_tokens=0,
+    draft_generated_tokens=0,
+    little_accepted_tokens=0,
+    draft_accepted_tokens=0,
     wall_time=0.0,
     throughput=0.0,
 )
@@ -334,11 +336,15 @@ class EvalMTBench(Decoding):
         - Little Model Forward Times: {decoding_metrics["little_forward_times"]}
         - Draft Model Forward Times: {decoding_metrics["draft_forward_times"]}
         - Target Model Forward Times: {decoding_metrics["target_forward_times"]}
-        - Little Model Acceptance Rate: {decoding_metrics["little_acceptance_rate"]:.2%}
-        - Draft Model Acceptance Rate: {decoding_metrics["draft_acceptance_rate"]:.2%}
+        - Total Generated Tokens: {decoding_metrics["generated_tokens"]}
+        - Little Generated Tokens: {decoding_metrics["little_generated_tokens"]}
+        - Draft Generated Tokens: {decoding_metrics["draft_generated_tokens"]}
+        - Little Accepted Tokens: {decoding_metrics["little_accepted_tokens"]}
+        - Draft Accepted Tokens: {decoding_metrics["draft_accepted_tokens"]}
         - Wall Time: {decoding_metrics["wall_time"]:.2f} seconds
         - Throughput: {decoding_metrics["throughput"]:.2f} tokens/second
-        - Total Generated Tokens: {decoding_metrics["generated_tokens"]}
+        - Little Acceptance Rate: {decoding_metrics["little_accepted_tokens"] / decoding_metrics["little_generated_tokens"] if decoding_metrics["little_generated_tokens"] > 0 else 1.0}
+        - Draft Acceptance Rate: {decoding_metrics["draft_accepted_tokens"] / decoding_metrics["draft_generated_tokens"] if decoding_metrics["draft_generated_tokens"] > 0 else 1.0}
         """
 
         metrics_str += """
