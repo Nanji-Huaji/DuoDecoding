@@ -18,7 +18,8 @@ from .utils import seed_everything, norm_logits, sample, max_fn
 import time
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
-from .model.pld.pld import greedy_search_pld
+
+# from .model.pld.pld import greedy_search_pld
 
 from .model.rest.rest.model.utils import *
 from .model.rest.rest.model.rest_model import RestModel
@@ -39,6 +40,8 @@ class DecodingMetrics(TypedDict):
     draft_accepted_tokens: int
     wall_time: float
     throughput: float
+    communication_time: Optional[float]
+    computation_time: Optional[float]
 
 
 class Decoding(ABC):
@@ -169,16 +172,16 @@ class Decoding(ABC):
                     local_files_only=True,
                 ).eval()
 
-        elif self.args.eval_mode == "pld":
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.target_model.greedy_search_pld = greedy_search_pld.__get__(self.target_model, type(self.target_model))
+        # elif self.args.eval_mode == "pld":
+        #     self.target_model = AutoModelForCausalLM.from_pretrained(
+        #         self.args.target_model,
+        #         device_map="cuda:0",
+        #         torch_dtype=torch.bfloat16,
+        #         trust_remote_code=True,
+        #         cache_dir="llama/.cache/huggingface",
+        #         local_files_only=True,
+        #     ).eval()
+        #     self.target_model.greedy_search_pld = greedy_search_pld.__get__(self.target_model, type(self.target_model))
         elif self.args.eval_mode == "lade":
             from .model.lade.utils import augment_all, config_lade
             from .model.lade.decoding import CONFIG_MAP
@@ -233,6 +236,31 @@ class Decoding(ABC):
             self.target_model = AutoModelForCausalLM.from_pretrained(
                 self.args.target_model,
                 device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+        elif self.args.eval_mode == "tridecoding_with_bandwidth":
+            self.little_model = AutoModelForCausalLM.from_pretrained(
+                self.args.little_model,
+                device_map="cuda:0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                self.args.draft_model,
+                device_map="cuda:1" if torch.cuda.device_count() > 1 else "cuda:0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.target_model = AutoModelForCausalLM.from_pretrained(
+                self.args.target_model,
+                device_map="balanced_low_0" if torch.cuda.device_count() > 2 else "cuda:0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 cache_dir="llama/.cache/huggingface",
@@ -311,6 +339,8 @@ class Decoding(ABC):
             draft_accepted_tokens=0,
             wall_time=elapsed_time,
             throughput=throughput,
+            communication_time=None,
+            computation_time=None,
         )
 
         return x, metrics
@@ -330,7 +360,7 @@ class Decoding(ABC):
         draft_forward_times = 0
         target_forward_times = 0
         total_accepted_tokens = 0
-        total_drafted_tokens = 0  # 需要这个来计算接受率
+        total_drafted_tokens = 0
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -342,19 +372,39 @@ class Decoding(ABC):
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
 
-            x = approx_model_cache.generate(prefix.to(draft_device), self.args.gamma)
-            draft_forward_times += self.args.gamma
-            total_drafted_tokens += self.args.gamma
+            # 确保不会生成超过max_tokens的token
+            remaining_tokens = max_tokens - prefix_len
+            if remaining_tokens <= 0:
+                break
+
+            # 调整gamma以不超过剩余的token数量
+            current_gamma = min(self.args.gamma, remaining_tokens - 1)  # 减1是为了留给最后的采样token
+            if current_gamma <= 0:
+                # 如果只剩1个token，直接用target model生成
+                _ = target_model_cache.generate(prefix.to(target_device), 1)
+                target_forward_times += 1
+                if self.accelerator.is_main_process:
+                    self.target_forward_times += 1
+
+                t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
+                prefix = torch.cat((prefix, t), dim=1)
+                total_accepted_tokens += 1
+                self.num_acc_tokens.append(1)
+                break
+
+            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            draft_forward_times += current_gamma
+            total_drafted_tokens += current_gamma
 
             _ = target_model_cache.generate(x.to(target_device), 1)
             target_forward_times += 1
 
             if self.accelerator.is_main_process:
-                self.draft_forward_times += self.args.gamma
+                self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            n = prefix_len + self.args.gamma - 1
-            for i in range(self.args.gamma):
+            n = prefix_len + current_gamma - 1
+            for i in range(current_gamma):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
@@ -364,17 +414,20 @@ class Decoding(ABC):
                     n = prefix_len + i - 1
                     break
 
-            self.num_acc_tokens.append(n - prefix_len + 1)
-
             this_step_accepted_tokens = n - prefix_len + 1
             total_accepted_tokens += this_step_accepted_tokens
+            self.num_acc_tokens.append(this_step_accepted_tokens)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
 
             approx_model_cache.rollback(n + 1)
 
-            if n < prefix_len + self.args.gamma - 1:
+            # 检查是否还有空间添加一个token
+            if prefix.shape[1] >= max_tokens:
+                break
+
+            if n < prefix_len + current_gamma - 1:
                 # reject someone, sample from the pos n
                 t = sample(
                     max_fn(
@@ -388,11 +441,14 @@ class Decoding(ABC):
                 t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
                 target_model_cache.rollback(n + 2)
 
-            prefix = torch.cat((prefix, t), dim=1)
+            # 最后检查添加token后是否会超出限制
+            if prefix.shape[1] < max_tokens:
+                prefix = torch.cat((prefix, t), dim=1)
+                total_accepted_tokens += 1
 
-            end_event.record(stream=torch.cuda.current_stream())
-            torch.cuda.synchronize()
-            elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
@@ -408,6 +464,8 @@ class Decoding(ABC):
             draft_accepted_tokens=total_accepted_tokens,
             wall_time=elapsed_time,
             throughput=throughput,
+            communication_time=None,
+            computation_time=None,
         )
 
         return prefix, metrics
@@ -501,10 +559,14 @@ class Decoding(ABC):
             draft_forward_times=draft_forward_times,
             target_forward_times=target_forward_times,
             generated_tokens=generated_tokens,
-            little_acceptance_rate=1.0,
-            draft_acceptance_rate=total_accepted_tokens / total_drafted_tokens if total_drafted_tokens > 0 else 1.0,
+            little_generated_tokens=0,
+            draft_generated_tokens=total_drafted_tokens,
+            little_accepted_tokens=0,
+            draft_accepted_tokens=total_accepted_tokens,
             wall_time=elapsed_time,
             throughput=throughput,
+            communication_time=None,
+            computation_time=None,
         )
 
         return prefix, metrics
@@ -731,39 +793,305 @@ class Decoding(ABC):
             draft_accepted_tokens=total_draft_accepted_tokens,
             wall_time=elapsed_time,
             throughput=throughput,
+            communication_time=None,
+            computation_time=None,
         )
 
-        self.color_print(f"decoding metrics: {json.dumps(metrics, indent=2)}", 3)
+        # self.color_print(f"decoding metrics: {json.dumps(metrics, indent=2)}", 3)
         return prefix, metrics
 
     @torch.no_grad()
-    def pld_forward(self, prefix):
-        input_ids = prefix.cuda()
-        attention_mask = torch.ones_like(input_ids).cuda()
+    def tridecoding_with_bandwidth(
+        self, prefix, edge_cloud_bandwidth, edge_end_bandwidth
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        # Convert bandwidths to bytes per second
+        edge_cloud_bandwidth_bps = (edge_cloud_bandwidth * 1024 * 1024) / 8
+        edge_end_bandwidth_bps = (edge_end_bandwidth * 1024 * 1024) / 8
+
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        output_ids, idx, accept_length_list = self.target_model.greedy_search_pld(
-            input_ids,
-            attention_mask=attention_mask,
-            # stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=len(input_ids[0]) + max_new_tokens)]),
-            stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_tokens)]),
-            draft_matching_window_size=3,
-            draft_num_candidate_tokens=10,
-            use_cache=True,
-            pad_token_id=2,
-            eos_token_id=2,
-            return_dict_in_generate=False,
+        little_device = self.little_model.device
+        draft_device = self.draft_model.device
+        target_device = self.target_model.device
+
+        # Initialize KV caches
+        little_model_cache = KVCacheModel(self.little_model, self.args.temp, self.args.top_k, self.args.top_p)
+        little_model_cache.vocab_size = self.vocab_size
+        draft_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
+        draft_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
+        target_model_cache.vocab_size = self.vocab_size
+
+        # Metrics tracking
+        little_forward_times = 0
+        draft_forward_times = 0
+        target_forward_times = 0
+        total_little_generated_tokens = 0
+        total_draft_generated_tokens = 0
+        total_little_accepted_tokens = 0
+        total_draft_accepted_tokens = 0
+        total_communication_time = 0.0
+        edge_end_comm_time = 0.0
+        edge_cloud_comm_time = 0.0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        current_tokens = prefix.clone()
+        start_event.record(stream=torch.cuda.current_stream())
+
+        def calculate_transmission_time(data_size_bytes, bandwidth_bps):
+            """Calculate transmission time based on bandwidth"""
+            transmission_time = data_size_bytes / bandwidth_bps
+            return transmission_time
+
+        def simulate_data_transfer(tokens, prob_history=None, link_type="edge_cloud"):
+            """
+            Simulate data transfer between models and return transfer time
+            link_type: 'edge_end' for edge-endpoint communication
+                    'edge_cloud' for edge-cloud communication
+            """
+            total_bytes = 0
+
+            # Token data size (int32 or int64)
+            token_bytes = tokens.element_size() * tokens.numel()
+            total_bytes += token_bytes
+
+            # Probability history data size if provided
+            if prob_history is not None:
+                prob_bytes = prob_history.element_size() * prob_history.numel()
+                total_bytes += prob_bytes
+
+            # Select bandwidth based on link type
+            if link_type == "edge_end":
+                bandwidth = edge_end_bandwidth_bps
+            else:  # edge_cloud
+                bandwidth = edge_cloud_bandwidth_bps
+
+            # Calculate transmission time
+            transfer_time = calculate_transmission_time(total_bytes, bandwidth)
+
+            # Simulate the delay
+            time.sleep(transfer_time)
+
+            return transfer_time, link_type
+
+        while prefix.shape[1] < max_tokens:
+            prefix_len = prefix.shape[1]
+
+            # Calculate remaining tokens
+            remaining_tokens = max_tokens - prefix_len
+            if remaining_tokens <= 0:
+                break
+
+            actual_gamma1 = min(self.args.gamma1, remaining_tokens)
+            actual_gamma2 = min(self.args.gamma2, remaining_tokens - actual_gamma1)
+
+            # Stage 1: Little model (endpoint) generates tokens
+            x1 = little_model_cache.generate(prefix.to(little_device), actual_gamma1)
+            little_forward_times += actual_gamma1
+            total_little_generated_tokens += actual_gamma1
+
+            # Transfer from endpoint (little) to edge (draft) - using edge_end_bandwidth
+            little_prob_hist = little_model_cache._prob_history[:, prefix_len : prefix_len + actual_gamma1, :]
+            comm_time_1, link_1 = simulate_data_transfer(x1[:, prefix_len:], little_prob_hist, link_type="edge_end")
+            total_communication_time += comm_time_1
+            edge_end_comm_time += comm_time_1
+
+            # Stage 2: Draft model (edge) generates tokens
+            x2 = draft_model_cache.generate(x1.to(draft_device), actual_gamma2)
+            draft_forward_times += actual_gamma2
+            total_draft_generated_tokens += actual_gamma2
+
+            # Transfer from edge (draft) to cloud (target) - using edge_cloud_bandwidth
+            draft_prob_hist = draft_model_cache._prob_history[
+                :, prefix_len : prefix_len + actual_gamma1 + actual_gamma2, :
+            ]
+            comm_time_2, link_2 = simulate_data_transfer(x2[:, prefix_len:], draft_prob_hist, link_type="edge_cloud")
+            total_communication_time += comm_time_2
+            edge_cloud_comm_time += comm_time_2
+
+            # Stage 3: Target model (cloud) verification
+            _ = target_model_cache.generate(x2.to(target_device), 1)
+            target_forward_times += 1
+
+            # For verification, transfer little model probabilities to cloud
+            # This goes from endpoint to cloud, so we need both hops
+            if actual_gamma1 > 0:
+                # First hop: endpoint to edge (edge_end_bandwidth)
+                comm_time_3a, _ = simulate_data_transfer(
+                    torch.empty(0), little_prob_hist, link_type="edge_end"  # No tokens, just probabilities
+                )
+                # Second hop: edge to cloud (edge_cloud_bandwidth)
+                comm_time_3b, _ = simulate_data_transfer(torch.empty(0), little_prob_hist, link_type="edge_cloud")
+                total_communication_time += comm_time_3a + comm_time_3b
+                edge_end_comm_time += comm_time_3a
+                edge_cloud_comm_time += comm_time_3b
+
+            # Verification phase (same as original)
+            total_candidates = actual_gamma1 + actual_gamma2
+            n = prefix_len + total_candidates - 1
+            seq_len = x2.shape[1]
+
+            for i in range(total_candidates):
+                pos = prefix_len + i
+
+                if pos >= seq_len:
+                    n = pos - 1
+                    break
+
+                r = torch.rand(1, device=target_device)
+                j = x2[:, pos]
+                prob_pos = pos - 1
+
+                if i < actual_gamma1:
+                    # Compare little vs draft
+                    draft_hist_size = draft_model_cache._prob_history.shape[1]
+                    little_hist_size = little_model_cache._prob_history.shape[1]
+
+                    if prob_pos >= draft_hist_size or prob_pos >= little_hist_size:
+                        n = pos - 1
+                        break
+
+                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    p_little = little_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    eps = 1e-10
+                    ratio = torch.clamp(p_draft / (p_little + eps), 0, 100)
+
+                    if r > ratio:
+                        n = pos - 1
+                        break
+                else:
+                    # Compare draft vs target
+                    target_hist_size = target_model_cache._prob_history.shape[1]
+                    draft_hist_size = draft_model_cache._prob_history.shape[1]
+
+                    if prob_pos >= target_hist_size or prob_pos >= draft_hist_size:
+                        n = pos - 1
+                        break
+
+                    p_target = target_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
+                    eps = 1e-10
+                    ratio = torch.clamp(p_target / (p_draft + eps), 0, 100)
+
+                    if r > ratio:
+                        n = pos - 1
+                        break
+
+            # Count accepted tokens
+            final_accepted_tokens = n - prefix_len + 1
+            if final_accepted_tokens > 0:
+                little_accepted_count = min(final_accepted_tokens, actual_gamma1)
+                draft_accepted_count = max(0, final_accepted_tokens - actual_gamma1)
+                total_little_accepted_tokens += little_accepted_count
+                total_draft_accepted_tokens += draft_accepted_count
+
+            self.num_acc_tokens.append(final_accepted_tokens)
+            prefix = x2[:, : n + 1]
+
+            if prefix.shape[1] >= max_tokens:
+                prefix = prefix[:, :max_tokens]
+                break
+
+            # Rollback caches
+            little_model_cache.rollback(n + 1)
+            draft_model_cache.rollback(n + 1)
+
+            # Sample next token (same logic as original)
+            if n < prefix_len + total_candidates - 1:
+                if n < prefix_len + actual_gamma1 - 1:
+                    # Sample from draft - little
+                    if n < draft_model_cache._prob_history.shape[1] and n < little_model_cache._prob_history.shape[1]:
+                        draft_probs = draft_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
+                        little_probs = little_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
+                        diff_probs = torch.clamp(draft_probs - little_probs, min=0.0) + 1e-10
+                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
+                        t = sample(diff_probs)
+                    else:
+                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
+                        t = sample(target_probs)
+                else:
+                    # Sample from target - draft
+                    if n < target_model_cache._prob_history.shape[1] and n < draft_model_cache._prob_history.shape[1]:
+                        target_probs = target_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
+                        draft_probs = draft_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
+                        diff_probs = torch.clamp(target_probs - draft_probs, min=0.0) + 1e-10
+                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
+                        t = sample(diff_probs)
+                    else:
+                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
+                        t = sample(target_probs)
+                target_model_cache.rollback(n + 1)
+            else:
+                target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
+                t = sample(target_probs)
+                target_model_cache.rollback(n + 2)
+
+            if prefix.shape[1] < max_tokens:
+                prefix = torch.cat((prefix, t), dim=1)
+
+            if prefix.shape[1] >= max_tokens:
+                prefix = prefix[:, :max_tokens]
+                break
+
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+
+        # Total wall time includes computation and communication
+        computation_time = start_event.elapsed_time(end_event) / 1000.0
+        total_wall_time = computation_time + total_communication_time
+
+        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        throughput = generated_tokens / total_wall_time if total_wall_time > 0 else 0
+
+        metrics = DecodingMetrics(
+            little_forward_times=little_forward_times,
+            draft_forward_times=draft_forward_times,
+            target_forward_times=target_forward_times,
+            generated_tokens=generated_tokens,
+            little_generated_tokens=total_little_generated_tokens,
+            draft_generated_tokens=total_draft_generated_tokens,
+            little_accepted_tokens=total_little_accepted_tokens,
+            draft_accepted_tokens=total_draft_accepted_tokens,
+            wall_time=total_wall_time,
+            throughput=throughput,
+            communication_time=total_communication_time,
+            computation_time=computation_time,
         )
-        input_len = len(input_ids[0])
-        new_token = len(output_ids[0][input_len:])
-        if 2 in output_ids[0, input_len:].tolist():
-            for i, id in enumerate(output_ids[0, input_len:]):
-                if id == 2:
-                    eos_token_ids_index = i
-            invalid_len = len(output_ids[0, input_len:]) - eos_token_ids_index - 1
-            if invalid_len > 0:
-                accept_length_list[-1] -= invalid_len
-                new_token -= invalid_len
-        return output_ids
+
+        # Add detailed communication metrics for analysis
+        # metrics['edge_end_comm_time'] = edge_end_comm_time
+        # metrics['edge_cloud_comm_time'] = edge_cloud_comm_time
+
+        return prefix, metrics
+
+    # @torch.no_grad()
+    # def pld_forward(self, prefix):
+    #     input_ids = prefix.cuda()
+    #     attention_mask = torch.ones_like(input_ids).cuda()
+    #     max_tokens = prefix.shape[1] + self.args.max_tokens
+    #     output_ids, idx, accept_length_list = self.target_model.greedy_search_pld(
+    #         input_ids,
+    #         attention_mask=attention_mask,
+    #         # stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=len(input_ids[0]) + max_new_tokens)]),
+    #         stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_tokens)]),
+    #         draft_matching_window_size=3,
+    #         draft_num_candidate_tokens=10,
+    #         use_cache=True,
+    #         pad_token_id=2,
+    #         eos_token_id=2,
+    #         return_dict_in_generate=False,
+    #     )
+    #     input_len = len(input_ids[0])
+    #     new_token = len(output_ids[0][input_len:])
+    #     if 2 in output_ids[0, input_len:].tolist():
+    #         for i, id in enumerate(output_ids[0, input_len:]):
+    #             if id == 2:
+    #                 eos_token_ids_index = i
+    #         invalid_len = len(output_ids[0, input_len:]) - eos_token_ids_index - 1
+    #         if invalid_len > 0:
+    #             accept_length_list[-1] -= invalid_len
+    #             new_token -= invalid_len
+    #     return output_ids
 
     @torch.no_grad()
     def lookahead_forward(self, prefix):

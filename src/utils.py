@@ -47,6 +47,8 @@ def model_zoo(args):
         "llama-2-13b": 32000,
         "tiny-vicuna-1b": 32000,
         "vicuna-13b-v1.5": 32000,
+        "tiny-llama-1.1b": 32000,
+        "Llama-2-13b": 32000,
     }
 
     zoo = {
@@ -69,6 +71,8 @@ def model_zoo(args):
         "llama-2-13b": "llama/Llama-2-13b-hf",
         "tiny-vicuna-1b": "vicuna/tiny-vicuna-1b",
         "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
+        "tiny-llama-1.1b": "llama/tiny-llama-1.1b",
+        "Llama-2-13b": "llama/Llama-2-13b-hf",
     }
 
     args.vocab_size = vocab_size[args.draft_model]
@@ -204,6 +208,18 @@ def parse_arguments():
         type=int,
         default=4,
         help="The number of guesses for the second draft model.",
+    )
+    parser.add_argument(
+        "--edge_cloud_bandwidth",
+        type=float,
+        default=20.0,
+        help="The bandwidth between edge and cloud in Mbps.",
+    )
+    parser.add_argument(
+        "--edge_end_bandwidth",
+        type=float,
+        default=100.0,
+        help="The bandwidth between edge and end device in Mbps.",
     )
 
     args = parser.parse_args()

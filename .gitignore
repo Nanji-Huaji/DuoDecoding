@@ -10,3 +10,11 @@ exp/*
 vicuna/*
 llama/*
 
+read_results.ipynb
+best_results.json
+.gitignore
+.gitignore
+cmds/exp.sh
+all_results_summary.json
+all_results_detailed.json
+experiment_report.txt

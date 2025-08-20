@@ -9,7 +9,8 @@ from transformers.generation.logits_process import LogitsProcessorList
 from transformers.generation.stopping_criteria import StoppingCriteriaList
 from transformers.generation.utils import _crop_past_key_values
 
-device = torch.device('cuda:0')
+device = torch.device("cuda:0")
+
 
 @torch.no_grad()
 def find_candidate_pred_tokens(input_ids, max_ngram_size=3, num_pred_tokens=10):
@@ -49,22 +50,22 @@ def find_candidate_pred_tokens(input_ids, max_ngram_size=3, num_pred_tokens=10):
 
 @torch.no_grad()
 def greedy_search_pld(
-        self,
-        input_ids: torch.LongTensor,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
-        max_length: Optional[int] = None,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_scores: Optional[bool] = None,
-        return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
-        streamer: Optional["BaseStreamer"] = None,
-        draft_matching_window_size=3,
-        draft_num_candidate_tokens=10,
-        **model_kwargs,
+    self,
+    input_ids: torch.LongTensor,
+    logits_processor: Optional[LogitsProcessorList] = None,
+    stopping_criteria: Optional[StoppingCriteriaList] = None,
+    max_length: Optional[int] = None,
+    pad_token_id: Optional[int] = None,
+    eos_token_id: Optional[Union[int, List[int]]] = None,
+    output_attentions: Optional[bool] = None,
+    output_hidden_states: Optional[bool] = None,
+    output_scores: Optional[bool] = None,
+    return_dict_in_generate: Optional[bool] = None,
+    synced_gpus: bool = False,
+    streamer: Optional["BaseStreamer"] = None,
+    draft_matching_window_size=3,
+    draft_num_candidate_tokens=10,
+    **model_kwargs,
 ):
     global tokenizer
 
@@ -87,8 +88,9 @@ def greedy_search_pld(
         step += 1
         cur_len = input_ids.shape[-1]
 
-        candidate_pred_tokens = find_candidate_pred_tokens(input_ids, draft_matching_window_size,
-                                                           draft_num_candidate_tokens)
+        candidate_pred_tokens = find_candidate_pred_tokens(
+            input_ids, draft_matching_window_size, draft_num_candidate_tokens
+        )
 
         if len(candidate_pred_tokens) == 0:
             candidate_pred_tokens = torch.tensor([100], device=input_ids.device).unsqueeze(0)
@@ -103,7 +105,10 @@ def greedy_search_pld(
 
         attention_mask = candidate_kwargs["attention_mask"]
         mask_extension_length = candidate_input_ids.shape[1] - attention_mask.shape[1]
-        candidate_kwargs["attention_mask"] = torch.cat([attention_mask, attention_mask.new_ones((attention_mask.shape[0], mask_extension_length))], dim=-1,)
+        candidate_kwargs["attention_mask"] = torch.cat(
+            [attention_mask, attention_mask.new_ones((attention_mask.shape[0], mask_extension_length))],
+            dim=-1,
+        )
 
         model_inputs = self.prepare_inputs_for_generation(candidate_input_ids, **candidate_kwargs)
 
@@ -115,7 +120,7 @@ def greedy_search_pld(
             output_hidden_states=output_hidden_states,
         )
 
-        new_logits = outputs.logits[:, -candidate_length - 1:]  # excludes the input prompt if present
+        new_logits = outputs.logits[:, -candidate_length - 1 :]  # excludes the input prompt if present
         selected_tokens = new_logits.argmax(dim=-1)
         candidate_new_tokens = candidate_input_ids[:, -candidate_length:]
         n_matches = ((~(candidate_new_tokens == selected_tokens[:, :-1])).cumsum(dim=-1) < 1).sum()
