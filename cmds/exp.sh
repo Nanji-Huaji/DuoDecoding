@@ -29,21 +29,21 @@
 #     --temp 0 \
 #     --exp_name speculative_decoding-1b_$(date +%Y%m%d_%H%M%S) \
 
-#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
-#     --num_processes 1 \
-#     --main_process_port 29051 \
-#     eval/eval_mt_bench.py \
-#     --eval_mode tridecoding \
-#     --gamma 5 \
-#     --gamma1 6 \
-#     --gamma2 6 \
-#     -n 1 \
-#     -e vicuna \
-#     --draft_model vicuna-68m \
-#     --target_model tiny-vicuna-1b \
-#     --max_tokens 128 \
-#     --temp 0 \
-#     --exp_name speculative_decoding-1b_$(date +%Y%m%d_%H%M%S) \
+    # CUDA_VISIBLE_DEVICES=0 accelerate launch \
+    # --num_processes 1 \
+    # --main_process_port 29051 \
+    # eval/eval_mt_bench.py \
+    # --eval_mode tridecoding \
+    # --gamma 5 \
+    # --gamma1 6 \
+    # --gamma2 6 \
+    # -n 1 \
+    # -e vicuna \
+    # --draft_model vicuna-68m \
+    # --target_model tiny-vicuna-1b \
+    # --max_tokens 128 \
+    # --temp 0 \
+    # --exp_name tri_quality_examination-1b__$(date +%Y%m%d_%H%M%S) 
 
 # 猜测解码
 # CUDA_VISIBLE_DEVICES=0 accelerate launch \
@@ -101,6 +101,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch \
     --target_model tiny-vicuna-1b \
     --max_tokens 128 \
     --temp 0 \
-    --edge_cloud_bandwidth 0.22 \
-    --edge_end_bandwidth 0.4 \
+    --edge_cloud_bandwidth 22 \
+    --edge_end_bandwidth 4 \
+    --cloud_end_bandwidth 4 \
     --exp_name tridecoding_width_bandwidth_$(date +%Y%m%d_%H%M%S) \

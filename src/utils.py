@@ -221,6 +221,12 @@ def parse_arguments():
         default=100.0,
         help="The bandwidth between edge and end device in Mbps.",
     )
+    parser.add_argument(
+        "--cloud_end_bandwidth",
+        type=float,
+        default=100.0,
+        help="The bandwidth between cloud and end device in Mbps.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

@@ -28,6 +28,7 @@ decoding_metrics = DecodingMetrics(
     throughput=0.0,
     communication_time=0.0,
     computation_time=0.0,
+    edge_end_comm_time=0.0,
 )
 
 
@@ -261,6 +262,9 @@ class EvalMTBench(Decoding):
                         for key in decoding_metrics.keys():
                             if key in metrics and key not in ["little_acceptance_rate", "draft_acceptance_rate"]:
                                 decoding_metrics[key] += metrics[key]
+                                assert (
+                                    decoding_metrics[key] is not None
+                                ), f"Metric {key} is None, please check your decoding function."
 
                     torch.cuda.synchronize()
                     end_time = time.time()
@@ -335,6 +339,15 @@ class EvalMTBench(Decoding):
             2,
         )
 
+        # 添加类型检查和默认值
+        computation_time = decoding_metrics.get("computation_time", 0.0)
+        if not isinstance(computation_time, (int, float)):
+            decoding_metrics["computation_time"] = 0.0
+
+        communication_time = decoding_metrics.get("communication_time", 0.0)
+        if not isinstance(communication_time, (int, float)):
+            decoding_metrics["communication_time"] = 0.0
+
         metrics_str = f"""
         ------------- Evaluation Summary -------------
         Evaluation Metrics:
@@ -348,9 +361,12 @@ class EvalMTBench(Decoding):
         - Little Accepted Tokens: {decoding_metrics["little_accepted_tokens"]}
         - Draft Accepted Tokens: {decoding_metrics["draft_accepted_tokens"]}
         - Wall Time: {decoding_metrics["wall_time"]:.2f} seconds
-        - Throughput: {decoding_metrics["throughput"]:.2f} tokens/second
+        - Throughput: {decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]:.2f if decoding_metrics["wall_time"] != 0 else 0.0} tokens/second
         - Little Acceptance Rate: {decoding_metrics["little_accepted_tokens"] / decoding_metrics["little_generated_tokens"] if decoding_metrics["little_generated_tokens"] > 0 else 1.0}
         - Draft Acceptance Rate: {decoding_metrics["draft_accepted_tokens"] / decoding_metrics["draft_generated_tokens"] if decoding_metrics["draft_generated_tokens"] > 0 else 1.0}
+        - Communication Time: {decoding_metrics["communication_time"]:.2f} seconds
+        - Computation Time: {decoding_metrics["computation_time"]:.2f} seconds
+
         """
 
         metrics_str += """
