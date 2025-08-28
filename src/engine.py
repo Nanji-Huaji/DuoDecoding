@@ -19,7 +19,6 @@ import time
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
 
-# from .model.pld.pld import greedy_search_pld
 
 from .model.rest.rest.model.utils import *
 from .model.rest.rest.model.rest_model import RestModel
@@ -27,6 +26,8 @@ from .model.rest.rest.model.kv_cache import initialize_past_key_values
 import draftretriever
 
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
+
+from .communication import CommunicationSimulator
 
 
 class DecodingMetrics(TypedDict):
@@ -351,7 +352,7 @@ class Decoding(ABC):
     def speculative_decoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device
+        draft_device = self.draft_model.device 
         target_device = self.target_model.device
 
         approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
@@ -394,32 +395,12 @@ class Decoding(ABC):
                 self.num_acc_tokens.append(1)
                 break
 
-            # 🔍 调试点1：循环开始
-            print(f"\n{'='*50}")
-            print(f"[Loop Start] prefix_len: {prefix_len}, gamma: {current_gamma}")
-
             x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
-            # 🔍 调试点2：Draft生成后
-            print(f"[After Draft] Generated {current_gamma} tokens")
-            print(f"[After Draft] x.shape: {x.shape}")
-            print(f"[After Draft] approx_prob_history.shape: {approx_model_cache._prob_history.shape}")
-            print(f"[After Draft] Expected prob_history length: {prefix_len + current_gamma}")
-            if approx_model_cache._prob_history.shape[1] != prefix_len + current_gamma:
-                print(
-                    f"⚠️ MISMATCH! Missing {prefix_len + current_gamma - approx_model_cache._prob_history.shape[1]} probabilities"
-                )
-
             _ = target_model_cache.generate(x.to(target_device), 1)
             target_forward_times += 1
-
-            # 🔍 调试点3：Target生成后
-            print(f"[After Target] target_prob_history.shape: {target_model_cache._prob_history.shape}")
-            print(f"[After Target] Expected prob_history length: {x.shape[1] + 1}")
-            if target_model_cache._prob_history.shape[1] != x.shape[1] + 1:
-                print(f"⚠️ MISMATCH! Target history size issue")
 
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
@@ -427,22 +408,13 @@ class Decoding(ABC):
 
             n = prefix_len + current_gamma - 1
             for i in range(current_gamma):
-                # 🔍 调试点4：验证索引
+                # 检查索引是否合法
                 draft_idx = prefix_len + i - 1
                 target_idx = prefix_len + i - 1
 
-                print(f"[Verify {i}] Accessing draft_prob[{draft_idx}], target_prob[{target_idx}]")
-
-                # 检查索引是否合法
                 if draft_idx >= approx_model_cache._prob_history.shape[1]:
-                    print(
-                        f"❌ ERROR: draft_idx {draft_idx} >= draft_history_size {approx_model_cache._prob_history.shape[1]}"
-                    )
                     break
                 if target_idx >= target_model_cache._prob_history.shape[1]:
-                    print(
-                        f"❌ ERROR: target_idx {target_idx} >= target_history_size {target_model_cache._prob_history.shape[1]}"
-                    )
                     break
 
                 r = torch.rand(1, device=draft_device)
@@ -452,14 +424,10 @@ class Decoding(ABC):
                     approx_model_cache._prob_history[:, draft_idx, j]
                 ):
                     n = prefix_len + i - 1
-                    print(f"[Verify {i}] Token rejected at position {n}")
                     break
 
             this_step_accepted_tokens = n - prefix_len + 1
             total_accepted_tokens += this_step_accepted_tokens
-
-            # 🔍 调试点5：验证结果
-            print(f"[Verify Result] Accepted {this_step_accepted_tokens}/{current_gamma} tokens")
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
@@ -852,7 +820,6 @@ class Decoding(ABC):
             computation_time=0.0,
             edge_end_comm_time=0.0,
         )
-        assert None not in metrics.values(), "Metrics should not contain None values."
 
         return prefix, metrics
 
@@ -881,6 +848,12 @@ class Decoding(ABC):
         edge_end_bandwidth_bps = (edge_end_bandwidth * 1024 * 1024) / 8
         cloud_end_bandwidth_bps = (cloud_end_bandwidth * 1024 * 1024) / 8
 
+        comm_simulator = CommunicationSimulator(
+            bandwidth_edge_cloud=edge_cloud_bandwidth_bps,
+            bandwidth_edge_end=edge_end_bandwidth_bps,
+            bandwidth_cloud_end=cloud_end_bandwidth_bps,
+        )
+
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
         draft_device = self.draft_model.device
@@ -904,6 +877,7 @@ class Decoding(ABC):
         total_draft_generated_tokens = 0
         total_little_accepted_tokens = 0
         total_draft_accepted_tokens = 0
+        total_wall_time = 0.0
         total_communication_time = 0.0
         edge_end_comm_time = 0.0
         edge_cloud_comm_time = 0.0
@@ -914,71 +888,7 @@ class Decoding(ABC):
         current_tokens = prefix.clone()
         start_event.record(stream=torch.cuda.current_stream())
 
-        # Transfer counter for logging
-        transfer_id = 0
-
-        def calculate_transmission_time(data_size_bytes, bandwidth_bps):
-            """Calculate transmission time based on bandwidth"""
-            transmission_time = data_size_bytes / bandwidth_bps
-            return transmission_time
-
-        def simulate_data_transfer(tokens, prob_history=None, link_type="edge_cloud", description=""):
-            """
-            Simulate data transfer between models and return transfer time
-            link_type: 'edge_end' for edge-endpoint communication
-                    'edge_cloud' for edge-cloud communication
-                    'cloud_end' for cloud-endpoint direct communication
-            """
-            nonlocal transfer_id
-            transfer_id += 1
-
-            total_bytes = 0
-            token_bytes = 0
-            prob_bytes = 0
-
-            # Token data size (int32 or int64)
-            if tokens is not None and tokens.numel() > 0:
-                token_bytes = tokens.element_size() * tokens.numel()
-                total_bytes += token_bytes
-
-            # Probability history data size if provided
-            if prob_history is not None:
-                prob_bytes = prob_history.element_size() * prob_history.numel()
-                total_bytes += prob_bytes
-
-            # Select bandwidth based on link type
-            if link_type == "edge_end":
-                bandwidth = edge_end_bandwidth_bps
-                bandwidth_mbps = edge_end_bandwidth
-                link_desc = "Edge↔End"
-            elif link_type == "edge_cloud":
-                bandwidth = edge_cloud_bandwidth_bps
-                bandwidth_mbps = edge_cloud_bandwidth
-                link_desc = "Edge↔Cloud"
-            else:  # cloud_end
-                bandwidth = cloud_end_bandwidth_bps
-                bandwidth_mbps = cloud_end_bandwidth
-                link_desc = "Cloud↔End"
-
-            # Calculate transmission time
-            transfer_time = calculate_transmission_time(total_bytes, bandwidth)
-
-            # # Print transfer details
-            # self.color_print(f"[Transfer #{transfer_id}] {link_desc} | {description}", 2)
-            # self.color_print(f"  ├─ Token data: {token_bytes:,} bytes ({token_bytes/1024:.2f} KB)", 2)
-            # self.color_print(f"  ├─ Prob data: {prob_bytes:,} bytes ({prob_bytes/1024:.2f} KB)", 2)
-            # self.color_print(f"  ├─ Total data: {total_bytes:,} bytes ({total_bytes/1024:.2f} KB)", 2)
-            # self.color_print(f"  ├─ Bandwidth: {bandwidth_mbps:.1f} Mbps", 2)
-            # self.color_print(f"  └─ Transfer time: {transfer_time*1000:.3f} ms", 2)
-            # self.color_print("", 2)
-
-            # print(f"Prob history dtype: {little_model_cache._prob_history.dtype}")
-            # print(f"Element size: {little_model_cache._prob_history.element_size()}")
-
-            # Simulate the delay
-            time.sleep(transfer_time)
-
-            return transfer_time, link_type
+        prob_history_dtype = getattr(torch, self.args.dtype_comm, torch.bfloat16)
 
         iteration = 0
         while prefix.shape[1] < max_tokens:
@@ -994,8 +904,6 @@ class Decoding(ABC):
             actual_gamma1 = min(self.args.gamma1, remaining_tokens)
             actual_gamma2 = min(self.args.gamma2, remaining_tokens - actual_gamma1)
 
-            # print(f"Generating: γ1={actual_gamma1} tokens (Little), γ2={actual_gamma2} tokens (Draft)")
-
             # Stage 1: Little model (endpoint) generates tokens
             x1 = little_model_cache.generate(prefix.to(little_device), actual_gamma1)
             little_forward_times += actual_gamma1
@@ -1004,12 +912,11 @@ class Decoding(ABC):
             # Transfer from endpoint (little) to edge (draft) - using edge_end_bandwidth
             start_idx = prefix_len
             little_prob_hist = little_model_cache._prob_history[:, start_idx : start_idx + actual_gamma1, :]
-            # print(f"_prob_history shape: {little_model_cache._prob_history.shape}")
-            # print(f"little_prob_hist shape: {little_prob_hist.shape}")
-            comm_time_1, link_1 = simulate_data_transfer(
+            comm_time_1, link_1 = comm_simulator(
                 x1[:, prefix_len:],
                 little_prob_hist,
                 link_type="edge_end",
+                prob_history_dtype=prob_history_dtype,
                 description=f"Little→Draft: {actual_gamma1} tokens + probs",
             )
             total_communication_time += comm_time_1
@@ -1024,23 +931,15 @@ class Decoding(ABC):
             draft_prob_hist = draft_model_cache._prob_history[
                 :, start_idx : start_idx + actual_gamma1 + actual_gamma2, :
             ]
-            comm_time_2, link_2 = simulate_data_transfer(
+            comm_time_2, link_2 = comm_simulator(
                 x2[:, prefix_len:],
                 draft_prob_hist,
                 link_type="edge_cloud",
+                prob_history_dtype=prob_history_dtype,
                 description=f"Draft→Target: {actual_gamma1+actual_gamma2} tokens + probs",
             )
             total_communication_time += comm_time_2
             edge_cloud_comm_time += comm_time_2
-
-            # print(f"prefix_len: {prefix_len}")
-            # print(f"Little model _prob_history total shape: {little_model_cache._prob_history.shape}")
-            # print(f"Slicing range: [{start_idx}:{start_idx + actual_gamma1}]")
-            # print(f"Expected slice size: {actual_gamma1}, Actual: {little_prob_hist.shape[1]}")
-
-            # print(f"actual_gamma1: {actual_gamma1}")
-            # print(f"actual_gamma2: {actual_gamma2}")
-            # print(f"draft_prob_hist shape: {draft_prob_hist.shape}")
 
             # Stage 3: Target model (cloud) verification
             _ = target_model_cache.generate(x2.to(target_device), 1)
@@ -1049,21 +948,16 @@ class Decoding(ABC):
             # For verification, transfer little model probabilities directly from endpoint to cloud
             # Using cloud_end_bandwidth for direct communication
             if actual_gamma1 > 0:
-                comm_time_3, _ = simulate_data_transfer(
+                comm_time_3, link_3 = comm_simulator(
                     torch.empty(0),  # No tokens, just probabilities
                     little_prob_hist,
                     link_type="cloud_end",
+                    prob_history_dtype=prob_history_dtype,
                     description=f"Little→Target (direct): {actual_gamma1} probability distributions",
                 )
                 total_communication_time += comm_time_3
                 cloud_end_comm_time += comm_time_3
 
-            # print(f"[Verify Debug]")
-            # print(f"  First token pos: {prefix_len}, prob_pos: {prefix_len-1}")
-            # print(f"  little_prob_hist covers positions: [{start_idx}:{start_idx + actual_gamma1}]")
-            # print(f"  draft_prob_hist extracted from: [{start_idx}:{start_idx+actual_gamma1+actual_gamma2}]")
-            # print(f"  Needed positions for verification: [{prefix_len-1}:{prefix_len-1+actual_gamma1}]")
-            # Verification phase (same as original)
             total_candidates = actual_gamma1 + actual_gamma2
             n = prefix_len + total_candidates - 1
             seq_len = x2.shape[1]
@@ -1122,11 +1016,6 @@ class Decoding(ABC):
                 total_little_accepted_tokens += little_accepted_count
                 total_draft_accepted_tokens += draft_accepted_count
 
-            # self.color_print(f"Verification result: {final_accepted_tokens}/{total_candidates} tokens accepted", 2)
-            # self.color_print(f"  ├─ Little: {little_accepted_count}/{actual_gamma1} accepted", 2)
-            # self.color_print(f"  └─ Draft: {draft_accepted_count}/{actual_gamma2} accepted", 2)
-            # self.color_print("", 2)
-
             self.num_acc_tokens.append(final_accepted_tokens)
             prefix = x2[:, : n + 1]
 
@@ -1184,23 +1073,6 @@ class Decoding(ABC):
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / total_wall_time if total_wall_time > 0 else 0
-
-        # Print summary
-        # self.color_print("=" * 50, 2)
-        # self.color_print("SUMMARY", 2)
-        # self.color_print("=" * 50, 2)
-        # self.color_print(f"Generated tokens: {generated_tokens}", 2)
-        # self.color_print(f"Total wall time: {total_wall_time:.3f}s", 2)
-        # self.color_print(f"  ├─ Computation: {computation_time:.3f}s ({computation_time/total_wall_time*100:.1f}%)", 2)
-        # self.color_print(
-        #     f"  └─ Communication: {total_communication_time:.3f}s ({total_communication_time/total_wall_time*100:.1f}%)",
-        #     2,
-        # )
-        # self.color_print(f"Communication breakdown:", 2)
-        # self.color_print(f"  ├─ Edge↔End: {edge_end_comm_time:.3f}s", 2)
-        # self.color_print(f"  ├─ Edge↔Cloud: {edge_cloud_comm_time:.3f}s", 2)
-        # self.color_print(f"  └─ Cloud↔End: {cloud_end_comm_time:.3f}s", 2)
-        # self.color_print(f"Throughput: {throughput:.2f} tokens/s", 2)
 
         metrics = DecodingMetrics(
             little_forward_times=little_forward_times,

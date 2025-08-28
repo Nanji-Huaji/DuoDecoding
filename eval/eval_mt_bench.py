@@ -349,24 +349,7 @@ class EvalMTBench(Decoding):
             decoding_metrics["communication_time"] = 0.0
 
         metrics_str = f"""
-        ------------- Evaluation Summary -------------
-        Evaluation Metrics:
-        - eval_mode: {self.args.eval_mode}
-        - Little Model Forward Times: {decoding_metrics["little_forward_times"]}
-        - Draft Model Forward Times: {decoding_metrics["draft_forward_times"]}
-        - Target Model Forward Times: {decoding_metrics["target_forward_times"]}
-        - Total Generated Tokens: {decoding_metrics["generated_tokens"]}
-        - Little Generated Tokens: {decoding_metrics["little_generated_tokens"]}
-        - Draft Generated Tokens: {decoding_metrics["draft_generated_tokens"]}
-        - Little Accepted Tokens: {decoding_metrics["little_accepted_tokens"]}
-        - Draft Accepted Tokens: {decoding_metrics["draft_accepted_tokens"]}
-        - Wall Time: {decoding_metrics["wall_time"]:.2f} seconds
-        - Throughput: {decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]:.2f if decoding_metrics["wall_time"] != 0 else 0.0} tokens/second
-        - Little Acceptance Rate: {decoding_metrics["little_accepted_tokens"] / decoding_metrics["little_generated_tokens"] if decoding_metrics["little_generated_tokens"] > 0 else 1.0}
-        - Draft Acceptance Rate: {decoding_metrics["draft_accepted_tokens"] / decoding_metrics["draft_generated_tokens"] if decoding_metrics["draft_generated_tokens"] > 0 else 1.0}
-        - Communication Time: {decoding_metrics["communication_time"]:.2f} seconds
-        - Computation Time: {decoding_metrics["computation_time"]:.2f} seconds
-
+        {str(decoding_metrics)}
         """
 
         metrics_str += """

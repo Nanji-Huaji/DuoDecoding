@@ -227,6 +227,13 @@ def parse_arguments():
         default=100.0,
         help="The bandwidth between cloud and end device in Mbps.",
     )
+    parser.add_argument(
+        "--dtype_comm",
+        type=str,
+        choices=["float16", "bfloat16", "float32", "int8"],
+        default="float16",
+        help="The data type for communication.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
