@@ -19,3 +19,5 @@ all_results_summary.json
 all_results_detailed.json
 experiment_report.txt
 exp_res/*
+
+*.sh

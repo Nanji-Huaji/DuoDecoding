@@ -648,13 +648,6 @@ class Decoding(ABC):
             total_candidates = actual_gamma1 + actual_gamma2
             n = prefix_len + total_candidates - 1
 
-            # 在验证循环之前添加
-            print(f"[Debug] Verification setup:")
-            print(f"  prefix_len: {prefix_len}")
-            print(f"  little_prob_history shape: {little_model_cache._prob_history.shape}")
-            print(f"  draft_prob_history shape: {draft_model_cache._prob_history.shape}")
-            print(f"  target_prob_history shape: {target_model_cache._prob_history.shape}")
-            print(f"  Verifying {total_candidates} tokens")
 
             # Get the actual sequence length for verification
             seq_len = x2.shape[1]
@@ -931,6 +924,8 @@ class Decoding(ABC):
             draft_prob_hist = draft_model_cache._prob_history[
                 :, start_idx : start_idx + actual_gamma1 + actual_gamma2, :
             ]
+            self.color_print(f"prob_history shape: {draft_prob_hist.shape}", 2)
+            self.color_print(f"prob_history shape for whole sequence: {draft_model_cache._prob_history.shape}", 2)
             comm_time_2, link_2 = comm_simulator(
                 x2[:, prefix_len:],
                 draft_prob_hist,
