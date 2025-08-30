@@ -63,6 +63,28 @@ class CommunicationSimulator:
             self.stats[link_type].append(transfer_unit)
 
         return transfer_time
+    
+    @staticmethod
+    def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
+        """
+        probs: torch.Tensor，当前词表概率分布，形状为(..., V)
+        k: int，保留的top-k数量
+        返回压缩后的概率分布，形状与输入相同，但仅保留top-k概率，其他位置为0，值得注意的是，这不是真正的压缩，但我们假设传输时只传输非零部分
+        """
+        if probs is None or probs.numel() == 0:
+            return torch.empty(0)
+
+        if k >= len(probs):
+            return probs
+
+        # 获取top-k indices
+        top_k_values, top_k_indices = torch.topk(probs, k, sorted=True)
+
+        # 创建压缩的概率分布
+        compressed_probs = torch.zeros_like(probs)
+        compressed_probs[top_k_indices] = top_k_values
+
+        return compressed_probs
 
     def transfer(self, tokens: torch.Tensor, prob: torch.Tensor|None, link_type: LinkType) -> float:
         token_bytes = 0
@@ -118,9 +140,9 @@ class CUHLM(CommunicationSimulator):
     def __init__(
         self,
         bandwidth_edge_cloud,
-        bandwidth_edge_end,
-        bandwidth_cloud_end,
-        uncertainty_threshold: float,
+        bandwidth_edge_end = float('inf'),
+        bandwidth_cloud_end = float('inf'),
+        uncertainty_threshold: float = 0.8,
         vocab_size: int = 32000,
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
@@ -130,9 +152,10 @@ class CUHLM(CommunicationSimulator):
 
     @staticmethod
     def calculate_uncertainty(
-        logits: torch.Tensor|None, M: int = 20, theta_max: float = 2.0, draft_token: Optional[int] = None
+        logits: torch.Tensor | None, M: int = 20, theta_max: float = 2.0, draft_token: Optional[int] = None
     ) -> float:
         if logits is None or logits.numel() == 0:
+            warnings.warn("警告：logits为空，无法计算不确定度，默认返回1.0")
             return 1.0
         if logits.dim() > 1:
             logits = logits[0]
@@ -215,6 +238,7 @@ class CUHLM(CommunicationSimulator):
     def determine_transfer_strategy(self, uncertainty: float, current_probs: torch.Tensor | None) -> Tuple[bool, int]:
         "返回是否传输以及传输的词汇表大小"
         if current_probs is None or current_probs.numel() == 0: 
+            warnings.warn("警告：current_probs为空，无法决定传输策略，默认不传输概率分布")
             return False, 0
         if uncertainty >= self.uncertainty_threshold: # 不确定度高，传输
             vocab_size = max(1, self._calculate_compressed_vocab_size(uncertainty, current_probs))
@@ -318,12 +342,46 @@ class CUHLM(CommunicationSimulator):
         # 如果没找到满足条件的k，返回保守值
         return min(self.DEFAULT_COMPRESSED_VOCAB_SIZE, self.vocab_size // 100)
 
+    def terminal_prob(self, current_probs: torch.Tensor, logits: Optional[torch.Tensor]) -> torch.Tensor:
+        """
+        返回先经过压缩再重建的终端概率分布
+        形状为(vocab_size,)
+        """
+        if current_probs is None and logits is None:
+            warnings.warn("警告：current_probs和logits均为空，无法获取终端概率分布")
+            return torch.empty(0)
+        
+        if logits is None:
+            # 按照贪心解码重建logits
+            probs = torch.clamp(current_probs, min=1e-8)
+            log_probs = torch.log(probs)
+            # 减去最大值，使最大概率对应的logit为0
+            if current_probs.dim() == 1:
+                logits = log_probs - torch.max(log_probs)
+            else:
+                logits = log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
+
+        uncertainty = self.calculate_uncertainty(logits)
+        should_transfer_prob, vocab_size = self.determine_transfer_strategy(uncertainty, current_probs)
+        if not should_transfer_prob:
+            return current_probs
+        if vocab_size < self.vocab_size:
+            compressed_probs = self._apply_top_k_compression(current_probs, vocab_size)
+            rebuilt_probs = self.rebuild_full_probs(compressed_probs)
+            return rebuilt_probs
+        else:
+            return current_probs
+
+
     def transfer(
-        self, tokens: torch.Tensor, prob_history: Optional[torch.Tensor] = None, logits: Optional[torch.Tensor] = None, link_type: LinkType = "edge_cloud"
+        self, tokens: Optional[torch.Tensor], prob_history: Optional[torch.Tensor] = None, logits: Optional[torch.Tensor] = None, link_type: LinkType = "edge_cloud"
     ) -> float:
         if link_type != "edge_cloud":
             # 其他链路不传输数据
             return 0.0
+
+        if tokens is None:
+            tokens = torch.empty(0)
 
         current_probs = self._get_current_probs(prob_history)
         # 如果 prob_history 为空，current_probs 也是空张量，后续逻辑会在 determine_transfer_strategy 中处理这种情况（不传输概率分布，只传输 tokens）

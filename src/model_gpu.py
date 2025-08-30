@@ -18,10 +18,13 @@ class KVCacheModel:
         self._top_k = top_k
         self._top_p = top_p
 
+        self.logits_history = None # 不确定性方法需要存储logits历史
+
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if self._past_key_values is None:
             outputs = self._model(input_ids)
             self._prob_history = outputs.logits[:, :, : self.vocab_size]
+            self.logits_history = outputs.logits
             for i in range(self._prob_history.shape[-2]):
                 self._prob_history[:, i, :] = norm_logits(
                     self._prob_history[:, i, :],
@@ -42,6 +45,7 @@ class KVCacheModel:
             outputs = self._model(last_input_id, past_key_values=self._past_key_values, use_cache=True)
 
             not_cached_q = outputs.logits[:, :, : self.vocab_size]
+            self.logits_history = torch.cat([self.logits_history, outputs.logits], dim=1)
 
             if not_cached_q.dim() == 2:
                 not_cached_q = torch.unsqueeze(not_cached_q, 0)
@@ -95,3 +99,13 @@ class KVCacheModel:
 
         self._past_key_values = past_key_values_trimmed
         self._prob_history = self._prob_history[:, :end_pos, :]
+        self.logits_history = self.logits_history[:, :end_pos, :]
+
+    
+    @property
+    def current_length(self) -> int:
+        # 当前KVCache的长度
+        if self._past_key_values is None:
+            return 0
+        return self._past_key_values[0][0].shape[2]
+    

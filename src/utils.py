@@ -234,6 +234,12 @@ def parse_arguments():
         default="float16",
         help="The data type for communication.",
     )
+    parser.add_argument(
+        "--uncertainty_threshold",
+        type=float,
+        default=0.8,
+        help="The uncertainty threshold for uncertainty-based decoding.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

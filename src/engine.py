@@ -27,7 +27,7 @@ import draftretriever
 
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
 
-from .communication import CommunicationSimulator
+from .communication import CommunicationSimulator, CUHLM
 
 
 class DecodingMetrics(TypedDict):
@@ -268,6 +268,23 @@ class Decoding(ABC):
                 cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
+        elif self.args.eval_mode == "uncertainty_decoding":
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                self.args.draft_model,
+                device_map="cuda:0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
+            self.target_model = AutoModelForCausalLM.from_pretrained(
+                self.args.target_model,
+                device_map="balanced_low_0",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+            ).eval()
 
         self.vocab_size = self.args.vocab_size
 
@@ -352,7 +369,7 @@ class Decoding(ABC):
     def speculative_decoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device 
+        draft_device = self.draft_model.device
         target_device = self.target_model.device
 
         approx_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
@@ -374,6 +391,16 @@ class Decoding(ABC):
 
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
+
+            draft_kvcache_length = approx_model_cache.current_length
+            target_kvcache_length = target_model_cache.current_length
+            self.color_print(f"Draft KVCache length: {draft_kvcache_length}", 3)
+            self.color_print(f"Target KVCache length: {target_kvcache_length}", 3)
+            if draft_kvcache_length != target_kvcache_length:
+                self.color_print(
+                    f"Error: Draft KVCache length {draft_kvcache_length} != Target KVCache length {target_kvcache_length}",
+                    1,
+                )
 
             # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
@@ -484,50 +511,194 @@ class Decoding(ABC):
 
         return prefix, metrics
 
-    def _speculative_forward(
-        self, prefix, gamma, approx_model_cache, target_model_cache, max_new_tokens
-    ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        assert hasattr(approx_model_cache, "vocab_size") and hasattr(
-            target_model_cache, "vocab_size"
-        ), "Please initialize KVCacheModel with vocab_size attribute."
 
-        assert self.draft_model is not None, "draft_model should not be None."
+    @torch.no_grad
+    def uncertainty_decoding_without_kvcache(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
+        comm_simulator = CUHLM(bandwidth_edge_cloud=self.args.edge_cloud_bandwidth, uncertainty_threshold=0)
+        prefix_len = prefix.shape[1]
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+        
+        draft_device = self.draft_model.device
+        target_device = self.target_model.device
+        
+        draft_forwards = 0
+        target_forwards = 0
+        accepted_tokens = 0
+
+        while prefix.shape[1] < max_tokens:
+            # ==== Draft model forward ====
+            output = self.draft_model(prefix.to(draft_device))
+            draft_logits = output.logits[:, -1, : self.vocab_size]
+            draft_probs = norm_logits(draft_logits, self.args.temp, self.args.top_k, self.args.top_p)
+            draft_token = sample(draft_probs)  # [batch, 1]
+            
+            draft_forwards += 1
+
+            # ==== 计算不确定性 ====
+            uncertainty = comm_simulator.calculate_uncertainty(
+                draft_logits, M=20, theta_max=2.0, 
+                draft_token=draft_token[0, 0].item()
+            )
+            should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(uncertainty, draft_logits)
+
+            if not should_transfer:
+                # ==== 直接接受draft token ====
+                prefix = torch.cat((prefix, draft_token.to(prefix.device)), dim=1)
+                accepted_tokens += 1
+                continue
+
+            # ==== Target model验证 ====
+            extended_sequence = torch.cat((prefix.to(target_device), draft_token.to(target_device)), dim=1)
+            output = self.target_model(extended_sequence)
+            target_logits = output.logits[:, -2, : self.vocab_size]  # 最后一个位置（draft token位置）
+            target_probs = norm_logits(target_logits, self.args.temp, self.args.top_k, self.args.top_p)
+            
+            target_forwards += 1
+
+            # ==== Accept/Reject逻辑 ====
+            r = torch.rand(1, device=draft_device)
+            j = draft_token[0, 0].item()
+
+            # 模拟通信
+            comm_simulator.simulate_transfer(
+                draft_token.numel() + vocab_size * draft_probs.element_size(), 
+                "edge_cloud"
+            )
+
+            # 计算接受概率
+            target_prob_j = target_probs.to(draft_device)[0, j]
+            draft_prob_j = draft_probs[0, j]
+            accept_prob = min(1.0, target_prob_j / draft_prob_j)
+
+            if r <= accept_prob:
+                # ==== 接受draft token ====
+                prefix = torch.cat((prefix, draft_token.to(prefix.device)), dim=1)
+                accepted_tokens += 1
+            else:
+                # ==== 拒绝，从修正分布采样 ====
+                corrected_probs = torch.clamp(target_probs.to(draft_device) - draft_probs, min=0.0)
+                
+                if corrected_probs.sum() > 0:
+                    corrected_probs = corrected_probs / corrected_probs.sum(dim=-1, keepdim=True)
+                    corrected_token = sample(corrected_probs)
+                else:
+                    # 当修正分布全零时，直接从target分布采样
+                    corrected_token = sample(target_probs.to(draft_device))
+                
+                prefix = torch.cat((prefix, corrected_token.to(prefix.device)), dim=1)
+                accepted_tokens += 1
+
+        # ==== 更新统计 ====
+        if self.accelerator.is_main_process:
+            self.draft_forward_times += draft_forwards
+            self.target_forward_times += target_forwards
+        self.num_acc_tokens.extend([1] * accepted_tokens)
+                
+        metrics = DecodingMetrics(
+            little_forward_times=0,
+            draft_forward_times=draft_forwards,
+            target_forward_times=target_forwards,
+            generated_tokens=prefix.shape[1] - prefix_len,
+            little_generated_tokens=0,
+            draft_generated_tokens=draft_forwards,
+            little_accepted_tokens=0,
+            draft_accepted_tokens=accepted_tokens,
+            wall_time=0.0,
+            throughput=0.0,
+            communication_time=comm_simulator.edge_cloud_comm_time,
+            computation_time=0.0,
+            edge_end_comm_time=comm_simulator.edge_end_comm_time,
+        )
+        
+        output_text = self.tokenizer.decode(prefix[0], skip_special_tokens=True)
+        self.color_print(f"Output text: {output_text}", 3)
+        return prefix, metrics
+
+    
+
+
+    @torch.no_grad()
+    def uncertainty_decoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """
+        Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
+        """
+        comm_simulator = CUHLM(bandwidth_edge_cloud=self.args.edge_cloud_bandwidth, uncertainty_threshold=0)
+
+        max_tokens = prefix.shape[1] + self.args.max_tokens
 
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        draft_forward_times = 0
-        target_forward_times = 0
-        total_accepted_tokens = 0
-        total_drafted_tokens = 0  # 需要这个来计算接受率
+        approx_model_cache = KVCacheModel(
+            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        approx_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(
+            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        target_model_cache.vocab_size = self.vocab_size
 
-        max_tokens = prefix.shape[1] + max_new_tokens
+        loop_idx = 0
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
-        current_tokens = prefix.clone()
-
         start_event.record(stream=torch.cuda.current_stream())
 
+
         while prefix.shape[1] < max_tokens:
+            loop_idx += 1
             prefix_len = prefix.shape[1]
 
-            x = approx_model_cache.generate(prefix.to(draft_device), gamma)
-            draft_forward_times += gamma
-            total_drafted_tokens += gamma
-
+            x = approx_model_cache.generate(prefix.to(draft_device), 1)
             _ = target_model_cache.generate(x.to(target_device), 1)
-            target_forward_times += 1
+
+
+
+            comm_simulator.transfer(x)
+            current_logit = approx_model_cache.logits_history[:, -1, : self.vocab_size]
+            assert current_logit is not None, "Logits history should not be None"
+            uncertainty = comm_simulator.calculate_uncertainty(current_logit, M = 20, theta_max=2.0, draft_token = x[0, -1].item())
+            should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(uncertainty, current_logit)
 
             if self.accelerator.is_main_process:
-                self.draft_forward_times += gamma
+                self.draft_forward_times += 1
                 self.target_forward_times += 1
 
-            n = prefix_len + gamma - 1
-            for i in range(gamma):
+            n = prefix_len + 1 - 1
+
+            if not should_transfer:
+                
+                # 接受draft token - 仿照接受所有token的情况
+                accepted_token = x[:, -1:]  # draft token
+                prefix = torch.cat((prefix, accepted_token), dim=1)
+                
+                # KVCache管理：仿照接受所有token的情况
+                # 由于我们接受了draft token，需要从target model采样一个新token
+                t = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
+                
+                # rollback target_model_cache，因为我们已经消费了它的输出
+                # 这里n相当于prefix_len（接受了1个token）
+                n = prefix_len  # 接受了位置为prefix_len的token
+                target_model_cache.rollback(n + 2)  # 等同于rollback(prefix_len + 2)
+                
+                # 将新采样的token添加到序列中
+                if prefix.shape[1] < max_tokens:
+                    prefix = torch.cat((prefix, t), dim=1)
+                
+                continue
+
+
+            for i in range(1):
+                current_probs = comm_simulator._get_current_probs(approx_model_cache._prob_history)
+                compressed_prob = comm_simulator._apply_top_k_compression(current_probs, vocab_size)
+                rebuild_probs = comm_simulator.rebuild_full_probs(compressed_prob)
+                approx_model_cache._prob_history[:, -1, : self.vocab_size] = rebuild_probs # 完成概率的重建
+
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
+
+                comm_simulator.simulate_transfer(j.numel() + vocab_size * approx_model_cache._prob_history.element_size(), "edge_cloud")
 
                 if r > (target_model_cache._prob_history.to(draft_device)[:, prefix_len + i - 1, j]) / (
                     approx_model_cache._prob_history[:, prefix_len + i - 1, j]
@@ -537,15 +708,12 @@ class Decoding(ABC):
 
             self.num_acc_tokens.append(n - prefix_len + 1)
 
-            this_step_accepted_tokens = n - prefix_len + 1
-            total_accepted_tokens += this_step_accepted_tokens
-
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
 
             approx_model_cache.rollback(n + 1)
 
-            if n < prefix_len + gamma - 1:
+            if n < prefix_len + 1 - 1:
                 # reject someone, sample from the pos n
                 t = sample(
                     max_fn(
@@ -561,28 +729,26 @@ class Decoding(ABC):
 
             prefix = torch.cat((prefix, t), dim=1)
 
-            end_event.record(stream=torch.cuda.current_stream())
-            torch.cuda.synchronize()
-            elapsed_time = start_event.elapsed_time(end_event) / 1000.0
-
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         metrics = DecodingMetrics(
             little_forward_times=0,
-            draft_forward_times=draft_forward_times,
-            target_forward_times=target_forward_times,
-            generated_tokens=generated_tokens,
+            draft_forward_times=self.draft_forward_times,
+            target_forward_times=self.target_forward_times,
+            generated_tokens=prefix.shape[1] - prefix_len,
             little_generated_tokens=0,
-            draft_generated_tokens=total_drafted_tokens,
+            draft_generated_tokens=self.draft_forward_times,
             little_accepted_tokens=0,
-            draft_accepted_tokens=total_accepted_tokens,
-            wall_time=elapsed_time,
-            throughput=throughput,
-            communication_time=None,
-            computation_time=None,
-            edge_end_comm_time=0.0,
+            draft_accepted_tokens=sum(self.num_acc_tokens),
+            wall_time=elapsed_time + comm_simulator.edge_cloud_comm_time,
+            throughput=0.0,
+            communication_time=comm_simulator.edge_cloud_comm_time,
+            computation_time=elapsed_time,
+            edge_end_comm_time=comm_simulator.edge_end_comm_time,
         )
+
 
         return prefix, metrics
 
@@ -647,7 +813,6 @@ class Decoding(ABC):
             # Verification phase: verify tokens sequentially from left to right
             total_candidates = actual_gamma1 + actual_gamma2
             n = prefix_len + total_candidates - 1
-
 
             # Get the actual sequence length for verification
             seq_len = x2.shape[1]

@@ -21,3 +21,8 @@ experiment_report.txt
 exp_res/*
 
 *.sh
+.idea/DuoDecoding.iml
+.idea/modules.xml
+.idea/vcs.xml
+.idea/inspectionProfiles/profiles_settings.xml
+test.py
