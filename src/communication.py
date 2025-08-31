@@ -20,7 +20,14 @@ LinkType = Literal["edge_cloud", "edge_end", "cloud_end"]
 
 
 class CommunicationSimulator:
-
+    """
+    带宽单位：bytes/second
+    protocol_overhead_bytes: 每次传输的协议开销，单位bytes
+    transfer_top_k: Optional[int], 如果设置了top-k压缩，则在传输概率分布时只传输top-k概率，其他位置为0，假设传输时只传输非零部分
+    统计信息保存在self.stats中
+    统计信息包括每次传输的数据大小和传输时间
+    统计信息分为三类链路：edge-cloud, edge-end, cloud-end
+    """
     def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None):
         self.bandwidth_edge_cloud = bandwidth_edge_cloud
         self.bandwidth_edge_end = bandwidth_edge_end
@@ -46,6 +53,18 @@ class CommunicationSimulator:
     def cloud_end_comm_time(self):
         return sum(self.stats["cloud_end"][i]["transfer_time"] for i in range(len(self.stats["cloud_end"])))
 
+    @property
+    def edge_cloud_data(self):
+        return sum(self.stats["edge_cloud"][i]["data_size_bytes"] for i in range(len(self.stats["edge_cloud"])))
+    
+    @property
+    def edge_end_data(self):
+        return sum(self.stats["edge_end"][i]["data_size_bytes"] for i in range(len(self.stats["edge_end"])))
+    
+    @property
+    def cloud_end_data(self):
+        return sum(self.stats["cloud_end"][i]["data_size_bytes"] for i in range(len(self.stats["cloud_end"])))
+
     def simulate_transfer(self, data_size_bytes, link_type, add_to_stats=True) -> float:
         if link_type == "edge_cloud":
             bandwidth = self.bandwidth_edge_cloud
@@ -63,7 +82,7 @@ class CommunicationSimulator:
             self.stats[link_type].append(transfer_unit)
 
         return transfer_time
-    
+
     @staticmethod
     def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
         """
@@ -86,7 +105,89 @@ class CommunicationSimulator:
 
         return compressed_probs
 
-    def transfer(self, tokens: torch.Tensor, prob: torch.Tensor|None, link_type: LinkType) -> float:
+    @staticmethod
+    def rebuild_full_probs(compressed_probs: torch.Tensor) -> torch.Tensor:
+        """
+        接收一个稀疏的概率分布张量(compressed_probs)，并重建为完整的概率分布。
+        compressed_probs: torch.Tensor，形状为(..., vocab_size)
+        重建后形状同样为(..., vocab_size)
+        """
+        if compressed_probs is None or compressed_probs.numel() == 0:
+            warnings.warn("警告：compressed_probs为空，无法重建完整概率分布")
+            return torch.empty(0)
+
+        rebuilt_probs = compressed_probs.clone()
+
+        # 处理最后一个维度（vocab_size）
+        # 找到非零位置（top-k位置）
+        nonzero_mask = compressed_probs > 0  
+
+        # 计算每个位置的top-k概率总和
+        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)  
+
+        # 计算剩余概率质量
+        residual_mass = 1.0 - top_k_sum  
+
+        # 计算零位置的数量
+        zero_mask = compressed_probs == 0  
+        zero_count = zero_mask.sum(dim=-1, keepdim=True)  
+
+        # 避免除零：如果没有零位置，则不需要重建
+        uniform_prob = torch.where(
+            zero_count > 0, residual_mass / zero_count, torch.zeros_like(residual_mass)
+        )  
+        # 将均匀概率分配到零位置
+        rebuilt_probs = torch.where(zero_mask, uniform_prob, rebuilt_probs)
+
+        return rebuilt_probs
+
+
+    @staticmethod
+    def compress_rebuild_probs(probs: torch.Tensor, k: int) -> torch.Tensor:
+        """
+        Args:
+            probs: 形状：(batch_size, seq_len, vocab_size)
+            k: int, top-k数量
+        Returns:
+            rebuilt_probs: 形状：(batch_size, seq_len, vocab_size)
+        """
+        if probs is None or probs.numel() == 0:
+            warnings.warn("警告：probs为空，无法进行压缩重建")
+            return torch.empty(0)
+
+        if probs.dim() != 3:
+            raise ValueError(f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建")
+
+        if k >= probs.shape[-1]:
+            return probs  # 无需压缩
+
+        batch_size, seq_len, vocab_size = probs.shape
+
+        # 向量化处理：reshape为(batch_size * seq_len, vocab_size)
+        flat_probs = probs.view(-1, vocab_size)
+
+        # 批量获取top-k
+        top_k_values, top_k_indices = torch.topk(flat_probs, k, dim=-1, sorted=True)
+
+        # 创建压缩的概率分布
+        compressed_probs = torch.zeros_like(flat_probs)
+        batch_indices = torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
+        compressed_probs[batch_indices, top_k_indices] = top_k_values
+
+        # 重建概率分布
+        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
+        residual_mass = 1.0 - top_k_sum
+        zero_mask = compressed_probs == 0
+        zero_count = zero_mask.sum(dim=-1, keepdim=True)
+
+        uniform_prob = torch.where(zero_count > 0, residual_mass / zero_count, torch.zeros_like(residual_mass))
+
+        rebuilt_flat_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
+
+        # 恢复原始形状
+        return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
+
+    def transfer(self, tokens: torch.Tensor, prob: torch.Tensor|None, link_type: LinkType, is_compressed: bool = False, compressed_k: Optional[int] = 300) -> float:
         token_bytes = 0
         prob_bytes = 0
 
@@ -102,6 +203,11 @@ class CommunicationSimulator:
 
         total_bytes += self.protocol_overhead_bytes
 
+        if is_compressed and prob is not None and prob.numel() > 0 and compressed_k is not None:
+            # 计算压缩后的概率分布大小，假设传输时只传输非零部分
+            prob_size = compressed_k * prob.element_size()
+            total_bytes = token_bytes + prob_size + self.protocol_overhead_bytes
+
         return self.simulate_transfer(total_bytes, link_type)
 
     def __call__(
@@ -110,6 +216,8 @@ class CommunicationSimulator:
         prob_history: Optional[torch.Tensor] = None,
         link_type: LinkType = "edge_cloud",
         prob_history_dtype=torch.float16,
+        is_compressed: bool = False,
+        compressed_k: Optional[int] = 300,
         description="",
     ) -> Tuple[float, str]:
         if link_type not in ["edge_cloud", "edge_end", "cloud_end"]:
@@ -136,7 +244,12 @@ class CommunicationSimulator:
 
 class CUHLM(CommunicationSimulator):
     DEFAULT_COMPRESSED_VOCAB_SIZE = 300
-
+    """
+    超参数：
+    uncertainty_threshold: float, 不确定度阈值，默认0.8
+    M: int, 温度扰动采样数量，默认20
+    theta_max: float, 最大温度扰动，默认2.0
+    """
     def __init__(
         self,
         bandwidth_edge_cloud,

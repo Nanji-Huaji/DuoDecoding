@@ -44,7 +44,29 @@ class DecodingMetrics(TypedDict):
     communication_time: float
     computation_time: float
     edge_end_comm_time: float
+    edge_cloud_data_bytes: int
+    edge_end_data_bytes: int
+    cloud_end_data_bytes: int
 
+def get_empty_metrics() -> DecodingMetrics:
+    return DecodingMetrics(
+        little_forward_times=0,
+        draft_forward_times=0,
+        target_forward_times=0,
+        generated_tokens=0,
+        little_generated_tokens=0,
+        draft_generated_tokens=0,
+        little_accepted_tokens=0,
+        draft_accepted_tokens=0,
+        wall_time=0.0,
+        throughput=0.0,
+        communication_time=0.0,
+        computation_time=0.0,
+        edge_end_comm_time=0.0,
+        edge_cloud_data_bytes=0,
+        edge_end_data_bytes=0,
+        cloud_end_data_bytes=0,
+    )
 
 class Decoding(ABC):
     def __init__(self, args):
@@ -347,21 +369,12 @@ class Decoding(ABC):
         generated_tokens = x.shape[1] - prefix_len
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
 
-        metrics = DecodingMetrics(
-            little_forward_times=0,
-            draft_forward_times=0,
-            target_forward_times=target_forward_times,
-            generated_tokens=generated_tokens,
-            little_generated_tokens=0,
-            draft_generated_tokens=0,
-            little_accepted_tokens=0,
-            draft_accepted_tokens=0,
-            wall_time=elapsed_time,
-            throughput=throughput,
-            communication_time=0.0,
-            computation_time=0.0,
-            edge_end_comm_time=0.0,
-        )
+        metrics = get_empty_metrics()
+        metrics["target_forward_times"] = target_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["wall_time"] = elapsed_time
+        metrics["throughput"] = throughput
+
 
         return x, metrics
 
@@ -493,21 +506,15 @@ class Decoding(ABC):
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
 
-        metrics = DecodingMetrics(
-            little_forward_times=0,
-            draft_forward_times=draft_forward_times,
-            target_forward_times=target_forward_times,
-            generated_tokens=generated_tokens,
-            little_generated_tokens=0,
-            draft_generated_tokens=total_drafted_tokens,
-            little_accepted_tokens=0,
-            draft_accepted_tokens=total_accepted_tokens,
-            wall_time=elapsed_time,
-            throughput=throughput,
-            communication_time=0.0,
-            computation_time=0.0,
-            edge_end_comm_time=0.0,
-        )
+        metrics = get_empty_metrics()
+        metrics["draft_forward_times"] = draft_forward_times
+        metrics["target_forward_times"] = target_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["draft_generated_tokens"] = total_drafted_tokens
+        metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["wall_time"] = elapsed_time
+        metrics["throughput"] = throughput
+
 
         return prefix, metrics
 
@@ -524,6 +531,11 @@ class Decoding(ABC):
         draft_forwards = 0
         target_forwards = 0
         accepted_tokens = 0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record(stream=torch.cuda.current_stream())
 
         while prefix.shape[1] < max_tokens:
             # ==== Draft model forward ====
@@ -588,34 +600,38 @@ class Decoding(ABC):
                 prefix = torch.cat((prefix, corrected_token.to(prefix.device)), dim=1)
                 accepted_tokens += 1
 
+        end_event.record(stream=torch.cuda.current_stream())
+
+        torch.cuda.synchronize()
+
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0  # Convert to seconds
+
         # ==== 更新统计 ====
         if self.accelerator.is_main_process:
             self.draft_forward_times += draft_forwards
             self.target_forward_times += target_forwards
         self.num_acc_tokens.extend([1] * accepted_tokens)
-                
-        metrics = DecodingMetrics(
-            little_forward_times=0,
-            draft_forward_times=draft_forwards,
-            target_forward_times=target_forwards,
-            generated_tokens=prefix.shape[1] - prefix_len,
-            little_generated_tokens=0,
-            draft_generated_tokens=draft_forwards,
-            little_accepted_tokens=0,
-            draft_accepted_tokens=accepted_tokens,
-            wall_time=0.0,
-            throughput=0.0,
-            communication_time=comm_simulator.edge_cloud_comm_time,
-            computation_time=0.0,
-            edge_end_comm_time=comm_simulator.edge_end_comm_time,
-        )
+
+        metrics = get_empty_metrics()
+        metrics["draft_forward_times"] = draft_forwards
+        metrics["target_forward_times"] = target_forwards
+        metrics["generated_tokens"] = prefix.shape[1] - prefix_len
+        metrics["draft_generated_tokens"] = draft_forwards
+        metrics["draft_accepted_tokens"] = accepted_tokens
+        metrics["wall_time"] = elapsed_time + comm_simulator.edge_cloud_comm_time
+        metrics["throughput"] = (prefix.shape[1] - prefix_len) / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
+        metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
+        metrics["computation_time"] = elapsed_time
+        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
+        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
+        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
+
+
         
         output_text = self.tokenizer.decode(prefix[0], skip_special_tokens=True)
         self.color_print(f"Output text: {output_text}", 3)
         return prefix, metrics
-
-    
-
 
     @torch.no_grad()
     def uncertainty_decoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -652,7 +668,6 @@ class Decoding(ABC):
 
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
             _ = target_model_cache.generate(x.to(target_device), 1)
-
 
 
             comm_simulator.transfer(x)
@@ -733,22 +748,21 @@ class Decoding(ABC):
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
-        metrics = DecodingMetrics(
-            little_forward_times=0,
-            draft_forward_times=self.draft_forward_times,
-            target_forward_times=self.target_forward_times,
-            generated_tokens=prefix.shape[1] - prefix_len,
-            little_generated_tokens=0,
-            draft_generated_tokens=self.draft_forward_times,
-            little_accepted_tokens=0,
-            draft_accepted_tokens=sum(self.num_acc_tokens),
-            wall_time=elapsed_time + comm_simulator.edge_cloud_comm_time,
-            throughput=0.0,
-            communication_time=comm_simulator.edge_cloud_comm_time,
-            computation_time=elapsed_time,
-            edge_end_comm_time=comm_simulator.edge_end_comm_time,
-        )
+        metrics = get_empty_metrics()
 
+        metrics["draft_forward_times"] = self.draft_forward_times
+        metrics["target_forward_times"] = self.target_forward_times
+        metrics["generated_tokens"] = prefix.shape[1] - prefix_len
+        metrics["draft_generated_tokens"] = self.draft_forward_times
+        metrics["draft_accepted_tokens"] = sum(self.num_acc_tokens)
+        metrics["wall_time"] = elapsed_time + comm_simulator.edge_cloud_comm_time
+        metrics["throughput"] = (prefix.shape[1] - prefix_len) / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
+        metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
+        metrics["computation_time"] = elapsed_time
+        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
+        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
+        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
 
         return prefix, metrics
 
@@ -963,21 +977,20 @@ class Decoding(ABC):
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
 
-        metrics = DecodingMetrics(
-            little_forward_times=little_forward_times,
-            draft_forward_times=draft_forward_times,
-            target_forward_times=target_forward_times,
-            generated_tokens=generated_tokens,
-            little_generated_tokens=total_little_generated_tokens,
-            draft_generated_tokens=total_draft_generated_tokens,
-            little_accepted_tokens=total_little_accepted_tokens,
-            draft_accepted_tokens=total_draft_accepted_tokens,
-            wall_time=elapsed_time,
-            throughput=throughput,
-            communication_time=0.0,
-            computation_time=0.0,
-            edge_end_comm_time=0.0,
-        )
+        metrics = get_empty_metrics()
+
+        metrics["little_forward_times"] = little_forward_times
+        metrics["draft_forward_times"] = draft_forward_times
+        metrics["target_forward_times"] = target_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["draft_generated_tokens"] = total_draft_generated_tokens
+        metrics["little_generated_tokens"] = total_little_generated_tokens
+        metrics["draft_accepted_tokens"] = total_draft_accepted_tokens
+        metrics["little_accepted_tokens"] = total_little_accepted_tokens
+        metrics["wall_time"] = elapsed_time
+        metrics["throughput"] = throughput
+
+
 
         return prefix, metrics
 
@@ -988,6 +1001,7 @@ class Decoding(ABC):
         edge_cloud_bandwidth: float | None = None,
         edge_end_bandwidth: float | None = None,
         cloud_end_bandwidth: float | None = None,
+        topk: Optional[int] = None,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
 
         if edge_cloud_bandwidth is None:
@@ -1010,6 +1024,7 @@ class Decoding(ABC):
             bandwidth_edge_cloud=edge_cloud_bandwidth_bps,
             bandwidth_edge_end=edge_end_bandwidth_bps,
             bandwidth_cloud_end=cloud_end_bandwidth_bps,
+            transfer_top_k=topk,
         )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -1048,6 +1063,10 @@ class Decoding(ABC):
 
         prob_history_dtype = getattr(torch, self.args.dtype_comm, torch.bfloat16)
 
+        rebuilded_probs = lambda one_dim_probs: comm_simulator.rebuild_full_probs(
+            comm_simulator._apply_top_k_compression(one_dim_probs, topk)
+        ).squeeze(0)
+
         iteration = 0
         while prefix.shape[1] < max_tokens:
             iteration += 1
@@ -1070,11 +1089,18 @@ class Decoding(ABC):
             # Transfer from endpoint (little) to edge (draft) - using edge_end_bandwidth
             start_idx = prefix_len
             little_prob_hist = little_model_cache._prob_history[:, start_idx : start_idx + actual_gamma1, :]
+            # 对概率进行压缩重建
+            if topk is not None and topk > 0:
+                # TODO: Check Shape
+                little_prob_hist = comm_simulator.compress_rebuild_probs(little_prob_hist, topk).to(prob_history_dtype)
+                little_model_cache._prob_history[:, start_idx : start_idx + actual_gamma1, :] = little_prob_hist.to(little_device)
             comm_time_1, link_1 = comm_simulator(
                 x1[:, prefix_len:],
                 little_prob_hist,
                 link_type="edge_end",
                 prob_history_dtype=prob_history_dtype,
+                is_compressed=(topk is not None and topk > 0),
+                compressed_k=topk,
                 description=f"Little→Draft: {actual_gamma1} tokens + probs",
             )
             total_communication_time += comm_time_1
@@ -1089,14 +1115,18 @@ class Decoding(ABC):
             draft_prob_hist = draft_model_cache._prob_history[
                 :, start_idx : start_idx + actual_gamma1 + actual_gamma2, :
             ]
-            self.color_print(f"prob_history shape: {draft_prob_hist.shape}", 2)
-            self.color_print(f"prob_history shape for whole sequence: {draft_model_cache._prob_history.shape}", 2)
+            # 对概率进行压缩重建
+            if topk is not None and topk > 0:
+                draft_prob_hist = comm_simulator.compress_rebuild_probs(draft_prob_hist, topk).to(prob_history_dtype)
+                draft_model_cache._prob_history[:, start_idx : start_idx + actual_gamma1 + actual_gamma2, :] = draft_prob_hist.to(draft_device)
             comm_time_2, link_2 = comm_simulator(
                 x2[:, prefix_len:],
                 draft_prob_hist,
                 link_type="edge_cloud",
                 prob_history_dtype=prob_history_dtype,
                 description=f"Draft→Target: {actual_gamma1+actual_gamma2} tokens + probs",
+                is_compressed=(topk is not None and topk > 0),
+                compressed_k=topk,
             )
             total_communication_time += comm_time_2
             edge_cloud_comm_time += comm_time_2
@@ -1113,6 +1143,8 @@ class Decoding(ABC):
                     little_prob_hist,
                     link_type="cloud_end",
                     prob_history_dtype=prob_history_dtype,
+                    is_compressed=(topk is not None and topk > 0),
+                    compressed_k=topk,
                     description=f"Little→Target (direct): {actual_gamma1} probability distributions",
                 )
                 total_communication_time += comm_time_3
@@ -1234,21 +1266,24 @@ class Decoding(ABC):
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / total_wall_time if total_wall_time > 0 else 0
 
-        metrics = DecodingMetrics(
-            little_forward_times=little_forward_times,
-            draft_forward_times=draft_forward_times,
-            target_forward_times=target_forward_times,
-            generated_tokens=generated_tokens,
-            little_generated_tokens=total_little_generated_tokens,
-            draft_generated_tokens=total_draft_generated_tokens,
-            little_accepted_tokens=total_little_accepted_tokens,
-            draft_accepted_tokens=total_draft_accepted_tokens,
-            wall_time=total_wall_time,
-            throughput=throughput,
-            communication_time=total_communication_time,
-            computation_time=computation_time,
-            edge_end_comm_time=edge_end_comm_time,
-        )
+        metrics = get_empty_metrics()
+        metrics["little_forward_times"] = little_forward_times
+        metrics["draft_forward_times"] = draft_forward_times
+        metrics["target_forward_times"] = target_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["draft_generated_tokens"] = total_draft_generated_tokens
+        metrics["little_generated_tokens"] = total_little_generated_tokens
+        metrics["draft_accepted_tokens"] = total_draft_accepted_tokens
+        metrics["little_accepted_tokens"] = total_little_accepted_tokens
+        metrics["wall_time"] = total_wall_time
+        metrics["throughput"] = throughput
+        metrics["communication_time"] = total_communication_time
+        metrics["computation_time"] = computation_time
+        metrics["edge_end_comm_time"] = edge_end_comm_time
+        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
+        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
+
 
         return prefix, metrics
 

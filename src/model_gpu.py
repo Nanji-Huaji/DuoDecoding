@@ -12,13 +12,13 @@ class KVCacheModel:
     ) -> None:
         self._model = model
         self._past_key_values = None
-        self._prob_history = None
+        self._prob_history: torch.Tensor | None = None
 
         self._temperature = temperature
         self._top_k = top_k
         self._top_p = top_p
 
-        self.logits_history = None # 不确定性方法需要存储logits历史
+        self.logits_history: torch.Tensor | None = None # 不确定性方法需要存储logits历史
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if self._past_key_values is None:

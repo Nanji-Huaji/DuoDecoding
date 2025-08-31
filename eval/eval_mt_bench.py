@@ -13,24 +13,9 @@ from src.engine import Decoding
 from fastchat.model import get_conversation_template
 from typing import List, Tuple
 
-from src.engine import DecodingMetrics
+from src.engine import get_empty_metrics, DecodingMetrics
 
-decoding_metrics = DecodingMetrics(
-    little_forward_times=0,
-    draft_forward_times=0,
-    target_forward_times=0,
-    generated_tokens=0,
-    little_generated_tokens=0,
-    draft_generated_tokens=0,
-    little_accepted_tokens=0,
-    draft_accepted_tokens=0,
-    wall_time=0.0,
-    throughput=0.0,
-    communication_time=0.0,
-    computation_time=0.0,
-    edge_end_comm_time=0.0,
-)
-
+decoding_metrics = get_empty_metrics()
 
 def read_results(file_path):
     f = open(file_path)
@@ -350,6 +335,10 @@ class EvalMTBench(Decoding):
         if not isinstance(communication_time, (int, float)):
             decoding_metrics["communication_time"] = 0.0
 
+        if decoding_metrics["wall_time"] != 0:
+            decoding_metrics["throughput"] = decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+
+
         metrics_str = f"""
         {str(decoding_metrics)}
         """
@@ -366,6 +355,8 @@ class EvalMTBench(Decoding):
         eval_result["gamma"] = self.args.gamma
         eval_result["gamma1"] = self.args.gamma1
         eval_result["gamma2"] = self.args.gamma2
+
+
 
         decoding_metrics_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json")
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
