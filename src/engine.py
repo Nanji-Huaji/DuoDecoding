@@ -29,6 +29,7 @@ from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
 
 from .communication import CommunicationSimulator, CUHLM
 
+from typing import Literal
 
 class DecodingMetrics(TypedDict):
     little_forward_times: int
@@ -531,6 +532,9 @@ class Decoding(ABC):
         metrics["wall_time"] = elapsed_time
         metrics["throughput"] = throughput
 
+        output_text = self.tokenizer.decode(prefix[0], skip_special_tokens=True)
+        self.color_print(f"Output text: {output_text}", 3)
+
         return prefix, metrics
 
     @torch.no_grad
@@ -680,6 +684,9 @@ class Decoding(ABC):
         metrics["throughput"] = throughput
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+
+        output_text = self.tokenizer.decode(prefix[0], skip_special_tokens=True)
+        self.color_print(f"Output text: {output_text}", 3)
 
         return prefix, metrics
 
@@ -929,14 +936,13 @@ class Decoding(ABC):
     # 我需要重构tridecoding的KVCache管理
 
 
+    # 正在进行重构
     @torch.no_grad()
-    def tridecoding(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
+    def tridecoding(self, prefix):
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
         draft_device = self.draft_model.device
         target_device = self.target_model.device
-
-        # 初始化三层模型的KV Cache
         little_model_cache = KVCacheModel(self.little_model, self.args.temp, self.args.top_k, self.args.top_p)
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
@@ -944,141 +950,170 @@ class Decoding(ABC):
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
         target_model_cache.vocab_size = self.vocab_size
 
-        # 统计指标
-        metrics = get_empty_metrics()
+        # Metrics tracking
+        little_model_forward_times = 0
+        draft_model_forward_times = 0
+        target_model_forward_times = 0
+        total_little_model_generated_tokens = 0
+        total_draft_model_generated_tokens = 0
+        total_little_model_accepted_tokens = 0
+        total_draft_model_accepted_tokens = 0
+        wall_time = 0
+        
+        
+        idx = 0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        current_tokens = prefix.clone()  # 用于计算生成token数
+
+        start_event.record(stream=torch.cuda.current_stream())
 
         while prefix.shape[1] < max_tokens:
+
+
+            idx += 1
+
             prefix_len = prefix.shape[1]
 
-            # 第一层：Little model生成gamma2个tokens
-            x_little = little_model_cache.generate(prefix.to(little_device), self.args.gamma2)
+            # 第一层 speculative
 
-            # 第二层：Draft model验证little model的输出
-            _ = draft_model_cache.generate(x_little.to(draft_device), 1)
+            x = little_model_cache.generate(prefix.to(little_device), self.args.gamma2)
+            _ = draft_model_cache.generate(x.to(draft_device), 1)
 
-            if self.accelerator.is_main_process:
-                self.little_forward_times += self.args.gamma2
-                self.draft_forward_times += 1
+            little_model_forward_times += self.args.gamma2
+            draft_model_forward_times += 1
+            total_little_model_generated_tokens += self.args.gamma2
 
-            # 验证little model的tokens
-            n_little = prefix_len + self.args.gamma2 - 1
+            n1: int = prefix_len + self.args.gamma2 - 1
+
+            little_accepted_this_iter = 0
             for i in range(self.args.gamma2):
                 r = torch.rand(1, device=little_device)
-                j = x_little[:, prefix_len + i]
-
-                # 使用draft model的概率验证little model
+                j = x[:, prefix_len + i]
                 if r > (
-                    draft_model_cache._prob_history.to(little_device)[:, prefix_len + i - 1, j]
-                    / little_model_cache._prob_history[:, prefix_len + i - 1, j]
-                ):
-                    n_little = prefix_len + i - 1
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
+                    n1 = prefix_len + i - 1
                     break
+                else:
+                    little_accepted_this_iter += 1
 
-            # 接受的little model tokens
-            accepted_little_tokens = n_little - prefix_len + 1
-            prefix_after_little = x_little[:, : n_little + 1]
+            total_little_model_accepted_tokens += little_accepted_this_iter
 
-            # 回滚little model cache
-            little_model_cache.rollback(n_little + 1)
+            assert n1 >= prefix_len - 1, f"n {n1}, prefix_len {prefix_len}"
+            prefix = x[:, : n1 + 1]
 
-            # 处理little model被拒绝的情况
-            if n_little < prefix_len + self.args.gamma2 - 1:
-                # 从draft model的调整分布中重采样
-                t_draft = sample(
+            little_model_cache.rollback(n1 + 1)
+
+            if n1 < prefix_len + self.args.gamma2 - 1:
+                # reject someone, sample from the pos n1
+                t = sample(
                     max_fn(
-                        draft_model_cache._prob_history[:, n_little, : self.vocab_size].to(little_device)
-                        - little_model_cache._prob_history[:, n_little, : self.vocab_size]
+                        draft_model_cache._prob_history[:, n1, : self.vocab_size].to(
+                            little_device
+                        )
+                        - little_model_cache._prob_history[:, n1, : self.vocab_size]
                     )
                 )
-                draft_model_cache.rollback(n_little + 1)
-                prefix_after_little = torch.cat((prefix_after_little, t_draft), dim=1)
+                draft_model_cache.rollback(n1 + 1)
+                
             else:
-                # 所有little model tokens被接受，draft model继续生成gamma1个tokens
-                draft_model_cache.rollback(n_little + 2)
+                t = sample(
+                    draft_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(little_device)
+                draft_model_cache.rollback(n1 + 2)
 
-            # 第三层：Draft model生成gamma1个额外tokens（基于已接受的序列）
-            x_draft = draft_model_cache.generate(prefix_after_little.to(draft_device), self.args.gamma1)
+            prefix = torch.cat((prefix, t), dim=1)
+            new_generated_token = prefix[:, prefix_len :]
 
-            # Target model验证draft model的输出
-            _ = target_model_cache.generate(x_draft.to(target_device), 1)
+            # 第二层 speculative
 
-            if self.accelerator.is_main_process:
-                self.draft_forward_times += self.args.gamma1
-                self.target_forward_times += 1
+            # prefix_len = prefix.shape[1]
+            x = draft_model_cache.generate(prefix.to(draft_device), self.args.gamma1)
+            # x = torch.cat((new_generated_token.to(draft_device), x), dim=1)  # 拼接上little model新生成的token
 
-            # 验证draft model的tokens
-            n_draft = prefix_after_little.shape[1] + self.args.gamma1 - 1
-            for i in range(self.args.gamma1):
+            _ = target_model_cache.generate(x.to(target_device), 1)
+
+            draft_model_forward_times += self.args.gamma1
+            target_model_forward_times += 1
+            total_draft_model_generated_tokens += self.args.gamma1
+
+            n2: int = prefix_len + self.args.gamma1 - 1
+            draft_accepted_this_iter = 0
+            for i in range(max(self.args.gamma1, new_generated_token.shape[1] + self.args.gamma1)):
                 r = torch.rand(1, device=draft_device)
-                j = x_draft[:, prefix_after_little.shape[1] + i]
-
-                # 使用target model的概率验证draft model
+                j = x[:, prefix_len + i]
                 if r > (
-                    target_model_cache._prob_history.to(draft_device)[:, prefix_after_little.shape[1] + i - 1, j]
-                    / draft_model_cache._prob_history[:, prefix_after_little.shape[1] + i - 1, j]
-                ):
-                    n_draft = prefix_after_little.shape[1] + i - 1
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
+                    n2 = prefix_len + i - 1
                     break
+                else:
+                    draft_accepted_this_iter += 1
+            total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            # 更新最终的prefix
-            prefix = x_draft[:, : n_draft + 1]
-
-            # 回滚draft model cache
-            draft_model_cache.rollback(n_draft + 1)
-
-            # 处理draft model被拒绝的情况
-            if n_draft < prefix_after_little.shape[1] + self.args.gamma1 - 1:
-                # 从target model的调整分布中重采样
-                t_target = sample(
+            assert n2 >= prefix_len - 1, f"n {n2}, prefix_len {prefix_len}"
+            prefix = x[:, : n2 + 1]
+            draft_model_cache.rollback(n2 + 1)
+            little_model_cache.rollback(n2 + 1) if n2 <= little_model_cache.current_length else None
+            if n2 < prefix_len + self.args.gamma1 - 1:
+                t = sample(
                     max_fn(
-                        target_model_cache._prob_history[:, n_draft, : self.vocab_size].to(draft_device)
-                        - draft_model_cache._prob_history[:, n_draft, : self.vocab_size]
+                        target_model_cache._prob_history[:, n2, : self.vocab_size].to(
+                            draft_device
+                        )
+                        - draft_model_cache._prob_history[:, n2, : self.vocab_size]
                     )
                 )
-                target_model_cache.rollback(n_draft + 1)
+                target_model_cache.rollback(n2 + 1)
             else:
-                # 所有draft model tokens被接受，从target model采样新token
-                t_target = sample(target_model_cache._prob_history[:, -1, : self.vocab_size]).to(draft_device)
-                target_model_cache.rollback(n_draft + 2)
+                t = sample(
+                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(draft_device)
+                target_model_cache.rollback(n2 + 2)
 
-            prefix = torch.cat((prefix, t_target), dim=1)
+            prefix = torch.cat((prefix, t), dim=1)
 
-            # 同步所有cache到当前prefix长度
-            current_len = prefix.shape[1]
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
-            # 重新同步little model cache（如果需要继续使用）
-            if current_len < max_tokens:
-                # 为下一轮准备：确保little model cache与当前prefix同步
-                _ = little_model_cache.generate(prefix[:, :current_len].to(little_device), 0)
+        wall_time += elapsed_time
+        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        throughput = generated_tokens / wall_time if wall_time > 0 else 0
 
-            # # 收集统计信息
-            # self.num_acc_tokens.append(n_draft - prefix_len + 1)
-            # metrics.total_accepted_tokens += n_draft - prefix_len + 1
-            # metrics.total_draft_tokens += self.args.gamma1 + self.args.gamma2
+        metrics = get_empty_metrics()
+        metrics["little_forward_times"] = little_model_forward_times
+        metrics["draft_forward_times"] = draft_model_forward_times
+        metrics["target_forward_times"] = target_model_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["little_generated_tokens"] = total_little_model_generated_tokens
+        metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
+        metrics["little_accepted_tokens"] = total_little_model_accepted_tokens
+        metrics["draft_accepted_tokens"] = total_draft_model_accepted_tokens
+        metrics["wall_time"] = wall_time
+        metrics["throughput"] = metrics["generated_tokens"] / wall_time if wall_time > 0 else 0
 
-        # 计算接受率
-        # metrics.acceptance_rate = (
-        #     metrics.total_accepted_tokens / metrics.total_draft_tokens if metrics.total_draft_tokens > 0 else 0
-        # )
-
-        output_text = self.tokenizer.decode(prefix[0], skip_special_tokens=True)
-        self.color_print(f"Output text: {output_text}", 3)
-
+        import json
+        self.color_print(json.dumps(metrics, indent=4), 2)
 
         return prefix, metrics
 
     @torch.no_grad()
-    def tridecoding_kvcache_incorrect(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
+    def tridecoding_without_kvcache(self, prefix) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """
+        TriDecoding implementation without KVCache - recomputes all logits for each forward pass
+        """
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
         draft_device = self.draft_model.device
         target_device = self.target_model.device
-        little_model_cache = KVCacheModel(self.little_model, self.args.temp, self.args.top_k, self.args.top_p)
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(self.draft_model, self.args.temp, self.args.top_k, self.args.top_p)
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(self.target_model, self.args.temp, self.args.top_k, self.args.top_p)
-        target_model_cache.vocab_size = self.vocab_size
 
         # Metrics tracking
         little_forward_times = 0
@@ -1092,202 +1127,209 @@ class Decoding(ABC):
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         current_tokens = prefix.clone()
+
         start_event.record(stream=torch.cuda.current_stream())
 
         while prefix.shape[1] < max_tokens:
+            
             prefix_len = prefix.shape[1]
 
-            # Calculate how many tokens we can still generate
+            # Calculate remaining tokens
             remaining_tokens = max_tokens - prefix_len
             if remaining_tokens <= 0:
                 break
 
-            # Adjust gamma values if necessary to not exceed max_tokens
-            actual_gamma1 = min(self.args.gamma1, remaining_tokens)
-            actual_gamma2 = min(self.args.gamma2, remaining_tokens - actual_gamma1)
+            # Adjust gamma values to not exceed max_tokens
+            actual_gamma1 = min(self.args.gamma1, remaining_tokens - 1)  # Leave space for final token
+            actual_gamma2 = min(self.args.gamma2, remaining_tokens - actual_gamma1 - 1)
 
-            # Stage 1: little model generates gamma1 tokens
-            x1 = little_model_cache.generate(prefix.to(little_device), actual_gamma1)
-            little_forward_times += actual_gamma1
-            total_little_generated_tokens += actual_gamma1
-
-            # Stage 2: draft model processes little model output and generates gamma2 more tokens
-            x2 = draft_model_cache.generate(x1.to(draft_device), actual_gamma2)
-            draft_forward_times += actual_gamma2
-            total_draft_generated_tokens += actual_gamma2
-
-            # Stage 3: target model verifies all draft tokens
-            _ = target_model_cache.generate(x2.to(target_device), 1)
-            target_forward_times += 1
-
-            if self.accelerator.is_main_process:
-                self.little_forward_times += actual_gamma1
-                self.draft_forward_times += actual_gamma2
-                self.target_forward_times += 1
-
-            # Verification phase: verify tokens sequentially from left to right
-            total_candidates = actual_gamma1 + actual_gamma2
-            n = prefix_len + total_candidates - 1
-
-            # Get the actual sequence length for verification
-            seq_len = x2.shape[1]
-
-            # Track accepted tokens for this iteration
-            little_accepted_this_iter = 0
-            draft_accepted_this_iter = 0
-
-            # Verify tokens one by one
-            for i in range(total_candidates):
-                pos = prefix_len + i
-
-                # Skip if position is beyond sequence length
-                if pos >= seq_len:
-                    n = pos - 1
-                    break
-
-                r = torch.rand(1, device=target_device)
-                j = x2[:, pos]
-
-                # Check bounds for probability history access
-                prob_pos = pos - 1  # Position in probability history (0-indexed relative to sequence)
-
-                # Determine which model to compare against
-                if i < actual_gamma1:
-                    # Compare little model vs draft model
-                    # Check bounds for both models
-                    draft_hist_size = draft_model_cache._prob_history.shape[1]
-                    little_hist_size = little_model_cache._prob_history.shape[1]
-
-                    if prob_pos >= draft_hist_size or prob_pos >= little_hist_size:
-                        n = pos - 1
-                        break
-
-                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
-                    p_little = little_model_cache._prob_history.to(target_device)[:, prob_pos, j]
-                    # Add small epsilon to avoid division by zero
-                    eps = 1e-10
-                    ratio = p_draft / (p_little + eps)
-                    ratio = torch.clamp(ratio, 0, 100)  # Clamp to reasonable range
-                    if r > ratio:
-                        n = pos - 1
-                        break
-                    else:
-                        # This little model token is accepted
-                        little_accepted_this_iter += 1
-                else:
-                    # Compare draft model vs target model
-                    # Check bounds for both models
-                    target_hist_size = target_model_cache._prob_history.shape[1]
-                    draft_hist_size = draft_model_cache._prob_history.shape[1]
-
-                    if prob_pos >= target_hist_size or prob_pos >= draft_hist_size:
-                        n = pos - 1
-                        break
-
-                    p_target = target_model_cache._prob_history.to(target_device)[:, prob_pos, j]
-                    p_draft = draft_model_cache._prob_history.to(target_device)[:, prob_pos, j]
-                    # Add small epsilon to avoid division by zero
-                    eps = 1e-10
-                    ratio = p_target / (p_draft + eps)
-                    ratio = torch.clamp(ratio, 0, 100)  # Clamp to reasonable range
-                    if r > ratio:
-                        n = pos - 1
-                        break
-                    else:
-                        # This draft model token is accepted
-                        draft_accepted_this_iter += 1
-
-            # Count accepted tokens based on final n
-            final_accepted_tokens = n - prefix_len + 1
-            if final_accepted_tokens > 0:
-                # Count how many are from little model vs draft model
-                little_accepted_count = min(final_accepted_tokens, actual_gamma1)
-                draft_accepted_count = max(0, final_accepted_tokens - actual_gamma1)
-
-                total_little_accepted_tokens += little_accepted_count
-                total_draft_accepted_tokens += draft_accepted_count
-
-            self.num_acc_tokens.append(final_accepted_tokens)
-
-            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x2[:, : n + 1]
-
-            # Check if we've reached max_tokens after accepting tokens
-            if prefix.shape[1] >= max_tokens:
-                prefix = prefix[:, :max_tokens]  # Truncate to exact length
+            if actual_gamma1 <= 0:
                 break
 
-            # Rollback all caches to accepted position
-            little_model_cache.rollback(n + 1)
-            draft_model_cache.rollback(n + 1)
+            # ==== Stage 1: Little model generates gamma1 tokens ====
+            current_sequence = prefix.to(little_device)
+            little_generated_tokens = []
+            little_probs_history = []
 
-            # Sample next token based on rejection point
-            if n < prefix_len + total_candidates - 1:
-                # Some tokens were rejected, sample from the appropriate distribution
-                if n < prefix_len + actual_gamma1 - 1:
-                    # Rejection happened in little model stage, sample from draft - little
-                    # Check bounds before accessing
-                    if n < draft_model_cache._prob_history.shape[1] and n < little_model_cache._prob_history.shape[1]:
-                        draft_probs = draft_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
-                        little_probs = little_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
-                        # Ensure non-negative probabilities
-                        diff_probs = torch.clamp(draft_probs - little_probs, min=0.0)
-                        # Add small epsilon to ensure valid probability distribution
-                        diff_probs = diff_probs + 1e-10
-                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
-                        t = sample(diff_probs)
-                    else:
-                        # Fallback: sample from target model
-                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
-                        t = sample(target_probs)
+            for i in range(actual_gamma1):
+                # Forward pass through little model
+                output = self.little_model(current_sequence)
+                logits = output.logits[:, -1, :self.vocab_size]
+                probs = norm_logits(logits, self.args.temp, self.args.top_k, self.args.top_p)
+                
+                # Sample next token
+                next_token = sample(probs)
+                little_generated_tokens.append(next_token)
+                little_probs_history.append(probs)
+                
+                # Extend sequence
+                current_sequence = torch.cat((current_sequence, next_token), dim=1)
+                little_forward_times += 1
+                total_little_generated_tokens += 1
+
+            # ==== Stage 2: Draft model generates gamma2 more tokens ====
+            current_sequence = current_sequence.to(draft_device)
+            draft_generated_tokens = []
+            draft_probs_history = []
+
+            for i in range(actual_gamma2):
+                # Forward pass through draft model
+                output = self.draft_model(current_sequence)
+                logits = output.logits[:, -1, :self.vocab_size]
+                probs = norm_logits(logits, self.args.temp, self.args.top_k, self.args.top_p)
+                
+                # Sample next token
+                next_token = sample(probs)
+                draft_generated_tokens.append(next_token)
+                draft_probs_history.append(probs)
+                
+                # Extend sequence
+                current_sequence = torch.cat((current_sequence, next_token), dim=1)
+                draft_forward_times += 1
+                total_draft_generated_tokens += 1
+
+            # ==== Stage 3: Target model verification ====
+            # Forward pass through target model to get all required probabilities
+            target_sequence = current_sequence.to(target_device)
+            target_output = self.target_model(target_sequence)
+            target_logits = target_output.logits
+            target_forward_times += 1
+
+            # ==== Verification Phase ====
+            accepted_tokens = 0
+            
+            # First verify little model tokens against draft model
+            little_accepted = 0
+            for i in range(actual_gamma1):
+                pos_in_sequence = prefix_len + i
+                token_to_verify = little_generated_tokens[i][0, 0].item()
+                
+                # Get draft model probability for this position
+                draft_logits = target_logits[:, pos_in_sequence - 1, :self.vocab_size]
+                draft_probs = norm_logits(draft_logits, self.args.temp, self.args.top_k, self.args.top_p)
+                
+                # Accept/reject based on probability ratio
+                r = torch.rand(1, device=little_device)
+                little_prob = little_probs_history[i][0, token_to_verify]
+                draft_prob = draft_probs.to(little_device)[0, token_to_verify]
+                
+                if r <= min(1.0, draft_prob / (little_prob + 1e-10)):
+                    little_accepted += 1
                 else:
-                    # Rejection happened in draft model stage, sample from target - draft
-                    # Check bounds before accessing
-                    if n < target_model_cache._prob_history.shape[1] and n < draft_model_cache._prob_history.shape[1]:
-                        target_probs = target_model_cache._prob_history[:, n, : self.vocab_size].to(target_device)
-                        draft_probs = draft_model_cache._prob_history.to(target_device)[:, n, : self.vocab_size]
-                        # Ensure non-negative probabilities
-                        diff_probs = torch.clamp(target_probs - draft_probs, min=0.0)
-                        # Add small epsilon to ensure valid probability distribution
-                        diff_probs = diff_probs + 1e-10
-                        diff_probs = diff_probs / diff_probs.sum(dim=-1, keepdim=True)
-                        t = sample(diff_probs)
+                    # Reject this token and all subsequent ones
+                    break
+
+            # Then verify draft model tokens against target model
+            draft_accepted = 0
+            if little_accepted == actual_gamma1:  # Only verify draft tokens if all little tokens accepted
+                for i in range(actual_gamma2):
+                    pos_in_sequence = prefix_len + actual_gamma1 + i
+                    token_to_verify = draft_generated_tokens[i][0, 0].item()
+                    
+                    # Get target model probability for this position
+                    target_logits_pos = target_logits[:, pos_in_sequence - 1, :self.vocab_size]
+                    target_probs = norm_logits(target_logits_pos, self.args.temp, self.args.top_k, self.args.top_p)
+                    
+                    # Accept/reject based on probability ratio
+                    r = torch.rand(1, device=draft_device)
+                    draft_prob = draft_probs_history[i][0, token_to_verify]
+                    target_prob = target_probs.to(draft_device)[0, token_to_verify]
+                    
+                    if r <= min(1.0, target_prob / (draft_prob + 1e-10)):
+                        draft_accepted += 1
                     else:
-                        # Fallback: sample from target model
-                        target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
-                        t = sample(target_probs)
-                target_model_cache.rollback(n + 1)
-            else:
-                # All tokens accepted, sample from target model
-                target_probs = target_model_cache._prob_history[:, -1, : self.vocab_size].to(target_device)
-                t = sample(target_probs)
-                target_model_cache.rollback(n + 2)
+                        # Reject this token and all subsequent ones
+                        break
 
-            # Only add the new token if we haven't reached max_tokens
+            # Update metrics
+            total_little_accepted_tokens += little_accepted
+            total_draft_accepted_tokens += draft_accepted
+            total_accepted = little_accepted + draft_accepted
+            self.num_acc_tokens.append(total_accepted)
+
+            # ==== Update sequence based on accepted tokens ====
+            if total_accepted > 0:
+                # Add accepted tokens to prefix
+                for i in range(little_accepted):
+                    prefix = torch.cat((prefix, little_generated_tokens[i].to(prefix.device)), dim=1)
+                for i in range(draft_accepted):
+                    prefix = torch.cat((prefix, draft_generated_tokens[i].to(prefix.device)), dim=1)
+
+            # ==== Sample correction token if needed ====
             if prefix.shape[1] < max_tokens:
-                prefix = torch.cat((prefix, t), dim=1)
+                if little_accepted < actual_gamma1:
+                    # Rejection happened in little model stage
+                    # Sample from draft - little distribution
+                    reject_pos = prefix_len + little_accepted - 1
+                    if reject_pos >= 0 and reject_pos < target_logits.shape[1]:
+                        draft_logits_pos = target_logits[:, reject_pos, :self.vocab_size]
+                        draft_probs = norm_logits(draft_logits_pos, self.args.temp, self.args.top_k, self.args.top_p)
+                        little_probs = little_probs_history[little_accepted] if little_accepted < len(little_probs_history) else torch.zeros_like(draft_probs)
+                        
+                        corrected_probs = torch.clamp(draft_probs.to(little_device) - little_probs, min=0.0)
+                        if corrected_probs.sum() > 1e-10:
+                            corrected_probs = corrected_probs / corrected_probs.sum(dim=-1, keepdim=True)
+                            correction_token = sample(corrected_probs)
+                        else:
+                            correction_token = sample(draft_probs.to(little_device))
+                        
+                        prefix = torch.cat((prefix, correction_token.to(prefix.device)), dim=1)
+                        
+                elif draft_accepted < actual_gamma2:
+                    # Rejection happened in draft model stage
+                    # Sample from target - draft distribution
+                    reject_pos = prefix_len + actual_gamma1 + draft_accepted - 1
+                    if reject_pos >= 0 and reject_pos < target_logits.shape[1]:
+                        target_logits_pos = target_logits[:, reject_pos, :self.vocab_size]
+                        target_probs = norm_logits(target_logits_pos, self.args.temp, self.args.top_k, self.args.top_p)
+                        draft_probs = draft_probs_history[draft_accepted] if draft_accepted < len(draft_probs_history) else torch.zeros_like(target_probs)
+                        
+                        corrected_probs = torch.clamp(target_probs.to(draft_device) - draft_probs, min=0.0)
+                        if corrected_probs.sum() > 1e-10:
+                            corrected_probs = corrected_probs / corrected_probs.sum(dim=-1, keepdim=True)
+                            correction_token = sample(corrected_probs)
+                        else:
+                            correction_token = sample(target_probs.to(draft_device))
+                        
+                        prefix = torch.cat((prefix, correction_token.to(prefix.device)), dim=1)
+                        
+                else:
+                    # All tokens accepted, sample from target model's last position
+                    last_pos = prefix.shape[1] - 1
+                    if last_pos >= 0 and last_pos < target_logits.shape[1]:
+                        target_logits_pos = target_logits[:, last_pos, :self.vocab_size]
+                        target_probs = norm_logits(target_logits_pos, self.args.temp, self.args.top_k, self.args.top_p)
+                        new_token = sample(target_probs.to(prefix.device))
+                        prefix = torch.cat((prefix, new_token), dim=1)
 
-            # Final check to ensure we don't exceed max_tokens
+            # Update forward times for metrics
+            if self.accelerator.is_main_process:
+                self.little_forward_times += little_forward_times
+                self.draft_forward_times += draft_forward_times
+                self.target_forward_times += target_forward_times
+
+            # Ensure we don't exceed max_tokens
             if prefix.shape[1] >= max_tokens:
-                prefix = prefix[:, :max_tokens]  # Truncate to exact length
+                prefix = prefix[:, :max_tokens]
                 break
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
 
+        # Create metrics
         metrics = get_empty_metrics()
-
         metrics["little_forward_times"] = little_forward_times
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
         metrics["generated_tokens"] = generated_tokens
-        metrics["draft_generated_tokens"] = total_draft_generated_tokens
         metrics["little_generated_tokens"] = total_little_generated_tokens
-        metrics["draft_accepted_tokens"] = total_draft_accepted_tokens
+        metrics["draft_generated_tokens"] = total_draft_generated_tokens
         metrics["little_accepted_tokens"] = total_little_accepted_tokens
+        metrics["draft_accepted_tokens"] = total_draft_accepted_tokens
         metrics["wall_time"] = elapsed_time
         metrics["throughput"] = throughput
 
@@ -1296,6 +1338,8 @@ class Decoding(ABC):
 
         return prefix, metrics
 
+
+    # 这个的KVCache管理也是错的
     @torch.no_grad()
     def tridecoding_with_bandwidth(
         self,

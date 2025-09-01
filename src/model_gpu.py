@@ -101,11 +101,14 @@ class KVCacheModel:
         self._prob_history = self._prob_history[:, :end_pos, :]
         self.logits_history = self.logits_history[:, :end_pos, :]
 
-    
     @property
     def current_length(self) -> int:
         # 当前KVCache的长度
         if self._past_key_values is None:
             return 0
         return self._past_key_values[0][0].shape[2]
-    
+
+    def __len__(self) -> int:
+        if self._past_key_values is None:
+            return 0
+        return self.current_length
