@@ -98,6 +98,8 @@ class EvalMTBench(Decoding):
             decoding = self.tridecoding_with_bandwidth
         elif self.args.eval_mode == "uncertainty_decoding":
             decoding = self.uncertainty_decoding
+        elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
+            decoding = self.speculative_decoding_with_bandwidth
         else:
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError

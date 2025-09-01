@@ -16,6 +16,8 @@
 {
     "version": "0.2.0",
     "configurations": [
+        
+
         {
             "name": "Debug MT-Bench Large",
             "type": "debugpy",
@@ -23,7 +25,7 @@
             "program": "${workspaceFolder}/eval/eval_mt_bench.py",
             "args": [
                 "--eval_mode",
-                "tridecoding",
+                "Large",
                 "--gamma",
                 "5",
                 "-n",
@@ -40,13 +42,175 @@
                 "128",
                 "--temp",
                 "0",
+                "--uncertainty_threshold",
+                "0.8",
+                "--edge_cloud_bandwidth",
+                "100",
                 "--exp_name",
-                "tridecoding_expirement_${currentDate}_${currentTime}"
+                "large_${currentDate}_${currentTime}"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0"
             },
             "console": "integratedTerminal"
-        }
+        },
+        {
+            "name": "Debug MT-Bench Uncertainty",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/eval/eval_mt_bench.py",
+            "args": [
+                "--eval_mode",
+                "uncertainty_decoding",
+                "--gamma",
+                "5",
+                "-n",
+                "1",
+                "-e",
+                "vicuna",
+                "--use-gpt_fast_model",
+                "false",
+                "--draft_model",
+                "vicuna-68m",
+                "--target_model",
+                "tiny-vicuna-1b",
+                "--max_tokens",
+                "128",
+                "--temp",
+                "0",
+                "--uncertainty_threshold",
+                "0.8",
+                "--edge_cloud_bandwidth",
+                "100",
+                "--exp_name",
+                "uncertainty_${currentDate}_${currentTime}"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0"
+            },
+            
+            "console": "integratedTerminal"
+        },
+            {
+                "name": "Debug MT-Bench Speculative",
+                "type": "debugpy",
+                "request": "launch",
+                "program": "${workspaceFolder}/eval/eval_mt_bench.py",
+                "args": [
+                    "--eval_mode",
+                    "speculative_decoding_with_bandwidth",
+                    "--gamma",
+                    "5",
+                    "-n",
+                    "1",
+                    "-e",
+                    "vicuna",
+                    "--use-gpt_fast_model",
+                    "false",
+                    "--draft_model",
+                    "vicuna-68m",
+                    "--target_model",
+                    "tiny-vicuna-1b",
+                    "--max_tokens",
+                    "128",
+                    "--temp",
+                    "0",
+                    "--uncertainty_threshold",
+                    "0.8",
+                    "--edge_cloud_bandwidth",
+                    "100",
+                    "--exp_name",
+                    "uncertainty_${currentDate}_${currentTime}"
+                ],
+                "env": {
+                    "CUDA_VISIBLE_DEVICES": "0"
+                },
+                "console": "integratedTerminal"
+            },
+                {
+                    "name": "Debug MT-Bench Tri",
+                    "type": "debugpy",
+                    "request": "launch",
+                    "program": "${workspaceFolder}/eval/eval_mt_bench.py",
+                    "args": [
+                        "--eval_mode",
+                        "tridecoding_with_bandwidth",
+                        "--gamma1",
+                        "5",
+                        "--gamma2",
+                        "20",
+                        "-n",
+                        "1",
+                        "-e",
+                        "vicuna",
+                        "--use-gpt_fast_model",
+                        "false",
+                        "--draft_model",
+                        "vicuna-68m",
+                        "--target_model",
+                        "tiny-vicuna-1b",
+                        "--max_tokens",
+                        "128",
+                        "--temp",
+                        "0",
+                        "--uncertainty_threshold",
+                        "0.8",
+                        "--edge_cloud_bandwidth",
+                        "100",
+                        "--edge_end_bandwidth",
+                        "100",
+                        "--cloud_end_bandwidth",
+                        "100",
+                        "--exp_name",
+                        "tirdecoding_${currentDate}_${currentTime}"
+                    ],
+                    "env": {
+                        "CUDA_VISIBLE_DEVICES": "0"
+                    },
+                    "console": "integratedTerminal"
+                },
+                {
+                    "name": "Debug MT-Bench Tri baseline",
+                    "type": "debugpy",
+                    "request": "launch",
+                    "program": "${workspaceFolder}/eval/eval_mt_bench.py",
+                    "args": [
+                        "--eval_mode",
+                        "tridecoding",
+                        "--gamma1",
+                        "5",
+                        "--gamma2",
+                        "20",
+                        "-n",
+                        "1",
+                        "-e",
+                        "vicuna",
+                        "--use-gpt_fast_model",
+                        "false",
+                        "--draft_model",
+                        "vicuna-68m",
+                        "--target_model",
+                        "tiny-vicuna-1b",
+                        "--max_tokens",
+                        "128",
+                        "--temp",
+                        "0",
+                        "--uncertainty_threshold",
+                        "0.8",
+                        "--edge_cloud_bandwidth",
+                        "100",
+                        "--edge_end_bandwidth",
+                        "100",
+                        "--cloud_end_bandwidth",
+                        "100",
+                        "--exp_name",
+                        "tirdecoding_${currentDate}_${currentTime}"
+                    ],
+                    "env": {
+                        "CUDA_VISIBLE_DEVICES": "0"
+                    },
+                    "console": "integratedTerminal"
+                },
+            
     ]
 }

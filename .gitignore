@@ -5,15 +5,15 @@ exp/*
 
 *.log
 
-备忘录.md
+
 
 vicuna/*
 llama/*
 
+.vscode/*
+
 read_results.ipynb
 best_results.json
-.gitignore
-.gitignore
 cmds/exp.sh
 all_results_summary.json
 all_results_detailed.json
@@ -26,3 +26,4 @@ exp_res/*
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
 test.py
+
