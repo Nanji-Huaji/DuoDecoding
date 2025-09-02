@@ -187,7 +187,7 @@ class CommunicationSimulator:
         # 恢复原始形状
         return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
 
-    def transfer(self, tokens: torch.Tensor, prob: torch.Tensor|None, link_type: LinkType, is_compressed: bool = False, compressed_k: Optional[int] = 300) -> float:
+    def transfer(self, tokens: torch.Tensor|None, prob: torch.Tensor|None, link_type: LinkType, is_compressed: bool = False, compressed_k: Optional[int] = 300) -> float:
         token_bytes = 0
         prob_bytes = 0
 
