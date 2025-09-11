@@ -18,6 +18,22 @@ class Statistics(TypedDict):
 
 LinkType = Literal["edge_cloud", "edge_end", "cloud_end"]
 
+Dimension = Literal["Mbps", "MBps", "bps", "Bps"]
+
+def _convert_to_bytes_per_second(bandwidth: float, dimension: Dimension) -> float:
+    """
+    将带宽转换为bytes/second
+    """
+    if dimension == 'Mbps':
+        return bandwidth * 1e6 / 8
+    elif dimension == 'MBps':
+        return bandwidth * 1e6
+    elif dimension == 'bps':
+        return bandwidth / 8
+    elif dimension == 'Bps':
+        return bandwidth
+    else:
+        raise ValueError(f"Unknown dimension: {dimension}")
 
 class CommunicationSimulator:
     """
@@ -28,10 +44,10 @@ class CommunicationSimulator:
     统计信息包括每次传输的数据大小和传输时间
     统计信息分为三类链路：edge-cloud, edge-end, cloud-end
     """
-    def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None):
-        self.bandwidth_edge_cloud = bandwidth_edge_cloud
-        self.bandwidth_edge_end = bandwidth_edge_end
-        self.bandwidth_cloud_end = bandwidth_cloud_end
+    def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None, dimension: Dimension='Mbps'):
+        self.bandwidth_edge_cloud = _convert_to_bytes_per_second(bandwidth_edge_cloud, dimension)
+        self.bandwidth_edge_end = _convert_to_bytes_per_second(bandwidth_edge_end, dimension)
+        self.bandwidth_cloud_end = _convert_to_bytes_per_second(bandwidth_cloud_end, dimension)
         self.protocol_overhead_bytes = protocol_overhead_bytes
         self.stats = Statistics(
             edge_cloud=[],
@@ -210,6 +226,9 @@ class CommunicationSimulator:
 
         return self.simulate_transfer(total_bytes, link_type)
 
+    def send_reject_message(self, linktype: LinkType) -> None:
+        self.simulate_transfer(6, linktype)
+
     def __call__(
         self,
         tokens: torch.Tensor,
@@ -257,9 +276,10 @@ class CUHLM(CommunicationSimulator):
         bandwidth_cloud_end = float('inf'),
         uncertainty_threshold: float = 0.8,
         vocab_size: int = 32000,
+        dimension: Dimension = 'Mbps'
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
-        super().__init__(bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end)
+        super().__init__(bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, dimension=dimension)
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
 
@@ -486,53 +506,81 @@ class CUHLM(CommunicationSimulator):
             return current_probs
 
 
-    def transfer(
-        self, tokens: Optional[torch.Tensor], prob_history: Optional[torch.Tensor] = None, logits: Optional[torch.Tensor] = None, link_type: LinkType = "edge_cloud"
-    ) -> float:
-        if link_type != "edge_cloud":
-            # 其他链路不传输数据
-            return 0.0
+class PreciseCommunicationSimulator(CommunicationSimulator):
+    def __init__(self, bandwidth_hz: int | float, channel_gain: float, send_power_watt: float, noise_power_watt: float):
+        SNR = channel_gain * send_power_watt / noise_power_watt
+        channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
+        super().__init__(channel_capacity_bps / 10, channel_capacity_bps, channel_capacity_bps / 10, dimension='bps')  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
-        if tokens is None:
-            tokens = torch.empty(0)
+        self.comm_energy = 0.0  # 通信能耗，单位焦耳
+        self.send_power_watt = send_power_watt
+        self.noise_power_watt = noise_power_watt
+        self.bandwidth_hz = bandwidth_hz
+        self.channel_gain = channel_gain
 
-        current_probs = self._get_current_probs(prob_history)
-        # 如果 prob_history 为空，current_probs 也是空张量，后续逻辑会在 determine_transfer_strategy 中处理这种情况（不传输概率分布，只传输 tokens）
-        if logits is None and current_probs.numel() > 0:
-            # 假设为贪心解码
-            probs = torch.clamp(current_probs, min=1e-8)
-            log_probs = torch.log(probs)
-            # 减去最大值，使最大概率对应的logit为0
-            if current_probs.dim() == 1:
-                logits = log_probs - torch.max(log_probs)
-            else:
-                logits = log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
-
-        if (logits is None or logits.numel() == 0) and current_probs.numel() == 0:
-            # logits和prob_history都为空，无法计算不确定度，直接传输tokens
-            return super().transfer(tokens, None, link_type)
+    @property
+    def total_comm_energy(self):
+        energy = 0.0
+        for link_type in ["edge_cloud", "edge_end", "cloud_end"]:
+            for unit in self.stats[link_type]:
+                energy += unit["transfer_time"] * self.send_power_watt
+        return energy
 
 
-        uncertainty = self.calculate_uncertainty(logits)
-        should_transfer_prob, vocab_size = self.determine_transfer_strategy(uncertainty, current_probs)
-        if not should_transfer_prob:
-            return super().transfer(tokens, None, link_type)
+class PreciseCUHLM(CUHLM):
+    """
+    CUHLM的高精度版本，基于香农信道容量计算实际通信参数
 
-        if prob_history is None:
-            prob_history = torch.empty(0)
+    参数：
+    - bandwidth_hz: 信道带宽，单位Hz
+    - channel_gain: 信道增益
+    - send_power_watt: 发送功率，单位瓦特
+    - noise_power_watt: 噪声功率，单位瓦特
+    - uncertainty_threshold: 不确定度阈值，默认0.8
+    - vocab_size: 词汇表大小，默认32000
+    """
 
-        if tokens is None:
-            tokens = torch.empty(0)
+    def __init__(
+        self,
+        bandwidth_hz: int | float,
+        channel_gain: float,
+        send_power_watt: float,
+        noise_power_watt: float,
+        uncertainty_threshold: float = 0.8,
+        vocab_size: int = 32000,
+    ):
+        # 计算信噪比
+        SNR = channel_gain * send_power_watt / noise_power_watt
+        # 根据香农公式计算信道容量（bits/second）
+        channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
 
-        if vocab_size < self.vocab_size:
-            compressed_current_probs = self._apply_top_k_compression(current_probs, vocab_size)
-            prob_history = prob_history.clone()
-            if prob_history.dim() == 3:
-                prob_history[0, -1, :] = compressed_current_probs
-            else:
-                raise ValueError("prob_history维度不支持")
+        # 初始化CUHLM，使用计算得到的信道容量
+        # edge-cloud使用完整信道容量，其他链路假设为容量的十分之一
+        super().__init__(
+            bandwidth_edge_cloud=channel_capacity_bps,
+            bandwidth_edge_end=channel_capacity_bps / 10,
+            bandwidth_cloud_end=channel_capacity_bps / 10,
+            uncertainty_threshold=uncertainty_threshold,
+            vocab_size=vocab_size,
+            dimension="bps",
+        )
 
-        prob_size = vocab_size * prob_history.element_size() if prob_history.numel() > 0 else 0 # 假设传递稀疏词表时只传递非0
-        token_size = tokens.element_size() * tokens.numel() if tokens.numel() > 0 else 0
+        # 存储通信物理参数
+        self.bandwidth_hz = bandwidth_hz
+        self.channel_gain = channel_gain
+        self.send_power_watt = send_power_watt
+        self.noise_power_watt = noise_power_watt
+        self.SNR = SNR
+        self.channel_capacity_bps = channel_capacity_bps
 
-        return super().simulate_transfer(token_size + prob_size, link_type)
+        # 通信能耗统计，单位焦耳
+        self.comm_energy = 0.0
+
+    @property
+    def total_comm_energy(self):
+        """计算总通信能耗（焦耳）"""
+        energy = 0.0
+        for link_type in ["edge_cloud", "edge_end", "cloud_end"]:
+            for unit in self.stats[link_type]:
+                energy += unit["transfer_time"] * self.send_power_watt
+        return energy

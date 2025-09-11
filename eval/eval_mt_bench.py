@@ -17,6 +17,7 @@ from src.engine import get_empty_metrics, DecodingMetrics
 
 decoding_metrics = get_empty_metrics()
 
+
 def read_results(file_path):
     f = open(file_path)
     data = [json.loads(line) for line in f.readlines()]
@@ -37,7 +38,10 @@ class EvalMTBench(Decoding):
         if self.args.use_gpt_fast_model:
             self.load_tokenizer()
             self.load_model()
-            self.color_print("Not implemented yet for gpt-fast model, use normal model for instead.", 1)
+            self.color_print(
+                "Not implemented yet for gpt-fast model, use normal model for instead.",
+                1,
+            )
         else:
             self.load_tokenizer()
             self.load_model()
@@ -46,13 +50,19 @@ class EvalMTBench(Decoding):
 
         print(self.args.target_model)
 
-        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-2-chat"
         elif "Llama-2" in str(self.args.target_model):
             self.model_id = "vicuna"
-        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-3.1"
         elif "llama" in str(self.args.draft_model):
             self.model_id = "vicuna"
@@ -100,6 +110,11 @@ class EvalMTBench(Decoding):
             decoding = self.uncertainty_decoding
         elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
             decoding = self.speculative_decoding_with_bandwidth
+        elif (
+            self.args.eval_mode
+            == "speculative_decoding_with_bandwidth_full_prob"
+        ):
+            decoding = self.speculative_decoding_with_bandwidth_full_prob
         else:
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
@@ -108,7 +123,9 @@ class EvalMTBench(Decoding):
         # if use_compile:
         #     self.target_model = torch.compile(self.target_model, dynamic=True)
 
-        out_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl")
+        out_path = os.path.join(
+            self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
+        )
         out_f = open(out_path, "a")
 
         # warmup
@@ -164,7 +181,9 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
+                        input_ids = torch.tensor(
+                            self.tokenizer.encode(prompt)
+                        ).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
@@ -174,17 +193,25 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    output_text = self.tokenizer.decode(
+                        output_ids[0], spaces_between_special_tokens=False
+                    )
 
-                    for special_token in self.tokenizer.special_tokens_map.values():
+                    for (
+                        special_token
+                    ) in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
                             for special_tok in special_token:
-                                output_text = output_text.replace(special_tok, "")
+                                output_text = output_text.replace(
+                                    special_tok, ""
+                                )
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
                     if self.model_id == "llama-3.1":
-                        messages.append({"role": "assistant", "content": output_text})
+                        messages.append(
+                            {"role": "assistant", "content": output_text}
+                        )
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
@@ -241,7 +268,9 @@ class EvalMTBench(Decoding):
                         conv.append_message(conv.roles[0], qs)
                         conv.append_message(conv.roles[1], None)
                         prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
+                        input_ids = torch.tensor(
+                            self.tokenizer.encode(prompt)
+                        ).unsqueeze(0)
 
                     torch.cuda.synchronize()
                     start_time = time.time()
@@ -249,7 +278,10 @@ class EvalMTBench(Decoding):
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, metrics = output_ids
                         for key in decoding_metrics.keys():
-                            if key in metrics and key not in ["little_acceptance_rate", "draft_acceptance_rate"]:
+                            if key in metrics and key not in [
+                                "little_acceptance_rate",
+                                "draft_acceptance_rate",
+                            ]:
                                 decoding_metrics[key] += metrics[key]
                                 assert (
                                     decoding_metrics[key] is not None
@@ -258,17 +290,25 @@ class EvalMTBench(Decoding):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    output_text = self.tokenizer.decode(output_ids[0], spaces_between_special_tokens=False)
+                    output_text = self.tokenizer.decode(
+                        output_ids[0], spaces_between_special_tokens=False
+                    )
 
-                    for special_token in self.tokenizer.special_tokens_map.values():
+                    for (
+                        special_token
+                    ) in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
                             for special_tok in special_token:
-                                output_text = output_text.replace(special_tok, "")
+                                output_text = output_text.replace(
+                                    special_tok, ""
+                                )
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
                     if self.model_id == "llama-3.1":
-                        messages.append({"role": "assistant", "content": output_text})
+                        messages.append(
+                            {"role": "assistant", "content": output_text}
+                        )
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
@@ -315,8 +355,12 @@ class EvalMTBench(Decoding):
                 2,
             )
 
-        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(torch.tensor(total_wall_time))
-        total_speed_std = torch.std(torch.tensor(total_num_token) / torch.tensor(total_wall_time))
+        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(
+            torch.tensor(total_wall_time)
+        )
+        total_speed_std = torch.std(
+            torch.tensor(total_num_token) / torch.tensor(total_wall_time)
+        )
         self.color_print(
             f"Average generating speed: {total_speed.float().item():.2f} with std {total_speed_std.float().item()} token / second",
             2,
@@ -338,8 +382,10 @@ class EvalMTBench(Decoding):
             decoding_metrics["communication_time"] = 0.0
 
         if decoding_metrics["wall_time"] != 0:
-            decoding_metrics["throughput"] = decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-
+            decoding_metrics["throughput"] = (
+                decoding_metrics["generated_tokens"]
+                / decoding_metrics["wall_time"]
+            )
 
         metrics_str = f"""
         {str(decoding_metrics)}
@@ -358,13 +404,16 @@ class EvalMTBench(Decoding):
         eval_result["gamma1"] = self.args.gamma1
         eval_result["gamma2"] = self.args.gamma2
 
-
-
-        decoding_metrics_path = os.path.join(self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json")
+        decoding_metrics_path = os.path.join(
+            self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
+        )
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
+        self.color_print(f"{eval_result}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
-        self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
+        self.color_print(
+            f"Decoding metrics saved to {decoding_metrics_path}", 2
+        )
 
         self.color_print(metrics_str, 2)
 

@@ -13,6 +13,10 @@ from src.engine import Decoding
 from collections import Counter
 from fastchat.model import get_conversation_template
 
+from src.engine import DecodingMetrics, get_empty_metrics
+
+
+decoding_metrics = get_empty_metrics()
 
 class EvalHumaneval(Decoding):
     def __init__(self, args):
@@ -86,6 +90,7 @@ class EvalHumaneval(Decoding):
 
     @torch.no_grad()
     def eval(self):
+        global decoding_metrics
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
@@ -94,13 +99,24 @@ class EvalHumaneval(Decoding):
             decoding = self.parallel_speculative_decoding
         elif self.args.eval_mode == "duodec":
             decoding = self.duodecoding
-        elif self.args.eval_mode == "pld":
-            decoding = self.pld_forward
+        # elif self.args.eval_mode == "pld":
+        #     decoding = self.pld_forward
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":
             decoding = self.rest_forward
+        elif self.args.eval_mode == "tridecoding":
+            decoding = self.tridecoding
+        elif self.args.eval_mode == "tridecoding_with_bandwidth":
+            decoding = self.tridecoding_with_bandwidth
+        elif self.args.eval_mode == "uncertainty_decoding":
+            decoding = self.uncertainty_decoding
+        elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
+            decoding = self.speculative_decoding_with_bandwidth
+        elif self.args.eval_mode == "speculative_decoding_with_bandwidth_full_prob":
+            decoding = self.speculative_decoding_with_bandwidth_full_prob
         else:
+            print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
         out_path = os.path.join(
@@ -130,6 +146,8 @@ class EvalHumaneval(Decoding):
                     generate_ids = decoding(input_ids)
                 else:
                     generate_ids = decoding(input_ids)
+                if isinstance(generate_ids, tuple):
+                    generate_ids, _ = generate_ids
                 t = 0
                 all_time += max(0, t)
                 n = n - 1
@@ -151,6 +169,10 @@ class EvalHumaneval(Decoding):
                 torch.cuda.synchronize()
                 start_time = time.time()
                 generate_ids = decoding(input_ids)
+                if isinstance(generate_ids, tuple):
+                    generate_ids, metrics = generate_ids
+                    for key in decoding_metrics.keys():
+                        decoding_metrics[key] += metrics[key]
                 t = 0
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -210,6 +232,10 @@ class EvalHumaneval(Decoding):
                 2,
             )
 
+            self.color_print("-------Decoding Metrics-------")
+            self.color_print(f"{decoding_metrics}")
+            self.color_print("-------Decoding Metrics-------")
+
         # if self.accelerator.is_main_process:
         #     try:
         #         self.color_print(
@@ -217,7 +243,6 @@ class EvalHumaneval(Decoding):
         #         )
         #     except:
         #         pass
-
 
 
 if __name__ == "__main__":
