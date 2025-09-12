@@ -229,6 +229,9 @@ class CommunicationSimulator:
     def send_reject_message(self, linktype: LinkType) -> None:
         self.simulate_transfer(6, linktype)
 
+    def send_accept_message(self, linktype: LinkType) -> None:
+        self.simulate_transfer(6, linktype)
+
     def __call__(
         self,
         tokens: torch.Tensor,
@@ -260,6 +263,10 @@ class CommunicationSimulator:
 
         return transfer_time, link_type
 
+
+    @property
+    def total_comm_energy(self) -> float:
+        return 0.0
 
 class CUHLM(CommunicationSimulator):
     DEFAULT_COMPRESSED_VOCAB_SIZE = 300
@@ -507,6 +514,14 @@ class CUHLM(CommunicationSimulator):
 
 
 class PreciseCommunicationSimulator(CommunicationSimulator):
+    """
+    用于基于香农信道容量计算通信参数的通信模拟器
+    Args:
+        bandwidth_hz: 信道带宽，单位Hz
+        channel_gain: 信道增益
+        send_power_watt: 发送功率，单位瓦特
+        noise_power_watt: 噪声功率，单位瓦特
+    """
     def __init__(self, bandwidth_hz: int | float, channel_gain: float, send_power_watt: float, noise_power_watt: float):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
@@ -584,3 +599,5 @@ class PreciseCUHLM(CUHLM):
             for unit in self.stats[link_type]:
                 energy += unit["transfer_time"] * self.send_power_watt
         return energy
+
+    

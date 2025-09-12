@@ -15,6 +15,9 @@ from typing import List, Tuple
 
 from src.engine import get_empty_metrics, DecodingMetrics
 
+
+from functools import partial
+
 decoding_metrics = get_empty_metrics()
 
 
@@ -35,16 +38,9 @@ class EvalMTBench(Decoding):
     def __init__(self, args):
         super().__init__(args)
         # load relative resources
-        if self.args.use_gpt_fast_model:
-            self.load_tokenizer()
-            self.load_model()
-            self.color_print(
-                "Not implemented yet for gpt-fast model, use normal model for instead.",
-                1,
-            )
-        else:
-            self.load_tokenizer()
-            self.load_model()
+        
+        self.load_tokenizer()
+        self.load_model()
 
         self.load_data()
 
@@ -119,9 +115,17 @@ class EvalMTBench(Decoding):
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
-        # use_compile = True
-        # if use_compile:
-        #     self.target_model = torch.compile(self.target_model, dynamic=True)
+        if self.args.eval_mode in [
+            "speculative_decoding_with_bandwidth",
+            "tridecoding_with_bandwidth",
+            "uncertainty_decoding",
+            "speculative_decoding_with_bandwidth_full_prob",
+        ]:
+            decoding = partial(
+                decoding,
+                transfer_top_k=self.args.transfer_top_k,
+                use_precise_comm_sim=self.args.use_precise,
+            )
 
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"

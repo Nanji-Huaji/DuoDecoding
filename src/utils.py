@@ -240,6 +240,17 @@ def parse_arguments():
         default=0.8,
         help="The uncertainty threshold for uncertainty-based decoding.",
     )
+    parser.add_argument(
+        "--transfer_top_k",
+        type=int,
+        default=300,
+        help="The top k probs to transfer during communication.",
+    )
+    parser.add_argument(
+        "--use_precise",
+        action="store_true",
+        help="Use the physics level to simulate the communication.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

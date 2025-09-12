@@ -33,6 +33,7 @@ from .communication import (
     CommunicationSimulator,
     CUHLM,
     PreciseCommunicationSimulator,
+    PreciseCUHLM,
 )
 
 from typing import Literal
@@ -846,9 +847,11 @@ class Decoding(ABC):
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
+
         return prefix, metrics
 
-    @torch.no_grad
+    @torch.no_grad()
     def speculative_decoding_with_bandwidth_full_prob(
         self,
         prefix,
@@ -1059,9 +1062,11 @@ class Decoding(ABC):
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
+
         return prefix, metrics
 
-    @torch.no_grad
+    @torch.no_grad()
     def uncertainty_decoding_without_kvcache(
         self, prefix
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -1211,16 +1216,24 @@ class Decoding(ABC):
 
     @torch.no_grad()
     def uncertainty_decoding(
-        self, prefix
+        self, prefix, transfer_top_k: Optional[int] = 300, use_precise_comm_sim = False
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
         """
-        comm_simulator = CUHLM(
-            bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-            uncertainty_threshold=0.8,
-            dimension="Mbps",
-        )
+        if use_precise_comm_sim:
+            comm_simulator = PreciseCUHLM(
+                bandwidth_hz=1e9,
+                channel_gain=1e-8,
+                send_power_watt=0.5,
+                noise_power_watt=1e-10,
+            )
+        else:
+            comm_simulator = CUHLM(
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                uncertainty_threshold=0.8,
+                dimension="Mbps",
+            )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
@@ -1257,10 +1270,15 @@ class Decoding(ABC):
             loop_idx += 1
             prefix_len = prefix.shape[1]
 
+            # 传输 prompt
+            if loop_idx == 1:
+                comm_simulator.transfer(prefix, None, link_type="edge_cloud")
+
             # Sync
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
             _ = target_model_cache.generate(x.to(target_device), 1)
 
+            # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
             current_logit = approx_model_cache.logits_history[
                 :, -1, : self.vocab_size
@@ -1296,6 +1314,8 @@ class Decoding(ABC):
                 accepted_token = x[:, -1:]  # draft token
                 prefix = torch.cat((prefix, accepted_token), dim=1)
 
+                comm_simulator.send_accept_message(linktype="edge_cloud") # 发送消息告知应该接受
+
                 # KVCache管理：仿照接受所有token的情况
                 # 由于我们接受了draft token，需要从target model采样一个新token
                 t = sample(
@@ -1315,43 +1335,50 @@ class Decoding(ABC):
                 if prefix.shape[1] < max_tokens:
                     prefix = torch.cat((prefix, t), dim=1)
 
+                comm_simulator.transfer(t, None, link_type="edge_cloud") # 传输接受的token和新采样的token
+
                 continue
 
             is_accepted_last_step = False
-            for i in range(1):
-                current_probs = comm_simulator._get_current_probs(
-                    approx_model_cache._prob_history
-                )
-                compressed_prob = comm_simulator._apply_top_k_compression(
-                    current_probs, vocab_size
-                )
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    compressed_prob
-                )
-                approx_model_cache._prob_history[:, -1, : self.vocab_size] = (
-                    rebuild_probs  # 完成概率的重建
-                )
 
-                r = torch.rand(1, device=draft_device)
-                j = x[:, prefix_len + i]
+            # 拒绝采样
 
-                comm_simulator.transfer(
-                    j,
-                    approx_model_cache._prob_history[:, -1, : self.vocab_size],
-                    link_type="edge_cloud",
-                    is_compressed=True,
-                    compressed_k=vocab_size,
-                )
 
-                if r > (
-                    target_model_cache._prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (
-                    approx_model_cache._prob_history[:, prefix_len + i - 1, j]
-                ):
-                    n = prefix_len + i - 1
-                    break
+            # 压缩
+            current_probs = comm_simulator._get_current_probs(
+                approx_model_cache._prob_history
+            )
+            compressed_prob = comm_simulator._apply_top_k_compression(
+                current_probs, vocab_size
+            )
+
+            rebuild_probs = comm_simulator.rebuild_full_probs(
+                compressed_prob
+            )
+            approx_model_cache._prob_history[:, -1, : self.vocab_size] = (
+                rebuild_probs  # 完成概率的重建
+            )
+
+            r = torch.rand(1, device=draft_device)
+            j = x[:, prefix_len]
+
+            comm_simulator.transfer(
+                None, # 一开始已经传输过
+                approx_model_cache._prob_history[:, -1, : self.vocab_size],
+                link_type="edge_cloud",
+                is_compressed=True,
+                compressed_k=vocab_size,
+            )
+
+            if r > (
+                target_model_cache._prob_history.to(draft_device)[
+                    :, prefix_len - 1, j
+                ]
+            ) / (
+                approx_model_cache._prob_history[:, prefix_len - 1, j]
+            ):
+                n = prefix_len - 1
+                comm_simulator.send_reject_message(linktype="edge_cloud") # 发送消息告知应该拒绝
 
             total_accepted_tokens += n - prefix_len + 1
 
@@ -1380,6 +1407,7 @@ class Decoding(ABC):
                 ).to(draft_device)
                 target_model_cache.rollback(n + 2)
 
+            comm_simulator.transfer(t, None, link_type="edge_cloud") # 传输新采样的token
             prefix = torch.cat((prefix, t), dim=1)
 
         end_event.record(stream=torch.cuda.current_stream())
@@ -1407,6 +1435,8 @@ class Decoding(ABC):
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
         metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
         metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
+
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
 
         return prefix, metrics
 
@@ -1620,7 +1650,7 @@ class Decoding(ABC):
         return prefix, metrics
 
     @torch.no_grad()
-    def tridecoding_with_bandwidth(self, prefix, transfer_top_k=300):
+    def tridecoding_with_bandwidth(self, prefix, transfer_top_k=300, use_precise_comm_sim = False):
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
         draft_device = self.draft_model.device
@@ -1638,13 +1668,22 @@ class Decoding(ABC):
         )
         target_model_cache.vocab_size = self.vocab_size
 
-        comm_simulator = CommunicationSimulator(
-            bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-            bandwidth_edge_end=self.args.edge_end_bandwidth,
-            bandwidth_cloud_end=self.args.cloud_end_bandwidth,
-            transfer_top_k=transfer_top_k,
-            dimension="Mbps",
-        )
+
+        if use_precise_comm_sim:
+            comm_simulator = PreciseCommunicationSimulator(
+                bandwidth_hz=1e9,
+                channel_gain=1e-8,
+                send_power_watt=0.5,
+                noise_power_watt=1e-10,
+            )
+        else:
+            comm_simulator = CommunicationSimulator(
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.args.edge_end_bandwidth,
+                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                transfer_top_k=transfer_top_k,
+                dimension="Mbps",
+            )
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -1893,6 +1932,7 @@ class Decoding(ABC):
         metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
         metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
 
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
         return prefix, metrics
 
     @torch.no_grad()
