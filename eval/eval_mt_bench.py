@@ -13,8 +13,13 @@ from src.engine import Decoding
 from fastchat.model import get_conversation_template
 from typing import List, Tuple
 
-from src.engine import get_empty_metrics, DecodingMetrics
 
+
+
+from src.baselines import get_empty_metrics, DecodingMetrics
+
+
+from src.baselines import Baselines
 
 from functools import partial
 
@@ -34,7 +39,7 @@ def read_results(file_path):
     return record
 
 
-class EvalMTBench(Decoding):
+class EvalMTBench(Baselines):
     def __init__(self, args):
         super().__init__(args)
         # load relative resources
@@ -92,8 +97,8 @@ class EvalMTBench(Decoding):
             decoding = self.parallel_speculative_decoding
         elif self.args.eval_mode == "duodec":
             decoding = self.duodecoding
-        # elif self.args.eval_mode == "pld":
-        #     decoding = self.pld_forward
+        elif self.args.eval_mode == "pld":
+            decoding = self.pld_forward
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":

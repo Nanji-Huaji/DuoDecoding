@@ -44,7 +44,7 @@ class CommunicationSimulator:
     统计信息包括每次传输的数据大小和传输时间
     统计信息分为三类链路：edge-cloud, edge-end, cloud-end
     """
-    def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None, dimension: Dimension='Mbps'):
+    def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None, dimension: Dimension='Mbps', ntt_ms: float = 20):
         self.bandwidth_edge_cloud = _convert_to_bytes_per_second(bandwidth_edge_cloud, dimension)
         self.bandwidth_edge_end = _convert_to_bytes_per_second(bandwidth_edge_end, dimension)
         self.bandwidth_cloud_end = _convert_to_bytes_per_second(bandwidth_cloud_end, dimension)
@@ -54,8 +54,9 @@ class CommunicationSimulator:
             edge_end=[],
             cloud_end=[],
         )
-        # TODO: 实现top-k压缩
         self.transfer_top_k = transfer_top_k 
+
+        self.ntt = ntt_ms / 1000  # 转换为秒
 
     @property
     def edge_cloud_comm_time(self):
@@ -92,6 +93,8 @@ class CommunicationSimulator:
             raise ValueError(f"Unknown link type: {link_type}")
 
         transfer_time = data_size_bytes / bandwidth
+
+        transfer_time += self.ntt
 
         if add_to_stats:
             transfer_unit = TransferUnit(data_size_bytes=data_size_bytes, transfer_time=transfer_time)
@@ -221,7 +224,11 @@ class CommunicationSimulator:
 
         if is_compressed and prob is not None and prob.numel() > 0 and compressed_k is not None:
             # 计算压缩后的概率分布大小，假设传输时只传输非零部分
-            prob_size = compressed_k * prob.element_size()
+            if prob.dim() == 3:
+                seq_length = prob.shape[1]
+            else:
+                seq_length = 1
+            prob_size = compressed_k * prob.element_size() * seq_length
             total_bytes = token_bytes + prob_size + self.protocol_overhead_bytes
 
         return self.simulate_transfer(total_bytes, link_type)
@@ -283,10 +290,11 @@ class CUHLM(CommunicationSimulator):
         bandwidth_cloud_end = float('inf'),
         uncertainty_threshold: float = 0.8,
         vocab_size: int = 32000,
-        dimension: Dimension = 'Mbps'
+        dimension: Dimension = 'Mbps',
+        ntt_ms: float = 20,
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
-        super().__init__(bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, dimension=dimension)
+        super().__init__(bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, dimension=dimension, ntt_ms=ntt_ms)
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
 
@@ -522,10 +530,13 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         send_power_watt: 发送功率，单位瓦特
         noise_power_watt: 噪声功率，单位瓦特
     """
-    def __init__(self, bandwidth_hz: int | float, channel_gain: float, send_power_watt: float, noise_power_watt: float):
+    def __init__(self, bandwidth_hz: int | float, channel_gain: float, send_power_watt: float, noise_power_watt: float, ntt_ms: float = 20):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
-        super().__init__(channel_capacity_bps / 10, channel_capacity_bps, channel_capacity_bps / 10, dimension='bps')  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
+        print(
+            f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+        )
+        super().__init__(channel_capacity_bps / 10, channel_capacity_bps, channel_capacity_bps / 10, dimension='bps', ntt_ms=ntt_ms)  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
         self.send_power_watt = send_power_watt
@@ -571,6 +582,11 @@ class PreciseCUHLM(CUHLM):
 
         # 初始化CUHLM，使用计算得到的信道容量
         # edge-cloud使用完整信道容量，其他链路假设为容量的十分之一
+
+        print(
+            f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+        )
+
         super().__init__(
             bandwidth_edge_cloud=channel_capacity_bps,
             bandwidth_edge_end=channel_capacity_bps / 10,
@@ -599,5 +615,3 @@ class PreciseCUHLM(CUHLM):
             for unit in self.stats[link_type]:
                 energy += unit["transfer_time"] * self.send_power_watt
         return energy
-
-    
