@@ -43,6 +43,13 @@ INT_SIZE = 4
 
 
 class DecodingMetrics(TypedDict):
+    """
+    TypedDict class that defines metrics for tracking decoding performance and resource usage.
+
+    This class serves as a type annotation for dictionaries containing comprehensive
+    metrics about the decoding process, including forward pass counts, token statistics,
+    timing information, communication overhead, and energy consumption.
+    """
     little_forward_times: int
     draft_forward_times: int
     target_forward_times: int
@@ -65,6 +72,9 @@ class DecodingMetrics(TypedDict):
 
 
 def get_empty_metrics() -> DecodingMetrics:
+    """
+    Create and return an empty DecodingMetrics object with all fields initialized to zero.
+    """
     return DecodingMetrics(
         little_forward_times=0,
         draft_forward_times=0,

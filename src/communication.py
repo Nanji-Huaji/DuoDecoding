@@ -5,6 +5,7 @@ import math
 
 import warnings
 
+
 class TransferUnit(TypedDict):
     data_size_bytes: int
     transfer_time: float
@@ -20,69 +21,120 @@ LinkType = Literal["edge_cloud", "edge_end", "cloud_end"]
 
 Dimension = Literal["Mbps", "MBps", "bps", "Bps"]
 
-def _convert_to_bytes_per_second(bandwidth: float, dimension: Dimension) -> float:
+
+def _convert_to_bytes_per_second(
+    bandwidth: float, dimension: Dimension
+) -> float:
     """
     将带宽转换为bytes/second
     """
-    if dimension == 'Mbps':
+    if dimension == "Mbps":
         return bandwidth * 1e6 / 8
-    elif dimension == 'MBps':
+    elif dimension == "MBps":
         return bandwidth * 1e6
-    elif dimension == 'bps':
+    elif dimension == "bps":
         return bandwidth / 8
-    elif dimension == 'Bps':
+    elif dimension == "Bps":
         return bandwidth
     else:
         raise ValueError(f"Unknown dimension: {dimension}")
 
+
 class CommunicationSimulator:
     """
-    带宽单位：bytes/second
-    protocol_overhead_bytes: 每次传输的协议开销，单位bytes
-    transfer_top_k: Optional[int], 如果设置了top-k压缩，则在传输概率分布时只传输top-k概率，其他位置为0，假设传输时只传输非零部分
-    统计信息保存在self.stats中
-    统计信息包括每次传输的数据大小和传输时间
-    统计信息分为三类链路：edge-cloud, edge-end, cloud-end
+    用于模拟通信的类
+    - 带宽单位：bytes/second
+    - protocol_overhead_bytes: 每次传输的协议开销，单位bytes
+    - transfer_top_k: Optional[int], 如果设置了top-k压缩，则在传输概率分布时只传输top-k概率，其他位置为0，假设传输时只传输非零部分
+    - 统计信息保存在self.stats中
+    - 统计信息包括每次传输的数据大小和传输时间
+    - 统计信息分为三类链路：edge-cloud, edge-end, cloud-end
     """
-    def __init__(self, bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, protocol_overhead_bytes: int = 0, transfer_top_k: Optional[int] = None, dimension: Dimension='Mbps', ntt_ms: float = 20):
-        self.bandwidth_edge_cloud = _convert_to_bytes_per_second(bandwidth_edge_cloud, dimension)
-        self.bandwidth_edge_end = _convert_to_bytes_per_second(bandwidth_edge_end, dimension)
-        self.bandwidth_cloud_end = _convert_to_bytes_per_second(bandwidth_cloud_end, dimension)
+
+    def __init__(
+        self,
+        bandwidth_edge_cloud,
+        bandwidth_edge_end,
+        bandwidth_cloud_end,
+        protocol_overhead_bytes: int = 0,
+        transfer_top_k: Optional[int] = None,
+        dimension: Dimension = "Mbps",
+        ntt_ms_edge_end: float = 20,
+        ntt_ms_edge_cloud: float = 200
+    ):
+        self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
+            bandwidth_edge_cloud, dimension
+        )
+        self.bandwidth_edge_end = _convert_to_bytes_per_second(
+            bandwidth_edge_end, dimension
+        )
+        self.bandwidth_cloud_end = _convert_to_bytes_per_second(
+            bandwidth_cloud_end, dimension
+        )
         self.protocol_overhead_bytes = protocol_overhead_bytes
         self.stats = Statistics(
             edge_cloud=[],
             edge_end=[],
             cloud_end=[],
         )
-        self.transfer_top_k = transfer_top_k 
+        self.transfer_top_k = transfer_top_k
 
-        self.ntt = ntt_ms / 1000  # 转换为秒
+        self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
+        self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
 
     @property
     def edge_cloud_comm_time(self):
-        return sum(self.stats["edge_cloud"][i]["transfer_time"] for i in range(len(self.stats["edge_cloud"])))
+        return sum(
+            self.stats["edge_cloud"][i]["transfer_time"]
+            for i in range(len(self.stats["edge_cloud"]))
+        )
 
     @property
     def edge_end_comm_time(self):
-        return sum(self.stats["edge_end"][i]["transfer_time"] for i in range(len(self.stats["edge_end"])))
+        return sum(
+            self.stats["edge_end"][i]["transfer_time"]
+            for i in range(len(self.stats["edge_end"]))
+        )
 
     @property
     def cloud_end_comm_time(self):
-        return sum(self.stats["cloud_end"][i]["transfer_time"] for i in range(len(self.stats["cloud_end"])))
+        return sum(
+            self.stats["cloud_end"][i]["transfer_time"]
+            for i in range(len(self.stats["cloud_end"]))
+        )
 
     @property
     def edge_cloud_data(self):
-        return sum(self.stats["edge_cloud"][i]["data_size_bytes"] for i in range(len(self.stats["edge_cloud"])))
-    
+        return sum(
+            self.stats["edge_cloud"][i]["data_size_bytes"]
+            for i in range(len(self.stats["edge_cloud"]))
+        )
+
     @property
     def edge_end_data(self):
-        return sum(self.stats["edge_end"][i]["data_size_bytes"] for i in range(len(self.stats["edge_end"])))
-    
+        return sum(
+            self.stats["edge_end"][i]["data_size_bytes"]
+            for i in range(len(self.stats["edge_end"]))
+        )
+
     @property
     def cloud_end_data(self):
-        return sum(self.stats["cloud_end"][i]["data_size_bytes"] for i in range(len(self.stats["cloud_end"])))
+        return sum(
+            self.stats["cloud_end"][i]["data_size_bytes"]
+            for i in range(len(self.stats["cloud_end"]))
+        )
 
-    def simulate_transfer(self, data_size_bytes, link_type, add_to_stats=True) -> float:
+    def simulate_transfer(
+        self,
+        data_size_bytes: int | float,
+        link_type: Literal["edge_cloud", "edge_end", "cloud_end"],
+        add_to_stats=True,
+    ) -> float:
+        """
+        执行一次传输模拟。
+        - data_size_bytes: 传输的数据大小，单位bytes
+        - link_type: 传输链路类型，"edge_cloud", "edge_end", "cloud_end"
+        """
         if link_type == "edge_cloud":
             bandwidth = self.bandwidth_edge_cloud
         elif link_type == "edge_end":
@@ -94,16 +146,27 @@ class CommunicationSimulator:
 
         transfer_time = data_size_bytes / bandwidth
 
-        transfer_time += self.ntt
+        if link_type == "edge_end":
+            ntt = self.ntt_edge_end
+        elif link_type == "edge_cloud":
+            ntt = self.ntt_edge_cloud
+        elif link_type == "cloud_end":
+            ntt = self.ntt_edge_cloud + self.ntt_edge_end
+
+        transfer_time += ntt
 
         if add_to_stats:
-            transfer_unit = TransferUnit(data_size_bytes=data_size_bytes, transfer_time=transfer_time)
+            transfer_unit = TransferUnit(
+                data_size_bytes=data_size_bytes, transfer_time=transfer_time
+            )
             self.stats[link_type].append(transfer_unit)
 
         return transfer_time
 
     @staticmethod
-    def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
+    def _apply_top_k_compression(
+        probs: torch.Tensor | None, k: int
+    ) -> torch.Tensor:
         """
         probs: torch.Tensor，当前词表概率分布，形状为(..., V)
         k: int，保留的top-k数量
@@ -139,27 +202,28 @@ class CommunicationSimulator:
 
         # 处理最后一个维度（vocab_size）
         # 找到非零位置（top-k位置）
-        nonzero_mask = compressed_probs > 0  
+        nonzero_mask = compressed_probs > 0
 
         # 计算每个位置的top-k概率总和
-        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)  
+        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
 
         # 计算剩余概率质量
-        residual_mass = 1.0 - top_k_sum  
+        residual_mass = 1.0 - top_k_sum
 
         # 计算零位置的数量
-        zero_mask = compressed_probs == 0  
-        zero_count = zero_mask.sum(dim=-1, keepdim=True)  
+        zero_mask = compressed_probs == 0
+        zero_count = zero_mask.sum(dim=-1, keepdim=True)
 
         # 避免除零：如果没有零位置，则不需要重建
         uniform_prob = torch.where(
-            zero_count > 0, residual_mass / zero_count, torch.zeros_like(residual_mass)
-        )  
+            zero_count > 0,
+            residual_mass / zero_count,
+            torch.zeros_like(residual_mass),
+        )
         # 将均匀概率分配到零位置
         rebuilt_probs = torch.where(zero_mask, uniform_prob, rebuilt_probs)
 
         return rebuilt_probs
-
 
     @staticmethod
     def compress_rebuild_probs(probs: torch.Tensor, k: int) -> torch.Tensor:
@@ -175,7 +239,9 @@ class CommunicationSimulator:
             return torch.empty(0)
 
         if probs.dim() != 3:
-            raise ValueError(f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建")
+            raise ValueError(
+                f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建"
+            )
 
         if k >= probs.shape[-1]:
             return probs  # 无需压缩
@@ -186,11 +252,15 @@ class CommunicationSimulator:
         flat_probs = probs.view(-1, vocab_size)
 
         # 批量获取top-k
-        top_k_values, top_k_indices = torch.topk(flat_probs, k, dim=-1, sorted=True)
+        top_k_values, top_k_indices = torch.topk(
+            flat_probs, k, dim=-1, sorted=True
+        )
 
         # 创建压缩的概率分布
         compressed_probs = torch.zeros_like(flat_probs)
-        batch_indices = torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
+        batch_indices = (
+            torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
+        )
         compressed_probs[batch_indices, top_k_indices] = top_k_values
 
         # 重建概率分布
@@ -199,14 +269,27 @@ class CommunicationSimulator:
         zero_mask = compressed_probs == 0
         zero_count = zero_mask.sum(dim=-1, keepdim=True)
 
-        uniform_prob = torch.where(zero_count > 0, residual_mass / zero_count, torch.zeros_like(residual_mass))
+        uniform_prob = torch.where(
+            zero_count > 0,
+            residual_mass / zero_count,
+            torch.zeros_like(residual_mass),
+        )
 
-        rebuilt_flat_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
+        rebuilt_flat_probs = torch.where(
+            zero_mask, uniform_prob, compressed_probs
+        )
 
         # 恢复原始形状
         return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
 
-    def transfer(self, tokens: torch.Tensor|None, prob: torch.Tensor|None, link_type: LinkType, is_compressed: bool = False, compressed_k: Optional[int] = 300) -> float:
+    def transfer(
+        self,
+        tokens: torch.Tensor | None,
+        prob: torch.Tensor | None,
+        link_type: Literal["edge_cloud", "edge_end", "cloud_end"],
+        is_compressed: bool = False,
+        compressed_k: Optional[int] = 300,
+    ) -> float:
         token_bytes = 0
         prob_bytes = 0
 
@@ -222,7 +305,12 @@ class CommunicationSimulator:
 
         total_bytes += self.protocol_overhead_bytes
 
-        if is_compressed and prob is not None and prob.numel() > 0 and compressed_k is not None:
+        if (
+            is_compressed
+            and prob is not None
+            and prob.numel() > 0
+            and compressed_k is not None
+        ):
             # 计算压缩后的概率分布大小，假设传输时只传输非零部分
             if prob.dim() == 3:
                 seq_length = prob.shape[1]
@@ -233,17 +321,23 @@ class CommunicationSimulator:
 
         return self.simulate_transfer(total_bytes, link_type)
 
-    def send_reject_message(self, linktype: LinkType) -> None:
+    def send_reject_message(
+        self, linktype: Literal["edge_cloud", "edge_end", "cloud_end"]
+    ) -> None:
         self.simulate_transfer(6, linktype)
 
-    def send_accept_message(self, linktype: LinkType) -> None:
+    def send_accept_message(
+        self, linktype: Literal["edge_cloud", "edge_end", "cloud_end"]
+    ) -> None:
         self.simulate_transfer(6, linktype)
 
     def __call__(
         self,
         tokens: torch.Tensor,
         prob_history: Optional[torch.Tensor] = None,
-        link_type: LinkType = "edge_cloud",
+        link_type: Literal[
+            "edge_cloud", "edge_end", "cloud_end"
+        ] = "edge_cloud",
         prob_history_dtype=torch.float16,
         is_compressed: bool = False,
         compressed_k: Optional[int] = 300,
@@ -270,37 +364,52 @@ class CommunicationSimulator:
 
         return transfer_time, link_type
 
-
     @property
     def total_comm_energy(self) -> float:
         return 0.0
 
+
 class CUHLM(CommunicationSimulator):
-    DEFAULT_COMPRESSED_VOCAB_SIZE = 300
     """
+    基于不确定性进行机会传输的对比实验方法。
+
     超参数：
-    uncertainty_threshold: float, 不确定度阈值，默认0.8
-    M: int, 温度扰动采样数量，默认20
-    theta_max: float, 最大温度扰动，默认2.0
+    - uncertainty_threshold: float, 不确定度阈值，默认0.8
+    - M: int, 温度扰动采样数量，默认20
+    - theta_max: float, 最大温度扰动，默认2.0
     """
+
+    DEFAULT_COMPRESSED_VOCAB_SIZE = 300
+
     def __init__(
         self,
         bandwidth_edge_cloud,
-        bandwidth_edge_end = float('inf'),
-        bandwidth_cloud_end = float('inf'),
+        bandwidth_edge_end=float("inf"),
+        bandwidth_cloud_end=float("inf"),
         uncertainty_threshold: float = 0.8,
         vocab_size: int = 32000,
-        dimension: Dimension = 'Mbps',
-        ntt_ms: float = 20,
+        dimension: Dimension = "Mbps",
+        ntt_ms_edge_end: float = 20,
+        ntt_ms_edge_cloud: float = 200,
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
-        super().__init__(bandwidth_edge_cloud, bandwidth_edge_end, bandwidth_cloud_end, dimension=dimension, ntt_ms=ntt_ms)
+        super().__init__(
+            bandwidth_edge_cloud,
+            bandwidth_edge_end,
+            bandwidth_cloud_end,
+            dimension=dimension,
+            ntt_ms_edge_end: float = 20,
+            ntt_ms_edge_cloud: float = 200
+        )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
 
     @staticmethod
     def calculate_uncertainty(
-        logits: torch.Tensor | None, M: int = 20, theta_max: float = 2.0, draft_token: Optional[int] = None
+        logits: torch.Tensor | None,
+        M: int = 20,
+        theta_max: float = 2.0,
+        draft_token: Optional[int] = None,
     ) -> float:
         if logits is None or logits.numel() == 0:
             warnings.warn("警告：logits为空，无法计算不确定度，默认返回1.0")
@@ -315,12 +424,18 @@ class CUHLM(CommunicationSimulator):
         temperatures = torch.clamp(temperatures, min=1e-6)
 
         # 向量化扰动分布计算
-        perturbed_logits = logits.unsqueeze(0) / temperatures.unsqueeze(1)  # [M, vocab_size]
-        perturbed_logits = perturbed_logits - perturbed_logits.max(dim=1, keepdim=True)[0]
+        perturbed_logits = logits.unsqueeze(0) / temperatures.unsqueeze(
+            1
+        )  # [M, vocab_size]
+        perturbed_logits = (
+            perturbed_logits - perturbed_logits.max(dim=1, keepdim=True)[0]
+        )
         perturbed_probs = torch.softmax(perturbed_logits, dim=-1)
 
         # 批量采样
-        perturbed_tokens = torch.multinomial(perturbed_probs, 1).squeeze(1)  # [M]
+        perturbed_tokens = torch.multinomial(perturbed_probs, 1).squeeze(
+            1
+        )  # [M]
 
         # 计算分歧
         disagreements = (perturbed_tokens != draft_token).sum().item()
@@ -328,7 +443,9 @@ class CUHLM(CommunicationSimulator):
         return disagreements / M
 
     @staticmethod
-    def _get_current_probs(prob_history: Optional[torch.Tensor]) -> torch.Tensor:
+    def _get_current_probs(
+        prob_history: Optional[torch.Tensor],
+    ) -> torch.Tensor:
         """
         返回当前时间步的概率分布，为一维张量，(...,vocab_size)
         """
@@ -337,15 +454,15 @@ class CUHLM(CommunicationSimulator):
             return torch.empty(0)
             # prob_history形状: (1, seq_len, 32000)
         if prob_history.dim() == 3:
-            current_probs = prob_history[0, -1, :]  
+            current_probs = prob_history[0, -1, :]
         elif prob_history.dim() == 2:
-            current_probs = prob_history[-1, :]  
+            current_probs = prob_history[-1, :]
         elif prob_history.dim() == 1:
             current_probs = prob_history
         else:
             raise ValueError("prob_history维度不支持")
 
-        return current_probs  
+        return current_probs
 
     @staticmethod
     def rebuild_full_probs(compressed_probs: torch.Tensor) -> torch.Tensor:
@@ -362,40 +479,53 @@ class CUHLM(CommunicationSimulator):
 
         # 处理最后一个维度（vocab_size）
         # 找到非零位置（top-k位置）
-        nonzero_mask = compressed_probs > 0  
+        nonzero_mask = compressed_probs > 0
 
         # 计算每个位置的top-k概率总和
-        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)  
+        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
 
         # 计算剩余概率质量
-        residual_mass = 1.0 - top_k_sum  
+        residual_mass = 1.0 - top_k_sum
 
         # 计算零位置的数量
-        zero_mask = compressed_probs == 0  
-        zero_count = zero_mask.sum(dim=-1, keepdim=True)  
+        zero_mask = compressed_probs == 0
+        zero_count = zero_mask.sum(dim=-1, keepdim=True)
 
         # 避免除零：如果没有零位置，则不需要重建
         uniform_prob = torch.where(
-            zero_count > 0, residual_mass / zero_count, torch.zeros_like(residual_mass)
-        )  
+            zero_count > 0,
+            residual_mass / zero_count,
+            torch.zeros_like(residual_mass),
+        )
         # 将均匀概率分配到零位置
         rebuilt_probs = torch.where(zero_mask, uniform_prob, rebuilt_probs)
 
         return rebuilt_probs
 
-    def determine_transfer_strategy(self, uncertainty: float, current_probs: torch.Tensor | None) -> Tuple[bool, int]:
+    def determine_transfer_strategy(
+        self, uncertainty: float, current_probs: torch.Tensor | None
+    ) -> Tuple[bool, int]:
         "返回是否传输以及传输的词汇表大小"
-        if current_probs is None or current_probs.numel() == 0: 
-            warnings.warn("警告：current_probs为空，无法决定传输策略，默认不传输概率分布")
+        if current_probs is None or current_probs.numel() == 0:
+            warnings.warn(
+                "警告：current_probs为空，无法决定传输策略，默认不传输概率分布"
+            )
             return False, 0
-        if uncertainty >= self.uncertainty_threshold: # 不确定度高，传输
-            vocab_size = max(1, self._calculate_compressed_vocab_size(uncertainty, current_probs))
+        if uncertainty >= self.uncertainty_threshold:  # 不确定度高，传输
+            vocab_size = max(
+                1,
+                self._calculate_compressed_vocab_size(
+                    uncertainty, current_probs
+                ),
+            )
             return True, vocab_size
-        else: # 大模型直接接受当前输出
+        else:  # 大模型直接接受当前输出
             return False, 0
 
     @staticmethod
-    def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
+    def _apply_top_k_compression(
+        probs: torch.Tensor | None, k: int
+    ) -> torch.Tensor:
         """
         probs: torch.Tensor，当前词表概率分布，形状为(..., V)
         k: int，保留的top-k数量
@@ -421,7 +551,11 @@ class CUHLM(CommunicationSimulator):
         return torch.log(1 + torch.exp(eta * z)) / eta
 
     def _calculate_compressed_vocab_size(
-        self, uncertainty: float, current_probs: torch.Tensor, theta: float = 0.1, draft_token: Optional[int] = None
+        self,
+        uncertainty: float,
+        current_probs: torch.Tensor,
+        theta: float = 0.1,
+        draft_token: Optional[int] = None,
     ) -> int:
         """严格按照论文公式(24)实现：k(t)* = arg min {k(t) | U_TV(au(t) + b) ≤ θ}"""
 
@@ -430,7 +564,9 @@ class CUHLM(CommunicationSimulator):
 
         # 确保输入是完整的词汇表概率分布
         if len(current_probs) != self.vocab_size:
-            warnings.warn(f"警告：概率分布长度({len(current_probs)})与词汇表大小({self.vocab_size})不匹配")
+            warnings.warn(
+                f"警告：概率分布长度({len(current_probs)})与词汇表大小({self.vocab_size})不匹配"
+            )
             return max(1, min(300, self.vocab_size // 100))
 
         # Step 1: 计算rejection probability
@@ -438,7 +574,9 @@ class CUHLM(CommunicationSimulator):
         beta_d = max(0, min(1, a * uncertainty + b))
 
         # Step 2: 对概率分布排序
-        sorted_probs, sorted_indices = torch.sort(current_probs, descending=True)
+        sorted_probs, sorted_indices = torch.sort(
+            current_probs, descending=True
+        )
 
         # Step 3: 获取draft token概率
         if draft_token is None:
@@ -490,15 +628,19 @@ class CUHLM(CommunicationSimulator):
         # 如果没找到满足条件的k，返回保守值
         return min(self.DEFAULT_COMPRESSED_VOCAB_SIZE, self.vocab_size // 100)
 
-    def terminal_prob(self, current_probs: torch.Tensor, logits: Optional[torch.Tensor]) -> torch.Tensor:
+    def terminal_prob(
+        self, current_probs: torch.Tensor, logits: Optional[torch.Tensor]
+    ) -> torch.Tensor:
         """
         返回先经过压缩再重建的终端概率分布
         形状为(vocab_size,)
         """
         if current_probs is None and logits is None:
-            warnings.warn("警告：current_probs和logits均为空，无法获取终端概率分布")
+            warnings.warn(
+                "警告：current_probs和logits均为空，无法获取终端概率分布"
+            )
             return torch.empty(0)
-        
+
         if logits is None:
             # 按照贪心解码重建logits
             probs = torch.clamp(current_probs, min=1e-8)
@@ -507,14 +649,20 @@ class CUHLM(CommunicationSimulator):
             if current_probs.dim() == 1:
                 logits = log_probs - torch.max(log_probs)
             else:
-                logits = log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
+                logits = (
+                    log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
+                )
 
         uncertainty = self.calculate_uncertainty(logits)
-        should_transfer_prob, vocab_size = self.determine_transfer_strategy(uncertainty, current_probs)
+        should_transfer_prob, vocab_size = self.determine_transfer_strategy(
+            uncertainty, current_probs
+        )
         if not should_transfer_prob:
             return current_probs
         if vocab_size < self.vocab_size:
-            compressed_probs = self._apply_top_k_compression(current_probs, vocab_size)
+            compressed_probs = self._apply_top_k_compression(
+                current_probs, vocab_size
+            )
             rebuilt_probs = self.rebuild_full_probs(compressed_probs)
             return rebuilt_probs
         else:
@@ -530,13 +678,29 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         send_power_watt: 发送功率，单位瓦特
         noise_power_watt: 噪声功率，单位瓦特
     """
-    def __init__(self, bandwidth_hz: int | float, channel_gain: float, send_power_watt: float, noise_power_watt: float, ntt_ms: float = 20):
+
+    def __init__(
+        self,
+        bandwidth_hz: int | float,
+        channel_gain: float,
+        send_power_watt: float,
+        noise_power_watt: float,
+        ntt_ms_edge_end: float = 20,
+        ntt_ms_edge_cloud: float = 200
+    ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
         print(
             f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
         )
-        super().__init__(channel_capacity_bps / 10, channel_capacity_bps, channel_capacity_bps / 10, dimension='bps', ntt_ms=ntt_ms)  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
+        super().__init__(
+            channel_capacity_bps / 10,
+            channel_capacity_bps,
+            channel_capacity_bps / 10,
+            dimension="bps",
+            ntt_ms_edge_end: float = 20,
+            ntt_ms_edge_cloud: float = 200,
+        )  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
         self.send_power_watt = send_power_watt

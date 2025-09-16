@@ -1,54 +1,50 @@
+import warnings
+from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
+
 import torch
-import json
 import torch.distributed as dist
 import numpy as np
-import os
 import transformers
-import warnings
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteriaList, MaxLengthCriteria
+from accelerate import Accelerator
+import llama_cpp
+import draftretriever
 
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import llama_cpp
-from abc import ABC, abstractmethod
-from accelerate import Accelerator
+
 from .model_gpu import KVCacheModel
 from .model_cpu import KVCacheCppModel
 from .utils import seed_everything, norm_logits, sample, max_fn
-import time
-
-from transformers import StoppingCriteriaList, MaxLengthCriteria
-
-
 from .model.rest.rest.model.utils import *
 from .model.rest.rest.model.rest_model import RestModel
 from .model.rest.rest.model.kv_cache import initialize_past_key_values
-import draftretriever
-
 from .model.pld.pld import greedy_search_pld
-
-from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
-
 from .communication import (
     CommunicationSimulator,
     CUHLM,
     PreciseCommunicationSimulator,
     PreciseCUHLM,
 )
-
-from .engine import Decoding
-
-from .engine import DecodingMetrics, get_empty_metrics, INT_SIZE
+from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 
 
 class Baselines(Decoding):
+    """
+    用于实验的方法。
+    包含：
+    - Speculative Decoding with Bandwidth
+    - Uncertainty Decoding
+    - Speculative Decoding with Bandwidth + Full Prob
+    - Tridecoding
+    """
     def __init__(self, args):
         super().__init__(args)
 
     @torch.no_grad()
     def speculative_decoding_with_bandwidth(
         self,
-        prefix,
+        prefix: torch.Tensor,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -969,11 +965,8 @@ class Baselines(Decoding):
             assert n2 >= prefix_len - 1, f"n {n2}, prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
-            (
+            if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
-                if n2 <= little_model_cache.current_length
-                else None
-            )
             if n2 < prefix_len + self.args.gamma1 - 1:
 
                 rebuild_probs = comm_simulator.rebuild_full_probs(
