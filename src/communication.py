@@ -5,6 +5,8 @@ import math
 
 import warnings
 
+import logging
+
 
 class TransferUnit(TypedDict):
     data_size_bytes: int
@@ -366,6 +368,9 @@ class CommunicationSimulator:
 
     @property
     def total_comm_energy(self) -> float:
+        """
+        仅在子类中实现，用于占位，表示通信能耗，单位焦耳
+        """
         return 0.0
 
 
@@ -398,8 +403,8 @@ class CUHLM(CommunicationSimulator):
             bandwidth_edge_end,
             bandwidth_cloud_end,
             dimension=dimension,
-            ntt_ms_edge_end: float = 20,
-            ntt_ms_edge_cloud: float = 200
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -690,7 +695,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
-        print(
+        logging.info(
             f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
         )
         super().__init__(
@@ -698,8 +703,8 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             channel_capacity_bps,
             channel_capacity_bps / 10,
             dimension="bps",
-            ntt_ms_edge_end: float = 20,
-            ntt_ms_edge_cloud: float = 200,
+            ntt_ms_edge_end = ntt_ms_edge_end,
+            ntt_ms_edge_cloud = ntt_ms_edge_cloud,
         )  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
@@ -772,7 +777,7 @@ class PreciseCUHLM(CUHLM):
         self.comm_energy = 0.0
 
     @property
-    def total_comm_energy(self):
+    def total_comm_energy(self) -> float:
         """计算总通信能耗（焦耳）"""
         energy = 0.0
         for link_type in ["edge_cloud", "edge_end", "cloud_end"]:

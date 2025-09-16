@@ -14,8 +14,6 @@ from fastchat.model import get_conversation_template
 from typing import List, Tuple
 
 
-
-
 from src.baselines import get_empty_metrics, DecodingMetrics
 
 
@@ -23,7 +21,19 @@ from src.baselines import Baselines
 
 from functools import partial
 
+import inspect
+
 decoding_metrics = get_empty_metrics()
+
+
+def get_class_methods(cls) -> List[str]:
+    """获取类中定义的所有方法（不包括继承的方法和__init__）"""
+    methods = []
+    for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
+        # 检查方法是否在当前类中定义（而非继承）
+        if name in cls.__dict__ and name != "__init__":
+            methods.append(name)
+    return methods
 
 
 def read_results(file_path):
@@ -43,7 +53,7 @@ class EvalMTBench(Baselines):
     def __init__(self, args):
         super().__init__(args)
         # load relative resources
-        
+
         self.load_tokenizer()
         self.load_model()
 
@@ -116,6 +126,8 @@ class EvalMTBench(Baselines):
             == "speculative_decoding_with_bandwidth_full_prob"
         ):
             decoding = self.speculative_decoding_with_bandwidth_full_prob
+        elif self.args.eval_mode in get_class_methods(Baselines):
+            decoding = getattr(self, self.args.eval_mode)
         else:
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
