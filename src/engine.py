@@ -50,6 +50,7 @@ class DecodingMetrics(TypedDict):
     metrics about the decoding process, including forward pass counts, token statistics,
     timing information, communication overhead, and energy consumption.
     """
+
     little_forward_times: int
     draft_forward_times: int
     target_forward_times: int
@@ -1044,7 +1045,7 @@ class Decoding(ABC):
                 #     transfer_top_k is not None and transfer_top_k > 0,
                 #     transfer_top_k,
                 # )
-                
+
                 t = sample(
                     max_fn(
                         target_model_cache._prob_history[
@@ -1995,7 +1996,7 @@ class Decoding(ABC):
         return prefix, metrics
 
     @torch.no_grad()
-    def pld_forward(self, prefix):
+    def pld_forward(self, prefix, **kwargs):
         input_ids = prefix.cuda()
         attention_mask = torch.ones_like(input_ids).cuda()
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -2030,7 +2031,7 @@ class Decoding(ABC):
         return output_ids
 
     @torch.no_grad()
-    def lookahead_forward(self, prefix):
+    def lookahead_forward(self, prefix, **kwargs):
         input_ids = prefix.cuda()
 
         output_ids, idx, accept_length_list = self.target_model.generate(
@@ -2044,7 +2045,7 @@ class Decoding(ABC):
         return output_ids
 
     @torch.no_grad()
-    def rest_forward(self, prefix):
+    def rest_forward(self, prefix, **kwargs):
         temperature = self.args.temp
         top_p = self.args.top_p
         num_draft = self.args.num_draft
@@ -2131,7 +2132,7 @@ class Decoding(ABC):
         return input_ids
 
     @torch.no_grad()
-    def parallel_speculative_decoding(self, prefix):
+    def parallel_speculative_decoding(self, prefix, **kwargs):
         # parallel speculative decoding
         if self.accelerator.is_main_process:
             model = KVCacheModel(
@@ -2282,7 +2283,7 @@ class Decoding(ABC):
         return prefix
 
     @torch.no_grad()
-    def duodecoding(self, prefix):
+    def duodecoding(self, prefix, **kwargs):
         # parallel speculative decoding
         if self.accelerator.is_main_process:
             model = KVCacheCppModel(
@@ -2570,7 +2571,7 @@ class Decoding(ABC):
 
     @torch.no_grad()
     def verify_first_token_for_k_seq(
-        self, draft_tokens_k_seq, draft_prob_k_seq, target_prob
+        self, draft_tokens_k_seq, draft_prob_k_seq, target_prob, **kwargs
     ):
         flag = False  # if any accepted
         resampled_token_id = 0

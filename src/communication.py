@@ -743,6 +743,8 @@ class PreciseCUHLM(CUHLM):
         noise_power_watt: float,
         uncertainty_threshold: float = 0.8,
         vocab_size: int = 32000,
+        ntt_ms_edge_cloud: float = 200,
+        ntt_ms_edge_end: float = 20,
     ):
         # 计算信噪比
         SNR = channel_gain * send_power_watt / noise_power_watt
@@ -763,6 +765,8 @@ class PreciseCUHLM(CUHLM):
             uncertainty_threshold=uncertainty_threshold,
             vocab_size=vocab_size,
             dimension="bps",
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
         )
 
         # 存储通信物理参数

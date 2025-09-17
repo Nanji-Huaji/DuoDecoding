@@ -132,17 +132,14 @@ class EvalMTBench(Baselines):
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
-        if self.args.eval_mode in [
-            "speculative_decoding_with_bandwidth",
-            "tridecoding_with_bandwidth",
-            "uncertainty_decoding",
-            "speculative_decoding_with_bandwidth_full_prob",
-        ]:
-            decoding = partial(
-                decoding,
-                transfer_top_k=self.args.transfer_top_k,
-                use_precise_comm_sim=self.args.use_precise,
-            )
+
+        decoding = partial(
+            decoding,
+            transfer_top_k=self.args.transfer_top_k,
+            use_precise_comm_sim=self.args.use_precise,
+            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
+            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
+        )
 
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
@@ -438,19 +435,7 @@ class EvalMTBench(Baselines):
 
         self.color_print(metrics_str, 2)
 
-        # self.color_print(f"draft model forward times: {self.draft_forward_times}", 2)
-
         self.accelerator.wait_for_everyone()
-
-        # if (
-        #     self.accelerator.num_processes == 1 and self.accelerator.is_main_process
-        # ) or (
-        #     self.accelerator.num_processes == 2 and not self.accelerator.is_main_process
-        # ):
-        #     print(
-        #         f"\033[92mtarget model forward times: {self.target_forward_times}\033[0m"
-        #     )
-
 
 if __name__ == "__main__":
     args = parse_arguments()

@@ -47,6 +47,8 @@ class Baselines(Decoding):
         prefix: torch.Tensor,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
+        ntt_ms_edge_cloud: float = 200,
+        ntt_ms_edge_end: float = 20
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         串行传输 token 和 prob 的 speculative decoding
@@ -59,6 +61,8 @@ class Baselines(Decoding):
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -66,6 +70,8 @@ class Baselines(Decoding):
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -283,6 +289,8 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
+        ntt_ms_edge_cloud: float = 200,
+        ntt_ms_edge_end: float = 20
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
@@ -290,6 +298,8 @@ class Baselines(Decoding):
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -297,6 +307,8 @@ class Baselines(Decoding):
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -530,6 +542,8 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim=False,
+        ntt_ms_edge_cloud: float = 200,
+        ntt_ms_edge_end: float = 20
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
@@ -540,12 +554,15 @@ class Baselines(Decoding):
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         else:
             comm_simulator = CUHLM(
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 uncertainty_threshold=0.8,
                 dimension="Mbps",
+                
             )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens

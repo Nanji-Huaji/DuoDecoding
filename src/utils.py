@@ -251,6 +251,18 @@ def parse_arguments():
         action="store_true",
         help="Use the physics level to simulate the communication.",
     )
+    parser.add_argument(
+        "--ntt_ms_edge_end",
+        type=float,
+        default=20.0,
+        help="The network time delay between edge and end device in ms.",
+    )
+    parser.add_argument(
+        "--ntt_ms_edge_cloud",
+        type=float,
+        default=200.0,
+        help="The network time delay between edge and cloud in ms.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
