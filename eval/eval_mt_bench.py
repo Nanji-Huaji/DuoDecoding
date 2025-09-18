@@ -129,6 +129,16 @@ class EvalMTBench(Baselines):
         elif self.args.eval_mode in get_class_methods(Baselines):
             decoding = getattr(self, self.args.eval_mode)
         else:
+            try:
+                methods = getattr(self, self.args.eval_mode)
+                if callable(methods):
+                    decoding = methods
+                else:
+                    self.color_print("Unknown eval mode", 3)
+                    raise NotImplementedError
+            except AttributeError:
+                self.color_print("Unknown eval mode", 3)
+                raise NotImplementedError
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
@@ -406,7 +416,7 @@ class EvalMTBench(Baselines):
             )
 
         metrics_str = f"""
-        {str(decoding_metrics)}
+        {json.dumps(decoding_metrics, indent = 4)}
         """
 
         metrics_str += """
@@ -426,14 +436,13 @@ class EvalMTBench(Baselines):
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
         )
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-        self.color_print(f"{eval_result}", 3)
+        self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
         self.color_print(
             f"Decoding metrics saved to {decoding_metrics_path}", 2
         )
 
-        self.color_print(metrics_str, 2)
 
         self.accelerator.wait_for_everyone()
 

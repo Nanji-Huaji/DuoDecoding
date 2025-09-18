@@ -33,16 +33,16 @@ class Baselines(Decoding):
     """
     用于实验的方法。
     包含：
-    - Speculative Decoding with Bandwidth
+    - dssd
     - Uncertainty Decoding
-    - Speculative Decoding with Bandwidth + Full Prob
+    - dsd
     - Tridecoding
     """
     def __init__(self, args):
         super().__init__(args)
 
     @torch.no_grad()
-    def speculative_decoding_with_bandwidth(
+    def dist_split_spec(
         self,
         prefix: torch.Tensor,
         transfer_top_k: Optional[int] = 300,
@@ -284,7 +284,7 @@ class Baselines(Decoding):
         return prefix, metrics
 
     @torch.no_grad()
-    def speculative_decoding_with_bandwidth_full_prob(
+    def dist_spec(
         self,
         prefix,
         transfer_top_k: Optional[int] = 300,
@@ -777,7 +777,7 @@ class Baselines(Decoding):
         return prefix, metrics
 
     @torch.no_grad()
-    def tridecoding_with_bandwidth(
+    def tridecoding(
         self, prefix, transfer_top_k=300, use_precise_comm_sim=False
     ):
         max_tokens = prefix.shape[1] + self.args.max_tokens

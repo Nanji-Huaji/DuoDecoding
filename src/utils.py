@@ -157,12 +157,6 @@ def parse_arguments():
         type=int,
         default=10,
     )
-    parser.add_argument(
-        "--use-gpt_fast_model",
-        type=bool,
-        default=False,
-        help="Use gpt-fast model for decoding.",
-    )
     # end for lookahead decoding
 
     # for rest
@@ -185,12 +179,6 @@ def parse_arguments():
         help="The maximum number of draft tokens.",
     )
     # end for rest
-    parser.add_argument(
-        "--enable-compile",
-        type=bool,
-        default=False,
-        help="Enable torch.compile for optimization.",
-    )
     parser.add_argument(
         "--little_model",
         type=str,

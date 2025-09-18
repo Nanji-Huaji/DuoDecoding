@@ -16,8 +16,6 @@
 {
     "version": "0.2.0",
     "configurations": [
-        
-
         {
             "name": "Debug MT-Bench Large",
             "type": "debugpy",
@@ -180,7 +178,47 @@
                         "--gamma1",
                         "5",
                         "--gamma2",
+                        "0",
+                        "-n",
+                        "1",
+                        "-e",
+                        "vicuna",
+                        "--use-gpt_fast_model",
+                        "false",
+                        "--draft_model",
+                        "tiny-vicuna-1b",
+                        "--target_model",
+                        "vicuna-13b-v1.5",
+                        "--max_tokens",
                         "128",
+                        "--temp",
+                        "0",
+                        "--uncertainty_threshold",
+                        "0.8",
+                        "--edge_cloud_bandwidth",
+                        "100",
+                        "--edge_end_bandwidth",
+                        "100",
+                        "--cloud_end_bandwidth",
+                        "100",
+                        "--exp_name",
+                        "tirdecoding_${currentDate}_${currentTime}"
+                    ],
+                    "env": {
+                        "CUDA_VISIBLE_DEVICES": "0"
+                    },
+                    "console": "integratedTerminal"
+                },
+                {
+                    "name": "Debug MT-Bench Speculative full prob",
+                    "type": "debugpy",
+                    "request": "launch",
+                    "program": "${workspaceFolder}/eval/eval_mt_bench.py",
+                    "args": [
+                        "--eval_mode",
+                        "speculative_decoding_with_bandwidth_full_prob",
+                        "--gamma",
+                        "5",
                         "-n",
                         "1",
                         "-e",
@@ -199,12 +237,8 @@
                         "0.8",
                         "--edge_cloud_bandwidth",
                         "100",
-                        "--edge_end_bandwidth",
-                        "100",
-                        "--cloud_end_bandwidth",
-                        "100",
                         "--exp_name",
-                        "tirdecoding_${currentDate}_${currentTime}"
+                        "uncertainty_${currentDate}_${currentTime}"
                     ],
                     "env": {
                         "CUDA_VISIBLE_DEVICES": "0"

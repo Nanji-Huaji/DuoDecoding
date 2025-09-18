@@ -27,3 +27,6 @@ exp_res/*
 .idea/inspectionProfiles/profiles_settings.xml
 test.py
 
+.vscode/launch.json
+.vscode/settings.json
+exp_cmd.ipynb
