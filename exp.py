@@ -1,11 +1,24 @@
 import subprocess
 import os
+import json
+import threading
+import time
+from pathlib import Path
 
 from typing import TypedDict
 
+from typing import Literal
+
+from typing import List
+
+from typing import Dict
+
 from datetime import datetime
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 class ExpConfig(TypedDict):
+    CUDA_VISIBLE_DEVICES: Literal['0', '1']
     eval_mode: str
     edge_end_bandwidth: int
     edge_cloud_bandwidth: int
@@ -19,7 +32,7 @@ class ExpConfig(TypedDict):
 
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
-CUDA_VISIBLE_DEVICES=1 accelerate launch \
+CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --num_processes 1 \
     --main_process_port 29051 \
     eval/eval_mt_bench.py \
@@ -54,20 +67,217 @@ def get_file_path(exp_name: str) -> str:
     print(f"File not found for {exp_name}")
     return ""
 
-def run_exp(config: ExpConfig) -> dict:
+def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
+    """运行实验并重定向日志"""
+    # 创建日志目录
+    Path(log_dir).mkdir(exist_ok=True)
+    
+    # 生成日志文件名
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(log_dir, f"{config['exp_name'].replace('/', '_')}_{timestamp}.log")
+    
     cmd = cmd_temp.format(**config)
     if config.get("use_precise", False):
         cmd = add_args(cmd, "use_precise")
-    print(cmd)
-    subprocess.run(cmd, shell=True, check=True)
-    # 读取结果文件
-    result_file = get_file_path(config["exp_name"])
-    if result_file:
-        with open(result_file, 'r') as f:
-            result = f.read()
-        return {"exp_name": config["exp_name"], "result": result}
-    else:
-        return {"exp_name": config["exp_name"], "result": "File not found"}
+    
+    print(f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}")
+    print(f"日志文件: {log_file}")
+    
+    try:
+        # 重定向输出到日志文件
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write(f"实验配置: {json.dumps(config, indent=2, ensure_ascii=False)}\n")
+            f.write(f"执行命令: {cmd}\n")
+            f.write("=" * 80 + "\n")
+            
+            result = subprocess.run(
+                cmd, 
+                shell=True, 
+                check=True,
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+        
+        # 读取结果文件
+        result_file = get_file_path(config["exp_name"])
+        if result_file:
+            with open(result_file, 'r') as f:
+                result_data = f.read()
+            
+            # 尝试解析JSON字符串为字典
+            try:
+                parsed_result = json.loads(result_data)
+                return {
+                    "exp_name": config["exp_name"], 
+                    "result": parsed_result,  # 现在是字典对象
+                    "log_file": log_file,
+                    "status": "success"
+                }
+            except json.JSONDecodeError as e:
+                return {
+                    "exp_name": config["exp_name"], 
+                    "result": {"error": "JSON解析失败", "raw_data": result_data},
+                    "log_file": log_file,
+                    "status": "json_error"
+                }
+        else:
+            return {
+                "exp_name": config["exp_name"], 
+                "result": {"error": "结果文件未找到"},
+                "log_file": log_file,
+                "status": "no_result"
+            }
+            
+    except subprocess.CalledProcessError as e:
+        error_msg = f"实验失败，错误代码: {e.returncode}"
+        print(f"实验 {config['exp_name']} 失败: {error_msg}")
+        return {
+            "exp_name": config["exp_name"], 
+            "result": {"error": error_msg},
+            "log_file": log_file,
+            "status": "failed"
+        }
+
+class GPUManager:
+    def __init__(self):
+        self.available_gpus = set(self.get_available_gpus())
+        self.lock = threading.Lock()
+        print(f"初始化GPU管理器，可用GPU: {sorted(self.available_gpus)}")
+    
+    def get_available_gpus(self) -> List[int]:
+        """检测完全空闲的GPU"""
+        import pynvml
+        pynvml.nvmlInit()
+        available_gpus = []
+        
+        device_count = pynvml.nvmlDeviceGetCount()
+        for i in range(device_count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            # 检查显存使用情况
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            mem_used_mb = mem_info.used / 1024 / 1024
+            
+            # 检查GPU利用率
+            util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            gpu_util = util_info.gpu
+            
+            # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
+            if mem_used_mb < 1024 and gpu_util < 5:
+                available_gpus.append(i)
+                print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
+            else:
+                print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
+                
+        return available_gpus
+    
+    def acquire_gpu(self) -> int | None:
+        """获取一个可用的GPU"""
+        with self.lock:
+            if self.available_gpus:
+                gpu_id = self.available_gpus.pop()
+                print(f"分配GPU {gpu_id}")
+                return gpu_id
+            return None
+    
+    def release_gpu(self, gpu_id: int):
+        """释放GPU"""
+        with self.lock:
+            self.available_gpus.add(gpu_id)
+            print(f"释放GPU {gpu_id}")
+    
+    def has_available_gpu(self) -> bool:
+        """检查是否有可用GPU"""
+        with self.lock:
+            return len(self.available_gpus) > 0
+
+def run_experiment_with_gpu(config: ExpConfig, gpu_manager: GPUManager, log_dir: str = "logs") -> dict:
+    """在指定GPU上运行实验"""
+    gpu_id = None
+    try:
+        # 等待可用GPU
+        while gpu_id is None:
+            gpu_id = gpu_manager.acquire_gpu()
+            if gpu_id is None:
+                print(f"等待可用GPU运行实验: {config['exp_name']}")
+                time.sleep(5)
+        
+        # 更新配置中的GPU设备
+        config['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        
+        # 运行实验
+        result = run_exp(config, log_dir)
+        return result
+        
+    finally:
+        # 释放GPU
+        if gpu_id is not None:
+            gpu_manager.release_gpu(gpu_id)
+
+def run_experiments_parallel(configs: List[ExpConfig], max_workers: int = 2, log_dir: str = "logs") -> List[dict]:
+    """并行运行多个实验"""
+    gpu_manager = GPUManager()
+    
+    # 检查是否有足够的GPU
+    if len(gpu_manager.available_gpus) == 0:
+        print("错误: 没有可用的GPU")
+        return []
+    
+    print(f"将并行运行 {len(configs)} 个实验，最大并发数: {min(max_workers, len(gpu_manager.available_gpus))}")
+    
+    all_results = []
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(gpu_manager.available_gpus))) as executor:
+        # 提交所有任务
+        future_to_config = {
+            executor.submit(run_experiment_with_gpu, config, gpu_manager, log_dir): config 
+            for config in configs
+        }
+        
+        # 收集结果
+        for future in as_completed(future_to_config):
+            config = future_to_config[future]
+            try:
+                result = future.result()
+                all_results.append(result)
+                print(f"实验完成: {config['exp_name']}, 状态: {result['status']}")
+            except Exception as exc:
+                error_result = {
+                    "exp_name": config["exp_name"], 
+                    "result": f"执行异常: {exc}",
+                    "log_file": "",
+                    "status": "exception"
+                }
+                all_results.append(error_result)
+                print(f"实验异常: {config['exp_name']}, 错误: {exc}")
+    
+    return all_results
+
+
+def get_available_gpus() -> List[int]:
+    """检测完全空闲的GPU"""
+    import pynvml
+    pynvml.nvmlInit()
+    available_gpus = []
+    
+    device_count = pynvml.nvmlDeviceGetCount()
+    for i in range(device_count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        # 检查显存使用情况
+        mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        mem_used_mb = mem_info.used / 1024 / 1024 # type: ignore
+        
+        # 检查GPU利用率
+        util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        gpu_util = util_info.gpu
+        
+        # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
+        if mem_used_mb < 1024 and gpu_util < 5: # type: ignore
+            available_gpus.append(i)
+            print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
+        else:
+            print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
+            
+    return available_gpus
 
 
 def create_config(
@@ -75,9 +285,11 @@ def create_config(
     ntt_ms_edge_cloud: int | float = 10,
     ntt_ms_edge_end: int | float = 1,
     use_precise: bool = True,
+    CUDA_VISIBLE_DEVICES: Literal['0', '1'] = '0',
 ) -> ExpConfig:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     return ExpConfig(
+        CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
         eval_mode=eval_mode,
         edge_end_bandwidth=100,
         edge_cloud_bandwidth=100,
@@ -97,14 +309,39 @@ config_to_run = [
     create_config("tridecoding"),
 ]
 
+
 if __name__ == "__main__":
-    all_results = []
-    for config in config_to_run:
-        result = run_exp(config)
-        all_results.append(result)
+    # 创建日志目录
+    log_dir = "exp_logs"
+    Path(log_dir).mkdir(exist_ok=True)
     
-    # 保存所有结果到一个文件中
-    with open("all_experiment_results.txt", "w") as f:
-        for res in all_results:
-            f.write(f"Experiment: {res['exp_name']}\n")
-            f.write(f"Result: {res['result']}\n\n")
+    # 并行运行实验
+    all_results = run_experiments_parallel(config_to_run, max_workers=2, log_dir=log_dir)
+    
+    # 保存汇总结果
+    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(summary_file, "w", encoding='utf-8') as f:
+        json.dump(all_results, f, indent=2, ensure_ascii=False)
+    
+    # 打印汇总报告
+    print("\n" + "="*80)
+    print("实验汇总报告:")
+    print("="*80)
+    
+    successful = sum(1 for r in all_results if r['status'] == 'success')
+    failed = sum(1 for r in all_results if r['status'] == 'failed')
+    no_result = sum(1 for r in all_results if r['status'] == 'no_result')
+    exception = sum(1 for r in all_results if r['status'] == 'exception')
+    
+    print(f"总实验数: {len(all_results)}")
+    print(f"成功: {successful}")
+    print(f"失败: {failed}")
+    print(f"无结果: {no_result}")
+    print(f"异常: {exception}")
+    print(f"\n汇总结果已保存到: {summary_file}")
+    
+    for result in all_results:
+        print(f"\n实验: {result['exp_name']}")
+        print(f"状态: {result['status']}")
+        if result.get('log_file'):
+            print(f"日志: {result['log_file']}")

@@ -5,7 +5,12 @@ import torch
 import torch.distributed as dist
 import numpy as np
 import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteriaList, MaxLengthCriteria
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteriaList,
+    MaxLengthCriteria,
+)
 from accelerate import Accelerator
 import llama_cpp
 import draftretriever
@@ -38,6 +43,7 @@ class Baselines(Decoding):
     - dsd
     - Tridecoding
     """
+
     def __init__(self, args):
         super().__init__(args)
 
@@ -48,7 +54,7 @@ class Baselines(Decoding):
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
         ntt_ms_edge_cloud: float = 200,
-        ntt_ms_edge_end: float = 20
+        ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         串行传输 token 和 prob 的 speculative decoding
@@ -57,12 +63,12 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
-                bandwidth_hz=1e6,
+                bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -71,7 +77,7 @@ class Baselines(Decoding):
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -290,16 +296,16 @@ class Baselines(Decoding):
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
         ntt_ms_edge_cloud: float = 200,
-        ntt_ms_edge_end: float = 20
+        ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
-                bandwidth_hz=1e6,
+                bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -308,7 +314,7 @@ class Baselines(Decoding):
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -543,26 +549,25 @@ class Baselines(Decoding):
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim=False,
         ntt_ms_edge_cloud: float = 200,
-        ntt_ms_edge_end: float = 20
+        ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
         """
         if use_precise_comm_sim:
             comm_simulator = PreciseCUHLM(
-                bandwidth_hz=1e6,
+                bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         else:
             comm_simulator = CUHLM(
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 uncertainty_threshold=0.8,
                 dimension="Mbps",
-                
             )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -778,7 +783,13 @@ class Baselines(Decoding):
 
     @torch.no_grad()
     def tridecoding(
-        self, prefix, transfer_top_k=300, use_precise_comm_sim=False
+        self,
+        prefix,
+        transfer_top_k=300,
+        use_precise_comm_sim=False,
+        ntt_ms_edge_cloud: float = 10,
+        ntt_ms_edge_end: float = 1,
+        **kwargs
     ):
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
@@ -799,10 +810,12 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
-                bandwidth_hz=1e6,
+                bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -811,6 +824,8 @@ class Baselines(Decoding):
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
 
         # Metrics tracking
