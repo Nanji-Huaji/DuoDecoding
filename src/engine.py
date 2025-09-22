@@ -70,6 +70,7 @@ class DecodingMetrics(TypedDict):
     loop_times: int
     each_loop_draft_tokens: float
     comm_energy: float
+    connect_times: dict
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -96,6 +97,7 @@ def get_empty_metrics() -> DecodingMetrics:
         loop_times=0,
         each_loop_draft_tokens=0,
         comm_energy=0.0,
+        connect_times={"edge_end": 0, "cloud_end": 0, "edge_cloud": 0},
     )
 
 

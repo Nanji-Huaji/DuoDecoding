@@ -84,6 +84,12 @@ class CommunicationSimulator:
         self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
         self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
 
+        self.connect_times = {
+            "edge_end": 0, 
+            "cloud_end": 0,
+            "edge_cloud": 0
+        }
+
     @property
     def edge_cloud_comm_time(self):
         return sum(
@@ -126,6 +132,11 @@ class CommunicationSimulator:
             for i in range(len(self.stats["cloud_end"]))
         )
 
+    @property
+    def get_connct_times(self) -> dict:
+        return self.connect_times
+
+
     def simulate_transfer(
         self,
         data_size_bytes: int | float,
@@ -154,6 +165,8 @@ class CommunicationSimulator:
             ntt = self.ntt_edge_cloud
         elif link_type == "cloud_end":
             ntt = self.ntt_edge_cloud + self.ntt_edge_end
+
+        self.connect_times[link_type] += 1
 
         transfer_time += ntt
 

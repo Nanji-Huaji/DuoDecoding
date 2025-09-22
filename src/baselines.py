@@ -286,6 +286,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
+        metrics["connect_times"] = comm_simulator.connect_times
 
         return prefix, metrics
 
@@ -539,6 +540,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
+        metrics["connect_times"] = comm_simulator.connect_times
 
         return prefix, metrics
 
@@ -778,7 +780,7 @@ class Baselines(Decoding):
         metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
-
+        metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
 
     @torch.no_grad()
@@ -1080,4 +1082,5 @@ class Baselines(Decoding):
         metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
+        metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics

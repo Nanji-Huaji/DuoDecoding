@@ -30,6 +30,11 @@ class ExpConfig(TypedDict):
     ntt_ms_edge_end: int | float
 
 
+# Global Constants
+
+NTT_MS_EDGE_CLOUD = 0
+NTT_MS_EDGE_END = 0
+
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
 CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
@@ -207,6 +212,8 @@ def run_experiment_with_gpu(config: ExpConfig, gpu_manager: GPUManager, log_dir:
         
         # 运行实验
         result = run_exp(config, log_dir)
+        # 添加配置参数到结果中
+        result['config'] = config.copy()
         return result
         
     finally:
@@ -282,18 +289,21 @@ def get_available_gpus() -> List[int]:
 
 def create_config(
     eval_mode: str,
-    ntt_ms_edge_cloud: int | float = 10,
-    ntt_ms_edge_end: int | float = 1,
+    ntt_ms_edge_cloud: int | float = NTT_MS_EDGE_CLOUD,
+    ntt_ms_edge_end: int | float = NTT_MS_EDGE_END,
     use_precise: bool = True,
     CUDA_VISIBLE_DEVICES: Literal['0', '1'] = '0',
+    edge_end_bandwidth=100,
+    edge_cloud_bandwidth=100,
+    cloud_end_bandwidth=100,
 ) -> ExpConfig:
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     return ExpConfig(
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
         eval_mode=eval_mode,
-        edge_end_bandwidth=100,
-        edge_cloud_bandwidth=100,
-        cloud_end_bandwidth=100,
+        edge_end_bandwidth=edge_end_bandwidth,
+        edge_cloud_bandwidth=edge_cloud_bandwidth,
+        cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=300,
         exp_name=f"{eval_mode}/{eval_mode}_{timestamp}",
         use_precise=use_precise,
@@ -301,13 +311,58 @@ def create_config(
         ntt_ms_edge_end=ntt_ms_edge_end,
     )
 
+bandwidth_config = [(563, 34.6), (350, 25.0), (200, 15.0), (100, 5.0), (33.2, 0.14)]
 
-config_to_run = [
-    create_config("dist_spec"),
-    create_config("dist_split_spec"),
-    create_config("uncertainty_decoding"),
-    create_config("tridecoding"),
-]
+# 在此添加实验
+
+config_to_run = []
+
+for edge_end_bw, edge_cloud_bw in bandwidth_config:
+    config_to_run.append(
+        create_config(
+            eval_mode=f"dist_split_spec",
+            ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+            ntt_ms_edge_end=NTT_MS_EDGE_END,
+            edge_end_bandwidth=edge_end_bw,
+            edge_cloud_bandwidth=edge_cloud_bw,
+            cloud_end_bandwidth=edge_cloud_bw,
+            use_precise=False,
+        )
+    )
+    config_to_run.append(
+        create_config(
+            eval_mode=f"dist_spec", 
+            ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+            ntt_ms_edge_end=NTT_MS_EDGE_END,
+            use_precise=False,
+            edge_end_bandwidth=edge_end_bw,
+            edge_cloud_bandwidth=edge_cloud_bw,
+            cloud_end_bandwidth=edge_cloud_bw,
+        )
+    )
+    config_to_run.append(
+        create_config(
+            eval_mode="uncertainty_decoding",
+            ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+            ntt_ms_edge_end=NTT_MS_EDGE_END,
+            use_precise=False,
+            edge_end_bandwidth=edge_end_bw,
+            edge_cloud_bandwidth=edge_cloud_bw,
+            cloud_end_bandwidth=edge_cloud_bw,
+        )
+    )
+    config_to_run.append(
+        create_config(
+            eval_mode="tridecoding",
+            ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+            ntt_ms_edge_end=NTT_MS_EDGE_END,
+            use_precise=False,
+            edge_end_bandwidth=edge_end_bw,
+            edge_cloud_bandwidth=edge_cloud_bw,
+            cloud_end_bandwidth=edge_cloud_bw,
+        )
+    )
+
 
 
 if __name__ == "__main__":

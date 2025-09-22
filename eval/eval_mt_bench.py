@@ -23,6 +23,8 @@ from functools import partial
 
 import inspect
 
+from collections import Counter
+
 decoding_metrics = get_empty_metrics()
 
 
@@ -309,11 +311,24 @@ class EvalMTBench(Baselines):
                             if key in metrics and key not in [
                                 "little_acceptance_rate",
                                 "draft_acceptance_rate",
-                            ]:
+                            ] and hasattr(metrics[key], "__add__"):
                                 decoding_metrics[key] += metrics[key]
                                 assert (
                                     decoding_metrics[key] is not None
                                 ), f"Metric {key} is None, please check your decoding function."
+                            else:
+                                # 如果传入一个字典，尝试将字典的值进行累加
+                                if isinstance(metrics[key], dict):
+                                    try:
+                                        for sub_key in metrics[key]:
+                                            if sub_key in decoding_metrics[key]:
+                                                decoding_metrics[key][sub_key] += metrics[key][sub_key]
+                                            else:
+                                                decoding_metrics[key][sub_key] = metrics[key][sub_key]
+                                    except Exception as e:
+                                        print(f"Error updating metric {key}: {e}")
+                                        
+
 
                     torch.cuda.synchronize()
                     end_time = time.time()
