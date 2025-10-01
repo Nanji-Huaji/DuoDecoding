@@ -9,7 +9,7 @@ import logging
 
 
 class TransferUnit(TypedDict):
-    data_size_bytes: int
+    data_size_bytes: int | float
     transfer_time: float
 
 
@@ -133,7 +133,7 @@ class CommunicationSimulator:
         )
 
     @property
-    def get_connct_times(self) -> dict:
+    def get_connect_times(self) -> dict:
         return self.connect_times
 
 
@@ -737,7 +737,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
 
 class PreciseCUHLM(CUHLM):
     """
-    CUHLM的高精度版本，基于香农信道容量计算实际通信参数
+    CUHLM的复杂建模版本，基于香农信道容量计算实际通信参数
 
     参数：
     - bandwidth_hz: 信道带宽，单位Hz

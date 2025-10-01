@@ -65,8 +65,8 @@ class DecodingMetrics(TypedDict):
     computation_time: float
     edge_end_comm_time: float
     edge_cloud_data_bytes: int
-    edge_end_data_bytes: int
-    cloud_end_data_bytes: int
+    edge_end_data_bytes: int | float
+    cloud_end_data_bytes: int | float
     loop_times: int
     each_loop_draft_tokens: float
     comm_energy: float

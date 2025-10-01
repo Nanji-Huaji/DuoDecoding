@@ -30,3 +30,8 @@ test.py
 .vscode/launch.json
 .vscode/settings.json
 exp_cmd.ipynb
+.idea/misc.xml
+
+experiment_summary_*.json
+sorted_experiments.json
+experiment_results_table.md

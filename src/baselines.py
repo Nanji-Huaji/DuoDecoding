@@ -59,7 +59,7 @@ class Baselines(Decoding):
         """
         串行传输 token 和 prob 的 speculative decoding
         - transfer_top_k: 用于传输的top-k压缩参数，None或0表示不压缩
-        - use_precise_comm_sim: 是否使用精确的通信模拟器
+        - use_precise_comm_sim: 是否使用物理的通信模拟器
         """
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
