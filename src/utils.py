@@ -251,6 +251,11 @@ def parse_arguments():
         default=200.0,
         help="The network time delay between edge and cloud in ms.",
     )
+    parser.add_argument(
+        "--acc_head_path",
+        type=str,
+        default="/home/tiantianyi/code/DuoDecoding/src/SpecDec_pp/exp-weight6-layer3",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

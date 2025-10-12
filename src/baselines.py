@@ -15,6 +15,15 @@ from accelerate import Accelerator
 import llama_cpp
 import draftretriever
 
+import safetensors
+
+import json
+
+
+from .SpecDec_pp.specdec_pp.wrap_model import AcceptancePredictionHead
+
+import os
+
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
@@ -34,6 +43,28 @@ from .communication import (
 from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 
 
+from .adapter import DecodingAdapter
+
+from typing import Callable
+
+
+from safetensors.torch import load_file
+
+def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
+    if hasattr(instance, name):
+        method = getattr(instance, name)
+        if callable(method):
+            return method
+        else:
+            raise ValueError(
+                f"Attribute '{name}' in {instance.__class__.__name__} is not callable"
+            )
+    else:
+        raise ValueError(
+            f"Decoding method '{name}' not found in class {instance.__class__.__name__}"
+        )
+
+
 class Baselines(Decoding):
     """
     用于实验的方法。
@@ -46,6 +77,15 @@ class Baselines(Decoding):
 
     def __init__(self, args):
         super().__init__(args)
+        if self.args.eval_mode == "adaptive_decoding":
+            self.acc_head_path = args.acc_head_path
+            self.acc_head = AcceptancePredictionHead.from_pretrained(
+                self.acc_head_path,
+            ).to("cuda:0")
+            self.acc_head.eval()
+            self.adapter = DecodingAdapter(
+                self.acc_head, 0.8
+            )
 
     @torch.no_grad()
     def dist_split_spec(
@@ -1083,4 +1123,194 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+        return prefix, metrics
+
+    @torch.no_grad()
+    def adaptive_decoding(self, prefix, **kwargs) -> Tuple[torch.Tensor, DecodingMetrics]:
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+
+        # TODO: 有质量问题
+
+        draft_device = self.draft_model.device
+        target_device = self.target_model.device
+
+        approx_model_cache = KVCacheModel(
+            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        approx_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(
+            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        target_model_cache.vocab_size = self.vocab_size
+
+        draft_forward_times = 0
+        target_forward_times = 0
+        total_accepted_tokens = 0
+        total_drafted_tokens = 0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        current_tokens = prefix.clone()
+
+        loop_idx = 0
+
+        start_event.record(stream=torch.cuda.current_stream())
+
+        while prefix.shape[1] < max_tokens:
+
+            loop_idx += 1
+
+            prefix_len = prefix.shape[1]
+
+            draft_kvcache_length = approx_model_cache.current_length
+            target_kvcache_length = target_model_cache.current_length
+
+            least_generated_tokens = 3
+
+            # 确保不会生成超过max_tokens的token
+            remaining_tokens = max_tokens - prefix_len
+            if remaining_tokens <= 0:
+                break
+
+            # 调整gamma以不超过剩余的token数量
+            current_gamma = min(
+                self.args.gamma, remaining_tokens - 1
+            )  # 减1是为了留给最后的采样token
+            if current_gamma <= 0:
+                # 如果只剩1个token，直接用target model生成
+                _ = target_model_cache.generate(prefix.to(target_device), 1)
+                target_forward_times += 1
+                if self.accelerator.is_main_process:
+                    self.target_forward_times += 1
+
+                t = sample(
+                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(draft_device)
+                prefix = torch.cat((prefix, t), dim=1)
+                total_accepted_tokens += 1
+                self.num_acc_tokens.append(1)
+                break
+
+            # x = approx_model_cache.generate(
+            #     prefix.to(draft_device), current_gamma
+            # )
+
+            actual_gamma = 0
+
+            for _ in range(current_gamma):
+                actual_gamma += 1
+                x = approx_model_cache.generate(
+                    x, 1
+                ) if actual_gamma != 1 else approx_model_cache.generate(
+                    prefix.to(draft_device), 1
+                )
+                prefix_len = prefix.shape[1]
+                stop = self.adapter.predict(
+                    approx_model_cache.hidden_states,
+                ) and False
+                if stop and x.shape[-1] - prefix_len > least_generated_tokens:
+                    break
+
+
+
+            actual_gamma = current_gamma
+
+            current_gamma = actual_gamma
+            print(f"Adaptive gamma: {current_gamma}")
+
+
+            draft_forward_times += current_gamma
+            total_drafted_tokens += current_gamma
+
+            _ = target_model_cache.generate(x.to(target_device), 1)
+            target_forward_times += 1
+
+
+            if self.accelerator.is_main_process:
+                self.draft_forward_times += current_gamma
+                self.target_forward_times += 1
+
+            n = prefix_len + current_gamma - 1
+            for i in range(current_gamma):
+                # 检查索引是否合法
+                draft_idx = prefix_len + i - 1
+                target_idx = prefix_len + i - 1
+
+                if draft_idx >= approx_model_cache._prob_history.shape[1]:
+                    break
+                if target_idx >= target_model_cache._prob_history.shape[1]:
+                    break
+
+                r = torch.rand(1, device=draft_device)
+                j = x[:, prefix_len + i]
+
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, target_idx, j
+                    ]
+                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
+                    n = prefix_len + i - 1
+                    break
+
+            this_step_accepted_tokens = n - prefix_len + 1
+            total_accepted_tokens += this_step_accepted_tokens
+
+            self.num_acc_tokens.append(this_step_accepted_tokens)
+
+            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+            prefix = x[:, : n + 1]
+
+            approx_model_cache.rollback(n + 1)
+
+            # 检查是否还有空间添加一个token
+            if prefix.shape[1] >= max_tokens:
+                break
+
+            if n < prefix_len + current_gamma - 1:
+                # reject someone, sample from the pos n
+                t = sample(
+                    max_fn(
+                        target_model_cache._prob_history[
+                            :, n, : self.vocab_size
+                        ].to(draft_device)
+                        - approx_model_cache._prob_history[
+                            :, n, : self.vocab_size
+                        ]
+                    )
+                )
+                target_model_cache.rollback(n + 1)
+            else:
+                # all approx model decoding accepted
+                t = sample(
+                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(draft_device)
+                target_model_cache.rollback(n + 2)
+
+            # 最后检查添加token后是否会超出限制
+            if prefix.shape[1] < max_tokens:
+                prefix = torch.cat((prefix, t), dim=1)
+                total_accepted_tokens += 1
+
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+
+        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
+
+        metrics = get_empty_metrics()
+        metrics["draft_forward_times"] = draft_forward_times
+        metrics["target_forward_times"] = target_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["draft_generated_tokens"] = total_drafted_tokens
+        metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["wall_time"] = elapsed_time
+        metrics["throughput"] = throughput
+        metrics["loop_times"] = loop_idx
+        metrics["each_loop_draft_tokens"] = (
+            total_drafted_tokens / loop_idx if loop_idx > 0 else 0
+        )
+
+
         return prefix, metrics
