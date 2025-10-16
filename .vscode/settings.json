@@ -4,5 +4,6 @@
     "python-envs.pythonProjects": [],
     "python.analysis.diagnosticSeverityOverrides": {
             "reportOptionalSubscript": "none"
-}
+},
+"commentTranslate.hover.enabled": false
 }

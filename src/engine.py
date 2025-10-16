@@ -152,7 +152,15 @@ class Decoding(ABC):
                 cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
-        elif self.args.eval_mode == "sd":
+        elif self.args.eval_mode in [
+            "sd",
+            "dist_spec",
+            "dist_split_spec",
+            "uncertainty_decoding",
+            "speculative_decoding_with_bandwidth",
+            "speculative_decoding_with_bandwidth_full_prob",
+
+        ]:
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
                 device_map="cuda:0",
@@ -284,7 +292,7 @@ class Decoding(ABC):
             self.datastore = draftretriever.Reader(
                 index_file_path=self.args.datastore_path,
             )
-        elif self.args.eval_mode == "tridecoding":
+        elif self.args.eval_mode in ["tridecoding", "tridecoding_with_bandwidth"]:
             self.little_model = AutoModelForCausalLM.from_pretrained(
                 self.args.little_model,
                 device_map="auto",
@@ -304,131 +312,13 @@ class Decoding(ABC):
             self.target_model = AutoModelForCausalLM.from_pretrained(
                 self.args.target_model,
                 device_map="auto",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "tridecoding_with_bandwidth":
-            self.little_model = AutoModelForCausalLM.from_pretrained(
-                self.args.little_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map=(
-                    "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
-                ),
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map=(
-                    "balanced_low_0"
-                    if torch.cuda.device_count() > 2
-                    else "cuda:0"
-                ),
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "uncertainty_decoding":
-            self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="balanced_low_0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
-            self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="balanced_low_0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif (
-            self.args.eval_mode
-            == "speculative_decoding_with_bandwidth_full_prob"
-        ):
-            self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="balanced_low_0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "dist_spec":
-                self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-                self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="balanced_low_0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "dist_split_spec":
-                self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-                self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="balanced_low_0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 cache_dir="llama/.cache/huggingface",
                 local_files_only=True,
             ).eval()
         elif self.args.eval_mode == "adaptive_decoding":
+                
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
                 device_map="cuda:0",
@@ -438,6 +328,7 @@ class Decoding(ABC):
                 local_files_only=True,
                 output_hidden_states=True,
             ).eval()
+            
             self.target_model = AutoModelForCausalLM.from_pretrained(
                 self.args.target_model,
                 device_map="balanced_low_0",
@@ -1545,7 +1436,6 @@ class Decoding(ABC):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
 
         return prefix, metrics
-
 
     @torch.no_grad()
     def tridecoding_with_bandwidth(
