@@ -42,7 +42,7 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --main_process_port 29051 \
     eval/eval_mt_bench.py \
     --eval_mode {eval_mode} \
-    -e llama \
+    -e {llama_or_vicuna} \
     --draft_model tiny-llama-1.1b \
     --target_model Llama-2-13b \
     --little_model llama-68m \
@@ -57,7 +57,7 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
     --ntt_ms_edge_end {ntt_ms_edge_end} \
-"""
+""".format({'llama_or_vicuna': 'llama' if 'llama' in '{target_model}' else 'vicuna'})
 
 def add_args(base_cmd: str, extra_arg: str) -> str:
     # 修复语法错误

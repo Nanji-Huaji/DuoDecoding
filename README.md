@@ -1,76 +1,96 @@
 # DuoDecoding
-[![arXiv.2503.00784](https://img.shields.io/badge/arXiv-2503.00784-red)](https://arxiv.org/abs/2503.00784) [![Hugging Face Paper Page](https://img.shields.io/badge/🤗%20Paper%20Page-2503.00784-yellow)](https://huggingface.co/papers/2503.00784)
 
-This repo contains the implementation for the paper [Hardware-aware Heterogeneous Speculative Decoding with Dynamic Multi-Sequence Drafting](https://arxiv.org/abs/2503.00784). We propose deploying the draft model on CPU, which shifts drafting computational overhead to CPU and enables parallel decoding.
+This is an experiment framework based on Duodecoding.
 
 ## Setup
 
-1. Create a conda environment with Python 3.10:
 
-```sh
-conda create -n duodec python=3.10
-conda activate duodec
-```
-
-2. Install Python bindings for llama.cpp:
-```sh
-CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install llama-cpp-python
-```
-
-
-3. Install other required packages:
-```sh
-git clone https://github.com/KaiLv69/DuoDecoding.git
-cd DuoDecoding
+Firstly, install the requirements with:
+```bash
 pip install -r requirements.txt
 ```
 
-4. Set model path in `src/utils.py`.
+Then, download models in the following:
 
-5. (Optional) Install draftretriever and create a datastore for REST:
-```sh
-bash src/model/rest/datastore/datastore.sh
-pip install src/model/rest/DraftRetriever/wheels/draftretriever-0.1.0-cp310-cp310-manylinux_2_34_x86_64.whl
+Llama Series:
+    - Llama-68M
+    - TinyLlama-1.1B
+    - Llama-2-13B
+
+Vicuna Series:
+    - Vicuna-68M
+    - TinyVicuna-1B
+    - Vicuna-13B-v1.5
+
+And put them to:
+```
+./<llama/vicuna>/<your-model-dir>
 ```
 
-## Evaluation
-We provide evaluation scripts for the experiments reported in our paper.
-- To evaluate the baseline methods on Llama-2-7b:
-```sh
-bash cmds/baseline_llama.sh
-```
-- To evaluate DuoDecoding on Llama-2-7b:
-```sh
-bash cmds/duodec_llama.sh
-```
-- To evaluate baseline methods on Vicuna-7b-v1.5:
-```sh
-bash cmds/baseline_vicuna.sh
-```
-- To evaluate DuoDecoding on Vicuna-7b-v1.5:
-```sh
-bash cmds/duodec_vicuna.sh
+## Run
+
+
+Run experiments via `./exp.py`:
+```bash
+python exp.py
 ```
 
+### Args
 
-## Bugs and Questions
-If you have any questions related to the code or the paper, feel free to email Kai (klv23@m.fudan.edu.cn). If you encounter any problems when using the code, or want to report a bug, you can open an issue. Please try to specify the problem with details so we can help you better and quicker!
+This script is used to run given experiments automatically. Basically, the following args are needed:
+
+| Args  Name                      | Meaning                                                      | Choice                                                       |
+| ------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| eval_mode                       | The decoding method selected for the experiment              | `dist_spec`, `dist_split_spec`, `tridecoding`, `uncertainty_decoding` |
+| draft_model                     | The draft model for speculative decoding methods             | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `llama-68m`,  and `vicuna-68m` are available |
+| target_model                    | The target model for speculative decoding methods            | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `Llama-2-13b,` and `vicuna-13b-v1.5` are available. |
+| small_model                     | The smallest model for tridecoding methods                   | Currently, `llama-68m`,  and `vicuna-68m` are available      |
+| gamma                           | The number of drafted tokens on speculative decoding. <br>Automatically ignored on autoregressive or tridecoding methods. | An int                                                       |
+| gamma1                          | The number of drafted tokens in the tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
+| edge_end_bandwidth              | The bandwidth between the edge and the end device. <br>Only available on the methods implemented for transmission simulation. | A float                                                      |
+| edge_cloud_bandwidth            | The bandwidth between the edge and the cloud device. <br/>Ipid. | A float                                                      |
+| cloud_end_bandwidth             | The bandwidth between the edge and the end device. <br>Ipid. | A float                                                      |
+| max_tokens                      | Max tokens for each sample of the dataset.                   | An int                                                       |
+| temp                            | Temperature for the target model. Default: 0.0               | A float                                                      |
+| exp_name                        | The name of your experiment.                                 | A str                                                        |
+| ntt_ms_edge_cloud [Depreciated] | The non-transmission time between the edge and the cloud device. | A float                                                      |
+| ntt_ms_edge_end [Depreciated]   | Ipid.                                                        | A float                                                      |
+| transfer_top_k                  | Args for top-k compression on the methods that were implemented for transmission simulation. | An int                                                       |
 
 
-## Acknowledgments
+### Adding New Experiments
 
-This repo builds upon the following excellent repos: [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), [Spec-Bench](https://github.com/hemingkx/Spec-Bench), [parallelspeculativedecoding](https://github.com/smart-lty/parallelspeculativedecoding).
-
-## Citation
-Please cite our paper if you find the repo helpful:
-```bibtex
-@misc{lv2025duodecodinghardwareawareheterogeneousspeculative,
-      title={DuoDecoding: Hardware-aware Heterogeneous Speculative Decoding with Dynamic Multi-Sequence Drafting}, 
-      author={Kai Lv and Honglin Guo and Qipeng Guo and Xipeng Qiu},
-      year={2025},
-      eprint={2503.00784},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2503.00784}, 
-}
+Experiments are defined based on the following Typeddict:
+```python
+class ExpConfig(TypedDict):
+    CUDA_VISIBLE_DEVICES: Literal['0', '1'] # Sorry for only considered only for the machines having 1 or 2 gpus.
+    eval_mode: str
+    edge_end_bandwidth: int
+    edge_cloud_bandwidth: int
+    cloud_end_bandwidth: int
+    transfer_top_k: int
+    exp_name: str
+    use_precise: bool
+    ntt_ms_edge_cloud: int | float
+    ntt_ms_edge_end: int | float
 ```
+
+`ExpConfig` is not the same as the table above, for currently only do the experiments for llama series. You can add args on the table above to the typeddict and pass them to the scripts if you need.
+
+After defined your experiment configs, you can append them to the `config_to_run` list. And the experiment configs are to be run if the script is executed.
+
+
+### Reading the Results
+
+`table_generator_ver2.ipynb` is used for generating the table of experiment results.
+
+After you executed the experiment script, it automatically generates a json file named `experiment_summary_<experiment_date>.json`. You can change the `file_path` var to your json file and run the jupyter notebook:
+
+```python
+# ... exixting codes
+def main():
+    # 读取实验数据
+    file_path = "experiment_summary_20250920_145859.json" # change here
+# ... existing codes
+```
+

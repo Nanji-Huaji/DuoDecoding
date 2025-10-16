@@ -1314,3 +1314,7 @@ class Baselines(Decoding):
 
 
         return prefix, metrics
+
+
+    def adaptive_tridecoding(self, prefix, **kwargs) -> Tuple[torch.Tensor, DecodingMetrics]:
+        raise NotImplementedError("This decoding method has not been implemented yet")
