@@ -46,15 +46,16 @@ This script is used to run given experiments automatically. Basically, the follo
 | target_model                    | The target model for speculative decoding methods            | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `Llama-2-13b,` and `vicuna-13b-v1.5` are available. |
 | small_model                     | The smallest model for tridecoding methods                   | Currently, `llama-68m`,  and `vicuna-68m` are available      |
 | gamma                           | The number of drafted tokens on speculative decoding. <br>Automatically ignored on autoregressive or tridecoding methods. | An int                                                       |
-| gamma1                          | The number of drafted tokens in the tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
+| gamma1                          | The number of drafted tokens in end-edge level of the tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
+| gamma2                          | The number of drafted tokens in the edge-cloud level of tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
 | edge_end_bandwidth              | The bandwidth between the edge and the end device. <br>Only available on the methods implemented for transmission simulation. | A float                                                      |
-| edge_cloud_bandwidth            | The bandwidth between the edge and the cloud device. <br/>Ipid. | A float                                                      |
-| cloud_end_bandwidth             | The bandwidth between the edge and the end device. <br>Ipid. | A float                                                      |
+| edge_cloud_bandwidth            | The bandwidth between the edge and the cloud device. <br/>Ibid. | A float                                                      |
+| cloud_end_bandwidth             | The bandwidth between the edge and the end device. <br>Ibid. | A float                                                      |
 | max_tokens                      | Max tokens for each sample of the dataset.                   | An int                                                       |
 | temp                            | Temperature for the target model. Default: 0.0               | A float                                                      |
 | exp_name                        | The name of your experiment.                                 | A str                                                        |
 | ntt_ms_edge_cloud [Depreciated] | The non-transmission time between the edge and the cloud device. | A float                                                      |
-| ntt_ms_edge_end [Depreciated]   | Ipid.                                                        | A float                                                      |
+| ntt_ms_edge_end [Depreciated]   | Ibid.                                                        | A float                                                      |
 | transfer_top_k                  | Args for top-k compression on the methods that were implemented for transmission simulation. | An int                                                       |
 
 
