@@ -251,6 +251,24 @@ def parse_arguments():
         default=200.0,
         help="The network time delay between edge and cloud in ms.",
     )
+    parser.add_argument(
+        "--acc_head_path",
+        type=str,
+        default="./src/SpecDec_pp/exp-weight6-layer3",
+        help="The path of the accuracy head model.",
+    )
+    parser.add_argument(
+        "--small_draft_acc_head_path",
+        type=str,
+        default="./src/SpecDec_pp/exp-weight6-layer3",
+        help="The path of the small draft accuracy head model.",
+    )
+    parser.add_argument(
+        "--draft_target_acc_head_path",
+        type=str,
+        default="",
+        help="The path of the draft-target accuracy head model.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

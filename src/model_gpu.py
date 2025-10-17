@@ -9,6 +9,7 @@ class KVCacheModel:
         temperature: float = 1,
         top_k: int = 0,
         top_p: float = 0,
+        return_hidden_states: bool = False,
     ) -> None:
         self._model = model
         self._past_key_values = None
@@ -18,7 +19,11 @@ class KVCacheModel:
         self._top_k = top_k
         self._top_p = top_p
 
+        self.hidden_states: torch.Tensor | None = None
+
         self.logits_history: torch.Tensor | None = None # 不确定性方法需要存储logits历史
+
+        self.vocab_size = model.config.vocab_size
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if self._past_key_values is None:
@@ -34,6 +39,7 @@ class KVCacheModel:
                 )
             self._past_key_values = outputs.past_key_values
             last_q = self._prob_history[:, -1, :]
+            self.hidden_states = outputs.hidden_states
         else:
             # return the last token's logits
             cached_len = self._past_key_values[0][0].shape[2]
@@ -57,8 +63,15 @@ class KVCacheModel:
 
             last_q = not_cached_q[:, -1, :]
             self._past_key_values = outputs.past_key_values
+            self.hidden_states = outputs.hidden_states
 
         return last_q
+
+    @property
+    def last_hidden_state(self) -> torch.Tensor:
+        if self.hidden_states is None:
+            raise ValueError("hidden_states is None")
+        return self.hidden_states[-1]
 
     def _generate_with_kvcache(self, prefix: torch.Tensor, gamma: int) -> torch.Tensor:
         """forward the model gamma times

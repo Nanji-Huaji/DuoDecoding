@@ -35,3 +35,4 @@ exp_cmd.ipynb
 experiment_summary_*.json
 sorted_experiments.json
 experiment_results_table.md
+.vscode/settings.json
