@@ -254,7 +254,20 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default="/home/tiantianyi/code/DuoDecoding/src/SpecDec_pp/exp-weight6-layer3",
+        default="./src/SpecDec_pp/exp-weight6-layer3",
+        help="The path of the accuracy head model.",
+    )
+    parser.add_argument(
+        "--small_draft_acc_head_path",
+        type=str,
+        default="./src/SpecDec_pp/exp-weight6-layer3",
+        help="The path of the small draft accuracy head model.",
+    )
+    parser.add_argument(
+        "--draft_target_acc_head_path",
+        type=str,
+        default="",
+        help="The path of the draft-target accuracy head model.",
     )
 
     args = parser.parse_args()

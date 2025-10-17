@@ -13,19 +13,25 @@ pip install -r requirements.txt
 Then, download models in the following:
 
 Llama Series:
-    - Llama-68M
-    - TinyLlama-1.1B
-    - Llama-2-13B
+
+- [Llama-68M](https://huggingface.co/JackFram/llama-68m)
+- [TinyLlama-1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
+- [Llama-2-13B](https://huggingface.co/meta-llama/Llama-2-13b)
 
 Vicuna Series:
-    - Vicuna-68M
-    - TinyVicuna-1B
-    - Vicuna-13B-v1.5
+
+- [Vicuna-68M](https://huggingface.co/double7/vicuna-68m)
+- [TinyVicuna-1B](https://huggingface.co/Jiayi-Pan/Tiny-Vicuna-1B)
+- [Vicuna-13B-v1.5](https://huggingface.co/lmsys/vicuna-13b-v1.5)
 
 And put them to:
 ```
-./<llama/vicuna>/<your-model-dir>
+./<llama or vicuna>/<your-model-dir>
 ```
+
+If you occur an path problem, you can modify model path on `src/utils.py`.
+
+Model paths are defined on the `zoo` dict on the `model_zoo` function. And their vocab sizes are defined on the `vocab_size` dict on the same function.
 
 ## Run
 
@@ -41,7 +47,7 @@ This script is used to run given experiments automatically. Basically, the follo
 
 | Args  Name                      | Meaning                                                      | Choice                                                       |
 | ------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| eval_mode                       | The decoding method selected for the experiment              | `dist_spec`, `dist_split_spec`, `tridecoding`, `uncertainty_decoding` |
+| eval_mode                       | The decoding method selected for the experiment              | `dist_spec`, `dist_split_spec`, `tridecoding`, `uncertainty_decoding`, `adaptive_decoding` |
 | draft_model                     | The draft model for speculative decoding methods             | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `llama-68m`,  and `vicuna-68m` are available |
 | target_model                    | The target model for speculative decoding methods            | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `Llama-2-13b,` and `vicuna-13b-v1.5` are available. |
 | small_model                     | The smallest model for tridecoding methods                   | Currently, `llama-68m`,  and `vicuna-68m` are available      |
@@ -91,7 +97,10 @@ After you executed the experiment script, it automatically generates a json file
 # ... exixting codes
 def main():
     # 读取实验数据
-    file_path = "experiment_summary_20250920_145859.json" # change here
+    file_path = "experiment_summary_20250920_145859.json" # change heres
 # ... existing codes
 ```
 
+## Run via Bash Script
+
+There are some experiment scirpts on `cmds`. Run them directly can also run the experiments.

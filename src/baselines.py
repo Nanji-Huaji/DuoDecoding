@@ -1638,7 +1638,7 @@ class Baselines(Decoding):
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            assert n2 >= prefix_len - 1, f"n {n2}, prefix_len {prefix_len}"
+            assert n2 >= prefix_len - 1, f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
