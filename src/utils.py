@@ -269,6 +269,18 @@ def parse_arguments():
         default="",
         help="The path of the draft-target accuracy head model.",
     )
+    parser.add_argument(
+        "--small_draft_threshold",
+        type=float,
+        default=0.8,
+        help="The threshold for the small draft model for adaptive tri-decoding. Default is 0.8.",
+    )
+    parser.add_argument(
+        "--draft_target_threshold",
+        type=float,
+        default=0.8,
+        help="The threshold for the draft-target model for adaptive decoding. Default is 0.8.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
