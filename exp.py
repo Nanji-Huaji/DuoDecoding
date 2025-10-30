@@ -59,9 +59,10 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --ntt_ms_edge_end {ntt_ms_edge_end} \
 """.format({'llama_or_vicuna': 'llama' if 'llama' in '{target_model}' else 'vicuna'})
 
-def add_args(base_cmd: str, extra_arg: str) -> str:
+def add_args(base_cmd: str, extra_arg: str, value_of_extra_args: str | None = None) -> str:
     # 修复语法错误
-    return base_cmd.rstrip() + f" \\\n    --{extra_arg}"
+    return base_cmd.rstrip() + f" \\\n    --{extra_arg} {value_of_extra_args if value_of_extra_args is not None else ''}"
+
 
 def get_file_path(exp_name: str) -> str:
     dir_path = f"exp/{exp_name}"
