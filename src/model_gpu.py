@@ -1,5 +1,52 @@
 import torch
 from .utils import norm_logits, sample
+from typing import Tuple
+from typing import Literal
+
+
+class PastKeyValues:
+    # TODO
+    # 思考中
+    # 目的是让KVCache和prob_history可以在一开始的时候就被初始化，避免gpu内存占用高峰导致OOM
+    def __init__(self, *args, **kwargs):
+        self.past_key_values: torch.Tensor 
+        self.shape: torch.Size
+        self.used_ptr: Tuple[int, ...]
+        self.max_len: int
+        raise NotImplementedError("PastKeyValues class is not implemented yet.")
+    
+    def __getitem__(self, index: int) -> torch.Tensor:
+        return self.past_key_values[index]
+    
+    def __setitem__(self, index: int, value: torch.Tensor) -> None:
+        self.past_key_values[index] = value
+
+
+class ProbHistory:
+    # TODO
+    # 目的同上
+    def __init__(self, *args, **kwargs):
+        self.prob_history: torch.Tensor 
+        self.shape: torch.Size
+        self.used_ptr: int
+        self.max_len: int
+        raise NotImplementedError("ProbHistory class is not implemented yet.")
+    
+    def __getitem__(self, index: int) -> torch.Tensor:
+        return self.prob_history[index]
+    
+    def __setitem__(self, index: int, value: torch.Tensor) -> None:
+        self.prob_history[index] = value
+
+    def cat(self, other: 'ProbHistory' | torch.Tensor, dim: int) -> ProbHistory:
+        raise NotImplementedError("ProbHistory.cat method is not implemented yet.")
+
+    def as_type(self, type: Literal['torch.Tensor', 'numpy.ndarray']) -> 'ProbHistory' | torch.Tensor | 'np.ndarray':
+        raise NotImplementedError("ProbHistory.as_type method is not implemented yet.")
+
+    def to(self, target: torch.device | torch.dtype) -> 'ProbHistory':
+        pass
+
 
 
 class KVCacheModel:

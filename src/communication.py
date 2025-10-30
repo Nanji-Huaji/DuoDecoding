@@ -704,17 +704,38 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         send_power_watt: float,
         noise_power_watt: float,
         ntt_ms_edge_end: float = 20,
-        ntt_ms_edge_cloud: float = 200
+        ntt_ms_edge_cloud: float = 200,
+        edge_cloud_args: dict | None = None,
+        edge_end_args: dict | None = None
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
         logging.info(
             f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
         )
+
+        if edge_cloud_args is None:
+            edge_cloud_bandwidth = channel_capacity_bps / 10
+        else:
+            try:
+                edge_cloud_SNR = edge_cloud_args["channel_gain"] * edge_cloud_args["send_power_watt"] / edge_cloud_args["noise_power_watt"]
+                edge_cloud_bandwidth = edge_cloud_args["bandwidth_hz"] * math.log2(1 + edge_cloud_SNR)
+            except KeyError:
+                edge_cloud_bandwidth = channel_capacity_bps / 10
+
+        if edge_end_args is None:
+            edge_end_bandwidth = channel_capacity_bps / 10
+        else:
+            try:
+                edge_end_SNR = edge_end_args["channel_gain"] * edge_end_args["send_power_watt"] / edge_end_args["noise_power_watt"]
+                edge_end_bandwidth = edge_end_args["bandwidth_hz"] * math.log2(1 + edge_end_SNR)
+            except KeyError:
+                edge_end_bandwidth = channel_capacity_bps / 10
+
         super().__init__(
-            channel_capacity_bps / 10,
+            edge_cloud_bandwidth,
             channel_capacity_bps,
-            channel_capacity_bps / 10,
+            edge_end_bandwidth,
             dimension="bps",
             ntt_ms_edge_end = ntt_ms_edge_end,
             ntt_ms_edge_cloud = ntt_ms_edge_cloud,

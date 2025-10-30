@@ -1,5 +1,5 @@
 import warnings
-from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
+from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional, Callable
 
 import torch
 import torch.distributed as dist
@@ -12,13 +12,6 @@ from transformers import (
     MaxLengthCriteria,
 )
 from accelerate import Accelerator
-import llama_cpp
-import draftretriever
-
-import safetensors
-
-import json
-
 
 from .SpecDec_pp.specdec_pp.wrap_model import AcceptancePredictionHead
 
@@ -42,10 +35,8 @@ from .communication import (
 )
 from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 
-
 from .adapter import DecodingAdapter
 
-from typing import Callable
 
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
@@ -75,14 +66,22 @@ class Baselines(Decoding):
 
     def __init__(self, args):
         super().__init__(args)
+        self.load_acc_head()
+
+    def load_acc_head(self):
+        # Load acc head if adaptive method is used
+        args = self.args
         if self.args.eval_mode == "adaptive_decoding":
+            draft_target_threshold: float | int = self.args.draft_target_threshold
             self.acc_head_path = args.acc_head_path
             self.acc_head = AcceptancePredictionHead.from_pretrained(
                 self.acc_head_path,
             )
             self.acc_head.eval()
-            self.adapter = DecodingAdapter(self.acc_head, 0.8)
+            self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
         elif self.args.eval_mode == "adaptive_tridecoding":
+            small_draft_threshold: float | int = self.args.small_draft_threshold
+            draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
             self.small_draft_acc_head = AcceptancePredictionHead.from_pretrained(
                 self.small_draft_acc_head_path,
@@ -94,10 +93,10 @@ class Baselines(Decoding):
             )
             self.draft_target_acc_head.eval()
             self.small_draft_adapter = DecodingAdapter(
-                self.small_draft_acc_head, 0.8
+                self.small_draft_acc_head, small_draft_threshold
             )
             self.draft_target_adapter = DecodingAdapter(
-                self.draft_target_acc_head, 0.8
+                self.draft_target_acc_head, draft_target_threshold
             )
 
     @torch.no_grad()
@@ -1390,10 +1389,6 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        output_text = self.tokenizer.decode(
-            prefix[0, current_tokens.shape[1] :], skip_special_tokens=True
-        )
-        self.color_print(f"Generated text: {output_text}", 2)
 
         return prefix, metrics
 
@@ -1483,7 +1478,7 @@ class Baselines(Decoding):
                 prefix = torch.cat((prefix, next_tok), dim=1)
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
-                stop = self.adapter.predict(hidden_states)
+                stop = adapter.predict(hidden_states)
                 if stop:
                     break
 
@@ -1597,7 +1592,7 @@ class Baselines(Decoding):
                 prefix = torch.cat((prefix, next_tok), dim=1)
                 hidden_states = draft_model_cache.hidden_states
                 assert hidden_states is not None
-                stop = self.adapter.predict(hidden_states)
+                stop = adapter.predict(hidden_states)
                 if stop:
                     break
 

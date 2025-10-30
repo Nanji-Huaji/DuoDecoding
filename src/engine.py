@@ -72,7 +72,7 @@ class DecodingMetrics(TypedDict):
     communication_time: float
     computation_time: float
     edge_end_comm_time: float
-    edge_cloud_data_bytes: int
+    edge_cloud_data_bytes: int | float
     edge_end_data_bytes: int | float
     cloud_end_data_bytes: int | float
     loop_times: int
@@ -335,7 +335,7 @@ class Decoding(ABC):
                 attn_implementation=attn_impl,
             ).eval()
         elif self.args.eval_mode == "adaptive_decoding":
-                
+
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
                 device_map="cuda:0",

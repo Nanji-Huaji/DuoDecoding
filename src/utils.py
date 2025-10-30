@@ -254,19 +254,19 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default="./src/SpecDec_pp/exp-weight6-layer3",
+        default="src/SpecDec_pp/checkpoints/llama-1.1b",
         help="The path of the accuracy head model.",
     )
     parser.add_argument(
         "--small_draft_acc_head_path",
         type=str,
-        default="./src/SpecDec_pp/exp-weight6-layer3",
+        default="src/SpecDec_pp/checkpoints/llama-1.1b",
         help="The path of the small draft accuracy head model.",
     )
     parser.add_argument(
         "--draft_target_acc_head_path",
         type=str,
-        default="",
+        default="src/SpecDec_pp/checkpoints/llama-13b",
         help="The path of the draft-target accuracy head model.",
     )
     parser.add_argument(
