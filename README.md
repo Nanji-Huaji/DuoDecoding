@@ -65,7 +65,7 @@ This script is used to run given experiments automatically. Basically, the follo
 | transfer_top_k                  | Args for top-k compression on the methods that were implemented for transmission simulation. | An int                                                       |
 
 
->![NOTE]
+>[!NOTE]
 > Adaptive Decoding and Triadaptive Decoding require the acceptance prediction head path, whose checkpoints for tinyllama-1.1b and llama-2-13b are available on [here](https://drive.google.com/file/d/1i41ysUj0DlKkeZ-HUla1WFRlw4r8GaWr/view?usp=sharing).
 
 ### Adding New Experiments
