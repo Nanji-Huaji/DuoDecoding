@@ -19,13 +19,10 @@ import time
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
 
-
 from .model.rest.rest.model.utils import *
 from .model.rest.rest.model.rest_model import RestModel
 from .model.rest.rest.model.kv_cache import initialize_past_key_values
 import draftretriever
-
-from .model.pld.pld import greedy_search_pld
 
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
 
@@ -45,10 +42,11 @@ except ImportError:
 
 flash_attn_available = "flash_attn" in globals()
 
-attn_impl = "spda" if not flash_attn_available else "flash_attention_2"
+attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 
 INT_SIZE = 4
 
+torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
 
 class DecodingMetrics(TypedDict):
     """
@@ -258,16 +256,6 @@ class Decoding(ABC):
                     local_files_only=True,
                 ).eval()
 
-        # elif self.args.eval_mode == "pld":
-        #     self.target_model = AutoModelForCausalLM.from_pretrained(
-        #         self.args.target_model,
-        #         device_map="cuda:0",
-        #         torch_dtype=torch.bfloat16,
-        #         trust_remote_code=True,
-        #         cache_dir="llama/.cache/huggingface",
-        #         local_files_only=True,
-        #     ).eval()
-        #     self.target_model.greedy_search_pld = greedy_search_pld.__get__(self.target_model, type(self.target_model))
         elif self.args.eval_mode == "lade":
             from .model.lade.utils import augment_all, config_lade
             from .model.lade.decoding import CONFIG_MAP
@@ -387,7 +375,7 @@ class Decoding(ABC):
 
     @torch.no_grad()
     def autoregressive_sampling(
-        self, prefix
+        self, prefix, **kwargs
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if self.args.eval_mode == "small":
             model = self.draft_model
@@ -1749,41 +1737,6 @@ class Decoding(ABC):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         return prefix, metrics
-
-    @torch.no_grad()
-    def pld_forward(self, prefix, **kwargs):
-        input_ids = prefix.cuda()
-        attention_mask = torch.ones_like(input_ids).cuda()
-        max_tokens = prefix.shape[1] + self.args.max_tokens
-        output_ids, idx, accept_length_list = (
-            self.target_model.greedy_search_pld(
-                input_ids,
-                attention_mask=attention_mask,
-                # stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=len(input_ids[0]) + max_new_tokens)]),
-                stopping_criteria=StoppingCriteriaList(
-                    [MaxLengthCriteria(max_length=max_tokens)]
-                ),
-                draft_matching_window_size=3,
-                draft_num_candidate_tokens=10,
-                use_cache=True,
-                pad_token_id=2,
-                eos_token_id=2,
-                return_dict_in_generate=False,
-            )
-        )
-        input_len = len(input_ids[0])
-        new_token = len(output_ids[0][input_len:])
-        if 2 in output_ids[0, input_len:].tolist():
-            for i, id in enumerate(output_ids[0, input_len:]):
-                if id == 2:
-                    eos_token_ids_index = i
-            invalid_len = (
-                len(output_ids[0, input_len:]) - eos_token_ids_index - 1
-            )
-            if invalid_len > 0:
-                accept_length_list[-1] -= invalid_len
-                new_token -= invalid_len
-        return output_ids
 
     @torch.no_grad()
     def lookahead_forward(self, prefix, **kwargs):
