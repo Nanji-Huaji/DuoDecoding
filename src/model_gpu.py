@@ -38,14 +38,14 @@ class ProbHistory:
     def __setitem__(self, index: int, value: torch.Tensor) -> None:
         self.prob_history[index] = value
 
-    def cat(self, other: 'ProbHistory' | torch.Tensor, dim: int) -> ProbHistory:
-        raise NotImplementedError("ProbHistory.cat method is not implemented yet.")
+    # def cat(self, other: 'ProbHistory' | torch.Tensor, dim: int) -> ProbHistory:
+    #     raise NotImplementedError("ProbHistory.cat method is not implemented yet.")
 
-    def as_type(self, type: Literal['torch.Tensor', 'numpy.ndarray']) -> 'ProbHistory' | torch.Tensor | 'np.ndarray':
-        raise NotImplementedError("ProbHistory.as_type method is not implemented yet.")
+    # def as_type(self, type: Literal['torch.Tensor', 'numpy.ndarray']) -> 'ProbHistory' | torch.Tensor | 'np.ndarray':
+    #     raise NotImplementedError("ProbHistory.as_type method is not implemented yet.")
 
-    def to(self, target: torch.device | torch.dtype) -> 'ProbHistory':
-        pass
+    # def to(self, target: torch.device | torch.dtype) -> 'ProbHistory':
+    #     pass
 
 
 

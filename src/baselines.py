@@ -26,7 +26,6 @@ from .utils import seed_everything, norm_logits, sample, max_fn
 from .model.rest.rest.model.utils import *
 from .model.rest.rest.model.rest_model import RestModel
 from .model.rest.rest.model.kv_cache import initialize_past_key_values
-from .model.pld.pld import greedy_search_pld
 from .communication import (
     CommunicationSimulator,
     CUHLM,
