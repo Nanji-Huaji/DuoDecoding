@@ -49,6 +49,11 @@ def model_zoo(args):
         "vicuna-13b-v1.5": 32000,
         "tiny-llama-1.1b": 32000,
         "Llama-2-13b": 32000,
+        "llama-3-70b": 32000,
+        "qwen-3-0.6b": 151936,
+        "qwen-3-1.7b": 151936,
+        "qwen-3-14b": 151936,
+        "llama-2-70b": 32000,
     }
 
     zoo = {
@@ -73,6 +78,11 @@ def model_zoo(args):
         "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
         "tiny-llama-1.1b": "llama/tiny-llama-1.1b",
         "Llama-2-13b": "llama/Llama-2-13b-hf",
+        "llama-3-70b": "llama/llama-70B",
+        "qwen-3-0.6b": "Qwen/Qwen3-0.6B",
+        "qwen-3-1.7b": "Qwen/Qwen3-1.7B",
+        "qwen-3-14b": "Qwen/Qwen3-14B",
+        "llama-2-70b": "llama/Llama-2-70b-hf",
     }
 
     args.vocab_size = vocab_size[args.draft_model]

@@ -42,3 +42,7 @@ experiment_results_table.md
 
 .vscode
 .vscode/*
+
+qwen/*
+
+hf_download.py
