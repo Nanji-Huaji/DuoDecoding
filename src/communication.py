@@ -822,3 +822,14 @@ class PreciseCUHLM(CUHLM):
             for unit in self.stats[link_type]:
                 energy += unit["transfer_time"] * self.send_power_watt
         return energy
+
+class StochasticCommunication(CommunicationSimulator):
+    """
+    基于随机信道模型的通信模拟器
+    """
+
+    def __init__(
+        self,
+        **kwargs):
+        super().__init__(**kwargs)
+        raise NotImplementedError("StochasticCommunication尚未实现")

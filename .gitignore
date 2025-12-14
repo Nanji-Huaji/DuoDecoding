@@ -46,3 +46,5 @@ experiment_results_table.md
 qwen/*
 
 hf_download.py
+
+src/quantize/data/*

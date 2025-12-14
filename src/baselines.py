@@ -37,7 +37,6 @@ from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 from .adapter import DecodingAdapter
 
 
-
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
     if hasattr(instance, name):
         method = getattr(instance, name)
@@ -71,24 +70,34 @@ class Baselines(Decoding):
         # Load acc head if adaptive method is used
         args = self.args
         if self.args.eval_mode == "adaptive_decoding":
-            draft_target_threshold: float | int = self.args.draft_target_threshold
+            draft_target_threshold: float | int = (
+                self.args.draft_target_threshold
+            )
             self.acc_head_path = args.acc_head_path
             self.acc_head = AcceptancePredictionHead.from_pretrained(
                 self.acc_head_path,
             )
             self.acc_head.eval()
-            self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
+            self.adapter = DecodingAdapter(
+                self.acc_head, draft_target_threshold
+            )
         elif self.args.eval_mode == "adaptive_tridecoding":
             small_draft_threshold: float | int = self.args.small_draft_threshold
-            draft_target_threshold: float | int = self.args.draft_target_threshold
+            draft_target_threshold: float | int = (
+                self.args.draft_target_threshold
+            )
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
-            self.small_draft_acc_head = AcceptancePredictionHead.from_pretrained(
-                self.small_draft_acc_head_path,
+            self.small_draft_acc_head = (
+                AcceptancePredictionHead.from_pretrained(
+                    self.small_draft_acc_head_path,
+                )
             )
             self.small_draft_acc_head.eval()
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
-            self.draft_target_acc_head = AcceptancePredictionHead.from_pretrained(
-                self.draft_target_acc_head_path,
+            self.draft_target_acc_head = (
+                AcceptancePredictionHead.from_pretrained(
+                    self.draft_target_acc_head_path,
+                )
             )
             self.draft_target_acc_head.eval()
             self.small_draft_adapter = DecodingAdapter(
@@ -1052,7 +1061,7 @@ class Baselines(Decoding):
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
-            if n2 < prefix_len + self.args.gamma1 - 1:
+            if n2 < prefix_len + new_generated_token.shape[1] + self.args.gamma1 - 1:
 
                 rebuild_probs = comm_simulator.rebuild_full_probs(
                     draft_model_cache._prob_history[:, n2, : self.vocab_size]
@@ -1167,7 +1176,6 @@ class Baselines(Decoding):
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
-
 
         draft_device = self.draft_model.device
         target_device = self.target_model.device
@@ -1388,11 +1396,16 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-
         return prefix, metrics
 
     def adaptive_tridecoding(
-        self, prefix, transfer_top_k=300, use_precise_comm_sim=False, ntt_ms_edge_cloud=10, ntt_ms_edge_end=1, **kwargs
+        self,
+        prefix,
+        transfer_top_k=300,
+        use_precise_comm_sim=False,
+        ntt_ms_edge_cloud=10,
+        ntt_ms_edge_end=1,
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
@@ -1470,11 +1483,9 @@ class Baselines(Decoding):
 
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
-                q = little_model_cache._forward_with_kvcache(
-                    prefix.to(little_device)
-                )
+                q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-                prefix = torch.cat((prefix, next_tok), dim=1)
+                x = torch.cat((x, next_tok), dim=1)
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
                 stop = adapter.predict(hidden_states)
@@ -1482,7 +1493,7 @@ class Baselines(Decoding):
                     break
 
             actual_gamma2 = x.shape[1] - prefix_len
-            
+
             _ = draft_model_cache.generate(x.to(draft_device), 1)
 
             little_model_forward_times += actual_gamma2
@@ -1584,18 +1595,16 @@ class Baselines(Decoding):
 
             for _ in range(self.args.gamma1):
                 adapter = self.draft_target_adapter
-                q = draft_model_cache._forward_with_kvcache(
-                    prefix.to(draft_device)
-                )
+                q = draft_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-                prefix = torch.cat((prefix, next_tok), dim=1)
+                x = torch.cat((x, next_tok), dim=1)
                 hidden_states = draft_model_cache.hidden_states
                 assert hidden_states is not None
                 stop = adapter.predict(hidden_states)
                 if stop:
                     break
 
-            actual_gamma1 = x.shape[1] - prefix_len
+            actual_gamma1 = x.shape[1] - prefix.shape[1]
 
             _ = target_model_cache.generate(x.to(target_device), 1)
 
@@ -1632,12 +1641,14 @@ class Baselines(Decoding):
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            assert n2 >= prefix_len - 1, f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
-            if n2 < prefix_len + actual_gamma1 - 1:
+            if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
 
                 rebuild_probs = comm_simulator.rebuild_full_probs(
                     draft_model_cache._prob_history[:, n2, : self.vocab_size]

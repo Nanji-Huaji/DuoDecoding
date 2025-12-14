@@ -146,18 +146,22 @@ class KVCacheModel:
 
     @torch.no_grad()
     def rollback(self, end_pos: int):
-        past_key_values_trimmed = []
         if self._past_key_values is None:
             return
-        assert self._past_key_values
-        for kv in self._past_key_values:
-            k, v = kv
-            k = k[:, :, :end_pos, :]
-            v = v[:, :, :end_pos, :]
-            kv_trimmed = (k, v)
-            past_key_values_trimmed.append(kv_trimmed)
 
-        self._past_key_values = past_key_values_trimmed
+        if hasattr(self._past_key_values, 'crop'):
+            self._past_key_values.crop(end_pos)
+        else:
+            past_key_values_trimmed = []
+            assert self._past_key_values
+            for kv in self._past_key_values:
+                k, v = kv
+                k = k[:, :, :end_pos, :]
+                v = v[:, :, :end_pos, :]
+                kv_trimmed = (k, v)
+                past_key_values_trimmed.append(kv_trimmed)
+            self._past_key_values = past_key_values_trimmed
+
         self._prob_history = self._prob_history[:, :end_pos, :]
         self.logits_history = self.logits_history[:, :end_pos, :]
 

@@ -345,6 +345,37 @@ class Decoding(ABC):
                 attn_implementation=attn_impl,
             ).eval()
 
+        elif self.args.eval_mode == "adaptive_tridecoding":
+            self.little_model = AutoModelForCausalLM.from_pretrained(
+                self.args.little_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+                attn_implementation=attn_impl,
+                output_hidden_states=True,
+            ).eval()
+            self.draft_model = AutoModelForCausalLM.from_pretrained(
+                self.args.draft_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+                attn_implementation=attn_impl,
+                output_hidden_states=True,
+            ).eval()
+            self.target_model = AutoModelForCausalLM.from_pretrained(
+                self.args.target_model,
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                cache_dir="llama/.cache/huggingface",
+                local_files_only=True,
+                attn_implementation=attn_impl,
+            ).eval()
+
         self.vocab_size = self.args.vocab_size
 
     def load_tokenizer(self):
