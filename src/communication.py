@@ -829,7 +829,25 @@ class StochasticCommunication(CommunicationSimulator):
     """
 
     def __init__(
-        self,
-        **kwargs):
-        super().__init__(**kwargs)
-        raise NotImplementedError("StochasticCommunication尚未实现")
+            self,
+            mean_bandwidth_edge_cloud,
+            mean_bandwidth_edge_end,
+            stddev_bandwidth,
+            protocol_overhead_bytes: int = 0,
+            transfer_top_k: Optional[int] = None,
+            dimension: Dimension = "Mbps",
+            ntt_ms_edge_end: float = 0,
+            ntt_ms_edge_cloud: float = 0,
+            tracefile: str | None = None,
+    ):
+        super().__init__(
+            mean_bandwidth_edge_cloud,
+            mean_bandwidth_edge_end,
+            mean_bandwidth_edge_end,
+            protocol_overhead_bytes,
+            transfer_top_k,
+            dimension,
+            ntt_ms_edge_end,
+            ntt_ms_edge_cloud
+        )
+        
