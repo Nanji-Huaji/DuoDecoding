@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class ExpConfig(TypedDict):
-    CUDA_VISIBLE_DEVICES: Literal["0", "1"]
+    CUDA_VISIBLE_DEVICES: str
     eval_mode: str
     edge_end_bandwidth: int | float
     edge_cloud_bandwidth: int | float
@@ -352,7 +352,7 @@ def create_config(
     ntt_ms_edge_end: int | float = NTT_MS_EDGE_END,
     use_precise: bool = True,
     use_stochastic_comm: bool = False,
-    CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
+    CUDA_VISIBLE_DEVICES: str = "0",
     use_rl_adapter: bool = False,
     edge_end_bandwidth=100,
     edge_cloud_bandwidth=100,
