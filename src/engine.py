@@ -392,6 +392,8 @@ class Decoding(ABC):
         # for llama models
         self.tokenizer.pad_token_id = 2
 
+  
+
     @abstractmethod
     def load_data(self):
         pass

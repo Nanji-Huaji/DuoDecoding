@@ -1,5 +1,6 @@
 import warnings
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional, Callable
+import time
 
 import torch
 import torch.distributed as dist
@@ -31,10 +32,12 @@ from .communication import (
     CUHLM,
     PreciseCommunicationSimulator,
     PreciseCUHLM,
+    
 )
 from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 
 from .adapter import DecodingAdapter
+from .rl_adapter import RLNetworkAdapter
 
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
@@ -50,6 +53,28 @@ def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
         raise ValueError(
             f"Decoding method '{name}' not found in class {instance.__class__.__name__}"
         )
+    
+
+# def get_comm_simulator(use_precise: bool, args: Any, use_stochastic: bool) -> CommunicationSimulator:
+#     if use_precise:
+#         return PreciseCommunicationSimulator(
+#             bandwidth_hz=1e7,
+#             channel_gain=1e-8,
+#             send_power_watt=0.5,
+#             noise_power_watt=1e-10,
+#             ntt_ms_edge_cloud=args.ntt_ms_edge_cloud,
+#             ntt_ms_edge_end=args.ntt_ms_edge_end,
+#         )
+#     else:
+#         return CommunicationSimulator(
+#             bandwidth_edge_cloud=args.edge_cloud_bandwidth,
+#             bandwidth_edge_end=args.edge_end_bandwidth,
+#             bandwidth_cloud_end=args.cloud_end_bandwidth,
+#             dimension="Mbps",
+#             ntt_ms_edge_cloud=args.ntt_ms_edge_cloud,
+#             ntt_ms_edge_end=args.ntt_ms_edge_end,
+#             use_stochastic=use_stochastic,
+#         )
 
 
 class Baselines(Decoding):
@@ -65,6 +90,10 @@ class Baselines(Decoding):
     def __init__(self, args):
         super().__init__(args)
         self.load_acc_head()
+        if getattr(args, "use_rl_adapter", False):
+            self.rl_adapter = RLNetworkAdapter(args)
+        else:
+            self.rl_adapter = None
 
     def load_acc_head(self):
         # Load acc head if adaptive method is used
@@ -113,6 +142,7 @@ class Baselines(Decoding):
         prefix: torch.Tensor,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -138,6 +168,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -356,6 +387,7 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -376,6 +408,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -610,6 +643,7 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim=False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
@@ -630,6 +664,7 @@ class Baselines(Decoding):
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 uncertainty_threshold=0.8,
                 dimension="Mbps",
+                use_stochastic=use_stochastic_comm,
             )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -849,6 +884,7 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k=300,
         use_precise_comm_sim=False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 10,
         ntt_ms_edge_end: float = 1,
         **kwargs,
@@ -888,6 +924,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
             )
 
         # Metrics tracking
@@ -1151,6 +1188,7 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k=300,
         use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 0,
         ntt_ms_edge_end: float = 0,
         **kwargs,
@@ -1172,6 +1210,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1210,6 +1249,9 @@ class Baselines(Decoding):
             prefix_len = prefix.shape[1]
 
             idx += 1
+            
+            step_start_time = time.time()
+            step_comm_time_start = comm_simulator.edge_cloud_comm_time
 
             # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
@@ -1235,6 +1277,9 @@ class Baselines(Decoding):
                 self.num_acc_tokens.append(1)
                 break
 
+            step_start_time = time.time()
+            step_comm_time_start = comm_simulator.edge_cloud_comm_time
+
             x = prefix.clone().to(draft_device)
             for _ in range(current_gamma):
                 q = approx_model_cache._forward_with_kvcache(x)
@@ -1245,6 +1290,17 @@ class Baselines(Decoding):
                 stop = self.adapter.predict(hidden_states)
                 if stop:
                     break
+
+            if self.rl_adapter is not None:
+                bandwidth = comm_simulator.bandwidth_edge_cloud
+                latency = comm_simulator.ntt_edge_cloud
+                if hasattr(self.adapter, "last_acc_prob"):
+                    acc_prob = self.adapter.last_acc_prob
+                else:
+                    acc_prob = self.num_acc_tokens[-1] / self.args.gamma if len(self.num_acc_tokens) > 0 else 0.5
+                probs = torch.softmax(q, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+                transfer_top_k = self.rl_adapter.select_k(bandwidth, latency, acc_prob, entropy)
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
             current_gamma = actual_gamma  # 更新current_gamma为实际生成的数量
@@ -1296,6 +1352,13 @@ class Baselines(Decoding):
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
+
+            if self.rl_adapter is not None:
+                step_end_time = time.time()
+                step_time = step_end_time - step_start_time
+                step_comm_time = comm_simulator.edge_cloud_comm_time - step_comm_time_start
+                reward = this_step_accepted_tokens / (step_time + step_comm_time + 1e-9)
+                self.rl_adapter.step(reward)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
@@ -1396,6 +1459,9 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
+        if self.rl_adapter is not None:
+            self.rl_adapter.save()
+
         return prefix, metrics
 
     def adaptive_tridecoding(
@@ -1403,6 +1469,7 @@ class Baselines(Decoding):
         prefix,
         transfer_top_k=300,
         use_precise_comm_sim=False,
+        use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud=10,
         ntt_ms_edge_end=1,
         **kwargs,
@@ -1442,6 +1509,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
             )
 
         # Metrics tracking
@@ -1731,3 +1799,5 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
+
+

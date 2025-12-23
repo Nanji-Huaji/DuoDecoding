@@ -149,6 +149,7 @@ class EvalMTBench(Baselines):
             decoding,
             transfer_top_k=self.args.transfer_top_k,
             use_precise_comm_sim=self.args.use_precise,
+            use_stochastic_comm=self.args.use_stochastic_comm,
             ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
             ntt_ms_edge_end=self.args.ntt_ms_edge_end,
         )

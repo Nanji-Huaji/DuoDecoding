@@ -6,6 +6,7 @@ import math
 import warnings
 
 import logging
+from src.utils import return_closest_mean_index, read_trace_file
 
 
 class TransferUnit(TypedDict):
@@ -62,7 +63,10 @@ class CommunicationSimulator:
         transfer_top_k: Optional[int] = None,
         dimension: Dimension = "Mbps",
         ntt_ms_edge_end: float = 20,
-        ntt_ms_edge_cloud: float = 200
+        ntt_ms_edge_cloud: float = 200,
+        use_stochastic: bool = False,
+        set_mean_bandwidth: bool = True,
+        mode: Literal["driving", "static", "walking"] = "static"
     ):
         self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
             bandwidth_edge_cloud, dimension
@@ -89,6 +93,42 @@ class CommunicationSimulator:
             "cloud_end": 0,
             "edge_cloud": 0
         }
+
+        self.use_stochastic = use_stochastic
+        self.dimension = dimension
+        if self.use_stochastic:
+            if set_mean_bandwidth:
+                assert bandwidth_edge_end is not None and bandwidth_edge_cloud is not None, "When set_mean_bandwidth is True, bandwidth_edge_end and bandwidth_edge_cloud must not be None"
+            
+            self.trace_file_dict = {
+                "driving": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/driving/5g/throughput.list",
+                "static": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/static/5g/away_p1.list",
+                "walking": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/walking/5g/away.list",
+            }
+            trace_file = self.trace_file_dict.get(mode, self.trace_file_dict["static"])
+            self.trace_data = []
+            self.trace_index = 0
+
+            if set_mean_bandwidth and bandwidth_edge_cloud is not None:
+                run_id = return_closest_mean_index(trace_file, bandwidth_edge_cloud)
+                if run_id == -1:
+                    run_id = 1
+                
+                raw_data = read_trace_file(trace_file, run_id)
+                if raw_data:
+                    current_mean = sum(raw_data) / len(raw_data)
+                    if current_mean > 0:
+                        scale_factor = bandwidth_edge_cloud / current_mean
+                        self.trace_data = [x * scale_factor for x in raw_data]
+                    else:
+                        self.trace_data = [bandwidth_edge_cloud] * len(raw_data)
+                else:
+                    self.trace_data = [bandwidth_edge_cloud]
+            else:
+                self.trace_data = read_trace_file(trace_file, 1)
+                if not self.trace_data:
+                    run_id = return_closest_mean_index(trace_file)
+                    self.trace_data = read_trace_file(trace_file, run_id)
 
     @property
     def edge_cloud_comm_time(self):
@@ -148,6 +188,11 @@ class CommunicationSimulator:
         - data_size_bytes: 传输的数据大小，单位bytes
         - link_type: 传输链路类型，"edge_cloud", "edge_end", "cloud_end"
         """
+        if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
+            current_bw = self.trace_data[self.trace_index]
+            self.bandwidth_edge_cloud = _convert_to_bytes_per_second(current_bw, self.dimension)
+            self.trace_index = (self.trace_index + 1) % len(self.trace_data)
+
         if link_type == "edge_cloud":
             bandwidth = self.bandwidth_edge_cloud
         elif link_type == "edge_end":
@@ -409,6 +454,9 @@ class CUHLM(CommunicationSimulator):
         dimension: Dimension = "Mbps",
         ntt_ms_edge_end: float = 20,
         ntt_ms_edge_cloud: float = 200,
+        use_stochastic: bool = False,
+        set_mean_bandwidth: bool = True,
+        mode: Literal["driving", "static", "walking"] = "static"
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
         super().__init__(
@@ -418,6 +466,9 @@ class CUHLM(CommunicationSimulator):
             dimension=dimension,
             ntt_ms_edge_end=ntt_ms_edge_end,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            use_stochastic=use_stochastic,
+            set_mean_bandwidth=set_mean_bandwidth,
+            mode=mode
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -823,31 +874,4 @@ class PreciseCUHLM(CUHLM):
                 energy += unit["transfer_time"] * self.send_power_watt
         return energy
 
-class StochasticCommunication(CommunicationSimulator):
-    """
-    基于随机信道模型的通信模拟器
-    """
 
-    def __init__(
-            self,
-            mean_bandwidth_edge_cloud,
-            mean_bandwidth_edge_end,
-            stddev_bandwidth,
-            protocol_overhead_bytes: int = 0,
-            transfer_top_k: Optional[int] = None,
-            dimension: Dimension = "Mbps",
-            ntt_ms_edge_end: float = 0,
-            ntt_ms_edge_cloud: float = 0,
-            tracefile: str | None = None,
-    ):
-        super().__init__(
-            mean_bandwidth_edge_cloud,
-            mean_bandwidth_edge_end,
-            mean_bandwidth_edge_end,
-            protocol_overhead_bytes,
-            transfer_top_k,
-            dimension,
-            ntt_ms_edge_end,
-            ntt_ms_edge_cloud
-        )
-        
