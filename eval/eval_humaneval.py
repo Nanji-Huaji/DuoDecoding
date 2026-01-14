@@ -8,6 +8,8 @@ import tqdm
 import time
 import ipdb
 import random
+import multiprocessing
+from datasets import load_dataset
 from src.utils import seed_everything, parse_arguments
 from src.engine import Decoding
 from collections import Counter
@@ -15,10 +17,37 @@ from fastchat.model import get_conversation_template
 
 from src.engine import DecodingMetrics, get_empty_metrics
 
+from src.baselines import Baselines
+
+from eval_mt_bench import get_class_methods
 
 decoding_metrics = get_empty_metrics()
 
-class EvalHumaneval(Decoding):
+def check_correctness_worker(check_program, result_queue):
+    try:
+        exec(check_program, {})
+        result_queue.put("passed")
+    except Exception as e:
+        result_queue.put(f"failed")
+
+def check_correctness(completion, test_code, entry_point, timeout=3.0):
+    check_program = completion + "\n" + test_code + "\n" + f"check({entry_point})"
+    
+    queue = multiprocessing.Queue()
+    p = multiprocessing.Process(target=check_correctness_worker, args=(check_program, queue))
+    p.start()
+    p.join(timeout)
+    if p.is_alive():
+        p.terminate()
+        p.join()
+        return 0 # Timeout
+    
+    if not queue.empty():
+        result = queue.get()
+        return 1 if result == "passed" else 0
+    return 0 # Failed/Empty
+
+class EvalHumaneval(Baselines):
     def __init__(self, args):
         super().__init__(args)
 
@@ -33,22 +62,29 @@ class EvalHumaneval(Decoding):
 
     def load_data(self):
         # * load evaluation data
-        self.color_print(f"Loading HumanEval data...", 3)
+        self.color_print(f"Loading HumanEval data from HuggingFace...", 3)
         data = []
-        with open(os.path.join(self.args.data_path, "humaneval.jsonl")) as f:
-            for line in f.readlines():
-                datum = json.loads(line)
-                datum["input_text"] = self.preprocess(datum["prompt"])
-                encode_special_token_flag = not (
-                    "Llama-3.1" in self.args.draft_model
-                    and "Llama-3.1" in self.args.target_model
-                )
-                input_ids = self.tokenizer.encode(
-                    datum["input_text"], add_special_tokens=encode_special_token_flag
-                )
-                datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
-                data.append(datum)
+        try:
+            hf_data = load_dataset("openai_humaneval", split="test")
+        except Exception as e:
+            self.color_print(f"Failed to load dataset from Hugging Face: {e}", 1)
+            raise e
+
+        for datum_item in hf_data:
+            datum = dict(datum_item)
+            datum["input_text"] = self.preprocess(datum["prompt"])
+            encode_special_token_flag = not (
+                "Llama-3.1" in self.args.draft_model
+                and "Llama-3.1" in self.args.target_model
+            )
+            input_ids = self.tokenizer.encode(
+                datum["input_text"], add_special_tokens=encode_special_token_flag
+            )
+            datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
+            data.append(datum)
+            
         self.data = data
+        self.color_print(f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2)
 
     def preprocess(self, input_text):
         if "vicuna" in self.args.target_model:
@@ -89,7 +125,7 @@ class EvalHumaneval(Decoding):
         return output_text
 
     @torch.no_grad()
-    def eval(self):
+    def eval(self, total: int | None = 80):
         global decoding_metrics
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
@@ -99,8 +135,6 @@ class EvalHumaneval(Decoding):
             decoding = self.parallel_speculative_decoding
         elif self.args.eval_mode == "duodec":
             decoding = self.duodecoding
-        # elif self.args.eval_mode == "pld":
-        #     decoding = self.pld_forward
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":
@@ -113,9 +147,24 @@ class EvalHumaneval(Decoding):
             decoding = self.uncertainty_decoding
         elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
             decoding = self.speculative_decoding_with_bandwidth
-        elif self.args.eval_mode == "speculative_decoding_with_bandwidth_full_prob":
+        elif (
+            self.args.eval_mode
+            == "speculative_decoding_with_bandwidth_full_prob"
+        ):
             decoding = self.speculative_decoding_with_bandwidth_full_prob
+        elif self.args.eval_mode in get_class_methods(Baselines):
+            decoding = getattr(self, self.args.eval_mode)
         else:
+            try:
+                methods = getattr(self, self.args.eval_mode)
+                if callable(methods):
+                    decoding = methods
+                else:
+                    self.color_print("Unknown eval mode", 3)
+                    raise NotImplementedError
+            except AttributeError:
+                self.color_print("Unknown eval mode", 3)
+                raise NotImplementedError
             print(f"Unknown eval mode: {self.args.eval_mode}")
             raise NotImplementedError
 
@@ -159,9 +208,12 @@ class EvalHumaneval(Decoding):
             self.num_acc_tokens = []
             self.prob_with_flag = []  # draft每个token的prob与他是否被接收
 
+            eval_data = self.data
+            if total is not None:
+                eval_data = self.data[:total]
+
             for datum in tqdm.tqdm(
-                self.data,
-                total=len(self.data),
+                eval_data,
                 disable=not self.accelerator.is_main_process,
                 ncols=50,
             ):
@@ -172,7 +224,8 @@ class EvalHumaneval(Decoding):
                 if isinstance(generate_ids, tuple):
                     generate_ids, metrics = generate_ids
                     for key in decoding_metrics.keys():
-                        decoding_metrics[key] += metrics[key]
+                        if key not in [""] and hasattr(decoding_metrics[key], "__add__"):
+                            decoding_metrics[key] += metrics[key]
                 t = 0
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -184,6 +237,8 @@ class EvalHumaneval(Decoding):
                     output = self.postprocess(
                         datum["input_text"], self.tokenizer.decode(generate_ids[0, :])
                     )
+                    passed = check_correctness(output, datum["test"], datum["entry_point"])
+                    self.acc_num.append(passed)
                     out_f.write(
                         json.dumps(
                             {
@@ -192,6 +247,7 @@ class EvalHumaneval(Decoding):
                                 "new_tokens": generate_ids.shape[1]
                                 - input_ids.shape[1],
                                 "completion": output,
+                                "passed": passed,
                             },
                             ensure_ascii=False,
                         )
@@ -218,19 +274,25 @@ class EvalHumaneval(Decoding):
         self.accelerator.wait_for_everyone()
 
         if self.accelerator.is_main_process:
-            speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
-            speed_std = (
-                (
-                    torch.tensor(wall_times["num_tokens"])
-                    / torch.tensor(wall_times["time"])
+            if len(wall_times["time"]) > 0 and sum(wall_times["time"]) > 0:
+                speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
+                speed_std = (
+                    (
+                        torch.tensor(wall_times["num_tokens"])
+                        / torch.tensor(wall_times["time"])
+                    )
+                    .std()
+                    .item()
                 )
-                .std()
-                .item()
-            )
-            self.color_print(
-                f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}",
-                2,
-            )
+                self.color_print(
+                    f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}",
+                    2,
+                )
+            else:
+                 self.color_print("No generation time recorded.", 3)
+
+            if len(self.acc_num) > 0:
+                decoding_metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
 
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{decoding_metrics}")

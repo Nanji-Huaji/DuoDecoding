@@ -761,9 +761,11 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
-        logging.info(
-            f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
-        )
+        if not getattr(PreciseCommunicationSimulator, "_has_logged", False):
+            logging.info(
+                f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+            )
+            PreciseCommunicationSimulator._has_logged = True
 
         if edge_cloud_args is None:
             edge_cloud_bandwidth = channel_capacity_bps / 10
@@ -839,9 +841,11 @@ class PreciseCUHLM(CUHLM):
         # 初始化CUHLM，使用计算得到的信道容量
         # edge-cloud使用完整信道容量，其他链路假设为容量的十分之一
 
-        print(
-            f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
-        )
+        if not getattr(PreciseCUHLM, "_has_logged", False):
+            print(
+                f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+            )
+            PreciseCUHLM._has_logged = True
 
         super().__init__(
             bandwidth_edge_cloud=channel_capacity_bps,

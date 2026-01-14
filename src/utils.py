@@ -137,6 +137,12 @@ def parse_arguments():
     )
     parser.add_argument("--gamma", type=int, default=4, help="guess time.")
     parser.add_argument(
+        "--eval_data_num",
+        type=int,
+        default=80,
+        help="number of samples to evaluate.",
+    )
+    parser.add_argument(
         "--sub_domain",
         type=str,
         default="math_reasoning",
@@ -189,6 +195,25 @@ def parse_arguments():
         help="The maximum number of draft tokens.",
     )
     # end for rest
+    parser.add_argument(
+        "--openai_api_key",
+        type=str,
+        default=os.environ.get("OPENAI_API_KEY"),
+        help="OpenAI API Key for MT-Bench Judge",
+    )
+    parser.add_argument(
+        "--openai_api_base",
+        type=str,
+        default=os.environ.get("OPENAI_BASE_URL"),
+        help="OpenAI API Base for MT-Bench Judge",
+    )
+    parser.add_argument(
+        "--judge_model",
+        type=str,
+        default=os.environ.get("JUDGE_MODEL", "deepseek-v3.1"),
+        help="Judge model for MT-Bench",
+    )
+
     parser.add_argument(
         "--little_model",
         type=str,
@@ -473,4 +498,3 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
             closest_run_id = run_id
             
     return closest_run_id
-
