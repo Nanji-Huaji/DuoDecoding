@@ -77,6 +77,7 @@ class DecodingMetrics(TypedDict):
     each_loop_draft_tokens: float
     comm_energy: float
     connect_times: dict
+    accuracy: Optional[Any]
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -104,6 +105,7 @@ def get_empty_metrics() -> DecodingMetrics:
         each_loop_draft_tokens=0,
         comm_energy=0.0,
         connect_times={"edge_end": 0, "cloud_end": 0, "edge_cloud": 0},
+        accuracy=0,
     )
 
 
@@ -391,6 +393,8 @@ class Decoding(ABC):
 
         # for llama models
         self.tokenizer.pad_token_id = 2
+
+  
 
     @abstractmethod
     def load_data(self):

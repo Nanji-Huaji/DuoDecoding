@@ -1,3 +1,6 @@
 [submodule "src/SpecDec_pp"]
 	path = src/SpecDec_pp
 	url = https://github.com/Kaffaljidhmah2/SpecDec_pp.git
+[submodule "data/sigcomm-5gmemu-5g-mmWave-uplink-data"]
+	path = data/sigcomm-5gmemu-5g-mmWave-uplink-data
+	url = https://github.com/NUWiNS/sigcomm-5gmemu-5g-mmWave-uplink-data

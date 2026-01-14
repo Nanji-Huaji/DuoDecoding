@@ -25,6 +25,54 @@ import inspect
 
 from collections import Counter
 
+import re
+import multiprocessing
+import asyncio
+from openai import AsyncOpenAI
+
+async def grade_mt_bench_async(question, answer, judge_model="gpt-4", api_key=None, api_base=None):
+    if not api_key:
+        return 0
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=api_base
+    )
+
+    prompt_template = """
+[Instruction]
+Please act as an impartial judge and evaluate the quality of the response provided by an AI assistant to the user question displayed below. Your evaluation should consider factors such as helpfulness, relevance, accuracy, depth, creativity, and level of detail. Begin your evaluation by providing a short explanation. Be as objective as possible. After providing your explanation, you must rate the response on a scale of 1 to 10 by strictly following this format: "[[rating]]", for example: "Rating: [[5]]".
+
+[Question]
+{question}
+
+[The Start of Assistant's Answer]
+{answer}
+[The End of Assistant's Answer]
+"""
+    
+    prompt = prompt_template.format(question=question, answer=answer)
+    
+    try:
+        response = await client.chat.completions.create(
+            model=judge_model,
+            messages=[
+                {"role": "system", "content": "You are a helpful and precise assistant for checking the quality of the answer."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=2048,
+        )
+        content = response.choices[0].message.content
+        match = re.search(r"\[\[(\d+)\]\]", content)
+        if match:
+            return float(match.group(1))
+        else:
+            return 0
+    except Exception as e:
+        print(f"Error in grading: {e}")
+        return 0
+
 decoding_metrics = get_empty_metrics()
 
 
@@ -109,8 +157,6 @@ class EvalMTBench(Baselines):
             decoding = self.parallel_speculative_decoding
         elif self.args.eval_mode == "duodec":
             decoding = self.duodecoding
-        elif self.args.eval_mode == "pld":
-            decoding = self.pld_forward
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
         elif self.args.eval_mode == "rest":
@@ -149,6 +195,7 @@ class EvalMTBench(Baselines):
             decoding,
             transfer_top_k=self.args.transfer_top_k,
             use_precise_comm_sim=self.args.use_precise,
+            use_stochastic_comm=self.args.use_stochastic_comm,
             ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
             ntt_ms_edge_end=self.args.ntt_ms_edge_end,
         )
@@ -311,6 +358,7 @@ class EvalMTBench(Baselines):
                             if key in metrics and key not in [
                                 "little_acceptance_rate",
                                 "draft_acceptance_rate",
+                                "accuracy"
                             ] and hasattr(metrics[key], "__add__"):
                                 decoding_metrics[key] += metrics[key]
                                 assert (
@@ -375,6 +423,27 @@ class EvalMTBench(Baselines):
                 "tstamp": time.time(),
             }
             if self.accelerator.is_main_process:
+                # Calculate Score
+                if self.args.openai_api_key:
+                    for choice in choices:
+                        # Create async tasks for all turns
+                        tasks = []
+                        for idx, turn in enumerate(choice["turns"]):
+                            qs = question["turns"][idx]
+                            tasks.append(grade_mt_bench_async(qs, turn, self.args.judge_model, self.args.openai_api_key, self.args.openai_api_base))
+                        
+                        # Run tasks concurrently
+                        async def run_grading_tasks():
+                             return await asyncio.gather(*tasks)
+
+                        scores = asyncio.run(run_grading_tasks())
+                        choice["score"] = sum(scores) / len(scores) if scores else 0
+                        
+                        # update metrics
+                        if "accuracy" not in decoding_metrics or decoding_metrics["accuracy"] == 0:
+                             decoding_metrics["accuracy"] = []
+                        decoding_metrics["accuracy"].append(choice["score"])
+
                 out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
                 out_f.flush()
         out_f.close()
@@ -429,6 +498,11 @@ class EvalMTBench(Baselines):
                 decoding_metrics["generated_tokens"]
                 / decoding_metrics["wall_time"]
             )
+
+        if self.accelerator.is_main_process and "accuracy" in decoding_metrics and isinstance(decoding_metrics["accuracy"], list) and len(decoding_metrics["accuracy"]) > 0:
+             avg_score = sum(decoding_metrics["accuracy"]) / len(decoding_metrics["accuracy"])
+             decoding_metrics["accuracy"] = avg_score
+             self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
 
         metrics_str = f"""
         {json.dumps(decoding_metrics, indent = 4)}

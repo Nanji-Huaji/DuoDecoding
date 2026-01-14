@@ -17,6 +17,7 @@ class DecodingAdapter:
         self.acc_head = acc_head
         self.model: KVCacheModel | None = model
         self.threshold = threshold
+        self.elast_acc_prob = 0.5
 
     @torch.no_grad()
     def predict(self, hidden_states: torch.Tensor) -> bool:
@@ -33,10 +34,10 @@ class DecodingAdapter:
         if self.threshold is None:
             predicted = logits.argmax(dim = -1)
             stop_prediction = (predicted == 0)
-            self._last_acc_prob = 1.0 if predicted == 1 else 0.0 # Approximate
+            self.last_acc_prob = 1.0 if predicted == 1 else 0.0 # Approximate
         else:
             acc_prob = logits.softmax(dim = -1)[1].item()
-            self._last_acc_prob = acc_prob
+            self.last_acc_prob = acc_prob
             cum_acc_prob *= acc_prob
             rej_prob = 1 - cum_acc_prob
 
@@ -50,8 +51,3 @@ class DecodingAdapter:
     @property
     def dtype(self):
         return next(self.acc_head.parameters()).dtype
-
-    @property
-    def last_acc_prob(self) -> float | None:
-        return getattr(self, "_last_acc_prob", None)
-    

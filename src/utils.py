@@ -4,7 +4,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 import numpy as np
-
+import re
 
 def seed_everything(seed: int):
     "set all random seed for reproducible results."
@@ -137,6 +137,12 @@ def parse_arguments():
     )
     parser.add_argument("--gamma", type=int, default=4, help="guess time.")
     parser.add_argument(
+        "--eval_data_num",
+        type=int,
+        default=80,
+        help="number of samples to evaluate.",
+    )
+    parser.add_argument(
         "--sub_domain",
         type=str,
         default="math_reasoning",
@@ -189,6 +195,25 @@ def parse_arguments():
         help="The maximum number of draft tokens.",
     )
     # end for rest
+    parser.add_argument(
+        "--openai_api_key",
+        type=str,
+        default=os.environ.get("OPENAI_API_KEY"),
+        help="OpenAI API Key for MT-Bench Judge",
+    )
+    parser.add_argument(
+        "--openai_api_base",
+        type=str,
+        default=os.environ.get("OPENAI_BASE_URL"),
+        help="OpenAI API Base for MT-Bench Judge",
+    )
+    parser.add_argument(
+        "--judge_model",
+        type=str,
+        default=os.environ.get("JUDGE_MODEL", "deepseek-v3.1"),
+        help="Judge model for MT-Bench",
+    )
+
     parser.add_argument(
         "--little_model",
         type=str,
@@ -291,6 +316,16 @@ def parse_arguments():
         default=0.8,
         help="The threshold for the draft-target model for adaptive decoding. Default is 0.8.",
     )
+    parser.add_argument(
+        "--use_stochastic_comm",
+        action="store_true",
+        help="Whether to use stochastic communication simulator.",
+    )
+    parser.add_argument(
+        "--use_rl_adapter",
+        action="store_true",
+        help="Whether to use RL adapter for dynamic k selection.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
@@ -373,3 +408,93 @@ def max_fn(x):
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
     return x_max / x_max_sum
+
+def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
+    """Read trace file and return a list of floats."""
+    with open(trace_file, "r") as f:
+        content = f.read()
+    
+    # Split by the separator
+    blocks = content.split("###############################")
+    
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        
+        lines = block.split('\n')
+        # Find the line starting with Run
+        run_id = -1
+        data_line = ""
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith("Run"):
+                try:
+                    run_id = int(line.split()[1])
+                except:
+                    pass
+            elif line:
+                # Assume this is the data line
+                data_line = line
+        
+        if run_id == read_idx and data_line:
+            return [float(x) for x in data_line.split(",") if float(x) >= 5]
+            
+    raise ValueError(f"Run ID {read_idx} not found in trace file.")
+
+def return_closest_mean_index(trace_file: str, mean_value: float | None = None) -> int:
+    """
+    Return the index (Run ID) of the run whose mean value is closest to the target mean_value.
+    If mean_value is None, it is calculated as the average of all runs' means.
+    """
+    with open(trace_file, "r") as f:
+        content = f.read()
+    
+    blocks = content.split("###############################")
+    run_means = {}
+    
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        
+        lines = block.split('\n')
+        run_id = -1
+        data_line = ""
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith("Run"):
+                try:
+                    run_id = int(line.split()[1])
+                except:
+                    pass
+            elif line:
+                # Assume this is the data line
+                data_line = line
+        
+        if run_id != -1 and data_line:
+            try:
+                data = [float(x) for x in data_line.split(",")]
+                if data:
+                    run_means[run_id] = sum(data) / len(data)
+            except ValueError:
+                pass
+
+    if not run_means:
+        return -1
+
+    if mean_value is None:
+        mean_value = sum(run_means.values()) / len(run_means)
+    
+    closest_run_id = -1
+    min_diff = float("inf")
+    
+    for run_id, r_mean in run_means.items():
+        diff = abs(r_mean - mean_value)
+        if diff < min_diff:
+            min_diff = diff
+            closest_run_id = run_id
+            
+    return closest_run_id
