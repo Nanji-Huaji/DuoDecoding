@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
+import pickle
 from collections import deque
 from typing import List, Tuple, Dict
 import os
@@ -16,24 +17,26 @@ TASK_MAP = {name: i for i, name in enumerate(KNOWN_TASKS)}
 UNKNOWN_TASK_ID = len(KNOWN_TASKS)
 
 class QNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=128):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(QNetwork, self).__init__()
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, action_dim)
         self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.relu(self.fc1(x))
         x = self.relu(self.fc2(x))
-        return self.fc3(x)
+        x = self.relu(self.fc3(x))
+        return self.fc4(x)
 
 class DDQNAgent:
     def __init__(
         self, 
         state_dim, 
         action_dim, 
-        hidden_dim=128, 
+        hidden_dim=256, 
         lr=1e-3, 
         gamma=0.99, 
         epsilon=1.0, 
@@ -120,12 +123,22 @@ class DDQNAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def save(self, path):
+        # Save model
         torch.save({
             'policy_net': self.policy_net.state_dict(),
             'target_net': self.target_net.state_dict(),
             'optimizer': self.optimizer.state_dict(),
-            'epsilon': self.epsilon
+            'epsilon': self.epsilon,
+            'update_count': self.update_count
         }, path)
+        
+        # Save buffer
+        buffer_path = path + ".buffer"
+        try:
+            with open(buffer_path, 'wb') as f:
+                pickle.dump(list(self.memory), f)
+        except Exception as e:
+            print(f"Failed to save replay buffer: {e}")
 
     def load(self, path):
         if os.path.exists(path):
@@ -135,7 +148,16 @@ class DDQNAgent:
                 self.target_net.load_state_dict(checkpoint['target_net'])
                 self.optimizer.load_state_dict(checkpoint['optimizer'])
                 self.epsilon = checkpoint['epsilon']
-                print(f"Loaded RL agent from {path}")
+                self.update_count = checkpoint.get('update_count', 0)
+                print(f"Loaded RL agent from {path}, steps: {self.update_count}")
+                
+                # Load buffer
+                buffer_path = path + ".buffer"
+                if os.path.exists(buffer_path):
+                    with open(buffer_path, 'rb') as f:
+                        memory_list = pickle.load(f)
+                        self.memory.extend(memory_list)
+                    print(f"Loaded {len(memory_list)} transitions from replay buffer.")
             except Exception as e:
                 print(f"Failed to load checkpoint from {path} (possibly due to architecture/state_dim change): {e}")
                 print("Starting training from scratch.")

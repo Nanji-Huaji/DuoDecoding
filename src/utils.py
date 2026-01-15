@@ -157,6 +157,13 @@ def parse_arguments():
         ],
     )
 
+    parser.add_argument(
+        "--task_name",
+        type=str,
+        default="unknown",
+        help="Task name for RL adapter context (e.g., mt_bench, humaneval).",
+    )
+    
     # for lookahead decoding
     parser.add_argument(
         "--level",
@@ -289,7 +296,7 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-1.1b",
+        default="src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
         help="The path of the accuracy head model.",
     )
     parser.add_argument(
