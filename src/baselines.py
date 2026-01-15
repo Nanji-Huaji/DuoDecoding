@@ -1300,7 +1300,8 @@ class Baselines(Decoding):
                     acc_prob = self.num_acc_tokens[-1] / self.args.gamma if len(self.num_acc_tokens) > 0 else 0.5
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                transfer_top_k = self.rl_adapter.select_k(bandwidth, latency, acc_prob, entropy)
+                task_name = getattr(self.args, "task_name", "unknown")
+                transfer_top_k = self.rl_adapter.select_k(bandwidth, latency, acc_prob, entropy, task_name)
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
             current_gamma = actual_gamma  # 更新current_gamma为实际生成的数量

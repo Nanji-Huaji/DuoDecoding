@@ -46,6 +46,7 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     eval/eval_mt_bench.py \
     --eval_mode {eval_mode} \
     -e llama \
+    --task_name mt_bench \
     --draft_model tiny-llama-1.1b \
     --target_model Llama-2-13b \
     --little_model llama-68m \

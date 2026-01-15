@@ -10,6 +10,11 @@ import os
 # 定义候选的 K 值
 K_CANDIDATES = [0, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000, 32000]
 
+# 定义任务列表以进行 One-Hot 编码
+KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
+TASK_MAP = {name: i for i, name in enumerate(KNOWN_TASKS)}
+UNKNOWN_TASK_ID = len(KNOWN_TASKS)
+
 class QNetwork(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=128):
         super(QNetwork, self).__init__()
@@ -95,13 +100,17 @@ class DDQNAgent:
             next_q_values = self.target_net(next_states).gather(1, next_actions)
             target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
-        current_q_values = self.policy_net(states).gather(1, actions)
+        with torch.enable_grad():
+            current_q_values = self.policy_net(states).gather(1, actions)
 
-        loss = self.loss_fn(current_q_values, target_q_values)
+            loss = self.loss_fn(current_q_values, target_q_values)
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            
+            if self.update_count % 10 == 0:
+                print(f"[RL Agent] Step: {self.update_count}, Loss: {loss.item():.4f}, Epsilon: {self.epsilon:.4f}")
 
         self.update_count += 1
         if self.update_count % self.target_update_freq == 0:
@@ -120,12 +129,16 @@ class DDQNAgent:
 
     def load(self, path):
         if os.path.exists(path):
-            checkpoint = torch.load(path, map_location=self.device)
-            self.policy_net.load_state_dict(checkpoint['policy_net'])
-            self.target_net.load_state_dict(checkpoint['target_net'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-            self.epsilon = checkpoint['epsilon']
-            print(f"Loaded RL agent from {path}")
+            try:
+                checkpoint = torch.load(path, map_location=self.device)
+                self.policy_net.load_state_dict(checkpoint['policy_net'])
+                self.target_net.load_state_dict(checkpoint['target_net'])
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
+                self.epsilon = checkpoint['epsilon']
+                print(f"Loaded RL agent from {path}")
+            except Exception as e:
+                print(f"Failed to load checkpoint from {path} (possibly due to architecture/state_dim change): {e}")
+                print("Starting training from scratch.")
 
 class RLNetworkAdapter:
     def __init__(self, args, device="cuda"):
@@ -133,8 +146,9 @@ class RLNetworkAdapter:
         self.device = device
         
         # State definition: 
-        # [bandwidth (norm), latency (norm), draft_acc_prob, entropy]
-        self.state_dim = 4 
+        # [bandwidth (norm), latency (norm), draft_acc_prob, entropy] + [one-hot task vector (6 dims)]
+        self.task_dim = len(KNOWN_TASKS) + 1 # +1 for unknown
+        self.state_dim = 4 + self.task_dim
         self.action_dim = len(K_CANDIDATES)
         
         self.agent = DDQNAgent(self.state_dim, self.action_dim, device=device)
@@ -145,13 +159,14 @@ class RLNetworkAdapter:
         
         self.last_state = None
         self.last_action = None
+        self.last_reward = None
         
         # Load pretrained model if exists
         self.model_path = os.path.join("checkpoints", "rl_adapter.pth")
         os.makedirs("checkpoints", exist_ok=True)
         self.agent.load(self.model_path)
 
-    def get_state(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float) -> np.ndarray:
+    def get_state(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float, task_name: str = "unknown") -> np.ndarray:
         """
         Construct state vector.
         """
@@ -164,17 +179,23 @@ class RLNetworkAdapter:
         # 3. Draft Acceptance Probability (already 0-1)
         acc_prob = draft_acc_prob
         
-        # 4. Entropy (already calculated)
-        # Normalize entropy roughly (max entropy for 32000 vocab is ~10.3)
+        # 4. Entropy 
         norm_entropy = min(entropy / 10.0, 1.0)
         
-        return np.array([norm_bw, norm_lat, acc_prob, norm_entropy], dtype=np.float32)
+        # 5. Task One-Hot Encoding
+        task_idx = TASK_MAP.get(task_name, UNKNOWN_TASK_ID)
+        task_vec = np.zeros(self.task_dim, dtype=np.float32)
+        task_vec[task_idx] = 1.0
+        
+        basic_features = np.array([norm_bw, norm_lat, acc_prob, norm_entropy], dtype=np.float32)
+        
+        return np.concatenate([basic_features, task_vec])
 
-    def select_k(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float, training=True) -> int:
+    def select_k(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float, task_name: str = "unknown", training=True) -> int:
         """
         Select top-k parameter k.
         """
-        state = self.get_state(bandwidth_mbps, latency_ms, draft_acc_prob, entropy)
+        state = self.get_state(bandwidth_mbps, latency_ms, draft_acc_prob, entropy, task_name)
         
         # If we have a previous state/action/reward, store the transition
         if self.last_state is not None and self.last_action is not None and self.last_reward is not None:
@@ -198,7 +219,6 @@ class RLNetworkAdapter:
     def save(self):
         self.agent.save(self.model_path)
         
-        # Save periodically (simple logic)
         if self.agent.update_count % 100 == 0:
             self.agent.save(self.model_path)
 

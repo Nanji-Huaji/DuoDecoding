@@ -17,6 +17,17 @@ from datetime import datetime
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from enum import Enum
+
+class EvalDataset(str, Enum):
+    mt_bench = "eval/eval_mt_bench.py"
+    humaneval = "eval/eval_humaneval.py"
+    cnndm = "eval/eval_cnndm.py"
+    xsum = "eval/eval_xsum.py"
+    gsm8k = "eval/eval_gsm8k.py"
+
+
+
 
 class ExpConfig(TypedDict):
     CUDA_VISIBLE_DEVICES: Literal["0", "1"]
@@ -31,6 +42,7 @@ class ExpConfig(TypedDict):
     use_rl_adapter: bool
     ntt_ms_edge_cloud: int | float
     ntt_ms_edge_end: int | float
+    eval_dataset: EvalDataset
 
 
 # Global Constants
@@ -43,7 +55,7 @@ echo "Running experiment: {eval_mode}"
 CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --num_processes 1 \
     --main_process_port 29051 \
-    eval/eval_mt_bench.py \
+    {eval_dataset} \
     --eval_mode {eval_mode} \
     -e llama \
     --draft_model tiny-llama-1.1b \
@@ -101,6 +113,17 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_stochastic_comm")
     if config.get("use_rl_adapter", False):
         cmd = add_args(cmd, "use_rl_adapter")
+
+    # Derive task_name based on eval_dataset or manually
+    script_path = str(config.get('eval_dataset', ''))
+    task_name = "unknown"
+    if "mt_bench" in script_path: task_name = "mt_bench"
+    elif "humaneval" in script_path: task_name = "humaneval"
+    elif "cnndm" in script_path: task_name = "cnndm"
+    elif "xsum" in script_path: task_name = "xsum"
+    elif "gsm8k" in script_path: task_name = "gsm8k"
+    
+    cmd = add_args(cmd, "task_name", task_name)
 
     print(
         f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}"
@@ -358,9 +381,11 @@ def create_config(
     edge_cloud_bandwidth=100,
     cloud_end_bandwidth=100,
     transfer_top_k: int = 300,
+    eval_dataset: EvalDataset = EvalDataset.mt_bench,
 ) -> ExpConfig:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return ExpConfig(
+        eval_dataset=eval_dataset,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
         eval_mode=eval_mode,
         edge_end_bandwidth=edge_end_bandwidth,

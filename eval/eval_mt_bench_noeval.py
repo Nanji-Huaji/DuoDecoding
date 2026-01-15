@@ -89,7 +89,7 @@ class EvalMTBench(Baselines):
         # * load evaluation data
         self.color_print(f"Loading MT-bench data...", 3)
         data = []
-        with open(os.path.join(self.args.data_path, "test.jsonl")) as f:
+        with open(os.path.join(self.args.data_path, "mt_bench.jsonl")) as f:
             for line in f.readlines():
                 datum = json.loads(line)
                 data.append(datum)
