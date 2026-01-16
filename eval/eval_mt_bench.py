@@ -109,6 +109,8 @@ class EvalMTBench(Baselines):
 
         self.load_data()
 
+        self.task = "mt_bench"
+
         print(self.args.target_model)
 
         if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(

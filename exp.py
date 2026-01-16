@@ -26,12 +26,18 @@ class EvalDataset(str, Enum):
     xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
 
+class EvalMode(str, Enum):
+    autoregression = "large"
+    dssd = "dist_split_spec"
+    dsd = "dist_spec"
+    cuhlm = "uncertainty_decoding"
+    ceesd = "adaptive_tridecoding" # ours
 
 
 
 class ExpConfig(TypedDict):
     CUDA_VISIBLE_DEVICES: Literal["0", "1"]
-    eval_mode: str
+    eval_mode: str | EvalMode
     edge_end_bandwidth: int | float
     edge_cloud_bandwidth: int | float
     cloud_end_bandwidth: int | float
@@ -40,6 +46,8 @@ class ExpConfig(TypedDict):
     use_precise: bool
     use_stochastic_comm: bool
     use_rl_adapter: bool
+    small_draft_threshold: float
+    draft_target_threshold: float
     ntt_ms_edge_cloud: int | float
     ntt_ms_edge_end: int | float
     eval_dataset: EvalDataset
@@ -69,6 +77,8 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
     --transfer_top_k {transfer_top_k} \
+    --small_draft_threshold {small_draft_threshold} \
+    --draft_target_threshold {draft_target_threshold} \
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
     --ntt_ms_edge_end {ntt_ms_edge_end} \
@@ -78,7 +88,6 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
 def add_args(
     base_cmd: str, extra_arg: str, value_of_extra_args: str | None = None
 ) -> str:
-    # 修复语法错误
     return (
         base_cmd.rstrip()
         + f" \\\n    --{extra_arg} {value_of_extra_args if value_of_extra_args is not None else ''}"
@@ -89,7 +98,7 @@ def get_file_path(exp_name: str) -> str:
     dir_path = f"exp/{exp_name}"
     for root, dirs, files in os.walk(dir_path):
         for file in files:
-            if file.endswith("_metrics.json"):  # 修复语法错误
+            if file.endswith("_metrics.json"):  
                 return os.path.join(root, file)
     print(f"File not found for {exp_name}")
     return ""
@@ -377,9 +386,11 @@ def create_config(
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
     use_rl_adapter: bool = False,
-    edge_end_bandwidth=100,
-    edge_cloud_bandwidth=100,
-    cloud_end_bandwidth=100,
+    edge_end_bandwidth: int | float=100,
+    edge_cloud_bandwidth: int | float=100,
+    cloud_end_bandwidth: int | float=100,
+    small_draft_threshold: float = 0.8,
+    draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
 ) -> ExpConfig:
@@ -392,6 +403,8 @@ def create_config(
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=transfer_top_k,
+        small_draft_threshold=small_draft_threshold,
+        draft_target_threshold=draft_target_threshold,
         exp_name=f"{eval_mode}/{eval_mode}_{timestamp}",
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
@@ -403,83 +416,26 @@ def create_config(
 
 bandwidth_config = [
     (563, 34.6),
-    (350, 25.0),
-    (200, 15.0),
-    (100, 5.0),
-    (33.2, 0.14),
 ]
 
 # 在此添加实验
 
 config_to_run = []
-
+ 
 for edge_end_bw, edge_cloud_bw in bandwidth_config:
-    for transfer_top_k in range(100, 1001, 100):
-        config_to_run.append(
-            create_config(
-                eval_mode=f"dist_split_spec",
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
+    for little_draft_threshold in range(1, 8+1):
+        for draft_target_threshold in range(1, 8+1):
+            config = create_config(
+                eval_mode=EvalMode.ceesd,
+                eval_dataset=EvalDataset.mt_bench,
                 edge_end_bandwidth=edge_end_bw,
                 edge_cloud_bandwidth=edge_cloud_bw,
                 cloud_end_bandwidth=edge_cloud_bw,
+                small_draft_threshold=little_draft_threshold / 10.0,
+                draft_target_threshold=draft_target_threshold / 10.0,
                 use_precise=False,
-                use_stochastic_comm=True,
-                transfer_top_k=transfer_top_k,
             )
-        )
-        config_to_run.append(
-            create_config(
-                eval_mode=f"dist_spec",
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=False,
-                edge_end_bandwidth=edge_end_bw,
-                edge_cloud_bandwidth=edge_cloud_bw,
-                cloud_end_bandwidth=edge_cloud_bw,
-                use_stochastic_comm=True,
-                transfer_top_k=transfer_top_k,
-            )
-        )
-        config_to_run.append(
-            create_config(
-                eval_mode="uncertainty_decoding",
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=False,
-                use_stochastic_comm=True,
-                edge_end_bandwidth=edge_end_bw,
-                edge_cloud_bandwidth=edge_cloud_bw,
-                cloud_end_bandwidth=edge_cloud_bw,
-                transfer_top_k=transfer_top_k,
-            )
-        )
-        config_to_run.append(
-            create_config(
-                eval_mode="tridecoding",
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=False,
-                use_stochastic_comm=True,
-                edge_end_bandwidth=edge_end_bw,
-                edge_cloud_bandwidth=edge_cloud_bw,
-                cloud_end_bandwidth=edge_cloud_bw,
-                transfer_top_k=transfer_top_k,
-            )
-        )
-        config_to_run.append(
-            create_config(
-                eval_mode="adaptive_tridecoding",
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=False,
-                use_stochastic_comm=True,
-                edge_end_bandwidth=edge_end_bw,
-                edge_cloud_bandwidth=edge_cloud_bw,
-                cloud_end_bandwidth=edge_cloud_bw,
-                transfer_top_k=transfer_top_k,
-            )
-        )
+            config_to_run.append(config)
 
 if __name__ == "__main__":
     # 创建日志目录

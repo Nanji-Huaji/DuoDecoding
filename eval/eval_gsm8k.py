@@ -39,6 +39,8 @@ class EvalGSM8K(Baselines):
         self.load_tokenizer()
         self.load_model()
         self.load_data()
+
+        self.task = "gsm8k"
         
         # Determine model_id for chat template
         if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):

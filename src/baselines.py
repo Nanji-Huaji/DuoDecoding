@@ -95,6 +95,8 @@ class Baselines(Decoding):
         else:
             self.rl_adapter = None
 
+        self.task = "unknown" # This attribute should be set in the subclass
+
     def load_acc_head(self):
         # Load acc head if adaptive method is used
         args = self.args
@@ -1300,7 +1302,7 @@ class Baselines(Decoding):
                     acc_prob = self.num_acc_tokens[-1] / self.args.gamma if len(self.num_acc_tokens) > 0 else 0.5
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                task_name = getattr(self.args, "task_name", "unknown")
+                task_name = getattr(self, "task", "unknown")
                 transfer_top_k = self.rl_adapter.select_k(bandwidth, latency, acc_prob, entropy, task_name)
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token

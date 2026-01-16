@@ -23,6 +23,8 @@ class EvalHumaneval(Decoding):
         self.load_data()
         self.load_model()
 
+        self.task = "specbench"
+
         self.draft_time = []
         self.target_time = []
         self.acc_num = []

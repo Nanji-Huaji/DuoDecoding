@@ -163,7 +163,7 @@ def parse_arguments():
         default="unknown",
         help="Task name for RL adapter context (e.g., mt_bench, humaneval).",
     )
-    
+
     # for lookahead decoding
     parser.add_argument(
         "--level",

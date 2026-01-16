@@ -32,6 +32,8 @@ class EvalCNNDM(Baselines):
         self.load_model()
         self.load_data()
         
+        self.task = "cnndm"
+        
         if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
             self.args.target_model
         ):
