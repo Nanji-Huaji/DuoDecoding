@@ -22,11 +22,8 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
 from .model_gpu import KVCacheModel
-from .model_cpu import KVCacheCppModel
 from .utils import seed_everything, norm_logits, sample, max_fn
-from .model.rest.rest.model.utils import *
-from .model.rest.rest.model.rest_model import RestModel
-from .model.rest.rest.model.kv_cache import initialize_past_key_values
+
 from .communication import (
     CommunicationSimulator,
     CUHLM,
@@ -226,7 +223,7 @@ class Baselines(Decoding):
 
                 t = sample(
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
+                ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
                 total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
@@ -347,6 +344,7 @@ class Baselines(Decoding):
 
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
+                t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
                 total_accepted_tokens += 1
 
@@ -471,7 +469,7 @@ class Baselines(Decoding):
 
                 t = sample(
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
+                ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
                 total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
@@ -604,6 +602,7 @@ class Baselines(Decoding):
 
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
+                t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
                 total_accepted_tokens += 1
 

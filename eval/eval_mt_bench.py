@@ -129,6 +129,8 @@ class EvalMTBench(Baselines):
             self.model_id = "llama-3.1"
         elif "llama" in str(self.args.draft_model):
             self.model_id = "vicuna"
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+            self.model_id = "qwen"
         else:
             raise NotImplementedError
 
@@ -223,7 +225,7 @@ class EvalMTBench(Baselines):
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):
 
-                if self.model_id == "llama-3.1":
+                if self.model_id == "llama-3.1" or self.model_id == "qwen":
                     messages = [
                         {
                             "role": "system",
@@ -242,7 +244,7 @@ class EvalMTBench(Baselines):
                 for turn_idx in range(len(question["turns"])):
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id == "llama-3.1":
+                    if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append({"role": "user", "content": qs})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
@@ -287,7 +289,7 @@ class EvalMTBench(Baselines):
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id == "llama-3.1":
+                    if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append(
                             {"role": "assistant", "content": output_text}
                         )
@@ -309,7 +311,7 @@ class EvalMTBench(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
-                if self.model_id == "llama-3.1":
+                if self.model_id == "llama-3.1" or self.model_id == "qwen":
                     messages = [
                         {
                             "role": "system",
@@ -329,7 +331,7 @@ class EvalMTBench(Baselines):
 
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id == "llama-3.1":
+                    if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append({"role": "user", "content": qs})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
@@ -398,7 +400,7 @@ class EvalMTBench(Baselines):
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id == "llama-3.1":
+                    if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append(
                             {"role": "assistant", "content": output_text}
                         )

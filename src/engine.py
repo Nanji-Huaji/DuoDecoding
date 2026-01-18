@@ -9,20 +9,20 @@ import warnings
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import llama_cpp
+# import llama_cpp
 from abc import ABC, abstractmethod
 from accelerate import Accelerator
 from .model_gpu import KVCacheModel
-from .model_cpu import KVCacheCppModel
+# from .model_cpu import KVCacheCppModel
 from .utils import seed_everything, norm_logits, sample, max_fn
 import time
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
 
-from .model.rest.rest.model.utils import *
-from .model.rest.rest.model.rest_model import RestModel
-from .model.rest.rest.model.kv_cache import initialize_past_key_values
-import draftretriever
+# from .model.rest.rest.model.utils import *
+# from .model.rest.rest.model.rest_model import RestModel
+# from .model.rest.rest.model.kv_cache import initialize_past_key_values
+# import draftretriever
 
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
 
@@ -46,7 +46,7 @@ attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 
 INT_SIZE = 4
 
-torch._inductor.config.triton.cudagraph_skip_dynamic_graphs = True
+
 
 class DecodingMetrics(TypedDict):
     """
@@ -241,22 +241,7 @@ class Decoding(ABC):
                 ).eval()
 
         elif self.args.eval_mode == "duodec":
-            if self.accelerator.is_main_process:
-                self.draft_model = llama_cpp.Llama(
-                    model_path=self.args.draft_model,
-                    n_ctx=4096,
-                    verbose=False,
-                    n_threads=16,
-                )
-            else:
-                self.target_model = AutoModelForCausalLM.from_pretrained(
-                    self.args.target_model,
-                    device_map="cuda:0",
-                    torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
-                    cache_dir="llama/.cache/huggingface",
-                    local_files_only=True,
-                ).eval()
+            raise NotImplementedError("DuoDecoding is not implemented yet.")
 
         elif self.args.eval_mode == "lade":
             from .model.lade.utils import augment_all, config_lade
@@ -284,18 +269,7 @@ class Decoding(ABC):
                 local_files_only=True,
             ).eval()
         elif self.args.eval_mode == "rest":
-            self.model = RestModel.from_pretrained(
-                self.args.target_model,
-                torch_dtype=torch.bfloat16,
-                low_cpu_mem_usage=True,
-                device_map="auto",
-            )
-            self.token_spans = list(range(2, self.args.max_token_span + 1))[
-                ::-1
-            ]
-            self.datastore = draftretriever.Reader(
-                index_file_path=self.args.datastore_path,
-            )
+            raise NotImplementedError("REST decoding is not implemented yet.")
         elif self.args.eval_mode in ["tridecoding", "tridecoding_with_bandwidth"]:
             self.little_model = AutoModelForCausalLM.from_pretrained(
                 self.args.little_model,
@@ -2025,8 +1999,8 @@ class Decoding(ABC):
             #     print(prefix.shape[1])
         return prefix
 
-    @torch.no_grad()
-    def duodecoding(self, prefix, **kwargs):
+    # @torch.no_grad()
+    # def duodecoding(self, prefix, **kwargs):
         # parallel speculative decoding
         if self.accelerator.is_main_process:
             model = KVCacheCppModel(
