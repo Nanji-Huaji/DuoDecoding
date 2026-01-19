@@ -136,6 +136,8 @@ class Decoding(ABC):
         self.num_acc_tokens = []
         self.prob_with_flag = []
 
+        self.vocab_size = -1
+
     def load_model(self):
         # * load models according to different evaluation methods.
         self.color_print(
@@ -169,8 +171,7 @@ class Decoding(ABC):
             "uncertainty_decoding",
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
-
-        ]:
+        ] and not ('70b' in self.args.target_model) :
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
                 device_map="cuda:0",
@@ -212,92 +213,7 @@ class Decoding(ABC):
                     attn_implementation=attn_impl,
                 ).eval()
 
-        elif self.args.eval_mode == "rc_para_sd":
-            if self.accelerator.is_main_process:
-                self.draft_model = AutoModelForCausalLM.from_pretrained(
-                    self.args.draft_model,
-                    device_map="cuda:0",
-                    torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
-                    cache_dir="llama/.cache/huggingface",
-                    local_files_only=True,
-                ).eval()
-                self.draft_model_2 = AutoModelForCausalLM.from_pretrained(
-                    self.args.draft_model,
-                    device_map=f"cuda:{torch.cuda.device_count()-1}",
-                    torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
-                    cache_dir="llama/.cache/huggingface",
-                    local_files_only=True,
-                ).eval()
-            else:
-                self.target_model = AutoModelForCausalLM.from_pretrained(
-                    self.args.target_model,
-                    device_map="auto",
-                    torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
-                    cache_dir="llama/.cache/huggingface",
-                    local_files_only=True,
-                ).eval()
 
-        elif self.args.eval_mode == "duodec":
-            raise NotImplementedError("DuoDecoding is not implemented yet.")
-
-        elif self.args.eval_mode == "lade":
-            from .model.lade.utils import augment_all, config_lade
-            from .model.lade.decoding import CONFIG_MAP
-
-            if int(os.environ.get("USE_LADE", 0)):
-                augment_all()
-                config_lade(
-                    LEVEL=self.args.level,
-                    WINDOW_SIZE=self.args.window,
-                    GUESS_SET_SIZE=self.args.guess,
-                    DEBUG=0,
-                    USE_FLASH=0,
-                    DIST_WORKERS=len(
-                        os.environ.get("CUDA_VISIBLE_DEVICES").split(",")
-                    ),
-                )
-                print("lade activated config: ", CONFIG_MAP)
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-            ).eval()
-        elif self.args.eval_mode == "rest":
-            raise NotImplementedError("REST decoding is not implemented yet.")
-        elif self.args.eval_mode in ["tridecoding", "tridecoding_with_bandwidth"]:
-            self.little_model = AutoModelForCausalLM.from_pretrained(
-                self.args.little_model,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-                attn_implementation=attn_impl,
-            ).eval()
-            self.draft_model = AutoModelForCausalLM.from_pretrained(
-                self.args.draft_model,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-                attn_implementation=attn_impl,
-            ).eval()
-            self.target_model = AutoModelForCausalLM.from_pretrained(
-                self.args.target_model,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                cache_dir="llama/.cache/huggingface",
-                local_files_only=True,
-                attn_implementation=attn_impl,
-            ).eval()
         elif self.args.eval_mode == "adaptive_decoding":
 
             self.draft_model = AutoModelForCausalLM.from_pretrained(
@@ -324,7 +240,7 @@ class Decoding(ABC):
         elif self.args.eval_mode == "adaptive_tridecoding":
             self.little_model = AutoModelForCausalLM.from_pretrained(
                 self.args.little_model,
-                device_map="auto",
+                device_map="cuda:0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 cache_dir="llama/.cache/huggingface",
@@ -334,7 +250,7 @@ class Decoding(ABC):
             ).eval()
             self.draft_model = AutoModelForCausalLM.from_pretrained(
                 self.args.draft_model,
-                device_map="auto",
+                device_map="balanced_low_0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 cache_dir="llama/.cache/huggingface",
@@ -344,7 +260,7 @@ class Decoding(ABC):
             ).eval()
             self.target_model = AutoModelForCausalLM.from_pretrained(
                 self.args.target_model,
-                device_map="auto",
+                device_map="balanced_low_0",
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 cache_dir="llama/.cache/huggingface",
@@ -352,7 +268,7 @@ class Decoding(ABC):
                 attn_implementation=attn_impl,
             ).eval()
 
-        self.vocab_size = self.args.vocab_size
+        self.vocab_size = int(self.args.vocab_size)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -368,7 +284,7 @@ class Decoding(ABC):
         # for llama models
         self.tokenizer.pad_token_id = 2
 
-  
+
 
     @abstractmethod
     def load_data(self):
