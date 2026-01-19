@@ -128,6 +128,7 @@ def parse_arguments():
     )
     parser.add_argument("--max_tokens", type=int, default=1024, help="max token number generated.")
     parser.add_argument("--temp", type=float, default=0.2, help="temperature for generating new tokens.")
+    parser.add_argument("--compile", action="store_true", help="Whether to compile the model layers.")
     parser.add_argument("--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy.")
     parser.add_argument(
         "--top_p",
@@ -384,9 +385,31 @@ def norm_logits(logits: torch.Tensor, temperature: float, top_k: float, top_p: f
         new_logits = torch.zeros_like(logits, device=logits.device)
         new_logits[:, idx] = 1
         return new_logits.float()
+
+    # scale
     logits = logits / temperature
+
+    # keep a copy in case filtering zeros out all entries
+    orig_logits = logits.clone()
+
+    # apply top-k/top-p filter
     logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
+
+    # If any row becomes all -inf (or non-finite) after filtering, fall back to original logits for that row
+    finite_mask = torch.isfinite(logits)
+    row_has_finite = finite_mask.any(dim=1)
+    if not row_has_finite.all():
+        # replace only the offending rows with original logits (no filtering)
+        bad_rows = (~row_has_finite).nonzero(as_tuple=False).squeeze(-1)
+        if bad_rows.numel() > 0:
+            logits[bad_rows] = orig_logits[bad_rows]
+
     probs = F.softmax(logits, dim=1)
+    # guard: replace any NaN/inf in probs (shouldn't happen) with uniform small probs
+    if not torch.isfinite(probs).all():
+        probs = torch.where(torch.isfinite(probs), probs, torch.zeros_like(probs))
+        probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-12)
+
     return probs
 
 
@@ -505,3 +528,30 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
             closest_run_id = run_id
             
     return closest_run_id
+
+
+def compile_layers(model):
+    if not hasattr(torch, "compile"):
+        print("torch.compile is not available. Please upgrade to PyTorch 2.0+.", flush=True)
+        return
+
+    layers = None
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        layers = model.model.layers
+    elif hasattr(model, "model") and hasattr(model.model, "h"):
+        layers = model.model.h
+    elif hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        layers = model.transformer.h
+    elif hasattr(model, "layers"):
+        layers = model.layers
+    
+    if layers:
+        print(f"Compiling {len(layers)} layers with reduce-overhead...", flush=True)
+        for layer in layers:
+            # Use reduce-overhead for StaticCache
+            layer.forward = torch.compile(layer.forward, mode="reduce-overhead")
+    else:
+        print("Model structure not recognized for compilation, skipping.", flush=True)
+
+
+

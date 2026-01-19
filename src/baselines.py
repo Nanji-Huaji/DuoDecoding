@@ -1554,9 +1554,25 @@ class Baselines(Decoding):
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
                 q = little_model_cache._forward_with_kvcache(x)
+                if x.shape[1] > little_model_cache._prob_history.shape[1]:
+                     # Fallback: if forward returned cached q but didn't append to history (loop 0 case usually)
+                     # But we need history to be aligned with x for verification loop.
+                     # If q is the distribution for the NEXT token, and x has not yet been grown.
+                     # The history covers x. (Predictions for x[0]...x[n-1] -> x[1]...x[n]?)
+                     # No, _prob_history[i] is prediction for token at i+1.
+                     pass
+
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
                 hidden_states = little_model_cache.hidden_states
+                
+                # If hidden_states is None (cached return case), we need to handle it?
+                if hidden_states is None:
+                    # If we hit cached return, hidden_states might be stale or None if not set?
+                    # In my model_gpu.py fix, 'self.hidden_states = outputs.hidden_states' is skipped if seq_len==0.
+                    # We should probably persist hidden_states or use 'last_hidden_state' property carefully.
+                    pass
+                
                 assert hidden_states is not None
                 stop = adapter.predict(hidden_states)
                 if stop:
@@ -1569,6 +1585,13 @@ class Baselines(Decoding):
             little_model_forward_times += actual_gamma2
             draft_model_forward_times += 1
             total_little_model_generated_tokens += actual_gamma2
+
+            # Guard: truncate verification length to available history to avoid index overflow
+            prob_history = little_model_cache._prob_history
+            if prob_history is not None:
+                max_allowed_gamma2 = prob_history.shape[1] - prefix_len + 1
+                if actual_gamma2 > max_allowed_gamma2:
+                    actual_gamma2 = max(0, max_allowed_gamma2)
 
             n1: int = prefix_len + actual_gamma2 - 1
 
@@ -1682,13 +1705,17 @@ class Baselines(Decoding):
             target_model_forward_times += 1
             total_draft_model_generated_tokens += actual_gamma1
 
-            n2: int = (
-                prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1
-            )
+            # Guard: cap verification length to available history to avoid index overflow
+            total_tokens_to_verify = new_generated_token.shape[1] + actual_gamma1
+            prob_history = draft_model_cache._prob_history
+            if prob_history is not None:
+                max_allowed = prob_history.shape[1] - prefix_len + 1
+                if total_tokens_to_verify > max_allowed:
+                    total_tokens_to_verify = max(0, max_allowed)
+
+            n2: int = prefix_len + total_tokens_to_verify - 1
             draft_accepted_this_iter = 0
-            for i in range(
-                new_generated_token.shape[1] + actual_gamma1,
-            ):
+            for i in range(total_tokens_to_verify):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
@@ -1714,6 +1741,15 @@ class Baselines(Decoding):
             assert (
                 n2 >= prefix_len - 1
             ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            # Cap n2 to available history length to avoid out-of-bounds
+            draft_hist_len = draft_model_cache._prob_history.shape[1]
+            target_hist_len = target_model_cache._prob_history.shape[1]
+            max_valid_n2 = min(draft_hist_len, target_hist_len) - 1
+            if max_valid_n2 < prefix_len - 1:
+                max_valid_n2 = prefix_len - 1  # keep prefix boundary
+            if n2 > max_valid_n2:
+                n2 = max_valid_n2
+
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:

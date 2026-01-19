@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from accelerate import Accelerator
 from .model_gpu import KVCacheModel
 # from .model_cpu import KVCacheCppModel
-from .utils import seed_everything, norm_logits, sample, max_fn
+from .utils import seed_everything, norm_logits, sample, max_fn, compile_layers
 import time
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
@@ -267,6 +267,14 @@ class Decoding(ABC):
                 local_files_only=True,
                 attn_implementation=attn_impl,
             ).eval()
+
+        if self.args.compile:
+            if hasattr(self, "little_model"):
+                compile_layers(self.little_model)
+            if hasattr(self, "draft_model"):
+                compile_layers(self.draft_model)
+            if hasattr(self, "target_model"):
+                compile_layers(self.target_model)
 
         self.vocab_size = int(self.args.vocab_size)
 
