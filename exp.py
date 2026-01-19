@@ -19,20 +19,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from enum import Enum
 
+
 class EvalDataset(str, Enum):
-    mt_bench = "eval/eval_mt_bench.py"
+    mt_bench = "eval/eval_mt_bench_noeval.py"
     humaneval = "eval/eval_humaneval.py"
     cnndm = "eval/eval_cnndm.py"
     xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
+
 
 class EvalMode(str, Enum):
     autoregression = "large"
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
-    ceesd = "adaptive_tridecoding" # ours
-
+    ceesd = "adaptive_tridecoding"  # ours
 
 
 class ExpConfig(TypedDict):
@@ -98,7 +99,7 @@ def get_file_path(exp_name: str) -> str:
     dir_path = f"exp/{exp_name}"
     for root, dirs, files in os.walk(dir_path):
         for file in files:
-            if file.endswith("_metrics.json"):  
+            if file.endswith("_metrics.json"):
                 return os.path.join(root, file)
     print(f"File not found for {exp_name}")
     return ""
@@ -124,14 +125,19 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_rl_adapter")
 
     # Derive task_name based on eval_dataset or manually
-    script_path = str(config.get('eval_dataset', ''))
+    script_path = str(config.get("eval_dataset", ""))
     task_name = "unknown"
-    if "mt_bench" in script_path: task_name = "mt_bench"
-    elif "humaneval" in script_path: task_name = "humaneval"
-    elif "cnndm" in script_path: task_name = "cnndm"
-    elif "xsum" in script_path: task_name = "xsum"
-    elif "gsm8k" in script_path: task_name = "gsm8k"
-    
+    if "mt_bench" in script_path:
+        task_name = "mt_bench"
+    elif "humaneval" in script_path:
+        task_name = "humaneval"
+    elif "cnndm" in script_path:
+        task_name = "cnndm"
+    elif "xsum" in script_path:
+        task_name = "xsum"
+    elif "gsm8k" in script_path:
+        task_name = "gsm8k"
+
     cmd = add_args(cmd, "task_name", task_name)
 
     print(
@@ -245,20 +251,26 @@ class GPUManager:
 
         return available_gpus
 
-    def acquire_gpu(self) -> int | None:
-        """获取一个可用的GPU"""
+    def acquire_gpu(self, count: int = 1) -> List[int] | None:
+        """获取 count 个可用的GPU"""
         with self.lock:
-            if self.available_gpus:
-                gpu_id = self.available_gpus.pop()
-                print(f"分配GPU {gpu_id}")
-                return gpu_id
+            if len(self.available_gpus) >= count:
+                # 优先选择利用率低的（即ID较小的，因为get_available_gpus已经过滤了）
+                selected = sorted(list(self.available_gpus))[:count]
+                for gpu in selected:
+                    self.available_gpus.remove(gpu)
+                print(f"分配GPU {selected}")
+                return selected
             return None
 
-    def release_gpu(self, gpu_id: int):
+    def release_gpu(self, gpu_ids: int | List[int]):
         """释放GPU"""
         with self.lock:
-            self.available_gpus.add(gpu_id)
-            print(f"释放GPU {gpu_id}")
+            if isinstance(gpu_ids, int):
+                gpu_ids = [gpu_ids]
+            for gpu_id in gpu_ids:
+                self.available_gpus.add(gpu_id)
+            print(f"释放GPU {gpu_ids}")
 
     def has_available_gpu(self) -> bool:
         """检查是否有可用GPU"""
@@ -270,17 +282,36 @@ def run_experiment_with_gpu(
     config: ExpConfig, gpu_manager: GPUManager, log_dir: str = "logs"
 ) -> dict:
     """在指定GPU上运行实验"""
-    gpu_id = None
+    gpu_ids = None
+    
+    # 检测是否为70b模型实验
+    is_large_model = "70b" in str(config).lower()
+    needed_gpus = 2 if is_large_model else 1
+    
     try:
-        # 等待可用GPU
-        while gpu_id is None:
-            gpu_id = gpu_manager.acquire_gpu()
-            if gpu_id is None:
-                print(f"等待可用GPU运行实验: {config['exp_name']}")
-                time.sleep(5)
+        if is_large_model:
+            # 70b模型：如果资源不足直接跳过
+            gpu_ids = gpu_manager.acquire_gpu(needed_gpus)
+            if gpu_ids is None:
+                msg = f"跳过实验 {config['exp_name']}: 70b模型需要{needed_gpus}个GPU，资源不足"
+                print(msg)
+                return {
+                    "exp_name": config["exp_name"],
+                    "result": {"error": msg},
+                    "log_file": "",
+                    "status": "skipped",
+                    "config": config.copy()
+                }
+        else:
+            # 普通模型：等待直到有可用GPU
+            while gpu_ids is None:
+                gpu_ids = gpu_manager.acquire_gpu(needed_gpus)
+                if gpu_ids is None:
+                    print(f"等待可用GPU运行实验: {config['exp_name']}")
+                    time.sleep(5)
 
         # 更新配置中的GPU设备
-        config["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        config["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
 
         # 运行实验
         result = run_exp(config, log_dir)
@@ -290,8 +321,8 @@ def run_experiment_with_gpu(
 
     finally:
         # 释放GPU
-        if gpu_id is not None:
-            gpu_manager.release_gpu(gpu_id)
+        if gpu_ids is not None:
+            gpu_manager.release_gpu(gpu_ids)
 
 
 def run_experiments_parallel(
@@ -386,9 +417,9 @@ def create_config(
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
     use_rl_adapter: bool = False,
-    edge_end_bandwidth: int | float=100,
-    edge_cloud_bandwidth: int | float=100,
-    cloud_end_bandwidth: int | float=100,
+    edge_end_bandwidth: int | float = 100,
+    edge_cloud_bandwidth: int | float = 100,
+    cloud_end_bandwidth: int | float = 100,
     small_draft_threshold: float = 0.8,
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
@@ -421,21 +452,19 @@ bandwidth_config = [
 # 在此添加实验
 
 config_to_run = []
- 
 for edge_end_bw, edge_cloud_bw in bandwidth_config:
-    for little_draft_threshold in range(1, 8+1):
-        for draft_target_threshold in range(1, 8+1):
-            config = create_config(
-                eval_mode=EvalMode.ceesd,
-                eval_dataset=EvalDataset.mt_bench,
-                edge_end_bandwidth=edge_end_bw,
-                edge_cloud_bandwidth=edge_cloud_bw,
-                cloud_end_bandwidth=edge_cloud_bw,
-                small_draft_threshold=little_draft_threshold / 10.0,
-                draft_target_threshold=draft_target_threshold / 10.0,
-                use_precise=False,
-            )
-            config_to_run.append(config)
+    config_to_run.append(
+        create_config(
+            eval_mode=EvalMode.ceesd,
+            edge_end_bandwidth=edge_end_bw,
+            edge_cloud_bandwidth=edge_cloud_bw,
+            cloud_end_bandwidth=edge_cloud_bw,
+            use_precise=False,
+            small_draft_threshold=0.6,
+            draft_target_threshold=0.3,
+            transfer_top_k=300,
+        )
+    )
 
 if __name__ == "__main__":
     # 创建日志目录
