@@ -36,6 +36,15 @@ class EvalMode(str, Enum):
     ceesd = "adaptive_tridecoding"  # ours
 
 
+model_acc_head_map = {
+    "llama-2-7b-chat": "src/SpecDec_pp/checkpoints/llama-2-chat-7b/exp-weight6-layer3",
+    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+    "Llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
+    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
+    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
+}
+
+
 class ExpConfig(TypedDict):
     CUDA_VISIBLE_DEVICES: Literal["0", "1"]
     eval_mode: str | EvalMode
@@ -52,6 +61,11 @@ class ExpConfig(TypedDict):
     ntt_ms_edge_cloud: int | float
     ntt_ms_edge_end: int | float
     eval_dataset: EvalDataset
+    draft_model: str
+    target_model: str
+    little_model: str
+    small_draft_acc_head_path: str
+    draft_target_acc_head_path: str
 
 
 # Global Constants
@@ -67,10 +81,12 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     {eval_dataset} \
     --eval_mode {eval_mode} \
     -e llama \
-    --draft_model tiny-llama-1.1b \
-    --target_model Llama-2-13b \
-    --little_model llama-68m \
+    --draft_model {draft_model} \
+    --target_model {target_model} \
+    --little_model {little_model} \
     --max_tokens 128 \
+    --small_draft_acc_head_path {small_draft_acc_head_path} \
+    --draft_target_acc_head_path {draft_target_acc_head_path} \
     --temp 0.0 \
     --gamma1 4 \
     --gamma2 26 \
@@ -96,11 +112,29 @@ def add_args(
 
 
 def get_file_path(exp_name: str) -> str:
-    dir_path = f"exp/{exp_name}"
-    for root, dirs, files in os.walk(dir_path):
-        for file in files:
-            if file.endswith("_metrics.json"):
-                return os.path.join(root, file)
+    # 原始逻辑：假设 exp_name 对应一个具体的文件夹
+    target_dir = f"exp/{exp_name}"
+
+    # 1. 如果 exp/{exp_name} 确实是一个文件夹，直接遍历
+    if os.path.isdir(target_dir):
+        for root, dirs, files in os.walk(target_dir):
+            for file in files:
+                if file.endswith("_metrics.json"):
+                    return os.path.join(root, file)
+
+    # 2. 如果文件夹不存在，可能是 exp_name 包含了 "父目录/文件前缀" 的结构
+    # 例如 exp_name="dssd/dssd_timestamp"，文件可能在 "exp/dssd/" 下
+    if "/" in exp_name:
+        parent_dir, file_prefix = os.path.split(exp_name)
+        search_dir = os.path.join("exp", parent_dir)
+
+        if os.path.isdir(search_dir):
+            for root, dirs, files in os.walk(search_dir):
+                for file in files:
+                    # 检查文件名是否包含前缀 (即 timestamp 部分) 且以后缀结尾
+                    if file_prefix in file and file.endswith("_metrics.json"):
+                        return os.path.join(root, file)
+
     print(f"File not found for {exp_name}")
     return ""
 
@@ -424,8 +458,22 @@ def create_config(
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
+    # 新添加的参数
+    draft_model: str = "tiny-vicuna-1b",
+    target_model: str = "vicuna-13b-v1.5",
+    little_model: str = "vicuna-68m",
+    small_draft_acc_head_path: str | None = None,
+    draft_target_acc_head_path: str | None = None,
 ) -> ExpConfig:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if small_draft_acc_head_path is None:
+        small_draft_acc_head_path = model_acc_head_map.get(
+            draft_model, ""
+        )
+    if draft_target_acc_head_path is None:
+        draft_target_acc_head_path = model_acc_head_map.get(
+            target_model, ""
+        )
     return ExpConfig(
         eval_dataset=eval_dataset,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
@@ -442,6 +490,11 @@ def create_config(
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,
         ntt_ms_edge_end=ntt_ms_edge_end,
         use_rl_adapter=use_rl_adapter,
+        draft_model=draft_model,
+        target_model=target_model,
+        little_model=little_model,
+        small_draft_acc_head_path=small_draft_acc_head_path,
+        draft_target_acc_head_path=draft_target_acc_head_path,
     )
 
 
@@ -453,18 +506,25 @@ bandwidth_config = [
 
 config_to_run = []
 for edge_end_bw, edge_cloud_bw in bandwidth_config:
-    config_to_run.append(
-        create_config(
-            eval_mode=EvalMode.ceesd,
-            edge_end_bandwidth=edge_end_bw,
-            edge_cloud_bandwidth=edge_cloud_bw,
-            cloud_end_bandwidth=edge_cloud_bw,
-            use_precise=False,
-            small_draft_threshold=0.6,
-            draft_target_threshold=0.3,
-            transfer_top_k=300,
+    for eval_mode in EvalMode:
+        for eval_dataset in EvalDataset:
+            config_to_run.append(
+                create_config(
+                    eval_mode=eval_mode,
+                    eval_dataset=eval_dataset,
+                    edge_end_bandwidth=edge_end_bw,
+                    edge_cloud_bandwidth=edge_cloud_bw,
+                    cloud_end_bandwidth=edge_cloud_bw,
+                    use_precise=False,
+                    target_model="vicuna-13b-v1.5",
+                    little_model="vicuna-68m",
+                    draft_model="tiny-vicuna-1b",
+                    small_draft_threshold=0.6,
+                    draft_target_threshold=0.3,
+                    transfer_top_k=300,
+
+                )
         )
-    )
 
 if __name__ == "__main__":
     # 创建日志目录
