@@ -102,7 +102,7 @@ class EvalGSM8K(Baselines):
     def postprocess(self, output_text):
         return output_text.strip()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def eval(self, total: int | None = 80):
         global decoding_metrics
         # Select decoding method
@@ -110,24 +110,14 @@ class EvalGSM8K(Baselines):
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
             decoding = self.speculative_decoding
-        elif self.args.eval_mode == "para_sd":
-            decoding = self.parallel_speculative_decoding
-        elif self.args.eval_mode == "duodec":
-            decoding = self.duodecoding
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
-        elif self.args.eval_mode == "rest":
-            decoding = self.rest_forward
         elif self.args.eval_mode == "tridecoding":
             decoding = self.tridecoding
-        elif self.args.eval_mode == "tridecoding_with_bandwidth":
-            decoding = self.tridecoding_with_bandwidth
         elif self.args.eval_mode == "uncertainty_decoding":
             decoding = self.uncertainty_decoding
         elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
             decoding = self.speculative_decoding_with_bandwidth
-        elif self.args.eval_mode == "speculative_decoding_with_bandwidth_full_prob":
-            decoding = self.speculative_decoding_with_bandwidth_full_prob
         elif self.args.eval_mode in get_class_methods(Baselines):
             decoding = getattr(self, self.args.eval_mode)
         else:
@@ -243,6 +233,31 @@ class EvalGSM8K(Baselines):
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{decoding_metrics}")
             self.color_print("-------Decoding Metrics-------")
+
+            # Save summaries
+            eval_result = dict(decoding_metrics)
+            eval_result["little_model"] = self.args.little_model
+            eval_result["draft_model"] = self.args.draft_model
+            eval_result["target_model"] = self.args.target_model
+            eval_result["eval_mode"] = self.args.eval_mode
+            eval_result["gamma"] = self.args.gamma
+            eval_result["gamma1"] = self.args.gamma1
+            eval_result["gamma2"] = self.args.gamma2
+
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"]
+                    / decoding_metrics["wall_time"]
+                )
+                eval_result["throughput"] = decoding_metrics["throughput"]
+
+            decoding_metrics_path = os.path.join(
+                self.args.exp_name, f"{self.args.eval_mode}_gsm8k_metrics.json"
+            )
+            os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
+            with open(decoding_metrics_path, "w") as f:
+                json.dump(eval_result, f, indent=4)
+            self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
 if __name__ == "__main__":
     args = parse_arguments()

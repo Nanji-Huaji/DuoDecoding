@@ -484,7 +484,7 @@ def create_config(
         transfer_top_k=transfer_top_k,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
-        exp_name=f"{eval_mode}/{eval_mode}_{timestamp}",
+        exp_name=f"{eval_mode}/{eval_dataset.name}/{eval_mode}_{timestamp}",
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,

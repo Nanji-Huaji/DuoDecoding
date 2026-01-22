@@ -110,22 +110,14 @@ class EvalHumaneval(Decoding):
 
         return output_text
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def eval(self):
         if self.args.eval_mode == "small" or self.args.eval_mode == "large":
             decoding = self.autoregressive_sampling
         elif self.args.eval_mode == "sd":
             decoding = self.speculative_decoding
-        elif self.args.eval_mode == "para_sd":
-            decoding = self.parallel_speculative_decoding
-        elif self.args.eval_mode == "duodec":
-            decoding = self.duodecoding
-        elif self.args.eval_mode == "pld":
-            decoding = self.pld_forward
         elif self.args.eval_mode == "lade":
             decoding = self.lookahead_forward
-        elif self.args.eval_mode == "rest":
-            decoding = self.rest_forward
         else:
             raise NotImplementedError
 
