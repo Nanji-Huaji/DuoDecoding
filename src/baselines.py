@@ -50,28 +50,7 @@ def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
         raise ValueError(
             f"Decoding method '{name}' not found in class {instance.__class__.__name__}"
         )
-    
 
-# def get_comm_simulator(use_precise: bool, args: Any, use_stochastic: bool) -> CommunicationSimulator:
-#     if use_precise:
-#         return PreciseCommunicationSimulator(
-#             bandwidth_hz=1e7,
-#             channel_gain=1e-8,
-#             send_power_watt=0.5,
-#             noise_power_watt=1e-10,
-#             ntt_ms_edge_cloud=args.ntt_ms_edge_cloud,
-#             ntt_ms_edge_end=args.ntt_ms_edge_end,
-#         )
-#     else:
-#         return CommunicationSimulator(
-#             bandwidth_edge_cloud=args.edge_cloud_bandwidth,
-#             bandwidth_edge_end=args.edge_end_bandwidth,
-#             bandwidth_cloud_end=args.cloud_end_bandwidth,
-#             dimension="Mbps",
-#             ntt_ms_edge_cloud=args.ntt_ms_edge_cloud,
-#             ntt_ms_edge_end=args.ntt_ms_edge_end,
-#             use_stochastic=use_stochastic,
-#         )
 
 
 class Baselines(Decoding):
@@ -135,7 +114,7 @@ class Baselines(Decoding):
                 self.draft_target_acc_head, draft_target_threshold
             )
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def dist_split_spec(
         self,
         prefix: torch.Tensor,
@@ -381,7 +360,7 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def dist_spec(
         self,
         prefix,
@@ -638,7 +617,7 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def uncertainty_decoding(
         self,
         prefix,
@@ -879,7 +858,7 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def tridecoding(
         self,
         prefix,
@@ -1183,7 +1162,7 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def adaptive_decoding(
         self,
         prefix,
@@ -1466,6 +1445,7 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    @torch.inference_mode()
     def adaptive_tridecoding(
         self,
         prefix,

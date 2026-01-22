@@ -19,7 +19,7 @@ class DecodingAdapter:
         self.threshold = threshold
         self.elast_acc_prob = 0.5
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict(self, hidden_states: torch.Tensor) -> bool:
         """
         Predict whether to stop generation based on the hidden states. 
