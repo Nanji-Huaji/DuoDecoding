@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 import re
 
+import json
+
 def seed_everything(seed: int):
     "set all random seed for reproducible results."
     random.seed(seed)
@@ -84,11 +86,11 @@ def model_zoo(args):
         "qwen-3-14b": "Qwen/Qwen3-14B",
         "llama-2-70b": "llama/Llama-2-70b-hf",
     }
+    args.draft_model = zoo.get(args.draft_model, args.draft_model)
+    args.target_model = zoo.get(args.target_model, args.target_model)
+    args.little_model = zoo.get(args.little_model, args.little_model) if hasattr(args, "little_model") else args.draft_model
+    args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
 
-    args.vocab_size = vocab_size[args.draft_model]
-    args.draft_model = zoo[args.draft_model]
-    args.target_model = zoo[args.target_model]
-    args.little_model = zoo[args.little_model] if hasattr(args, "little_model") else args.draft_model
 
 
 def parse_arguments():
@@ -505,3 +507,16 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
             closest_run_id = run_id
             
     return closest_run_id
+
+
+def get_vocab_size(model_name: str) -> int:
+    try:
+        with open(os.path.join(model_name, "config.json"), "r") as f:
+            config = json.load(f)
+            vocab_size = config.get("vocab_size", None)
+            if vocab_size is not None:
+                return vocab_size
+            else:
+                raise ValueError(f"Vocab size not found in config for model {model_name}.")
+    except FileNotFoundError:
+        raise ValueError(f"Config file for model {model_name} not found.")
