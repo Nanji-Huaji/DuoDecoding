@@ -14,6 +14,7 @@ from accelerate import Accelerator
 from .model_gpu import KVCacheModel
 from .utils import seed_everything, norm_logits, sample, max_fn
 import time
+from .register import Register
 
 from transformers import StoppingCriteriaList, MaxLengthCriteria
 
@@ -35,6 +36,8 @@ except ImportError:
     pass
 
 from functools import partial
+
+# from .register import Register
 
 flash_attn_available = "flash_attn" in globals()
 
@@ -104,8 +107,9 @@ def get_empty_metrics() -> DecodingMetrics:
     )
 
 
-class Decoding(ABC):
+class Decoding(Register, ABC):
     def __init__(self, args):
+        Register.__init__(self, args)
         self.args = args
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
@@ -232,6 +236,9 @@ class Decoding(ABC):
     def postprocess(self, input_text, output_text):
         pass
 
+
+    @Register.register_decoding("large")
+    @Register.register_decoding("small")
     @torch.inference_mode()
     def autoregressive_sampling(
         self, prefix, **kwargs
@@ -281,6 +288,7 @@ class Decoding(ABC):
 
         return x, metrics
 
+    @Register.register_decoding("sd")
     @torch.inference_mode()
     def speculative_decoding(
         self, prefix, transfer_top_k: int | None = 300

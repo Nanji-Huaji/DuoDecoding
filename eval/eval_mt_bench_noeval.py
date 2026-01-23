@@ -106,23 +106,7 @@ class EvalMTBench(Baselines):
     @torch.inference_mode()
     def eval(self):
         global decoding_metrics
-        if self.args.eval_mode == "small" or self.args.eval_mode == "large":
-            decoding = self.autoregressive_sampling
-        elif self.args.eval_mode == "sd":
-            decoding = self.speculative_decoding
-        elif self.args.eval_mode == "lade":
-            decoding = self.lookahead_forward
-        elif self.args.eval_mode == "tridecoding":
-            decoding = self.tridecoding
-        elif self.args.eval_mode == "uncertainty_decoding":
-            decoding = self.uncertainty_decoding
-        elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
-            decoding = self.speculative_decoding_with_bandwidth
-        
-        elif self.args.eval_mode in get_class_methods(Baselines):
-            decoding = getattr(self, self.args.eval_mode)
-
-        assert callable(decoding), f"{decoding} is not callable"
+        decoding = self.get_decoding_method()
 
         decoding = partial(
             decoding,

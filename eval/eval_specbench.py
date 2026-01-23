@@ -112,14 +112,7 @@ class EvalHumaneval(Decoding):
 
     @torch.inference_mode()
     def eval(self):
-        if self.args.eval_mode == "small" or self.args.eval_mode == "large":
-            decoding = self.autoregressive_sampling
-        elif self.args.eval_mode == "sd":
-            decoding = self.speculative_decoding
-        elif self.args.eval_mode == "lade":
-            decoding = self.lookahead_forward
-        else:
-            raise NotImplementedError
+        decoding = self.get_decoding_method()
 
         out_path = os.path.join(
             self.args.exp_name,

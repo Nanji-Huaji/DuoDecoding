@@ -36,6 +36,7 @@ from .engine import Decoding, DecodingMetrics, get_empty_metrics, INT_SIZE
 from .adapter import DecodingAdapter
 from .rl_adapter import RLNetworkAdapter
 
+from .register import Register
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
     if hasattr(instance, name):
@@ -113,7 +114,9 @@ class Baselines(Decoding):
             self.draft_target_adapter = DecodingAdapter(
                 self.draft_target_acc_head, draft_target_threshold
             )
-
+    
+    @Register.register_decoding("dist_split_spec")
+    @Register.register_decoding("dssd")
     @torch.inference_mode()
     def dist_split_spec(
         self,
@@ -360,6 +363,8 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    @Register.register_decoding("dist_spec")
+    @Register.register_decoding("dsd")
     @torch.inference_mode()
     def dist_spec(
         self,
@@ -617,6 +622,8 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    @Register.register_decoding("uncertainty_decoding")
+    @Register.register_decoding("cuhlm")
     @torch.inference_mode()
     def uncertainty_decoding(
         self,
@@ -858,6 +865,7 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
 
+    @Register.register_decoding("tridecoding")
     @torch.inference_mode()
     def tridecoding(
         self,
@@ -1162,6 +1170,7 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
         return prefix, metrics
 
+    @Register.register_decoding("adaptive_decoding")
     @torch.inference_mode()
     def adaptive_decoding(
         self,
@@ -1445,6 +1454,8 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    @Register.register_decoding("adaptive_tridecoding")
+    @Register.register_decoding("cee_sd")
     @torch.inference_mode()
     def adaptive_tridecoding(
         self,
