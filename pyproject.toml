@@ -36,11 +36,13 @@ dependencies = [
     "scipy>=1.15.3",
     "seaborn>=0.13.2",
     "sentencepiece>=0.2.1",
+    "setuptools>=80.10.1",
     "shortuuid>=1.0.13",
     "tiktoken>=0.12.0",
     "tokenizers>=0.22.2",
     "torch>=2.9.1",
     "tqdm>=4.67.1",
     "transformers>=4.57.6",
+    "triton>=3.5.1",
     "typer>=0.21.1",
 ]

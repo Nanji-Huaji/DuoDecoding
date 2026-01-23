@@ -160,7 +160,7 @@ class Decoding(Register, ABC):
                 self.args.target_model,
                 device_map="auto",
             ).eval()
-            
+
         elif self.args.eval_mode in [
             "sd",
             "dist_spec",
@@ -210,6 +210,19 @@ class Decoding(Register, ABC):
 
         self.vocab_size = int(self.args.vocab_size)
 
+        if hasattr(self, "draft_model") and self.draft_model is not None:
+            self.color_print("Compiling draft model...", 3)
+            # 使用 default 模式，虽然没有 reduce-overhead 快，但在变长输入和复杂 KV Cache 逻辑下更稳定
+            self.draft_model = torch.compile(
+                self.draft_model, mode="default", dynamic=True
+            )
+
+        if hasattr(self, "little_model") and self.little_model is not None:
+            self.color_print("Compiling little model...", 3)
+            self.little_model = torch.compile(
+                self.little_model, mode="default", dynamic=True
+            )
+
     def load_tokenizer(self):
         # * load tokenizers
         self.color_print(f"Loading tokenizer of {self.args.target_model}...", 3)
@@ -235,7 +248,6 @@ class Decoding(Register, ABC):
     @abstractmethod
     def postprocess(self, input_text, output_text):
         pass
-
 
     @Register.register_decoding("large")
     @Register.register_decoding("small")
@@ -268,12 +280,19 @@ class Decoding(Register, ABC):
         target_forward_times = 0
 
         start_event.record(stream=torch.cuda.current_stream())
-        while x.shape[1] < max_tokens:
-            x = model.generate(x, 1)
+
+        # 初始前向 (Prefill)
+        q = model._forward_with_kvcache(x)
+
+        while model.current_length < max_tokens:
+            next_tok = sample(q)
+            q = model._forward_with_kvcache(next_tok)
             target_forward_times += 1
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
+
+        x = model.input_ids
         elapsed_time = (
             start_event.elapsed_time(end_event) / 1000.0
         )  # Convert to seconds
@@ -681,7 +700,6 @@ class Decoding(Register, ABC):
 
         return prefix, metrics
 
-
     @torch.inference_mode()
     def uncertainty_decoding(
         self,
@@ -916,8 +934,6 @@ class Decoding(Register, ABC):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
 
         return prefix, metrics
-
-
 
     @torch.inference_mode()
     def lookahead_forward(self, prefix, **kwargs):

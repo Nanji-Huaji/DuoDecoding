@@ -1,5 +1,6 @@
 from argparse import Namespace
 
+
 class Register:
     # 这里的字典存储的是 { "mode_name": UnboundFunction }
     _DECODING_REGISTRY = {}

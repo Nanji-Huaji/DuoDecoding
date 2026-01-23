@@ -7,13 +7,13 @@ from torch import nn
 
 from .model_gpu import KVCacheModel
 
-from typing import TypedDict
+from typing import TypedDict, Any
 
 import logger
 
 
 class DecodingAdapter:
-    def __init__(self, acc_head: nn.Module, threshold: float | None, model: KVCacheModel | None = None):
+    def __init__(self, acc_head: Any, threshold: float | None, model: KVCacheModel | None = None):
         self.acc_head = acc_head
         self.model: KVCacheModel | None = model
         self.threshold = threshold

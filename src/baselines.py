@@ -86,6 +86,7 @@ class Baselines(Decoding):
                 self.acc_head_path,
             )
             self.acc_head.eval()
+            self.acc_head = torch.compile(self.acc_head)
             self.adapter = DecodingAdapter(
                 self.acc_head, draft_target_threshold
             )
@@ -101,6 +102,7 @@ class Baselines(Decoding):
                 )
             )
             self.small_draft_acc_head.eval()
+            self.small_draft_acc_head = torch.compile(self.small_draft_acc_head)
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
             self.draft_target_acc_head = (
                 AcceptancePredictionHead.from_pretrained(
@@ -108,6 +110,9 @@ class Baselines(Decoding):
                 )
             )
             self.draft_target_acc_head.eval()
+            self.draft_target_acc_head = torch.compile(
+                self.draft_target_acc_head
+            )
             self.small_draft_adapter = DecodingAdapter(
                 self.small_draft_acc_head, small_draft_threshold
             )
@@ -731,7 +736,7 @@ class Baselines(Decoding):
 
                 # 接受draft token - 仿照接受所有token的情况
                 accepted_token = x[:, -1:]  # draft token
-                prefix = torch.cat((prefix, accepted_token), dim=1)
+                prefix = torch.cat((prefix, accepted_token.to(prefix.device)), dim=1) # TODO: check device
 
                 comm_simulator.send_accept_message(
                     linktype="edge_cloud"
@@ -1269,17 +1274,18 @@ class Baselines(Decoding):
             step_start_time = time.time()
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
 
-            x = prefix.clone().to(draft_device)
+            q = approx_model_cache._forward_with_kvcache(prefix.to(draft_device))
             for _ in range(current_gamma):
-                q = approx_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
+                q = approx_model_cache._forward_with_kvcache(next_tok)
+
                 hidden_states = approx_model_cache.hidden_states
                 assert hidden_states is not None
                 stop = self.adapter.predict(hidden_states)
                 if stop:
                     break
-
+            
+            x = approx_model_cache.input_ids
             if self.rl_adapter is not None:
                 bandwidth = comm_simulator.bandwidth_edge_cloud
                 latency = comm_simulator.ntt_edge_cloud
@@ -1536,23 +1542,24 @@ class Baselines(Decoding):
 
             # 第一层 speculative
 
-            # x = little_model_cache.generate(
+            # q = little_model_cache.generate(
             #     prefix.to(little_device), self.args.gamma2
             # )
-
-            x = prefix.clone().to(little_device)
+            
+            q = little_model_cache._forward_with_kvcache(prefix.to(little_device))
 
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
-                q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
+                q = little_model_cache._forward_with_kvcache(next_tok)
+
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
                 stop = adapter.predict(hidden_states)
                 if stop:
                     break
 
+            x = little_model_cache.input_ids
             actual_gamma2 = x.shape[1] - prefix_len
 
             _ = draft_model_cache.generate(x.to(draft_device), 1)
@@ -1648,23 +1655,24 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            # x = draft_model_cache.generate(
+            # q = draft_model_cache.generate(
             #     prefix.to(draft_device), self.args.gamma1
             # )
 
-            x = prefix.clone().to(draft_device)
+            q = draft_model_cache._forward_with_kvcache(prefix.to(draft_device))
 
             for _ in range(self.args.gamma1):
                 adapter = self.draft_target_adapter
-                q = draft_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
+                q = draft_model_cache._forward_with_kvcache(next_tok)
+
                 hidden_states = draft_model_cache.hidden_states
                 assert hidden_states is not None
                 stop = adapter.predict(hidden_states)
                 if stop:
                     break
 
+            x = draft_model_cache.input_ids
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
             _ = target_model_cache.generate(x.to(target_device), 1)

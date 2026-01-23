@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from tqdm import tqdm
 
 from typing import TypedDict
 
@@ -387,7 +388,7 @@ def run_experiments_parallel(
         }
 
         # 收集结果
-        for future in as_completed(future_to_config):
+        for future in tqdm(as_completed(future_to_config), total=len(future_to_config), desc="运行进度"):
             config = future_to_config[future]
             try:
                 result = future.result()
@@ -504,27 +505,47 @@ bandwidth_config = [
 
 # 在此添加实验
 
-config_to_run = []
-for edge_end_bw, edge_cloud_bw in bandwidth_config:
-    for eval_mode in EvalMode:
-        for eval_dataset in EvalDataset:
-            config_to_run.append(
-                create_config(
-                    eval_mode=eval_mode,
-                    eval_dataset=eval_dataset,
-                    edge_end_bandwidth=edge_end_bw,
-                    edge_cloud_bandwidth=edge_cloud_bw,
-                    cloud_end_bandwidth=edge_cloud_bw,
-                    use_precise=False,
-                    target_model="llama-2-13b",
-                    little_model="llama-68m",
-                    draft_model="tiny-llama-1.1b",
-                    small_draft_threshold=0.6,
-                    draft_target_threshold=0.3,
-                    transfer_top_k=300,
+# config_to_run = []
+# for edge_end_bw, edge_cloud_bw in bandwidth_config:
+#     for eval_mode in EvalMode:
+#         for eval_dataset in EvalDataset:
+#             config_to_run.append(
+#                 create_config(
+#                     eval_mode=eval_mode,
+#                     eval_dataset=eval_dataset,
+#                     edge_end_bandwidth=edge_end_bw,
+#                     edge_cloud_bandwidth=edge_cloud_bw,
+#                     cloud_end_bandwidth=edge_cloud_bw,
+#                     use_precise=False,
+#                     target_model="llama-2-13b",
+#                     little_model="llama-68m",
+#                     draft_model="tiny-llama-1.1b",
+#                     small_draft_threshold=0.6,
+#                     draft_target_threshold=0.3,
+#                     transfer_top_k=300,
 
-                )
-        )
+#                 )
+#         )
+
+
+config_to_run = []
+
+config_to_run.append(
+    create_config(
+        eval_dataset=EvalDataset.mt_bench,
+        eval_mode=EvalMode.ceesd,
+        edge_end_bandwidth=563,
+        edge_cloud_bandwidth=34.6,
+        cloud_end_bandwidth=34.6,
+        use_precise=False,
+        target_model="llama-2-13b",
+        little_model="llama-68m",
+        draft_model="tiny-llama-1.1b",
+        small_draft_threshold=0.6,
+        draft_target_threshold=0.3,
+        transfer_top_k=300,
+    )
+)
 
 if __name__ == "__main__":
     # 创建日志目录
