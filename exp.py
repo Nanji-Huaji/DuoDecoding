@@ -39,7 +39,7 @@ class EvalMode(str, Enum):
 model_acc_head_map = {
     "llama-2-7b-chat": "src/SpecDec_pp/checkpoints/llama-2-chat-7b/exp-weight6-layer3",
     "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
-    "Llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
+    "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
     "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
     "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
 }
@@ -516,9 +516,9 @@ for edge_end_bw, edge_cloud_bw in bandwidth_config:
                     edge_cloud_bandwidth=edge_cloud_bw,
                     cloud_end_bandwidth=edge_cloud_bw,
                     use_precise=False,
-                    target_model="vicuna-13b-v1.5",
-                    little_model="vicuna-68m",
-                    draft_model="tiny-vicuna-1b",
+                    target_model="llama-2-13b",
+                    little_model="llama-68m",
+                    draft_model="tiny-llama-1.1b",
                     small_draft_threshold=0.6,
                     draft_target_threshold=0.3,
                     transfer_top_k=300,
