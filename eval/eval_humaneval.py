@@ -126,7 +126,7 @@ class EvalHumaneval(Baselines):
 
         return output_text
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def eval(self, total: int | None = 80):
         global decoding_metrics
         decoding = self.get_decoding_method()

@@ -9,7 +9,9 @@ from typing import List, Tuple, Dict
 import os
 
 # 定义候选的 K 值
-K_CANDIDATES = [0, 50, 100, 200, 300, 500, 1000, 2000, 5000, 10000, 32000]
+K_CANDIDATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+# 定义候选的阈值
+THRESHOLD_CANDIDATES = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99]
 
 # 定义任务列表以进行 One-Hot 编码
 KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
@@ -65,7 +67,7 @@ class DDQNAgent:
         self.target_net.eval()
 
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.SmoothL1Loss()
 
         # Replay Buffer
         self.memory = deque(maxlen=buffer_size)
@@ -95,6 +97,9 @@ class DDQNAgent:
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
         dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
 
+        # Reward Scaling: Prevent loss from exploding due to large reward values
+        rewards = rewards * 0.01
+
         # DDQN Logic
         # 1. Select action using Policy Net
         with torch.no_grad():
@@ -110,6 +115,8 @@ class DDQNAgent:
 
             self.optimizer.zero_grad()
             loss.backward()
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
             self.optimizer.step()
             
             if self.update_count % 10 == 0:
@@ -168,10 +175,14 @@ class RLNetworkAdapter:
         self.device = device
         
         # State definition: 
-        # [bandwidth (norm), latency (norm), draft_acc_prob, entropy] + [one-hot task vector (6 dims)]
+        # [bandwidth (norm), latency (norm), entropy] + [acc_prob_history (last 5 tokens)] + [one-hot task vector (6 dims)]
+        self.history_len = 5
         self.task_dim = len(KNOWN_TASKS) + 1 # +1 for unknown
-        self.state_dim = 4 + self.task_dim
-        self.action_dim = len(K_CANDIDATES)
+        self.state_dim = 3 + self.history_len + self.task_dim
+        
+        self.k_candidates = K_CANDIDATES
+        self.threshold_candidates = THRESHOLD_CANDIDATES
+        self.action_dim = len(self.k_candidates) * len(self.threshold_candidates)
         
         self.agent = DDQNAgent(self.state_dim, self.action_dim, device=device)
         
@@ -183,12 +194,14 @@ class RLNetworkAdapter:
         self.last_action = None
         self.last_reward = None
         
+        self.acc_prob_history = deque([0.5] * self.history_len, maxlen=self.history_len)
+        
         # Load pretrained model if exists
         self.model_path = os.path.join("checkpoints", "rl_adapter.pth")
         os.makedirs("checkpoints", exist_ok=True)
         self.agent.load(self.model_path)
 
-    def get_state(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float, task_name: str = "unknown") -> np.ndarray:
+    def get_state(self, bandwidth_mbps: float, latency_ms: float, entropy: float, task_name: str = "unknown") -> np.ndarray:
         """
         Construct state vector.
         """
@@ -198,26 +211,30 @@ class RLNetworkAdapter:
         # 2. Normalize Latency
         norm_lat = min(latency_ms / self.max_latency, 1.0)
         
-        # 3. Draft Acceptance Probability (already 0-1)
-        acc_prob = draft_acc_prob
-        
-        # 4. Entropy 
+        # 3. Entropy 
         norm_entropy = min(entropy / 10.0, 1.0)
+        
+        # 4. History of Acceptance Probabilities
+        acc_history = np.array(list(self.acc_prob_history), dtype=np.float32)
         
         # 5. Task One-Hot Encoding
         task_idx = TASK_MAP.get(task_name, UNKNOWN_TASK_ID)
         task_vec = np.zeros(self.task_dim, dtype=np.float32)
         task_vec[task_idx] = 1.0
         
-        basic_features = np.array([norm_bw, norm_lat, acc_prob, norm_entropy], dtype=np.float32)
+        basic_features = np.array([norm_bw, norm_lat, norm_entropy], dtype=np.float32)
         
-        return np.concatenate([basic_features, task_vec])
+        return np.concatenate([basic_features, acc_history, task_vec])
 
-    def select_k(self, bandwidth_mbps: float, latency_ms: float, draft_acc_prob: float, entropy: float, task_name: str = "unknown", training=True) -> int:
+    def select_config(self, bandwidth_mbps: float, latency_ms: float, acc_probs: List[float], entropy: float, task_name: str = "unknown", training=True) -> Tuple[int, float]:
         """
-        Select top-k parameter k.
+        Select both top-k (K) and threshold (gamma) parameters.
         """
-        state = self.get_state(bandwidth_mbps, latency_ms, draft_acc_prob, entropy, task_name)
+        # Update history with the full sequence from last step
+        for p in acc_probs:
+            self.acc_prob_history.append(p)
+            
+        state = self.get_state(bandwidth_mbps, latency_ms, entropy, task_name)
         
         # If we have a previous state/action/reward, store the transition
         if self.last_state is not None and self.last_action is not None and self.last_reward is not None:
@@ -226,11 +243,18 @@ class RLNetworkAdapter:
 
         action_idx = self.agent.select_action(state, training=training)
         
+        # Decode action index to (K, threshold)
+        k_idx = action_idx // len(self.threshold_candidates)
+        t_idx = action_idx % len(self.threshold_candidates)
+        
+        selected_k = self.k_candidates[k_idx]
+        selected_threshold = self.threshold_candidates[t_idx]
+        
         self.last_state = state
         self.last_action = action_idx
         self.last_reward = None # Reset reward
         
-        return K_CANDIDATES[action_idx]
+        return selected_k, selected_threshold
 
     def step(self, reward: float):
         """

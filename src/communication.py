@@ -110,7 +110,9 @@ class CommunicationSimulator:
             self.trace_index = 0
 
             if set_mean_bandwidth and bandwidth_edge_cloud is not None:
-                run_id = return_closest_mean_index(trace_file, bandwidth_edge_cloud)
+                # Use max(0.1, ...) to avoid using 0 as a mean bandwidth
+                target_mean = max(0.1, bandwidth_edge_cloud)
+                run_id = return_closest_mean_index(trace_file, target_mean)
                 if run_id == -1:
                     run_id = 1
                 
@@ -118,17 +120,25 @@ class CommunicationSimulator:
                 if raw_data:
                     current_mean = sum(raw_data) / len(raw_data)
                     if current_mean > 0:
-                        scale_factor = bandwidth_edge_cloud / current_mean
-                        self.trace_data = [x * scale_factor for x in raw_data]
+                        scale_factor = target_mean / current_mean
+                        # Apply scale factor and ensure a reasonable floor (5 Mbps)
+                        self.trace_data = [max(5.0, x * scale_factor) for x in raw_data]
+                        
+                        # Re-calculate mean and adjust to match exactly if needed
+                        actual_mean = sum(self.trace_data) / len(self.trace_data)
+                        if actual_mean > 0:
+                            re_scale = target_mean / actual_mean
+                            self.trace_data = [max(5.0, x * re_scale) for x in self.trace_data]
                     else:
-                        self.trace_data = [bandwidth_edge_cloud] * len(raw_data)
+                        self.trace_data = [target_mean] * len(raw_data)
                 else:
-                    self.trace_data = [bandwidth_edge_cloud]
+                    self.trace_data = [target_mean]
             else:
                 self.trace_data = read_trace_file(trace_file, 1)
                 if not self.trace_data:
                     run_id = return_closest_mean_index(trace_file)
                     self.trace_data = read_trace_file(trace_file, run_id)
+                self.trace_data = [max(5.0, x) for x in self.trace_data]
 
     @property
     def edge_cloud_comm_time(self):
@@ -202,6 +212,8 @@ class CommunicationSimulator:
         else:
             raise ValueError(f"Unknown link type: {link_type}")
 
+        # Ensure bandwidth is not too low (floor at 5 Mbps)
+        bandwidth = max(_convert_to_bytes_per_second(5.0, self.dimension), bandwidth)
         transfer_time = data_size_bytes / bandwidth
 
         if link_type == "edge_end":

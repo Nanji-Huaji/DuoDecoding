@@ -69,8 +69,10 @@ class Baselines(Decoding):
         self.load_acc_head()
         if getattr(args, "use_rl_adapter", False):
             self.rl_adapter = RLNetworkAdapter(args)
+            self.little_rl_adapter = RLNetworkAdapter(args) # New adapter for little-draft
         else:
             self.rl_adapter = None
+            self.little_rl_adapter = None
 
         self.task = "unknown" # This attribute should be set in the subclass
 
@@ -117,7 +119,7 @@ class Baselines(Decoding):
     
     @Register.register_decoding("dist_split_spec")
     @Register.register_decoding("dssd")
-    @torch.inference_mode()
+    @torch.no_grad()
     def dist_split_spec(
         self,
         prefix: torch.Tensor,
@@ -365,7 +367,7 @@ class Baselines(Decoding):
 
     @Register.register_decoding("dist_spec")
     @Register.register_decoding("dsd")
-    @torch.inference_mode()
+    @torch.no_grad()
     def dist_spec(
         self,
         prefix,
@@ -624,7 +626,7 @@ class Baselines(Decoding):
 
     @Register.register_decoding("uncertainty_decoding")
     @Register.register_decoding("cuhlm")
-    @torch.inference_mode()
+    @torch.no_grad()
     def uncertainty_decoding(
         self,
         prefix,
@@ -866,7 +868,7 @@ class Baselines(Decoding):
         return prefix, metrics
 
     @Register.register_decoding("tridecoding")
-    @torch.inference_mode()
+    @torch.no_grad()
     def tridecoding(
         self,
         prefix,
@@ -1171,7 +1173,7 @@ class Baselines(Decoding):
         return prefix, metrics
 
     @Register.register_decoding("adaptive_decoding")
-    @torch.inference_mode()
+    @torch.no_grad()
     def adaptive_decoding(
         self,
         prefix,
@@ -1270,6 +1272,7 @@ class Baselines(Decoding):
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
 
             x = prefix.clone().to(draft_device)
+            self.adapter.reset_step()
             for _ in range(current_gamma):
                 q = approx_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
@@ -1283,14 +1286,16 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 bandwidth = comm_simulator.bandwidth_edge_cloud
                 latency = comm_simulator.ntt_edge_cloud
-                if hasattr(self.adapter, "last_acc_prob"):
-                    acc_prob = self.adapter.last_acc_prob
-                else:
-                    acc_prob = self.num_acc_tokens[-1] / self.args.gamma if len(self.num_acc_tokens) > 0 else 0.5
+                acc_probs = getattr(self.adapter, "step_acc_probs", [])
+                
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                transfer_top_k = self.rl_adapter.select_k(bandwidth, latency, acc_prob, entropy, task_name)
+                next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                
+                # Update parameters for next step or current behavior
+                self.args.gamma = next_k
+                self.adapter.threshold = next_threshold
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
             current_gamma = actual_gamma  # 更新current_gamma为实际生成的数量
@@ -1456,7 +1461,7 @@ class Baselines(Decoding):
 
     @Register.register_decoding("adaptive_tridecoding")
     @Register.register_decoding("cee_sd")
-    @torch.inference_mode()
+    @torch.no_grad()
     def adaptive_tridecoding(
         self,
         prefix,
@@ -1531,17 +1536,18 @@ class Baselines(Decoding):
         while prefix.shape[1] < max_tokens:
 
             idx += 1
-
+            step_start_time = time.time()
             prefix_len = prefix.shape[1]
 
             # 第一层 speculative
+            edge_end_comm_start = comm_simulator.edge_end_comm_time
 
             # x = little_model_cache.generate(
             #     prefix.to(little_device), self.args.gamma2
             # )
 
             x = prefix.clone().to(little_device)
-
+            self.small_draft_adapter.reset_step()
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
                 q = little_model_cache._forward_with_kvcache(x)
@@ -1552,6 +1558,17 @@ class Baselines(Decoding):
                 stop = adapter.predict(hidden_states)
                 if stop:
                     break
+            
+            if self.little_rl_adapter is not None:
+                bandwidth = comm_simulator.bandwidth_edge_end
+                latency = comm_simulator.ntt_edge_end
+                acc_probs = getattr(self.small_draft_adapter, "step_acc_probs", [])
+                probs = torch.softmax(q, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+                task_name = getattr(self, "task", "unknown")
+                next_k, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                self.args.gamma2 = next_k
+                self.small_draft_adapter.threshold = next_threshold
 
             actual_gamma2 = x.shape[1] - prefix_len
 
@@ -1591,6 +1608,13 @@ class Baselines(Decoding):
                     little_accepted_this_iter += 1
 
             total_little_model_accepted_tokens += little_accepted_this_iter
+
+            if self.little_rl_adapter is not None:
+                step_end_time = time.time()
+                step_time = step_end_time - step_start_time
+                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                reward = (little_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9)
+                self.little_rl_adapter.step(reward)
 
             assert n1 >= prefix_len - 1, f"n {n1}, prefix_len {prefix_len}"
             prefix = x[:, : n1 + 1]
@@ -1642,6 +1666,8 @@ class Baselines(Decoding):
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
+            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
+            step_start_time = time.time()
 
             if idx == 1:
                 comm_simulator.transfer(prefix, None, "edge_cloud")
@@ -1653,7 +1679,7 @@ class Baselines(Decoding):
             # )
 
             x = prefix.clone().to(draft_device)
-
+            self.draft_target_adapter.reset_step()
             for _ in range(self.args.gamma1):
                 adapter = self.draft_target_adapter
                 q = draft_model_cache._forward_with_kvcache(x)
@@ -1664,6 +1690,17 @@ class Baselines(Decoding):
                 stop = adapter.predict(hidden_states)
                 if stop:
                     break
+            
+            if self.rl_adapter is not None:
+                bandwidth = comm_simulator.bandwidth_edge_cloud
+                latency = comm_simulator.ntt_edge_cloud
+                acc_probs = getattr(self.draft_target_adapter, "step_acc_probs", [])
+                probs = torch.softmax(q, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+                task_name = getattr(self, "task", "unknown")
+                next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                self.args.gamma1 = next_k
+                self.draft_target_adapter.threshold = next_threshold
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
@@ -1701,6 +1738,13 @@ class Baselines(Decoding):
                 else:
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
+
+            if self.rl_adapter is not None:
+                step_end_time = time.time()
+                step_time = step_end_time - step_start_time
+                step_comm_time = comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                reward = (draft_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9)
+                self.rl_adapter.step(reward)
 
             assert (
                 n2 >= prefix_len - 1
@@ -1791,6 +1835,10 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-        return prefix, metrics
+        if self.rl_adapter is not None:
+            self.rl_adapter.save()
+        if self.little_rl_adapter is not None:
+            self.little_rl_adapter.save()
 
+        return prefix, metrics
 

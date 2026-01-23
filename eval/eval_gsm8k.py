@@ -102,7 +102,7 @@ class EvalGSM8K(Baselines):
     def postprocess(self, output_text):
         return output_text.strip()
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def eval(self, total: int | None = 80):
         global decoding_metrics
         # Select decoding method

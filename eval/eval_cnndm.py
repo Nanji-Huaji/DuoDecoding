@@ -71,7 +71,7 @@ class EvalCNNDM(Baselines):
             self.color_print(f"Error loading CNN/DailyMail data: {e}", 1)
             self.data = []
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def eval(self, total: int | None = 80):
         global decoding_metrics
         decoding = self.get_decoding_method()

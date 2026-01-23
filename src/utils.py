@@ -448,7 +448,8 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
                 data_line = line
         
         if run_id == read_idx and data_line:
-            return [float(x) for x in data_line.split(",") if float(x) >= 5]
+            # Bandwidth should not be zero, provide a reasonable floor (5 Mbps)
+            return [max(5.0, float(x)) for x in data_line.split(",")]
             
     raise ValueError(f"Run ID {read_idx} not found in trace file.")
 

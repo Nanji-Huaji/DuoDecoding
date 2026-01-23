@@ -103,7 +103,7 @@ class EvalMTBench(Baselines):
     def postprocess(self, input_text, output_text):
         pass
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def eval(self):
         global decoding_metrics
         decoding = self.get_decoding_method()
