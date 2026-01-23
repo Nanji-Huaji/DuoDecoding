@@ -50,3 +50,9 @@ hf_download.py
 src/quantize/data/*
 confidence_data.json
 venv_docker/
+hyperparametertable.md
+plot_thresholds_20260117.ipynb
+.gitignore
+upload.py
+scan_threshold.py
+plot_thresholds_20260117.ipynb
