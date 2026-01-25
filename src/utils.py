@@ -335,6 +335,12 @@ def parse_arguments():
         action="store_true",
         help="Whether to use RL adapter for dynamic k selection.",
     )
+    parser.add_argument(
+        "--batch_delay",
+        type=float,
+        default=50e-3, # 50 ms
+        help="The delay time added to each batch in seconds.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)

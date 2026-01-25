@@ -173,6 +173,8 @@ class Baselines(Decoding):
         target_forward_times = 0
         total_accepted_tokens = 0
         total_drafted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -200,6 +202,7 @@ class Baselines(Decoding):
             )  # 减1是为了留给最后的采样token
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
+                queuing_time += batch_delay
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
@@ -219,6 +222,7 @@ class Baselines(Decoding):
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             target_forward_times += 1
@@ -362,6 +366,15 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+        
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] = (
+            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
+        )
+        if metrics["wall_time"] > 0:
+            metrics["throughput"] = (
+                metrics["generated_tokens"] / metrics["wall_time"]
+            )
 
         return prefix, metrics
 
@@ -416,6 +429,8 @@ class Baselines(Decoding):
         target_forward_times = 0
         total_accepted_tokens = 0
         total_drafted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -448,6 +463,7 @@ class Baselines(Decoding):
             )  # 减1是为了留给最后的采样token
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
+                queuing_time += batch_delay
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
@@ -467,6 +483,7 @@ class Baselines(Decoding):
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
             comm_simulator.transfer(x, None, "edge_cloud")
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             target_forward_times += 1
@@ -622,6 +639,15 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
+        batch_delay = getattr(self.args, "batch_delay", 0)
+        queuing_time = target_forward_times * batch_delay
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] += queuing_time
+        if metrics["wall_time"] > 0:
+            metrics["throughput"] = (
+                metrics["generated_tokens"] / metrics["wall_time"]
+            )
+
         return prefix, metrics
 
     @Register.register_decoding("uncertainty_decoding")
@@ -675,6 +701,8 @@ class Baselines(Decoding):
         draft_forward_times = 0
         total_accepted_tokens = 0
         total_drafted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
 
         loop_idx = 0
 
@@ -697,6 +725,7 @@ class Baselines(Decoding):
 
             # Sync
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             # 无论接受与否，都要传输起草的 token
@@ -848,8 +877,9 @@ class Baselines(Decoding):
         metrics["generated_tokens"] = prefix.shape[1] - input_len
         metrics["draft_generated_tokens"] = draft_forward_times
         metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["queuing_time"] = queuing_time
         metrics["wall_time"] = (
-            elapsed_time + comm_simulator.edge_cloud_comm_time
+            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
         )
         metrics["throughput"] = (
             (prefix.shape[1] - input_len) / metrics["wall_time"]
@@ -865,6 +895,16 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+
+        batch_delay = getattr(self.args, "batch_delay", 0)
+        queuing_time = target_forward_times * batch_delay
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] += queuing_time
+        if metrics["wall_time"] > 0:
+            metrics["throughput"] = (
+                metrics["generated_tokens"] / metrics["wall_time"]
+            )
+
         return prefix, metrics
 
     @Register.register_decoding("tridecoding")
@@ -925,6 +965,8 @@ class Baselines(Decoding):
         total_draft_model_generated_tokens = 0
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
         wall_time = 0
 
         idx = 0
@@ -1048,6 +1090,7 @@ class Baselines(Decoding):
                 prefix.to(draft_device), self.args.gamma1
             )
 
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             draft_model_forward_times += self.args.gamma1
@@ -1170,6 +1213,16 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+
+        batch_delay = getattr(self.args, "batch_delay", 0)
+        queuing_time = target_model_forward_times * batch_delay
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] += queuing_time
+        if metrics["wall_time"] > 0:
+            metrics["throughput"] = (
+                metrics["generated_tokens"] / metrics["wall_time"]
+            )
+
         return prefix, metrics
 
     @Register.register_decoding("adaptive_decoding")
@@ -1204,6 +1257,9 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
+
+        batch_delay = self.args.batch_delay
+        queuing_time = 0.0
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
@@ -1255,6 +1311,7 @@ class Baselines(Decoding):
             )  # 减1是为了留给最后的采样token
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
+                queuing_time += batch_delay
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
@@ -1303,6 +1360,7 @@ class Baselines(Decoding):
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             target_forward_times += 1
@@ -1445,7 +1503,7 @@ class Baselines(Decoding):
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
         metrics["wall_time"] = (
-            elapsed_time + comm_simulator.edge_cloud_comm_time
+            elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
         )
         metrics["throughput"] = throughput
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
@@ -1472,6 +1530,8 @@ class Baselines(Decoding):
         ntt_ms_edge_end=1,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        batch_delay = self.args.batch_delay
+        queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.little_model.device
         draft_device = self.draft_model.device
@@ -1704,6 +1764,7 @@ class Baselines(Decoding):
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             draft_model_forward_times += actual_gamma1
@@ -1819,9 +1880,10 @@ class Baselines(Decoding):
         metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
         metrics["little_accepted_tokens"] = total_little_model_accepted_tokens
         metrics["draft_accepted_tokens"] = total_draft_model_accepted_tokens
-        metrics["wall_time"] = wall_time
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] = wall_time + queuing_time
         metrics["throughput"] = (
-            metrics["generated_tokens"] / wall_time if wall_time > 0 else 0
+            metrics["generated_tokens"] / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
         )
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time
