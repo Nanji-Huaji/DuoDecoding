@@ -68,8 +68,8 @@ class Baselines(Decoding):
         super().__init__(args)
         self.load_acc_head()
         if getattr(args, "use_rl_adapter", False):
-            self.rl_adapter = RLNetworkAdapter(args)
-            self.little_rl_adapter = RLNetworkAdapter(args) # New adapter for little-draft
+            self.rl_adapter = RLNetworkAdapter(args, model_name="rl_adapter_main")
+            self.little_rl_adapter = RLNetworkAdapter(args, model_name="rl_adapter_little") # New adapter for little-draft
         else:
             self.rl_adapter = None
             self.little_rl_adapter = None

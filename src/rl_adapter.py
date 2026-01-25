@@ -170,7 +170,7 @@ class DDQNAgent:
                 print("Starting training from scratch.")
 
 class RLNetworkAdapter:
-    def __init__(self, args, device="cuda"):
+    def __init__(self, args, model_name="rl_adapter", device="cuda"):
         self.args = args
         self.device = device
         
@@ -197,7 +197,7 @@ class RLNetworkAdapter:
         self.acc_prob_history = deque([0.5] * self.history_len, maxlen=self.history_len)
         
         # Load pretrained model if exists
-        self.model_path = os.path.join("checkpoints", "rl_adapter.pth")
+        self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
         os.makedirs("checkpoints", exist_ok=True)
         self.agent.load(self.model_path)
 

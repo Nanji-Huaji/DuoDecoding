@@ -4,6 +4,7 @@ import sys
 import subprocess
 import os
 import signal
+import shutil
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -15,22 +16,58 @@ class TrainingManager:
         self.process = None
         
         # Convergence criteria
-        self.window_size = 5
-        self.stagnation_threshold = 0.01  # 1% change
+        self.window_size = 8             # Increased for multi-agent stability
+        self.stagnation_threshold = 0.005 # 0.5% change
         self.check_interval = 10
-        self.min_training_steps = 20     # Minimum TPS records before checking convergence
+        self.min_training_steps = 30     # More records before checking convergence
 
         # Patterns
         self.tps_pattern = re.compile(r"Average Generation Speed: ([\d\.]+) tokens/s")
-        self.loss_pattern = re.compile(r"Loss: ([\d\.]+)")
+        self.loss_pattern = re.compile(r"RL Agent\] Step: \d+, Loss: ([\d\.]+)")
         
         self.tps_history = []
         self.loss_history = []
 
+    def prepare_checkpoints(self):
+        """Migrate old single checkpoint to new dual checkpoint structure or verify existing ones."""
+        checkpoint_dir = Path("checkpoints")
+        old_pth = checkpoint_dir / "rl_adapter.pth"
+        old_buffer = checkpoint_dir / "rl_adapter.pth.buffer"
+        
+        targets = [
+            ("rl_adapter_main.pth", "rl_adapter_main.pth.buffer"),
+            ("rl_adapter_little.pth", "rl_adapter_little.pth.buffer")
+        ]
+        
+        # Check if new checkpoints already exist
+        existing_new = [t for t, _ in targets if (checkpoint_dir / t).exists()]
+        
+        if len(existing_new) == len(targets):
+            print(f"[{datetime.now()}] 检测到现有的双 Agent 检查点: {', '.join(existing_new)}。将直接加载继续训练。")
+            return
+
+        if old_pth.exists():
+            print(f"[{datetime.now()}] 检测到旧的单 Agent 检查点 {old_pth}，正在迁移到双 Agent 结构...")
+            for model_file, buffer_file in targets:
+                target_pth = checkpoint_dir / model_file
+                target_buf = checkpoint_dir / buffer_file
+                
+                if not target_pth.exists():
+                    shutil.copy(old_pth, target_pth)
+                    print(f"   -> 已创建 {target_pth}")
+                
+                if old_buffer.exists() and not target_buf.exists():
+                    shutil.copy(old_buffer, target_buf)
+                    print(f"   -> 已同步 Replay Buffer: {target_buf}")
+        else:
+            if existing_new:
+                print(f"[{datetime.now()}] 部分双 Agent 检查点已存在: {', '.join(existing_new)}。缺失的部分将重新开始。")
+            else:
+                print(f"[{datetime.now()}] 未发现任何历史检查点 (old or new)。Agent 将从头开始训练。")
+
     def get_best_gpu(self):
         """Finds the GPU with the most free memory."""
         try:
-            # Run nvidia-smi to get memory usage of all GPUs
             result = subprocess.run(
                 ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, check=True
@@ -43,28 +80,15 @@ class TrainingManager:
                     gpu_memory.append((idx, mem_used))
             
             if not gpu_memory:
-                print("No GPUs found via nvidia-smi. Defaulting to GPU 0.")
                 return "0"
-                
-            # Sort by memory usage (ascending)
-            # Find the GPU with minimum memory usage
             gpu_memory.sort(key=lambda x: x[1])
-            
-            best_gpu = gpu_memory[0][0]
-            mem_used = gpu_memory[0][1]
-            
-            # If the best GPU uses more than 2GB, it might be busy, but we return it anyway 
-            # (or you could implement a threshold to wait)
-            print(f"[{datetime.now()}] Selected GPU {best_gpu} (Memory used: {mem_used} MiB)")
-            return str(best_gpu)
-            
+            return str(gpu_memory[0][0])
         except Exception as e:
-            print(f"Error checking GPU status: {e}. Defaulting to GPU 0.")
             return "0"
 
     def start_training(self):
-        """Starts the training process in the background using nohup-like behavior."""
-        print(f"[{datetime.now()}] Starting training using {self.start_script}...")
+        """Starts the training process."""
+        self.prepare_checkpoints()
         
         # Clear old log
         if os.path.exists(self.log_file):
@@ -72,13 +96,12 @@ class TrainingManager:
 
         # Select GPU
         gpu_id = self.get_best_gpu()
-        
-        # Prepare environment
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_id
             
+        print(f"[{datetime.now()}] Starting training: {self.start_script} (Env: 34.6Mbps / 0ms)")
+        
         with open(self.log_file, "w") as out:
-            # Using setsid to create a new session, preventing signal propagation (like Ctrl+C)
             self.process = subprocess.Popen(
                 ["bash", self.start_script],
                 stdout=out,
@@ -97,44 +120,38 @@ class TrainingManager:
                 os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
                 self.process.wait(timeout=10)
                 print("Training stopped successfully.")
-            except Exception as e:
-                print(f"Error stopping process: {e}")
-                # Force kill if needed
+            except:
                 try:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
                 except:
                     pass
 
     def check_convergence(self):
-        """Checks if training has converged based on TPS history."""
+        """Checks convergence based on TPS."""
         if len(self.tps_history) < self.min_training_steps:
             return False
 
         current_window = self.tps_history[-self.window_size:]
         prev_window = self.tps_history[-self.window_size*2 : -self.window_size]
         
-        if len(prev_window) < self.window_size:
-            return False
-            
         curr_avg = np.mean(current_window)
         prev_avg = np.mean(prev_window)
         
         relative_change = abs(curr_avg - prev_avg) / (prev_avg + 1e-9)
         
-        print(f"   >>> TPS SMA Check: Curr={curr_avg:.2f}, Prev={prev_avg:.2f}, Change={relative_change:.2%}")
+        if len(self.tps_history) % 5 == 0:
+            print(f"   [Monitor] Curr TPS: {curr_avg:.2f} | Change: {relative_change:.2%}")
         
         return relative_change < self.stagnation_threshold
 
     def clean_stale_processes(self):
-        print(f"[{datetime.now()}] Cleaning up any stale training processes...")
+        """Cleanup old processes."""
+        print(f"[{datetime.now()}] Cleaning up environment...")
         try:
-            # Kill any python processes running eval scripts
-            subprocess.run("pkill -f 'eval_mt_bench|eval_gsm8k|eval_cnndm|eval_xsum|eval_humaneval'", shell=True)
-            # Kill any accelerate processes
-            subprocess.run("pkill -f 'accelerate launch'", shell=True)
-        except Exception as e:
-            print(f"Cleanup warning: {e}")
-
+            subprocess.run("pkill -9 -f 'eval_mt_bench|eval_gsm8k|eval_cnndm|eval_xsum|eval_humaneval|accelerate'", shell=True)
+            time.sleep(2)
+        except:
+            pass
 
     def run_manager(self):
         self.clean_stale_processes()
@@ -143,14 +160,10 @@ class TrainingManager:
         last_pos = 0
         try:
             while True:
-                # Check if process is still alive
                 if self.process.poll() is not None:
-                    print(f"[{datetime.now()}] Training process exited unexpectedly with code {self.process.returncode}.")
-                    # Determine if it finished all tasks or crashed
-                    # We can check the log tail
+                    print(f"[{datetime.now()}] Training process exited (Code: {self.process.returncode})")
                     break
                 
-                # Read new logs
                 try:
                     with open(self.log_file, 'r') as f:
                         f.seek(last_pos)
@@ -158,38 +171,22 @@ class TrainingManager:
                         last_pos = f.tell()
                         
                     if new_data:
-                        # Log parsing
                         tps_matches = self.tps_pattern.findall(new_data)
-                        loss_matches = self.loss_pattern.findall(new_data)
-                        
                         for val in tps_matches:
                             self.tps_history.append(float(val))
-                            print(f"[{datetime.now()}] Monitor: New TPS recorded -> {val}")
-                            
-                            # Check convergence only when new data comes
                             if self.check_convergence():
-                                print(f"\n[{datetime.now()}] !!! CONVERGENCE REACHED !!!")
-                                print("TPS has stabilized. Stopping training to save resources.")
+                                print(f"\n[{datetime.now()}] *** CONVERGENCE REACHED ***")
                                 self.stop_training()
                                 return
-
-                        for val in loss_matches:
-                            self.loss_history.append(float(val))
-                            # Optional: Check for loss convergence too
-                            # print(f"[{datetime.now()}] Monitor: New Loss recorded -> {val}")
-                            
                 except FileNotFoundError:
                     pass
-                
                 time.sleep(self.check_interval)
-                
         except KeyboardInterrupt:
-            print("\nManager stopped by user.")
+            print("\nStopped by user.")
             self.stop_training()
 
 if __name__ == "__main__":
-    # Ensure current directory
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    
     manager = TrainingManager(start_script="cmds/train_rl.sh", log_file="train_rl.log")
     manager.run_manager()
+
