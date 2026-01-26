@@ -31,6 +31,7 @@ class ExpConfig(TypedDict):
     ntt_ms_edge_end: int | float
     small_draft_threshold: float
     draft_target_threshold: float
+    main_process_port: int
 
 
 # Global Constants
@@ -42,7 +43,7 @@ cmd_temp = """
 echo "Running experiment: {eval_mode}"
 CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --num_processes 1 \
-    --main_process_port 29051 \
+    --main_process_port {main_process_port} \
     eval/eval_mt_bench.py \
     --eval_mode {eval_mode} \
     -e llama \
@@ -248,6 +249,9 @@ def run_experiment_with_gpu(
 
         # 更新配置中的GPU设备
         config["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        
+        # 为每个进程分配不同的主进程端口，避免并行冲突
+        config["main_process_port"] = 29050 + gpu_id
 
         # 运行实验
         result = run_exp(config, log_dir)
@@ -372,6 +376,7 @@ def create_config(
         ntt_ms_edge_end=ntt_ms_edge_end,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
+        main_process_port=29051,
     )
 
 

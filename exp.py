@@ -66,6 +66,7 @@ class ExpConfig(TypedDict):
     little_model: str
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
+    main_process_port: int
 
 
 # Global Constants
@@ -77,7 +78,7 @@ cmd_temp = """
 echo "Running experiment: {eval_mode}"
 CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --num_processes 1 \
-    --main_process_port 29051 \
+    --main_process_port {main_process_port} \
     {eval_dataset} \
     --eval_mode {eval_mode} \
     -e llama \
@@ -346,6 +347,10 @@ def run_experiment_with_gpu(
 
         # 更新配置中的GPU设备
         config["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
+        
+        # 为每个进程分配不同的主进程端口，避免并行冲突
+        # 使用 29050 + 第一个 GPU ID 作为端口号
+        config["main_process_port"] = 29050 + gpu_ids[0]
 
         # 运行实验
         result = run_exp(config, log_dir)
@@ -445,8 +450,8 @@ def get_available_gpus() -> List[int]:
 
 def create_config(
     eval_mode: str,
-    ntt_ms_edge_cloud: int | float = NTT_MS_EDGE_CLOUD,
-    ntt_ms_edge_end: int | float = NTT_MS_EDGE_END,
+    ntt_ms_edge_cloud: int | float = 0,
+    ntt_ms_edge_end: int | float = 0,
     use_precise: bool = True,
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
@@ -495,6 +500,7 @@ def create_config(
         little_model=little_model,
         small_draft_acc_head_path=small_draft_acc_head_path,
         draft_target_acc_head_path=draft_target_acc_head_path,
+        main_process_port=29051,
     )
 
 
@@ -522,7 +528,10 @@ for edge_end_bw, edge_cloud_bw in bandwidth_config:
                     small_draft_threshold=0.6,
                     draft_target_threshold=0.3,
                     transfer_top_k=300,
-
+                    use_rl_adapter=True,
+                    use_stochastic_comm=True,
+                    ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                    ntt_ms_edge_end=NTT_MS_EDGE_END,
                 )
         )
 
