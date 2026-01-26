@@ -5,12 +5,13 @@ import subprocess
 import os
 import signal
 import shutil
+import json
 import numpy as np
 from pathlib import Path
 from datetime import datetime
 
 class TrainingManager:
-    def __init__(self, start_script="cmds/train_rl.sh", log_file="train_rl.log"):
+    def __init__(self, start_script="cmds/train_rl_mixed.sh", log_file="train_rl.log"):
         self.start_script = start_script
         self.log_file = log_file
         self.process = None
@@ -23,10 +24,36 @@ class TrainingManager:
 
         # Patterns
         self.tps_pattern = re.compile(r"Average Generation Speed: ([\d\.]+) tokens/s")
-        self.loss_pattern = re.compile(r"RL Agent\] Step: \d+, Loss: ([\d\.]+)")
+        # 支持区分 main 和 little agent
+        self.loss_pattern_main = re.compile(r"\[rl_adapter_main\] Step: \d+, Loss: ([\d\.]+)")
+        self.loss_pattern_little = re.compile(r"\[rl_adapter_little\] Step: \d+, Loss: ([\d\.]+)")
+        self.reward_pattern_main = re.compile(r"\[rl_adapter_main\] Step: \d+, .*Reward: ([\d\.]+)")
+        self.reward_pattern_little = re.compile(r"\[rl_adapter_little\] Step: \d+, .*Reward: ([\d\.]+)")
         
         self.tps_history = []
-        self.loss_history = []
+        self.loss_history_main = []
+        self.loss_history_little = []
+        self.reward_history_main = []
+        self.reward_history_little = []
+        self.best_tps = 0.0
+        self.status_file = Path("checkpoints/training_status.json")
+
+    def save_training_status(self):
+        """Saves TPS and Loss history to a JSON file for plotting."""
+        status = {
+            "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "best_tps": self.best_tps,
+            "tps_history": self.tps_history,
+            "loss_history_main": self.loss_history_main,
+            "loss_history_little": self.loss_history_little,
+            "reward_history_main": self.reward_history_main,
+            "reward_history_little": self.reward_history_little
+        }
+        try:
+            with open(self.status_file, "w") as f:
+                json.dump(status, f, indent=4)
+        except Exception as e:
+            print(f"[{datetime.now()}] Failed to save status: {e}")
 
     def prepare_checkpoints(self):
         """Migrate old single checkpoint to new dual checkpoint structure or verify existing ones."""
@@ -172,8 +199,30 @@ class TrainingManager:
                         
                     if new_data:
                         tps_matches = self.tps_pattern.findall(new_data)
+                        loss_main = self.loss_pattern_main.findall(new_data)
+                        loss_little = self.loss_pattern_little.findall(new_data)
+                        reward_main = self.reward_pattern_main.findall(new_data)
+                        reward_little = self.reward_pattern_little.findall(new_data)
+                        
+                        for val in loss_main:
+                            self.loss_history_main.append(float(val))
+                        for val in loss_little:
+                            self.loss_history_little.append(float(val))
+                        for val in reward_main:
+                            self.reward_history_main.append(float(val))
+                        for val in reward_little:
+                            self.reward_history_little.append(float(val))
+
                         for val in tps_matches:
-                            self.tps_history.append(float(val))
+                            tps_val = float(val)
+                            self.tps_history.append(tps_val)
+                            if tps_val > self.best_tps:
+                                self.best_tps = tps_val
+                        
+                        if tps_matches or loss_main or loss_little or reward_main or reward_little:
+                            self.save_training_status()
+                            
+                        for val in tps_matches:
                             if self.check_convergence():
                                 print(f"\n[{datetime.now()}] *** CONVERGENCE REACHED ***")
                                 self.stop_training()
@@ -187,6 +236,6 @@ class TrainingManager:
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    manager = TrainingManager(start_script="cmds/train_rl.sh", log_file="train_rl.log")
+    manager = TrainingManager(start_script="cmds/train_rl_mixed.sh", log_file="train_rl.log")
     manager.run_manager()
 
