@@ -454,8 +454,12 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
                 data_line = line
         
         if run_id == read_idx and data_line:
-            # Bandwidth should not be zero, provide a reasonable floor (5 Mbps)
-            return [max(5.0, float(x)) for x in data_line.split(",")]
+            data = [float(x) for x in data_line.split(",")]
+            # 1. First pop trailing values that are less than 5.0
+            while data and data[-1] < 5.0:
+                data.pop()
+            # 2. Then apply clamping to the remaining values (middle and start)
+            return [max(5.0, x) for x in data]
             
     raise ValueError(f"Run ID {read_idx} not found in trace file.")
 
@@ -492,9 +496,14 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
         
         if run_id != -1 and data_line:
             try:
+                # Use the same logic as read_trace_file: pop trailing < 5.0, then clamp remaining
                 data = [float(x) for x in data_line.split(",")]
-                if data:
-                    run_means[run_id] = sum(data) / len(data)
+                while data and data[-1] < 5.0:
+                    data.pop()
+                processed_data = [max(5.0, x) for x in data]
+                
+                if processed_data:
+                    run_means[run_id] = sum(processed_data) / len(processed_data)
             except ValueError:
                 pass
 

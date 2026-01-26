@@ -13,6 +13,7 @@ from src.engine import Decoding
 from collections import Counter
 from fastchat.model import get_conversation_template
 
+from functools import partial
 
 class EvalHumaneval(Decoding):
     def __init__(self, args):
@@ -113,6 +114,15 @@ class EvalHumaneval(Decoding):
     @torch.inference_mode()
     def eval(self):
         decoding = self.get_decoding_method()
+
+        decoding = partial(
+            decoding,
+            transfer_top_k=self.args.transfer_top_k,
+            use_precise_comm_sim=self.args.use_precise,
+            use_stochastic_comm=self.args.use_stochastic_comm,
+            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
+            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
+        )
 
         out_path = os.path.join(
             self.args.exp_name,

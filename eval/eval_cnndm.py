@@ -252,6 +252,14 @@ class EvalCNNDM(Baselines):
                 "rougeL": avg_rl
             }
 
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"]
+                    / decoding_metrics["wall_time"]
+                )
+            else:
+                decoding_metrics["throughput"] = 0.0
+
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{decoding_metrics}")
             self.color_print("-------Decoding Metrics-------")
@@ -266,12 +274,7 @@ class EvalCNNDM(Baselines):
             eval_result["gamma1"] = self.args.gamma1
             eval_result["gamma2"] = self.args.gamma2
 
-            if decoding_metrics["wall_time"] != 0:
-                decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"]
-                    / decoding_metrics["wall_time"]
-                )
-                eval_result["throughput"] = decoding_metrics["throughput"]
+            eval_result["throughput"] = decoding_metrics["throughput"]
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"

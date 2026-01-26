@@ -21,6 +21,8 @@ from src.baselines import Baselines
 
 from eval_mt_bench import get_class_methods
 
+from functools import partial
+
 decoding_metrics = get_empty_metrics()
 
 def check_correctness_worker(check_program, result_queue):
@@ -130,6 +132,15 @@ class EvalHumaneval(Baselines):
     def eval(self, total: int | None = 80):
         global decoding_metrics
         decoding = self.get_decoding_method()
+
+        decoding = partial(
+            decoding,
+            transfer_top_k=self.args.transfer_top_k,
+            use_precise_comm_sim=self.args.use_precise,
+            use_stochastic_comm=self.args.use_stochastic_comm,
+            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
+            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
+        )
 
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_humaneval.jsonl"
@@ -257,6 +268,14 @@ class EvalHumaneval(Baselines):
             if len(self.acc_num) > 0:
                 decoding_metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
 
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"]
+                    / decoding_metrics["wall_time"]
+                )
+            else:
+                decoding_metrics["throughput"] = 0.0
+
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{decoding_metrics}")
             self.color_print("-------Decoding Metrics-------")
@@ -271,12 +290,7 @@ class EvalHumaneval(Baselines):
             eval_result["gamma1"] = self.args.gamma1
             eval_result["gamma2"] = self.args.gamma2
 
-            if decoding_metrics["wall_time"] != 0:
-                decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"]
-                    / decoding_metrics["wall_time"]
-                )
-                eval_result["throughput"] = decoding_metrics["throughput"]
+            eval_result["throughput"] = decoding_metrics["throughput"]
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_humaneval_metrics.json"

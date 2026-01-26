@@ -123,7 +123,7 @@ class EvalMTBench(Baselines):
 
         # warmup
         print(f"Start warm up...")
-        n = 10
+        n = 5
         for question in tqdm.tqdm(
             self.data,
             total=len(self.data),
