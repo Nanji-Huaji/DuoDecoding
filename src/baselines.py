@@ -680,6 +680,8 @@ class Baselines(Decoding):
                 uncertainty_threshold=0.8,
                 dimension="Mbps",
                 use_stochastic=use_stochastic_comm,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
             )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -895,15 +897,6 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-
-        batch_delay = getattr(self.args, "batch_delay", 0)
-        queuing_time = target_forward_times * batch_delay
-        metrics["queuing_time"] = queuing_time
-        metrics["wall_time"] += queuing_time
-        if metrics["wall_time"] > 0:
-            metrics["throughput"] = (
-                metrics["generated_tokens"] / metrics["wall_time"]
-            )
 
         return prefix, metrics
 
@@ -1410,7 +1403,8 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_cloud_comm_time - step_comm_time_start
-                reward = this_step_accepted_tokens / (step_time + step_comm_time + 1e-9)
+                # 修改奖励：增加 1 的基础值并加入熵奖励以鼓励探索
+                reward = (this_step_accepted_tokens + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
                 self.rl_adapter.step(reward)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
@@ -1489,12 +1483,6 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        throughput = (
-            generated_tokens
-            / (elapsed_time + comm_simulator.edge_cloud_comm_time)
-            if (elapsed_time + comm_simulator.edge_cloud_comm_time) > 0
-            else 0
-        )
 
         metrics = get_empty_metrics()
         metrics["draft_forward_times"] = draft_forward_times
@@ -1502,10 +1490,13 @@ class Baselines(Decoding):
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["queuing_time"] = queuing_time
         metrics["wall_time"] = (
             elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
         )
-        metrics["throughput"] = throughput
+        metrics["throughput"] = (
+            generated_tokens / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
+        )
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
@@ -1513,7 +1504,7 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
 
         if self.rl_adapter is not None:
-            self.rl_adapter.save()
+            self.rl_adapter.save(metrics.get("throughput"))
 
         return prefix, metrics
 
@@ -1673,10 +1664,11 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
-                reward = (little_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9)
+                # 修改奖励：增加熵奖励以鼓励探索
+                reward = (little_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
                 self.little_rl_adapter.step(reward)
 
-            assert n1 >= prefix_len - 1, f"n {n1}, prefix_len {prefix_len}"
+            assert n1 >= prefix_len - 1, f"n1 {n1}, prefix_len {prefix_len}"
             prefix = x[:, : n1 + 1]
 
             little_model_cache.rollback(n1 + 1)
@@ -1804,7 +1796,8 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
-                reward = (draft_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9)
+                # 修改奖励：增加熵奖励以鼓励探索
+                reward = (draft_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
                 self.rl_adapter.step(reward)
 
             assert (
@@ -1898,9 +1891,9 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
         if self.rl_adapter is not None:
-            self.rl_adapter.save()
+            self.rl_adapter.save(metrics.get("throughput"))
         if self.little_rl_adapter is not None:
-            self.little_rl_adapter.save()
+            self.little_rl_adapter.save(metrics.get("throughput"))
 
         return prefix, metrics
 

@@ -95,13 +95,13 @@ class KVCacheModel:
             x = torch.cat((x, next_tok), dim=1)
         return x
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:
         # output = self._generate_with_kvcache(input, gamma)
         output = self._generate_with_kvcache(input, gamma)
         return output
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def rollback(self, end_pos: int):
         if self._past_key_values is None:
             return

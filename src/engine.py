@@ -76,6 +76,7 @@ class DecodingMetrics(TypedDict):
     comm_energy: float
     connect_times: dict
     accuracy: Optional[Any]
+    queuing_time: int | float
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -104,6 +105,7 @@ def get_empty_metrics() -> DecodingMetrics:
         comm_energy=0.0,
         connect_times={"edge_end": 0, "cloud_end": 0, "edge_cloud": 0},
         accuracy=0,
+        queuing_time=0.0,
     )
 
 
@@ -268,7 +270,10 @@ class Decoding(Register, ABC):
         target_forward_times = 0
 
         start_event.record(stream=torch.cuda.current_stream())
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
         while x.shape[1] < max_tokens:
+            queuing_time += batch_delay
             x = model.generate(x, 1)
             target_forward_times += 1
 
@@ -278,13 +283,15 @@ class Decoding(Register, ABC):
             start_event.elapsed_time(end_event) / 1000.0
         )  # Convert to seconds
         generated_tokens = x.shape[1] - prefix_len
-        throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
 
         metrics = get_empty_metrics()
         metrics["target_forward_times"] = target_forward_times
         metrics["generated_tokens"] = generated_tokens
-        metrics["wall_time"] = elapsed_time
-        metrics["throughput"] = throughput
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] = elapsed_time + queuing_time
+        metrics["throughput"] = (
+            generated_tokens / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
+        )
 
         return x, metrics
 
@@ -433,7 +440,12 @@ class Decoding(Register, ABC):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        throughput = generated_tokens / elapsed_time if elapsed_time > 0 else 0
+        
+        batch_delay = getattr(self.args, "batch_delay", 0)
+        queuing_time = target_forward_times * batch_delay
+        wall_time = elapsed_time + queuing_time
+
+        throughput = generated_tokens / wall_time if wall_time > 0 else 0
 
         metrics = get_empty_metrics()
         metrics["draft_forward_times"] = draft_forward_times
@@ -441,9 +453,10 @@ class Decoding(Register, ABC):
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
-        metrics["wall_time"] = elapsed_time
+        metrics["wall_time"] = wall_time
         metrics["throughput"] = throughput
         metrics["loop_times"] = loop_idx
+        metrics["queuing_time"] = queuing_time
         metrics["each_loop_draft_tokens"] = (
             total_drafted_tokens / loop_idx if loop_idx > 0 else 0
         )
@@ -657,11 +670,13 @@ class Decoding(Register, ABC):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+
+        batch_delay = getattr(self.args, "batch_delay", 0)
+        queuing_time = target_forward_times * batch_delay
+        wall_time = elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
+
         throughput = (
-            generated_tokens
-            / (elapsed_time + comm_simulator.edge_cloud_comm_time)
-            if (elapsed_time + comm_simulator.edge_cloud_comm_time) > 0
-            else 0
+            generated_tokens / wall_time if wall_time > 0 else 0
         )
 
         metrics = get_empty_metrics()
@@ -670,10 +685,9 @@ class Decoding(Register, ABC):
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
-        metrics["wall_time"] = (
-            elapsed_time + comm_simulator.edge_cloud_comm_time
-        )
+        metrics["wall_time"] = wall_time
         metrics["throughput"] = throughput
+        metrics["queuing_time"] = queuing_time
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
@@ -682,7 +696,7 @@ class Decoding(Register, ABC):
         return prefix, metrics
 
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def uncertainty_decoding(
         self,
         prefix,
@@ -725,6 +739,8 @@ class Decoding(Register, ABC):
         draft_forward_times = 0
         total_accepted_tokens = 0
         total_drafted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
 
         loop_idx = 0
 
@@ -747,6 +763,7 @@ class Decoding(Register, ABC):
 
             # Sync
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
+            queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             # 无论接受与否，都要传输起草的 token
@@ -898,8 +915,9 @@ class Decoding(Register, ABC):
         metrics["generated_tokens"] = prefix.shape[1] - input_len
         metrics["draft_generated_tokens"] = draft_forward_times
         metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["queuing_time"] = queuing_time
         metrics["wall_time"] = (
-            elapsed_time + comm_simulator.edge_cloud_comm_time
+            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
         )
         metrics["throughput"] = (
             (prefix.shape[1] - input_len) / metrics["wall_time"]

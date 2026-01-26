@@ -100,6 +100,20 @@ class CommunicationSimulator:
             if set_mean_bandwidth:
                 assert bandwidth_edge_end is not None and bandwidth_edge_cloud is not None, "When set_mean_bandwidth is True, bandwidth_edge_end and bandwidth_edge_cloud must not be None"
             
+            # Calculate conversion factor from Mbps to the current dimension unit
+            # This is needed because trace data is always in Mbps
+            if dimension == "Mbps":
+                mbps_to_dim = 1.0
+            elif dimension == "bps":
+                mbps_to_dim = 1e6
+            elif dimension == "MBps":
+                mbps_to_dim = 1.0 / 8.0
+            elif dimension == "Bps":
+                mbps_to_dim = 1e6 / 8.0
+            else:
+                mbps_to_dim = 1.0
+            
+            floor_val = 5.0 * mbps_to_dim
             self.trace_file_dict = {
                 "driving": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/driving/5g/throughput.list",
                 "static": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/static/5g/away_p1.list",
@@ -110,35 +124,37 @@ class CommunicationSimulator:
             self.trace_index = 0
 
             if set_mean_bandwidth and bandwidth_edge_cloud is not None:
-                # Use max(0.1, ...) to avoid using 0 as a mean bandwidth
-                target_mean = max(0.1, bandwidth_edge_cloud)
-                run_id = return_closest_mean_index(trace_file, target_mean)
+                # target_mean is in the current dimension
+                target_mean = max(0.1 * mbps_to_dim, bandwidth_edge_cloud)
+                # return_closest_mean_index expects Mbps
+                run_id = return_closest_mean_index(trace_file, target_mean / mbps_to_dim)
                 if run_id == -1:
                     run_id = 1
                 
                 raw_data = read_trace_file(trace_file, run_id)
                 if raw_data:
-                    current_mean = sum(raw_data) / len(raw_data)
+                    current_mean = sum(raw_data) / len(raw_data) # This is in Mbps
                     if current_mean > 0:
-                        scale_factor = target_mean / current_mean
-                        # Apply scale factor and ensure a reasonable floor (5 Mbps)
-                        self.trace_data = [max(5.0, x * scale_factor) for x in raw_data]
+                        scale_factor = (target_mean / mbps_to_dim) / current_mean
+                        # Apply scale factor and ensure a reasonable floor (5 Mbps in current dimension)
+                        self.trace_data = [max(floor_val, x * scale_factor * mbps_to_dim) for x in raw_data]
                         
                         # Re-calculate mean and adjust to match exactly if needed
                         actual_mean = sum(self.trace_data) / len(self.trace_data)
                         if actual_mean > 0:
                             re_scale = target_mean / actual_mean
-                            self.trace_data = [max(5.0, x * re_scale) for x in self.trace_data]
+                            self.trace_data = [max(floor_val, x * re_scale) for x in self.trace_data]
                     else:
                         self.trace_data = [target_mean] * len(raw_data)
                 else:
                     self.trace_data = [target_mean]
             else:
-                self.trace_data = read_trace_file(trace_file, 1)
+                self.trace_data = read_trace_file(trace_file, 1) # This is in Mbps
                 if not self.trace_data:
-                    run_id = return_closest_mean_index(trace_file)
+                    run_id = return_closest_mean_index(trace_file, None)
                     self.trace_data = read_trace_file(trace_file, run_id)
-                self.trace_data = [max(5.0, x) for x in self.trace_data]
+                # Convert from Mbps to target dimension and apply floor
+                self.trace_data = [max(floor_val, x * mbps_to_dim) for x in self.trace_data]
 
     @property
     def edge_cloud_comm_time(self):
@@ -213,7 +229,8 @@ class CommunicationSimulator:
             raise ValueError(f"Unknown link type: {link_type}")
 
         # Ensure bandwidth is not too low (floor at 5 Mbps)
-        bandwidth = max(_convert_to_bytes_per_second(5.0, self.dimension), bandwidth)
+        # Use explicit "Mbps" to ensure the floor is always 5 Mbps regardless of self.dimension
+        bandwidth = max(_convert_to_bytes_per_second(5.0, "Mbps"), bandwidth)
         transfer_time = data_size_bytes / bandwidth
 
         if link_type == "edge_end":
