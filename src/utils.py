@@ -336,6 +336,11 @@ def parse_arguments():
         help="Whether to use RL adapter for dynamic k selection.",
     )
     parser.add_argument(
+        "--disable_rl_update",
+        action="store_true",
+        help="Whether to disable RL adapter update (training).",
+    )
+    parser.add_argument(
         "--batch_delay",
         type=float,
         default=50e-3, # 50 ms

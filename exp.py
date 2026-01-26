@@ -56,6 +56,7 @@ class ExpConfig(TypedDict):
     use_precise: bool
     use_stochastic_comm: bool
     use_rl_adapter: bool
+    disable_rl_update: bool
     small_draft_threshold: float
     draft_target_threshold: float
     ntt_ms_edge_cloud: int | float
@@ -66,7 +67,6 @@ class ExpConfig(TypedDict):
     little_model: str
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
-    main_process_port: int
 
 
 # Global Constants
@@ -78,7 +78,7 @@ cmd_temp = """
 echo "Running experiment: {eval_mode}"
 CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --num_processes 1 \
-    --main_process_port {main_process_port} \
+    --main_process_port 29051 \
     {eval_dataset} \
     --eval_mode {eval_mode} \
     -e llama \
@@ -158,6 +158,8 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_stochastic_comm")
     if config.get("use_rl_adapter", False):
         cmd = add_args(cmd, "use_rl_adapter")
+    if config.get("disable_rl_update", False):
+        cmd = add_args(cmd, "disable_rl_update")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -347,10 +349,6 @@ def run_experiment_with_gpu(
 
         # 更新配置中的GPU设备
         config["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
-        
-        # 为每个进程分配不同的主进程端口，避免并行冲突
-        # 使用 29050 + 第一个 GPU ID 作为端口号
-        config["main_process_port"] = 29050 + gpu_ids[0]
 
         # 运行实验
         result = run_exp(config, log_dir)
@@ -456,6 +454,7 @@ def create_config(
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
     use_rl_adapter: bool = False,
+    disable_rl_update: bool = False,
     edge_end_bandwidth: int | float = 100,
     edge_cloud_bandwidth: int | float = 100,
     cloud_end_bandwidth: int | float = 100,
@@ -495,12 +494,12 @@ def create_config(
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,
         ntt_ms_edge_end=ntt_ms_edge_end,
         use_rl_adapter=use_rl_adapter,
+        disable_rl_update=disable_rl_update,
         draft_model=draft_model,
         target_model=target_model,
         little_model=little_model,
         small_draft_acc_head_path=small_draft_acc_head_path,
         draft_target_acc_head_path=draft_target_acc_head_path,
-        main_process_port=29051,
     )
 
 
@@ -514,6 +513,8 @@ config_to_run = []
 for edge_end_bw, edge_cloud_bw in bandwidth_config:
     for eval_mode in EvalMode:
         for eval_dataset in EvalDataset:
+            if eval_mode == EvalMode.ceesd and eval_mode != EvalMode.autoregression:
+                continue  # 跳过 CEESD 模式
             config_to_run.append(
                 create_config(
                     eval_mode=eval_mode,

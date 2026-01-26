@@ -1405,7 +1405,8 @@ class Baselines(Decoding):
                 step_comm_time = comm_simulator.edge_cloud_comm_time - step_comm_time_start
                 # 修改奖励：增加 1 的基础值并加入熵奖励以鼓励探索
                 reward = (this_step_accepted_tokens + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
-                self.rl_adapter.step(reward)
+                if not getattr(self.args, "disable_rl_update", False):
+                    self.rl_adapter.step(reward)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
@@ -1666,7 +1667,8 @@ class Baselines(Decoding):
                 step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
                 # 修改奖励：增加熵奖励以鼓励探索
                 reward = (little_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
-                self.little_rl_adapter.step(reward)
+                if not getattr(self.args, "disable_rl_update", False):
+                    self.little_rl_adapter.step(reward)
 
             assert n1 >= prefix_len - 1, f"n1 {n1}, prefix_len {prefix_len}"
             prefix = x[:, : n1 + 1]
@@ -1798,7 +1800,8 @@ class Baselines(Decoding):
                 step_comm_time = comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
                 # 修改奖励：增加熵奖励以鼓励探索
                 reward = (draft_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
-                self.rl_adapter.step(reward)
+                if not getattr(self.args, "disable_rl_update", False):
+                    self.rl_adapter.step(reward)
 
             assert (
                 n2 >= prefix_len - 1
