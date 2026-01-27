@@ -26,6 +26,8 @@ class Eval(Baselines):
             self.model_id = "llama-3.1"
         elif "llama" in str(self.args.draft_model):
             self.model_id = "vicuna"
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+            self.model_id = "qwen"
         else:
             raise NotImplementedError
         

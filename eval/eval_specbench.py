@@ -15,16 +15,32 @@ from fastchat.model import get_conversation_template
 
 from functools import partial
 
-class EvalHumaneval(Decoding):
+class EvalSpecbench(Decoding):
     def __init__(self, args):
         super().__init__(args)
 
         # load relative resources
         self.load_tokenizer()
-        self.load_data()
         self.load_model()
 
         self.task = "specbench"
+        
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
+            self.model_id = "llama-2-chat"
+        elif "Llama-2" in str(self.args.target_model):
+            self.model_id = "vicuna"
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
+            self.model_id = "vicuna"
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
+            self.model_id = "llama-3.1"
+        elif "llama" in str(self.args.draft_model):
+            self.model_id = "vicuna"
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+            self.model_id = "qwen"
+        else:
+            self.model_id = "vicuna"
+        
+        self.load_data()
 
         self.draft_time = []
         self.target_time = []
@@ -53,13 +69,25 @@ class EvalHumaneval(Decoding):
         self.data = data
 
     def preprocess(self, input_text):
-        if "vicuna" in self.args.target_model:
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": input_text}
+            ]
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            return prompt
+        elif "vicuna" in self.model_id:
             text = input_text.strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
             conv.append_message(conv.roles[1], None)
             conv.stop_str = "</s>"
             prompt = conv.get_prompt()
+            return prompt
         else:
             if self.args.sub_domain == "summarization":
 

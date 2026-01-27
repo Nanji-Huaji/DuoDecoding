@@ -50,6 +50,8 @@ class EvalXSum(Baselines):
             self.model_id = "llama-3.1"
         elif "llama" in str(self.args.draft_model):
             self.model_id = "vicuna"
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+            self.model_id = "qwen"
         else:
             self.model_id = "vicuna"
 
@@ -108,7 +110,7 @@ class EvalXSum(Baselines):
             
             article = str(item["document"])
             qs = f"Summarize the following article:\n\n{article[:1000]}"
-            if self.model_id == "llama-3.1":
+            if self.model_id == "llama-3.1" or self.model_id == "qwen":
                 messages = [
                     {"role": "system", "content": "You are a helpful assistant."},
                     {"role": "user", "content": qs}
@@ -156,7 +158,7 @@ class EvalXSum(Baselines):
                 seed_everything(self.seed)
 
 
-                if self.model_id == "llama-3.1":
+                if self.model_id == "llama-3.1" or self.model_id == "qwen":
                     messages = [
                         {
                             "role": "system",

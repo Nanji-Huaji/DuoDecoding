@@ -55,10 +55,26 @@ class EvalHumaneval(Baselines):
 
         # load relative resources
         self.load_tokenizer()
-        self.load_data()
         self.load_model()
 
         self.task = "humaneval"
+
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
+            self.model_id = "llama-2-chat"
+        elif "Llama-2" in str(self.args.target_model):
+            self.model_id = "vicuna"
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
+            self.model_id = "vicuna"
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
+            self.model_id = "llama-3.1"
+        elif "llama" in str(self.args.draft_model):
+            self.model_id = "vicuna"
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+            self.model_id = "qwen"
+        else:
+            self.model_id = "vicuna"
+            
+        self.load_data()
 
         self.draft_time = []
         self.target_time = []
@@ -91,16 +107,27 @@ class EvalHumaneval(Baselines):
         self.color_print(f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2)
 
     def preprocess(self, input_text):
-        if "vicuna" in self.args.target_model:
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant. Please complete the following python code."},
+                {"role": "user", "content": input_text}
+            ]
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            return prompt
+        elif "vicuna" in self.model_id:
             text = input_text.strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
             conv.append_message(conv.roles[1], None)
             conv.stop_str = "</s>"
             prompt = conv.get_prompt()
+            return prompt
         else:
             return input_text.strip()
-        return prompt
 
     def postprocess(self, input_text, output_text):
         if output_text.startswith(self.tokenizer.bos_token):
