@@ -17,6 +17,7 @@ from accelerate import Accelerator
 from .SpecDec_pp.specdec_pp.wrap_model import AcceptancePredictionHead
 
 import os
+import math
 
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
@@ -68,8 +69,23 @@ class Baselines(Decoding):
         super().__init__(args)
         self.load_acc_head()
         if getattr(args, "use_rl_adapter", False):
-            self.rl_adapter = RLNetworkAdapter(args, model_name="rl_adapter_main")
-            self.little_rl_adapter = RLNetworkAdapter(args, model_name="rl_adapter_little") # New adapter for little-draft
+            # 限制 Main RL Agent (Draft -> Target) 的阈值搜索空间为 0.0..0.4
+            # 这里的阈值较低意味着对 Main Model 的拒绝预测更敏感
+            main_thresholds = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]
+            self.rl_adapter = RLNetworkAdapter(
+                args, 
+                model_name="rl_adapter_main", 
+                threshold_candidates=main_thresholds
+            )
+            
+            # 限制 Little RL Agent (Little -> Draft) 的阈值搜索空间为 0.4..0.9
+            # 这里的阈值较高意味着对 Little Model 的生成更宽容
+            little_thresholds = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+            self.little_rl_adapter = RLNetworkAdapter(
+                args, 
+                model_name="rl_adapter_little", 
+                threshold_candidates=little_thresholds
+            )
         else:
             self.rl_adapter = None
             self.little_rl_adapter = None
@@ -1403,8 +1419,18 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_cloud_comm_time - step_comm_time_start
-                # 修改奖励：增加 1 的基础值并加入熵奖励以鼓励探索
-                reward = (this_step_accepted_tokens + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
+                
+                # 去掉分子 +1：只有真正产生 accepted tokens 才有 TPS 基础奖励
+                tps_part = this_step_accepted_tokens / (step_time + step_comm_time + 1e-9)
+                # 使用带上限的指数激励
+                reward = math.exp(min(tps_part, 100) / 20.0)
+                
+                # 平滑的幂次惩罚：取代硬截断，让模型感知准确率的连续变化
+                # 只有在预测长度 > 1 时才惩罚低命中率，鼓励模型在不确定时收缩长度
+                if current_gamma > 1:
+                    acc_rate = this_step_accepted_tokens / current_gamma
+                    reward *= (acc_rate ** 2)
+                
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
@@ -1665,8 +1691,16 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
-                # 修改奖励：增加熵奖励以鼓励探索
-                reward = (little_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
+                
+                # 去掉分子 +1
+                tps_part = little_accepted_this_iter / (step_time + step_comm_time + 1e-9)
+                reward = math.exp(min(tps_part, 100) / 20.0)
+                
+                # 平滑的幂次惩罚
+                if actual_gamma2 > 1:
+                    acc_rate = little_accepted_this_iter / actual_gamma2
+                    reward *= (acc_rate ** 2)
+                    
                 if not getattr(self.args, "disable_rl_update", False):
                     self.little_rl_adapter.step(reward)
 
@@ -1798,8 +1832,16 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
-                # 修改奖励：增加熵奖励以鼓励探索
-                reward = (draft_accepted_this_iter + 1) / (step_time + step_comm_time + 1e-9) + 0.1 * entropy
+                
+                # 去掉分子 +1
+                tps_part = draft_accepted_this_iter / (step_time + step_comm_time + 1e-9)
+                reward = math.exp(min(tps_part, 100) / 20.0)
+                
+                # 平滑的幂次惩罚
+                if actual_gamma1 > 1:
+                    acc_rate = draft_accepted_this_iter / actual_gamma1
+                    reward *= (acc_rate ** 2)
+                
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 

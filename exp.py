@@ -23,8 +23,8 @@ from enum import Enum
 class EvalDataset(str, Enum):
     mt_bench = "eval/eval_mt_bench_noeval.py"
     humaneval = "eval/eval_humaneval.py"
-    cnndm = "eval/eval_cnndm.py"
-    xsum = "eval/eval_xsum.py"
+    # cnndm = "eval/eval_cnndm.py"
+    # xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
 
 
@@ -320,11 +320,11 @@ def run_experiment_with_gpu(
 ) -> dict:
     """在指定GPU上运行实验"""
     gpu_ids = None
-    
+
     # 检测是否为70b模型实验
     is_large_model = "70b" in str(config).lower()
     needed_gpus = 2 if is_large_model else 1
-    
+
     try:
         if is_large_model:
             # 70b模型：如果资源不足直接跳过
@@ -337,7 +337,7 @@ def run_experiment_with_gpu(
                     "result": {"error": msg},
                     "log_file": "",
                     "status": "skipped",
-                    "config": config.copy()
+                    "config": config.copy(),
                 }
         else:
             # 普通模型：等待直到有可用GPU
@@ -363,7 +363,10 @@ def run_experiment_with_gpu(
 
 
 def run_experiments_parallel(
-    configs: List[ExpConfig], max_workers: int = 2, log_dir: str = "logs"
+    configs: List[ExpConfig],
+    max_workers: int = 2,
+    log_dir: str = "logs",
+    summary_file: str | None = None,
 ) -> List[dict]:
     """并行运行多个实验"""
     gpu_manager = GPUManager()
@@ -410,6 +413,11 @@ def run_experiments_parallel(
                 }
                 all_results.append(error_result)
                 print(f"实验异常: {config['exp_name']}, 错误: {exc}")
+
+            # 中途保存结果
+            if summary_file:
+                with open(summary_file, "w", encoding="utf-8") as f:
+                    json.dump(all_results, f, indent=2, ensure_ascii=False)
 
     return all_results
 
@@ -471,13 +479,9 @@ def create_config(
 ) -> ExpConfig:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if small_draft_acc_head_path is None:
-        small_draft_acc_head_path = model_acc_head_map.get(
-            draft_model, ""
-        )
+        small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
     if draft_target_acc_head_path is None:
-        draft_target_acc_head_path = model_acc_head_map.get(
-            target_model, ""
-        )
+        draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
     return ExpConfig(
         eval_dataset=eval_dataset,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
@@ -503,55 +507,61 @@ def create_config(
     )
 
 
-bandwidth_config = [
-    (563, 34.6),
+config_to_run = []
+
+# 模型三元组配置
+model_triplets = [
+    # Vicuna: little, draft, target
+    ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
+    # Llama: little, draft, target
+    # ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
 ]
 
-# 在此添加实验
+# 阈值扫描范围
+# little_draft_thresholds = [0.6, 0.7, 0.8]
+# draft_target_thresholds = [0.1, 0.2, 0.3]
 
-config_to_run = []
-for edge_end_bw, edge_cloud_bw in bandwidth_config:
-    for eval_mode in EvalMode:
-        for eval_dataset in EvalDataset:
-            if eval_mode == EvalMode.ceesd and eval_mode != EvalMode.autoregression:
-                continue  # 跳过 CEESD 模式
-            config_to_run.append(
-                create_config(
-                    eval_mode=eval_mode,
-                    eval_dataset=eval_dataset,
-                    edge_end_bandwidth=edge_end_bw,
-                    edge_cloud_bandwidth=edge_cloud_bw,
-                    cloud_end_bandwidth=edge_cloud_bw,
-                    use_precise=False,
-                    target_model="llama-2-13b",
-                    little_model="llama-68m",
-                    draft_model="tiny-llama-1.1b",
-                    small_draft_threshold=0.6,
-                    draft_target_threshold=0.3,
-                    transfer_top_k=300,
-                    use_rl_adapter=True,
-                    use_stochastic_comm=True,
-                    ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                    ntt_ms_edge_end=NTT_MS_EDGE_END,
+little_draft_thresholds = [0.9]
+draft_target_thresholds = [0.1]
+
+for little, draft, target in model_triplets:
+    for eval_dataset in EvalDataset:
+        for ld_th in little_draft_thresholds:
+            for dt_th in draft_target_thresholds:
+                config_to_run.append(
+                    create_config(
+                        eval_mode=EvalMode.ceesd,
+                        eval_dataset=eval_dataset,
+                        little_model=little,
+                        draft_model=draft,
+                        target_model=target,
+                        small_draft_threshold=ld_th,
+                        draft_target_threshold=dt_th,
+                        use_rl_adapter=True,
+                        disable_rl_update=True,
+                        edge_end_bandwidth=563,
+                        edge_cloud_bandwidth=34.6,
+                        cloud_end_bandwidth=34.6,
+                        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                        ntt_ms_edge_end=NTT_MS_EDGE_END,
+                        use_precise=True,
+                    )
                 )
-        )
 
 if __name__ == "__main__":
     # 创建日志目录
     log_dir = "exp_logs"
     Path(log_dir).mkdir(exist_ok=True)
 
-    # 并行运行实验
-    all_results = run_experiments_parallel(
-        config_to_run, max_workers=2, log_dir=log_dir
-    )
-
-    # 保存汇总结果
+    # 提前确定汇总结果文件名
     summary_file = (
         f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     )
-    with open(summary_file, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2, ensure_ascii=False)
+
+    # 并行运行实验
+    all_results = run_experiments_parallel(
+        config_to_run, max_workers=4, log_dir=log_dir, summary_file=summary_file
+    )
 
     # 打印汇总报告
     print("\n" + "=" * 80)

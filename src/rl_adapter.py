@@ -180,7 +180,7 @@ class DDQNAgent:
                 print(f"Failed to load checkpoint: {e}. Starting fresh.")
 
 class RLNetworkAdapter:
-    def __init__(self, args, model_name="rl_adapter", device="cuda"):
+    def __init__(self, args, model_name="rl_adapter", device="cuda", k_candidates=None, threshold_candidates=None):
         self.args = args
         self.device = device
         
@@ -196,8 +196,8 @@ class RLNetworkAdapter:
             maxlen=self.seq_len
         )
         
-        self.k_candidates = K_CANDIDATES
-        self.threshold_candidates = THRESHOLD_CANDIDATES
+        self.k_candidates = k_candidates if k_candidates is not None else K_CANDIDATES
+        self.threshold_candidates = threshold_candidates if threshold_candidates is not None else THRESHOLD_CANDIDATES
         self.action_dim = len(self.k_candidates) * len(self.threshold_candidates)
         
         self.agent = DDQNAgent(
@@ -220,7 +220,11 @@ class RLNetworkAdapter:
         self.best_tps = -1.0
         
         os.makedirs("checkpoints", exist_ok=True)
-        self.agent.load(self.model_path)
+        # 实验评估时默认加载最优模型
+        if os.path.exists(self.best_model_path):
+            self.agent.load(self.best_model_path)
+        else:
+            self.agent.load(self.model_path)
 
     def _get_current_feature_vector(self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name):
         norm_bw = min(bandwidth_mbps / self.max_bandwidth, 1.0)
