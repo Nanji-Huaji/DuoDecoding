@@ -19,7 +19,7 @@ from src.baselines import get_empty_metrics, DecodingMetrics
 
 from src.baselines import Baselines
 
-from eval.few_shot_examples import get_few_shot_prompt
+from few_shot_examples import get_few_shot_prompt
 
 from functools import partial
 

@@ -485,7 +485,7 @@ def create_config(
     small_draft_threshold: float = 0.8,
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
-    num_shots: int = 0,
+    num_shots: int = 3,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
@@ -527,14 +527,18 @@ def create_config(
 
 config_to_run = []
 
+llama_series = ("llama-68m", "tiny-llama-1.1b", "llama-2-13b")
+vicuna_series = ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5")
+qwen_series = ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
+
 # 根据 LaTeX 表格定义的模型组合 (Draft, Target)
 # Row 1 (TinyLlama): Col 2 (TinyLlama-1B) = x, Col 3 (Llama-13B) = x
 # Row 2 (Llama-68M): Col 3 (Llama-13B) = x
-# specified_pairs = [
-#     ("llama-68m", "tiny-llama-1.1b"),
-#     # ("tiny-llama-1.1b", "llama-2-13b"),
-#     # ("llama-68m", "llama-2-13b"),
-# ]
+specified_pairs_llama = [
+    ("llama-68m", "tiny-llama-1.1b"),
+    # ("tiny-llama-1.1b", "llama-2-13b"),
+    # ("llama-68m", "llama-2-13b"),
+]
 
 specified_pairs_vicuna = [
     ("tiny-vicuna-1b", "vicuna-13b-v1.5"),
@@ -548,25 +552,30 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
-for draft, target in specified_pairs_qwen:
-    for eval_dataset in [EvalDataset.mt_bench]:
-        config_to_run.append(
-            create_config(
-                eval_mode=EvalMode.dsd,  # 使用 dsd (dist_spec)
-                eval_dataset=eval_dataset,
-                draft_model=draft,
-                target_model=target,
-                little_model=draft,  # dsd 不使用 little_model，此处作为占位符
-                small_draft_threshold=0.8,
-                draft_target_threshold=0.2,
+for little_model, draft_model, target_model in (llama_series,):
+    for dataset in EvalDataset:
+        for mode in EvalMode:
+            config = create_config(
+                eval_mode=mode,
+                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                ntt_ms_edge_end=NTT_MS_EDGE_END,
+                use_precise=False,
+                use_stochastic_comm=True,
                 edge_end_bandwidth=563,
                 edge_cloud_bandwidth=34.6,
                 cloud_end_bandwidth=34.6,
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=True,
+                small_draft_threshold=0.8,
+                draft_target_threshold=0.6,
+                transfer_top_k=300,
+                num_shots=3,
+                eval_dataset=dataset,
+                draft_model=draft_model,
+                target_model=target_model,
+                little_model=little_model,
+                use_rl_adapter=True,
+                disable_rl_update=True,
             )
-        )
+            config_to_run.append(config)
 
 if __name__ == "__main__":
     # 创建日志目录

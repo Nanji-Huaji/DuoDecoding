@@ -13,7 +13,7 @@ sys.path.append(os.path.join(sys.path[0], "../"))
 from src.utils import seed_everything, parse_arguments
 from src.baselines import Baselines, get_empty_metrics
 from functools import partial
-from eval.few_shot_examples import get_few_shot_prompt
+from few_shot_examples import get_few_shot_prompt
 import inspect
 
 # 同步 rl_adapter.py 中的定义

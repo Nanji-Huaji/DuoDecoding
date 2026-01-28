@@ -16,7 +16,7 @@ from datasets import load_dataset
 from eval_mt_bench import get_class_methods
 
 from functools import partial
-from eval.few_shot_examples import get_few_shot_prompt
+from few_shot_examples import get_few_shot_prompt
 
 decoding_metrics = get_empty_metrics()
 

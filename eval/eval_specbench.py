@@ -14,7 +14,7 @@ from collections import Counter
 from fastchat.model import get_conversation_template
 
 from functools import partial
-from eval.few_shot_examples import get_few_shot_prompt
+from few_shot_examples import get_few_shot_prompt
 
 class EvalSpecbench(Decoding):
     def __init__(self, args):

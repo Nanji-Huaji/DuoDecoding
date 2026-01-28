@@ -28,7 +28,7 @@ from collections import Counter
 
 from src.baselines import get_decoding_fn
 
-from eval.few_shot_examples import get_few_shot_prompt
+from few_shot_examples import get_few_shot_prompt
 
 decoding_metrics = get_empty_metrics()
 
