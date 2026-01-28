@@ -14,6 +14,7 @@ from collections import Counter
 from fastchat.model import get_conversation_template
 
 from functools import partial
+from eval.few_shot_examples import get_few_shot_prompt
 
 class EvalSpecbench(Decoding):
     def __init__(self, args):
@@ -69,10 +70,19 @@ class EvalSpecbench(Decoding):
         self.data = data
 
     def preprocess(self, input_text):
+        task_map = {
+            "math_reasoning": "gsm8k",
+            "summarization": "summarization",
+            "translation": "translation",
+            "qa": "gsm8k",
+        }
+        task = task_map.get(self.args.sub_domain, "gsm8k")
+        few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
+
         if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": input_text}
+                {"role": "user", "content": few_shot_prompt + input_text}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -81,7 +91,7 @@ class EvalSpecbench(Decoding):
             )
             return prompt
         elif "vicuna" in self.model_id:
-            text = input_text.strip()
+            text = (few_shot_prompt + input_text).strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
             conv.append_message(conv.roles[1], None)
@@ -90,22 +100,21 @@ class EvalSpecbench(Decoding):
             return prompt
         else:
             if self.args.sub_domain == "summarization":
-
                 text = input_text.strip()
-                prompt = text + " TL;DR: "
-
+                prompt = few_shot_prompt + text + " TL;DR: "
             elif self.args.sub_domain == "translation":
                 prompt = (
+                    few_shot_prompt +
                     "Translate German to English. German: "
                     + input_text[len("Translate German to English: ") :]
                     + " English: "
                 )
             elif self.args.sub_domain == "math_reasoning":
-                prompt = f"{input_text} Let's think step by step.\nStep 1:"
+                prompt = f"{few_shot_prompt}{input_text} Let's think step by step.\nStep 1:"
             elif self.args.sub_domain == "rag":
-                prompt = input_text
+                prompt = few_shot_prompt + input_text
             else:
-                text = input_text.strip()
+                text = (few_shot_prompt + input_text).strip()
                 conv = get_conversation_template("vicuna")
                 conv.append_message(conv.roles[0], text)
                 conv.append_message(conv.roles[1], None)

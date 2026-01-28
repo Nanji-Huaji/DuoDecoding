@@ -357,7 +357,6 @@ class Decoding(Register, ABC):
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
                 ).to(draft_device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
                 break
 
@@ -433,7 +432,6 @@ class Decoding(Register, ABC):
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
@@ -540,7 +538,6 @@ class Decoding(Register, ABC):
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
                 ).to(draft_device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
                 break
 
@@ -660,7 +657,6 @@ class Decoding(Register, ABC):
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
 
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
@@ -819,7 +815,6 @@ class Decoding(Register, ABC):
                     n + 2
                 )  # 等同于rollback(prefix_len + 2)
 
-                total_accepted_tokens += 1
 
                 # 将新采样的token添加到序列中
                 if prefix.shape[1] < max_tokens:

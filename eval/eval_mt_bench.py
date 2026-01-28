@@ -19,6 +19,8 @@ from src.baselines import get_empty_metrics, DecodingMetrics
 
 from src.baselines import Baselines
 
+from eval.few_shot_examples import get_few_shot_prompt
+
 from functools import partial
 
 import inspect
@@ -204,6 +206,9 @@ class EvalMTBench(Baselines):
                 num_token = []
                 for turn_idx in range(len(question["turns"])):
                     qs = question["turns"][turn_idx]
+                    if turn_idx == 0 and self.args.num_shots > 0:
+                        few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
+                        qs = few_shot_prompt + qs
 
                     if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append({"role": "user", "content": qs})

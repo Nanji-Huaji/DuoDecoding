@@ -145,6 +145,12 @@ def parse_arguments():
         help="number of samples to evaluate.",
     )
     parser.add_argument(
+        "--num_shots",
+        type=int,
+        default=0,
+        help="number of shots for few-shot evaluation.",
+    )
+    parser.add_argument(
         "--sub_domain",
         type=str,
         default="math_reasoning",

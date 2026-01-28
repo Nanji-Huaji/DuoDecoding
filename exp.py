@@ -52,6 +52,7 @@ class ExpConfig(TypedDict):
     edge_cloud_bandwidth: int | float
     cloud_end_bandwidth: int | float
     transfer_top_k: int
+    num_shots: int
     exp_name: str
     use_precise: bool
     use_stochastic_comm: bool
@@ -86,8 +87,6 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --target_model {target_model} \
     --little_model {little_model} \
     --max_tokens 128 \
-    --small_draft_acc_head_path {small_draft_acc_head_path} \
-    --draft_target_acc_head_path {draft_target_acc_head_path} \
     --temp 0.0 \
     --gamma1 4 \
     --gamma2 26 \
@@ -97,6 +96,7 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --transfer_top_k {transfer_top_k} \
     --small_draft_threshold {small_draft_threshold} \
     --draft_target_threshold {draft_target_threshold} \
+    --num_shots {num_shots} \
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
     --ntt_ms_edge_end {ntt_ms_edge_end} \
@@ -160,6 +160,18 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_rl_adapter")
     if config.get("disable_rl_update", False):
         cmd = add_args(cmd, "disable_rl_update")
+    if config.get("small_draft_acc_head_path"):
+        cmd = add_args(
+            cmd,
+            "small_draft_acc_head_path",
+            config["small_draft_acc_head_path"],
+        )
+    if config.get("draft_target_acc_head_path"):
+        cmd = add_args(
+            cmd,
+            "draft_target_acc_head_path",
+            config["draft_target_acc_head_path"],
+        )
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -174,6 +186,10 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         task_name = "xsum"
     elif "gsm8k" in script_path:
         task_name = "gsm8k"
+    elif "specbench" in script_path:
+        task_name = "specbench"
+    elif "mixed" in script_path:
+        task_name = "mixed"
 
     cmd = add_args(cmd, "task_name", task_name)
 
@@ -469,6 +485,7 @@ def create_config(
     small_draft_threshold: float = 0.8,
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
+    num_shots: int = 0,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
@@ -490,9 +507,10 @@ def create_config(
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=transfer_top_k,
+        num_shots=num_shots,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
-        exp_name=f"{eval_mode}/{eval_dataset.name}/{eval_mode}_{timestamp}",
+        exp_name=f"{eval_mode}/{eval_dataset.name}/{eval_mode}_{num_shots}shot_{timestamp}",
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,
@@ -509,44 +527,46 @@ def create_config(
 
 config_to_run = []
 
-# 模型三元组配置
-model_triplets = [
-    # Vicuna: little, draft, target
-    ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
-    # Llama: little, draft, target
-    # ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
+# 根据 LaTeX 表格定义的模型组合 (Draft, Target)
+# Row 1 (TinyLlama): Col 2 (TinyLlama-1B) = x, Col 3 (Llama-13B) = x
+# Row 2 (Llama-68M): Col 3 (Llama-13B) = x
+# specified_pairs = [
+#     ("llama-68m", "tiny-llama-1.1b"),
+#     # ("tiny-llama-1.1b", "llama-2-13b"),
+#     # ("llama-68m", "llama-2-13b"),
+# ]
+
+specified_pairs_vicuna = [
+    ("tiny-vicuna-1b", "vicuna-13b-v1.5"),
+    ("vicuna-68m", "vicuna-13b-v1.5"),
+    ("vicuna-68m", "tiny-vicuna-1b"),
 ]
 
-# 阈值扫描范围
-# little_draft_thresholds = [0.6, 0.7, 0.8]
-# draft_target_thresholds = [0.1, 0.2, 0.3]
+specified_pairs_qwen = [
+    ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B"),
+    ("qwen/Qwen3-0.6B", "qwen/Qwen3-14B"),
+    ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
+]
 
-little_draft_thresholds = [0.9]
-draft_target_thresholds = [0.1]
-
-for little, draft, target in model_triplets:
-    for eval_dataset in EvalDataset:
-        for ld_th in little_draft_thresholds:
-            for dt_th in draft_target_thresholds:
-                config_to_run.append(
-                    create_config(
-                        eval_mode=EvalMode.ceesd,
-                        eval_dataset=eval_dataset,
-                        little_model=little,
-                        draft_model=draft,
-                        target_model=target,
-                        small_draft_threshold=ld_th,
-                        draft_target_threshold=dt_th,
-                        use_rl_adapter=True,
-                        disable_rl_update=True,
-                        edge_end_bandwidth=563,
-                        edge_cloud_bandwidth=34.6,
-                        cloud_end_bandwidth=34.6,
-                        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                        ntt_ms_edge_end=NTT_MS_EDGE_END,
-                        use_precise=True,
-                    )
-                )
+for draft, target in specified_pairs_qwen:
+    for eval_dataset in [EvalDataset.mt_bench]:
+        config_to_run.append(
+            create_config(
+                eval_mode=EvalMode.dsd,  # 使用 dsd (dist_spec)
+                eval_dataset=eval_dataset,
+                draft_model=draft,
+                target_model=target,
+                little_model=draft,  # dsd 不使用 little_model，此处作为占位符
+                small_draft_threshold=0.8,
+                draft_target_threshold=0.2,
+                edge_end_bandwidth=563,
+                edge_cloud_bandwidth=34.6,
+                cloud_end_bandwidth=34.6,
+                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                ntt_ms_edge_end=NTT_MS_EDGE_END,
+                use_precise=True,
+            )
+        )
 
 if __name__ == "__main__":
     # 创建日志目录

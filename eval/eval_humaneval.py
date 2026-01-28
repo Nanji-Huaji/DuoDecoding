@@ -22,6 +22,7 @@ from src.baselines import Baselines
 from eval_mt_bench import get_class_methods
 
 from functools import partial
+from eval.few_shot_examples import get_few_shot_prompt
 
 decoding_metrics = get_empty_metrics()
 
@@ -107,10 +108,13 @@ class EvalHumaneval(Baselines):
         self.color_print(f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2)
 
     def preprocess(self, input_text):
+        few_shot_prompt = get_few_shot_prompt("humaneval", self.args.num_shots)
+        full_input = few_shot_prompt + input_text
+
         if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Please complete the following python code."},
-                {"role": "user", "content": input_text}
+                {"role": "user", "content": full_input}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -119,7 +123,7 @@ class EvalHumaneval(Baselines):
             )
             return prompt
         elif "vicuna" in self.model_id:
-            text = input_text.strip()
+            text = full_input.strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
             conv.append_message(conv.roles[1], None)
@@ -127,7 +131,7 @@ class EvalHumaneval(Baselines):
             prompt = conv.get_prompt()
             return prompt
         else:
-            return input_text.strip()
+            return full_input.strip()
 
     def postprocess(self, input_text, output_text):
         if output_text.startswith(self.tokenizer.bos_token):

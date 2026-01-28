@@ -18,6 +18,7 @@ from src.baselines import Baselines
 from eval_mt_bench import get_class_methods
 
 from functools import partial
+from eval.few_shot_examples import get_few_shot_prompt
 import inspect
 from rouge_score import rouge_scorer
 import numpy as np
@@ -71,6 +72,24 @@ class EvalCNNDM(Baselines):
             self.color_print(f"Error loading CNN/DailyMail data: {e}", 1)
             self.data = []
 
+    def preprocess(self, input_text):
+        few_shot_prompt = get_few_shot_prompt("cnndm", self.args.num_shots)
+        full_input = few_shot_prompt + "Article: " + input_text
+
+        qs = f"Summarize the following article:\n\n{full_input}"
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": qs}
+            ]
+            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            conv = get_conversation_template(self.model_id)
+            conv.append_message(conv.roles[0], qs)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt() + " "
+        return prompt
+
     @torch.no_grad()
     def eval(self, total: int | None = 80):
         global decoding_metrics
@@ -109,19 +128,11 @@ class EvalCNNDM(Baselines):
                 break
             
             article = str(item["article"])
-            qs = f"Summarize the following article:\n\n{article[:1000]}"
+            # qs = f"Summarize the following article:\n\n{article[:1000]}"
+            prompt = self.preprocess(article[:1000])
             if self.model_id == "llama-3.1" or self.model_id == "qwen":
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": qs}
-                ]
-                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
             else:
-                conv = get_conversation_template(self.model_id)
-                conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None)
-                prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
             
             input_ids = input_ids.to(self.accelerator.device)
@@ -145,7 +156,7 @@ class EvalCNNDM(Baselines):
             
             article = str(item["article"])
             reference = str(item["highlights"])
-            qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
+            # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
 
             loop_index += 1
             if loop_index > min(len(self.data), total) and total is not None:
@@ -157,22 +168,11 @@ class EvalCNNDM(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
+                prompt = self.preprocess(article[:4000])
 
                 if self.model_id == "llama-3.1" or self.model_id == "qwen":
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful assistant. Please summarize the given article.",
-                        },
-                        {"role": "user", "content": qs}
-                    ]
-                    prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                     input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
                 else:
-                    conv = get_conversation_template(self.model_id)
-                    conv.append_message(conv.roles[0], qs)
-                    conv.append_message(conv.roles[1], None)
-                    prompt = conv.get_prompt() + " "
                     input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
                 input_ids = input_ids.to(self.accelerator.device)

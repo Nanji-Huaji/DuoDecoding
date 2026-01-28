@@ -16,6 +16,7 @@ from datasets import load_dataset
 from eval_mt_bench import get_class_methods
 
 from functools import partial
+from eval.few_shot_examples import get_few_shot_prompt
 
 decoding_metrics = get_empty_metrics()
 
@@ -73,10 +74,13 @@ class EvalGSM8K(Baselines):
             self.data = []
 
     def preprocess(self, input_text):
+        few_shot_prompt = get_few_shot_prompt("gsm8k", self.args.num_shots)
+        full_input = few_shot_prompt + "Question: " + input_text
+
         if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'."},
-                {"role": "user", "content": input_text}
+                {"role": "user", "content": full_input}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -85,7 +89,7 @@ class EvalGSM8K(Baselines):
             )
         else:
             conv = get_conversation_template(self.model_id)
-            conv.append_message(conv.roles[0], f"{input_text}\nAnswer:")
+            conv.append_message(conv.roles[0], f"{full_input}\nAnswer:")
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
         return prompt

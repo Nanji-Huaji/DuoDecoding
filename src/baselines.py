@@ -228,7 +228,6 @@ class Baselines(Decoding):
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
                 ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
                 break
 
@@ -350,7 +349,6 @@ class Baselines(Decoding):
             if prefix.shape[1] < max_tokens:
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
 
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
@@ -489,7 +487,6 @@ class Baselines(Decoding):
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
                 ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
                 break
 
@@ -623,7 +620,6 @@ class Baselines(Decoding):
             if prefix.shape[1] < max_tokens:
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
 
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
@@ -794,12 +790,10 @@ class Baselines(Decoding):
 
                 # rollback target_model_cache，因为我们已经消费了它的输出
                 # 这里n相当于prefix_len（接受了1个token）
-                n = prefix_len  # 接受了位置为prefix_len的token
+                n = prefix_len  # 接受了位置为prefix_len of token
                 target_model_cache.rollback(
                     n + 2
                 )  # 等同于rollback(prefix_len + 2)
-
-                total_accepted_tokens += 1
 
                 # 将新采样的token添加到序列中
                 if prefix.shape[1] < max_tokens:
@@ -1104,7 +1098,9 @@ class Baselines(Decoding):
 
             draft_model_forward_times += self.args.gamma1
             target_model_forward_times += 1
-            total_draft_model_generated_tokens += self.args.gamma1
+            total_draft_model_generated_tokens += (
+                new_generated_token.shape[1] + self.args.gamma1
+            )
 
             n2: int = (
                 prefix_len + new_generated_token.shape[1] + self.args.gamma1 - 1
@@ -1330,7 +1326,6 @@ class Baselines(Decoding):
                     target_model_cache._prob_history[:, -1, : self.vocab_size]
                 ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
                 self.num_acc_tokens.append(1)
                 break
 
@@ -1500,7 +1495,6 @@ class Baselines(Decoding):
             if prefix.shape[1] < max_tokens:
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
-                total_accepted_tokens += 1
 
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
@@ -1797,7 +1791,9 @@ class Baselines(Decoding):
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1
-            total_draft_model_generated_tokens += actual_gamma1
+            total_draft_model_generated_tokens += (
+                new_generated_token.shape[1] + actual_gamma1
+            )
 
             n2: int = (
                 prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1

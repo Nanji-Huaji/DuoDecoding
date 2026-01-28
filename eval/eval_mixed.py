@@ -13,6 +13,7 @@ sys.path.append(os.path.join(sys.path[0], "../"))
 from src.utils import seed_everything, parse_arguments
 from src.baselines import Baselines, get_empty_metrics
 from functools import partial
+from eval.few_shot_examples import get_few_shot_prompt
 import inspect
 
 # 同步 rl_adapter.py 中的定义
@@ -110,18 +111,20 @@ class EvalMixed(Baselines):
 
     def preprocess_prompt(self, task, item):
         """为不同任务构建合适的 Prompt"""
+        few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
+        
         if task == "mt_bench":
-            prompt_text = item["turns"][0]
+            prompt_text = few_shot_prompt + item["turns"][0]
         elif task == "gsm8k":
-            prompt_text = f"Solve the following math problem step by step:\n{item['question']}\nAnswer:"
+            prompt_text = few_shot_prompt + f"Question: {item['question']}\nSolve the following math problem step by step and end your answer with 'The answer is <number>'.\nAnswer:"
         elif task == "cnndm":
-            prompt_text = f"Summarize the following article in a few sentences:\n{item['article']}\nSummary:"
+            prompt_text = few_shot_prompt + f"Article: {item['article']}\nSummarize the following article in a few sentences:\nSummary:"
         elif task == "xsum":
-            prompt_text = f"Summarize the following news article in one sentence:\n{item['document']}\nSummary:"
+            prompt_text = few_shot_prompt + f"Article: {item['document']}\nSummarize the following news article in one sentence:\nSummary:"
         elif task == "humaneval":
-            prompt_text = item["prompt"]
+            prompt_text = few_shot_prompt + item["prompt"]
         else:
-            prompt_text = str(item)
+            prompt_text = few_shot_prompt + str(item)
 
         # 应用模型模板
         if self.model_id in ["llama-3.1", "qwen"]:

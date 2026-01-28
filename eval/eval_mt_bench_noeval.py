@@ -28,6 +28,8 @@ from collections import Counter
 
 from src.baselines import get_decoding_fn
 
+from eval.few_shot_examples import get_few_shot_prompt
+
 decoding_metrics = get_empty_metrics()
 
 
@@ -100,7 +102,20 @@ class EvalMTBench(Baselines):
         self.data = data
 
     def preprocess(self, input_text):
-        pass
+        few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
+        qs = few_shot_prompt + input_text
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": qs}
+            ]
+            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        else:
+            conv = get_conversation_template(self.model_id)
+            conv.append_message(conv.roles[0], qs)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt() + " "
+        return prompt
 
     def postprocess(self, input_text, output_text):
         pass
@@ -157,6 +172,9 @@ class EvalMTBench(Baselines):
                 num_token = []
                 for turn_idx in range(len(question["turns"])):
                     qs = question["turns"][turn_idx]
+                    if turn_idx == 0 and self.args.num_shots > 0:
+                        few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
+                        qs = few_shot_prompt + qs
 
                     if self.model_id == "llama-3.1" or self.model_id == "qwen":
                         messages.append({"role": "user", "content": qs})
