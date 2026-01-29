@@ -2015,6 +2015,8 @@ class Baselines(Decoding):
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
         wall_time = 0
+        arp_overhead_time = 0.0
+        dra_overhead_time = 0.0
 
         idx = 0
 
@@ -2051,11 +2053,16 @@ class Baselines(Decoding):
                 x = torch.cat((x, next_tok), dim=1)
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
+                
+                arp_start = time.time()
                 stop = adapter.predict(hidden_states)
+                arp_overhead_time += time.time() - arp_start
+                
                 if stop:
                     break
             
             if self.little_rl_adapter is not None:
+                dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_end
                 latency = comm_simulator.ntt_edge_end
                 acc_probs = getattr(self.small_draft_adapter, "step_acc_probs", [])
@@ -2065,6 +2072,7 @@ class Baselines(Decoding):
                 next_k, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
                 self.args.gamma2 = next_k
                 self.small_draft_adapter.threshold = next_threshold
+                dra_overhead_time += time.time() - dra_start
 
             actual_gamma2 = x.shape[1] - prefix_len
 
@@ -2193,11 +2201,16 @@ class Baselines(Decoding):
                 x = torch.cat((x, next_tok), dim=1)
                 hidden_states = draft_model_cache.hidden_states
                 assert hidden_states is not None
+                
+                arp_start = time.time()
                 stop = adapter.predict(hidden_states)
+                arp_overhead_time += time.time() - arp_start
+                
                 if stop:
                     break
             
             if self.rl_adapter is not None:
+                dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_cloud
                 latency = comm_simulator.ntt_edge_cloud
                 acc_probs = getattr(self.draft_target_adapter, "step_acc_probs", [])
@@ -2207,6 +2220,7 @@ class Baselines(Decoding):
                 next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
                 self.args.gamma1 = next_k
                 self.draft_target_adapter.threshold = next_threshold
+                dra_overhead_time += time.time() - dra_start
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
@@ -2358,10 +2372,17 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+        metrics["arp_overhead_time"] = arp_overhead_time
+        metrics["dra_overhead_time"] = dra_overhead_time
+        
         if self.rl_adapter is not None:
+            dra_start = time.time()
             self.rl_adapter.save(metrics.get("throughput"))
+            metrics["dra_overhead_time"] += time.time() - dra_start
         if self.little_rl_adapter is not None:
+            dra_start = time.time()
             self.little_rl_adapter.save(metrics.get("throughput"))
+            metrics["dra_overhead_time"] += time.time() - dra_start
 
         return prefix, metrics
 

@@ -77,6 +77,8 @@ class DecodingMetrics(TypedDict):
     connect_times: dict
     accuracy: Optional[Any]
     queuing_time: int | float
+    arp_overhead_time: float
+    dra_overhead_time: float
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -106,6 +108,8 @@ def get_empty_metrics() -> DecodingMetrics:
         connect_times={"edge_end": 0, "cloud_end": 0, "edge_cloud": 0},
         accuracy=0,
         queuing_time=0.0,
+        arp_overhead_time=0.0,
+        dra_overhead_time=0.0,
     )
 
 
