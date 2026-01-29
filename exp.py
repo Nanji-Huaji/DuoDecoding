@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from enum import Enum
 
+from tqdm import tqdm
+
 
 class EvalDataset(str, Enum):
     mt_bench = "eval/eval_mt_bench_noeval.py"
@@ -91,8 +93,8 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --little_model {little_model} \
     --max_tokens {max_tokens} \
     --temp 0.0 \
-    --gamma1 4 \
-    --gamma2 6 \
+    --gamma1 5 \
+    --gamma2 5 \
     --edge_end_bandwidth {edge_end_bandwidth} \
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
@@ -412,7 +414,11 @@ def run_experiments_parallel(
         }
 
         # 收集结果
-        for future in as_completed(future_to_config):
+        for future in tqdm(
+            as_completed(future_to_config),
+            total=len(configs),
+            desc="Running Experiments",
+        ):
             config = future_to_config[future]
             try:
                 result = future.result()
@@ -602,7 +608,7 @@ config_to_run.append(
         draft_model=draft_model,
         target_model=target_model,
         little_model=little_model,
-        use_rl_adapter=False,
+        use_rl_adapter=True,
         disable_rl_update=True,
     )
 )
