@@ -144,6 +144,9 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         串行传输 token 和 prob 的 speculative decoding
@@ -350,6 +353,9 @@ class Baselines(Decoding):
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
 
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
+
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
@@ -403,6 +409,9 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
@@ -621,6 +630,9 @@ class Baselines(Decoding):
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
 
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
+
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
         end_event.record(stream=torch.cuda.current_stream())
@@ -673,6 +685,9 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
         Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
@@ -803,6 +818,9 @@ class Baselines(Decoding):
                     t, None, link_type="edge_cloud"
                 )  # 传输接受的token和新采样的token
 
+                if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                    break
+
                 continue
 
             is_accepted_last_step = False
@@ -878,6 +896,9 @@ class Baselines(Decoding):
             )  # 传输新采样的token
             prefix = torch.cat((prefix, t), dim=1)
 
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
+
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -920,6 +941,8 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 10,
         ntt_ms_edge_end: float = 1,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ):
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -1181,6 +1204,9 @@ class Baselines(Decoding):
             comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
             comm_simulator.transfer(t, None, "edge_end")
             # 同步
+            
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
@@ -1230,6 +1256,397 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    @Register.register_decoding("ceesd_w/o_arp")
+    @Register.register_decoding("ceesd_without_arp")
+    def ceesd_without_arp(
+        self,
+        prefix,
+        transfer_top_k=300,
+        use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
+        ntt_ms_edge_cloud: float = 0,
+        ntt_ms_edge_end: float = 0,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        # 不启用 adaptive head，但是要启用 rl agent（只修改 top-k），需要修改 rl agent 和 adapter 的互动行为，使之不报错
+        batch_delay = self.args.batch_delay
+        queuing_time = 0.0
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+        little_device = self.little_model.device
+        draft_device = self.draft_model.device
+        target_device = self.target_model.device
+        little_model_cache = KVCacheModel(
+            self.little_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        little_model_cache.vocab_size = self.vocab_size
+        draft_model_cache = KVCacheModel(
+            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        draft_model_cache.vocab_size = self.vocab_size
+        target_model_cache = KVCacheModel(
+            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+        )
+        target_model_cache.vocab_size = self.vocab_size
+
+        if use_precise_comm_sim:
+            comm_simulator = PreciseCommunicationSimulator(
+                bandwidth_hz=1e7,
+                channel_gain=1e-8,
+                send_power_watt=0.5,
+                noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+            )
+        else:
+            comm_simulator = CommunicationSimulator(
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.args.edge_end_bandwidth,
+                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                transfer_top_k=transfer_top_k,
+                dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
+            )
+
+        # Metrics tracking
+        little_model_forward_times = 0
+        draft_model_forward_times = 0
+        target_model_forward_times = 0
+        total_little_model_generated_tokens = 0
+        total_draft_model_generated_tokens = 0
+        total_little_model_accepted_tokens = 0
+        total_draft_model_accepted_tokens = 0
+        wall_time = 0
+
+        idx = 0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        current_tokens = prefix.clone()  # 用于计算生成token数
+
+        start_event.record(stream=torch.cuda.current_stream())
+
+        comm_simulator.transfer(
+            prefix, None, "edge_end"
+        )  # 将 prompt 传输到 edge
+
+        while prefix.shape[1] < max_tokens:
+
+            idx += 1
+            step_start_time = time.time()
+            prefix_len = prefix.shape[1]
+
+            # 第一层 speculative
+            edge_end_comm_start = comm_simulator.edge_end_comm_time
+
+            x = prefix.clone().to(little_device)
+            q = None
+            for _ in range(self.args.gamma2):
+                q = little_model_cache._forward_with_kvcache(x)
+                next_tok = sample(q)
+                x = torch.cat((x, next_tok), dim=1)
+            
+            if self.little_rl_adapter is not None:
+                bandwidth = comm_simulator.bandwidth_edge_end
+                latency = comm_simulator.ntt_edge_end
+                acc_probs = [] # No ARP head
+                probs = torch.softmax(q, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+                task_name = getattr(self, "task", "unknown")
+                next_k, _ = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                self.args.gamma2 = next_k
+
+            actual_gamma2 = x.shape[1] - prefix_len
+
+            _ = draft_model_cache.generate(x.to(draft_device), 1)
+
+            little_model_forward_times += actual_gamma2
+            draft_model_forward_times += 1
+            total_little_model_generated_tokens += actual_gamma2
+
+            n1: int = prefix_len + actual_gamma2 - 1
+
+            little_accepted_this_iter = 0
+            for i in range(actual_gamma2):
+                r = torch.rand(1, device=little_device)
+                j = x[:, prefix_len + i]
+
+                # 传输 token id 和 prob 用于 reject sampling
+                comm_simulator.transfer(
+                    j,
+                    little_model_cache._prob_history[:, prefix_len + i - 1, j],
+                    "edge_end",
+                )
+
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (
+                    little_model_cache._prob_history[:, prefix_len + i - 1, j]
+                ):
+                    comm_simulator.send_reject_message("edge_end")
+                    n1 = prefix_len + i - 1
+
+                    break
+
+                else:
+                    little_accepted_this_iter += 1
+
+            total_little_model_accepted_tokens += little_accepted_this_iter
+
+            if self.little_rl_adapter is not None:
+                step_end_time = time.time()
+                step_time = step_end_time - step_start_time
+                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                
+                # 去掉分子 +1
+                tps_part = little_accepted_this_iter / (step_time + step_comm_time + 1e-9)
+                reward = math.exp(min(tps_part, 100) / 20.0)
+                
+                # 平滑的幂次惩罚
+                if actual_gamma2 > 1:
+                    acc_rate = little_accepted_this_iter / actual_gamma2
+                    reward *= (acc_rate ** 2)
+                    
+                if not getattr(self.args, "disable_rl_update", False):
+                    self.little_rl_adapter.step(reward)
+
+            assert n1 >= prefix_len - 1, f"n1 {n1}, prefix_len {prefix_len}"
+            prefix = x[:, : n1 + 1]
+
+            little_model_cache.rollback(n1 + 1)
+
+            if n1 < prefix_len + actual_gamma2 - 1:
+                # reject someone, sample from the pos n1
+                rebuild_probs = comm_simulator.rebuild_full_probs(
+                    little_model_cache._prob_history[:, n1, : self.vocab_size]
+                )
+                little_model_cache._prob_history[:, n1, : self.vocab_size] = (
+                    rebuild_probs
+                )
+
+                comm_simulator.transfer(
+                    None,
+                    little_model_cache._prob_history[:, n1, : self.vocab_size],
+                    "edge_end",
+                    transfer_top_k is not None and transfer_top_k > 0,
+                    transfer_top_k,
+                )
+
+                t = sample(
+                    max_fn(
+                        draft_model_cache._prob_history[
+                            :, n1, : self.vocab_size
+                        ].to(little_device)
+                        - little_model_cache._prob_history[
+                            :, n1, : self.vocab_size
+                        ]
+                    )
+                )
+
+                draft_model_cache.rollback(n1 + 1)
+
+            else:
+                t = sample(
+                    draft_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(little_device)
+
+                draft_model_cache.rollback(n1 + 2)
+
+            # 传输索引
+            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
+            comm_simulator.transfer(t, None, "edge_end")
+
+            prefix = torch.cat((prefix, t), dim=1)
+            new_generated_token = prefix[:, prefix_len:]
+
+            # 第二层 speculative
+            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
+            step_start_time = time.time()
+
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
+
+            x = prefix.clone().to(draft_device)
+            q = None
+            for _ in range(self.args.gamma1):
+                q = draft_model_cache._forward_with_kvcache(x)
+                next_tok = sample(q)
+                x = torch.cat((x, next_tok), dim=1)
+            
+            if self.rl_adapter is not None:
+                bandwidth = comm_simulator.bandwidth_edge_cloud
+                latency = comm_simulator.ntt_edge_cloud
+                acc_probs = []
+                probs = torch.softmax(q, dim=-1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+                task_name = getattr(self, "task", "unknown")
+                next_k, _ = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                self.args.gamma1 = next_k
+
+            actual_gamma1 = x.shape[1] - prefix.shape[1]
+
+            queuing_time += batch_delay
+            _ = target_model_cache.generate(x.to(target_device), 1)
+
+            draft_model_forward_times += actual_gamma1
+            target_model_forward_times += 1
+            total_draft_model_generated_tokens += (
+                new_generated_token.shape[1] + actual_gamma1
+            )
+
+            n2: int = (
+                prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1
+            )
+            draft_accepted_this_iter = 0
+            for i in range(
+                new_generated_token.shape[1] + actual_gamma1,
+            ):
+                r = torch.rand(1, device=draft_device)
+                j = x[:, prefix_len + i]
+
+                # 传输 token id 和 prob 用于 reject sampling
+                comm_simulator.transfer(
+                    j,
+                    draft_model_cache._prob_history[:, prefix_len + i - 1, j],
+                    "edge_cloud",
+                )
+
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
+                    n2 = prefix_len + i - 1
+                    comm_simulator.send_reject_message("edge_cloud")
+                    break
+                else:
+                    draft_accepted_this_iter += 1
+            total_draft_model_accepted_tokens += draft_accepted_this_iter
+
+            if self.rl_adapter is not None:
+                step_end_time = time.time()
+                step_time = step_end_time - step_start_time
+                step_comm_time = comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                
+                # 去掉分子 +1
+                tps_part = draft_accepted_this_iter / (step_time + step_comm_time + 1e-9)
+                reward = math.exp(min(tps_part, 100) / 20.0)
+                
+                # 平滑的幂次惩罚
+                if actual_gamma1 > 1:
+                    acc_rate = draft_accepted_this_iter / actual_gamma1
+                    reward *= (acc_rate ** 2)
+                
+                if not getattr(self.args, "disable_rl_update", False):
+                    self.rl_adapter.step(reward)
+
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            prefix = x[:, : n2 + 1]
+            draft_model_cache.rollback(n2 + 1)
+            if n2 <= little_model_cache.current_length:
+                little_model_cache.rollback(n2 + 1)
+            if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
+
+                rebuild_probs = comm_simulator.rebuild_full_probs(
+                    draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                )
+                draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
+                    rebuild_probs
+                )
+
+                comm_simulator.transfer(
+                    None,
+                    draft_model_cache._prob_history[:, n2, : self.vocab_size],
+                    "edge_cloud",
+                    transfer_top_k is not None and transfer_top_k > 0,
+                    transfer_top_k,
+                )
+                t = sample(
+                    max_fn(
+                        target_model_cache._prob_history[
+                            :, n2, : self.vocab_size
+                        ].to(draft_device)
+                        - draft_model_cache._prob_history[
+                            :, n2, : self.vocab_size
+                        ]
+                    )
+                )
+                new_generated_token = prefix[:, prefix_len:]
+
+                target_model_cache.rollback(n2 + 1)
+
+            else:
+                t = sample(
+                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                ).to(draft_device)
+                new_generated_token = prefix[:, prefix_len:]
+
+                target_model_cache.rollback(n2 + 2)
+
+            prefix = torch.cat((prefix, t), dim=1)
+            # 传输索引
+            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+            comm_simulator.transfer(t, None, "edge_cloud")
+            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
+            comm_simulator.transfer(t, None, "edge_end")
+
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
+
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+
+        wall_time += elapsed_time
+        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        wall_time += (
+            comm_simulator.edge_cloud_comm_time
+            + comm_simulator.edge_end_comm_time
+        )
+
+        metrics = get_empty_metrics()
+        metrics["little_forward_times"] = little_model_forward_times
+        metrics["draft_forward_times"] = draft_model_forward_times
+        metrics["target_forward_times"] = target_model_forward_times
+        metrics["generated_tokens"] = generated_tokens
+        metrics["little_generated_tokens"] = total_little_model_generated_tokens
+        metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
+        metrics["little_accepted_tokens"] = total_little_model_accepted_tokens
+        metrics["draft_accepted_tokens"] = total_draft_model_accepted_tokens
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] = wall_time + queuing_time
+        metrics["throughput"] = (
+            metrics["generated_tokens"] / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
+        )
+        metrics["communication_time"] = (
+            comm_simulator.edge_cloud_comm_time
+            + comm_simulator.edge_end_comm_time
+        )
+        metrics["computation_time"] = elapsed_time
+        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
+        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
+        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
+
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
+        metrics["connect_times"] = comm_simulator.connect_times
+        if self.rl_adapter is not None:
+            self.rl_adapter.save(metrics.get("throughput"))
+        if self.little_rl_adapter is not None:
+            self.little_rl_adapter.save(metrics.get("throughput"))
+
+        return prefix, metrics
+
     @Register.register_decoding("adaptive_decoding")
     @torch.no_grad()
     def adaptive_decoding(
@@ -1240,6 +1657,8 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud: float = 0,
         ntt_ms_edge_end: float = 0,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
@@ -1496,6 +1915,9 @@ class Baselines(Decoding):
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
 
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
+
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
@@ -1540,6 +1962,8 @@ class Baselines(Decoding):
         use_stochastic_comm: bool = False,
         ntt_ms_edge_cloud=10,
         ntt_ms_edge_end=1,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         batch_delay = self.args.batch_delay
@@ -1893,6 +2317,9 @@ class Baselines(Decoding):
             comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
             comm_simulator.transfer(t, None, "edge_end")
             # 同步
+            
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()

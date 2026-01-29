@@ -70,7 +70,7 @@ class CollectConfidence(EvalMTBench):
         # Metrics tracking
         little_model_forward_times = 0
         draft_model_forward_times = 0
-        target_model_forward_times = 0
+        target_forward_times = 0
         total_little_model_generated_tokens = 0
         total_draft_model_generated_tokens = 0
         total_little_model_accepted_tokens = 0
@@ -256,7 +256,7 @@ class CollectConfidence(EvalMTBench):
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             draft_model_forward_times += actual_gamma1
-            target_model_forward_times += 1
+            target_forward_times += 1
             total_draft_model_generated_tokens += actual_gamma1
 
             n2: int = (
@@ -376,7 +376,7 @@ class CollectConfidence(EvalMTBench):
         metrics = get_empty_metrics()
         metrics["little_forward_times"] = little_model_forward_times
         metrics["draft_forward_times"] = draft_model_forward_times
-        metrics["target_forward_times"] = target_model_forward_times
+        metrics["target_forward_times"] = target_forward_times
         metrics["generated_tokens"] = generated_tokens
         metrics["little_generated_tokens"] = total_little_model_generated_tokens
         metrics["draft_generated_tokens"] = total_draft_model_generated_tokens

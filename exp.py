@@ -33,6 +33,8 @@ class EvalMode(str, Enum):
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
+    tridecoding = "tridecoding" # ablation of adaptive tridecoding
+    cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
 
 
@@ -68,6 +70,7 @@ class ExpConfig(TypedDict):
     little_model: str
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
+    max_tokens: int
 
 
 # Global Constants
@@ -86,10 +89,10 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
     --draft_model {draft_model} \
     --target_model {target_model} \
     --little_model {little_model} \
-    --max_tokens 128 \
+    --max_tokens {max_tokens} \
     --temp 0.0 \
     --gamma1 4 \
-    --gamma2 26 \
+    --gamma2 6 \
     --edge_end_bandwidth {edge_end_bandwidth} \
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
@@ -486,6 +489,7 @@ def create_config(
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
     num_shots: int = 3,
+    max_tokens: int = 128,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
@@ -508,6 +512,7 @@ def create_config(
         cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=transfer_top_k,
         num_shots=num_shots,
+        max_tokens=max_tokens,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
         exp_name=f"{eval_mode}/{eval_dataset.name}/{eval_mode}_{num_shots}shot_{timestamp}",
@@ -553,8 +558,8 @@ specified_pairs_qwen = [
 ]
 
 for little_model, draft_model, target_model in (llama_series,):
-    for dataset in EvalDataset:
-        for mode in EvalMode:
+    for dataset in (EvalDataset.mt_bench,):
+        for mode in [EvalMode.tridecoding, EvalMode.ceesd]:
             config = create_config(
                 eval_mode=mode,
                 ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
@@ -567,7 +572,7 @@ for little_model, draft_model, target_model in (llama_series,):
                 small_draft_threshold=0.8,
                 draft_target_threshold=0.6,
                 transfer_top_k=300,
-                num_shots=3,
+                num_shots=0,
                 eval_dataset=dataset,
                 draft_model=draft_model,
                 target_model=target_model,
@@ -576,6 +581,33 @@ for little_model, draft_model, target_model in (llama_series,):
                 disable_rl_update=True,
             )
             config_to_run.append(config)
+
+little_model, draft_model, target_model = llama_series
+
+config_to_run.append(
+    create_config(
+        eval_mode=EvalMode.cee_sd_without_arp,
+        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+        ntt_ms_edge_end=NTT_MS_EDGE_END,
+        use_precise=False,
+        use_stochastic_comm=True,
+        edge_end_bandwidth=563,
+        edge_cloud_bandwidth=34.6,
+        cloud_end_bandwidth=34.6,
+        small_draft_threshold=0.8,
+        draft_target_threshold=0.6,
+        transfer_top_k=300,
+        num_shots=0,
+        eval_dataset=EvalDataset.mt_bench,
+        draft_model=draft_model,
+        target_model=target_model,
+        little_model=little_model,
+        use_rl_adapter=False,
+        disable_rl_update=True,
+    )
+)
+
+
 
 if __name__ == "__main__":
     # 创建日志目录

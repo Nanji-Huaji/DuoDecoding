@@ -139,6 +139,22 @@ class Decoding(Register, ABC):
 
         self.vocab_size = -1
 
+    def _check_stopping_criteria(self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None) -> bool:
+        if not hasattr(self, "tokenizer") or self.tokenizer is None:
+            return False
+            
+        # Check for EOS
+        if (input_ids == self.tokenizer.eos_token_id).any():
+            return True
+            
+        # Check for stop sequences
+        if stop_sequences:
+            decoded_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+            for stop_seq in stop_sequences:
+                if decoded_text.endswith(stop_seq):
+                    return True
+        return False
+
     def load_model(self):
         # * load models according to different evaluation methods.
         self.color_print(
@@ -165,9 +181,12 @@ class Decoding(Register, ABC):
             
         elif self.args.eval_mode in [
             "sd",
+            "dsd",
+            "dssd",
             "dist_spec",
             "dist_split_spec",
             "uncertainty_decoding",
+            "cuhlm",
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
         ] and not ('70b' in self.args.target_model) :
@@ -194,16 +213,17 @@ class Decoding(Register, ABC):
                 device_map="balanced_low_0",
             ).eval()
 
-        elif self.args.eval_mode == "adaptive_tridecoding":
+        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp"]:
+            output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd"]
             self.little_model = loader(
                 self.args.little_model,
                 device_map="cuda:0",
-                output_hidden_states=True,
+                output_hidden_states=output_hidden_states,
             ).eval()
             self.draft_model = loader(
                 self.args.draft_model,
                 device_map="balanced_low_0",
-                output_hidden_states=True,
+                output_hidden_states=output_hidden_states,
             ).eval()
             self.target_model = loader(
                 self.args.target_model,
@@ -243,7 +263,11 @@ class Decoding(Register, ABC):
     @Register.register_decoding("small")
     @torch.inference_mode()
     def autoregressive_sampling(
-        self, prefix, **kwargs
+        self, 
+        prefix, 
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if self.args.eval_mode == "small":
             model = self.draft_model
@@ -276,6 +300,9 @@ class Decoding(Register, ABC):
             queuing_time += batch_delay
             x = model.generate(x, 1)
             target_forward_times += 1
+            
+            if use_early_stopping and self._check_stopping_criteria(x, stop_sequences):
+                break
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
@@ -298,7 +325,12 @@ class Decoding(Register, ABC):
     @Register.register_decoding("sd")
     @torch.inference_mode()
     def speculative_decoding(
-        self, prefix, transfer_top_k: int | None = 300
+        self, 
+        prefix, 
+        transfer_top_k: int | None = 300,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
@@ -432,6 +464,9 @@ class Decoding(Register, ABC):
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
+                
+            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+                break
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
