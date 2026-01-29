@@ -165,6 +165,7 @@ class EvalMTBench(Baselines):
             use_stochastic_comm=self.args.use_stochastic_comm,
             ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
             ntt_ms_edge_end=self.args.ntt_ms_edge_end,
+            use_early_stopping=self.args.use_early_stopping,
         )
 
         out_path = os.path.join(

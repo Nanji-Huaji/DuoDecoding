@@ -73,6 +73,7 @@ class ExpConfig(TypedDict):
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
     max_tokens: int
+    use_early_stopping: bool
 
 
 # Global Constants
@@ -165,6 +166,8 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_rl_adapter")
     if config.get("disable_rl_update", False):
         cmd = add_args(cmd, "disable_rl_update")
+    if config.get("use_early_stopping", False):
+        cmd = add_args(cmd, "use_early_stopping")
     if config.get("small_draft_acc_head_path"):
         cmd = add_args(
             cmd,
@@ -496,6 +499,7 @@ def create_config(
     transfer_top_k: int = 300,
     num_shots: int = 3,
     max_tokens: int = 128,
+    use_early_stopping: bool = False,
     eval_dataset: EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
@@ -531,6 +535,7 @@ def create_config(
         draft_model=draft_model,
         target_model=target_model,
         little_model=little_model,
+        use_early_stopping=use_early_stopping,
         small_draft_acc_head_path=small_draft_acc_head_path,
         draft_target_acc_head_path=draft_target_acc_head_path,
     )
@@ -585,6 +590,7 @@ for little_model, draft_model, target_model in (llama_series,):
                 little_model=little_model,
                 use_rl_adapter=True,
                 disable_rl_update=True,
+                use_early_stopping=True,
             )
             config_to_run.append(config)
 
@@ -610,6 +616,7 @@ config_to_run.append(
         little_model=little_model,
         use_rl_adapter=True,
         disable_rl_update=True,
+        use_early_stopping=True,
     )
 )
 

@@ -352,6 +352,11 @@ def parse_arguments():
         default=50e-3, # 50 ms
         help="The delay time added to each batch in seconds.",
     )
+    parser.add_argument(
+        "--use_early_stopping",
+        action="store_true",
+        help="Whether to use early stopping during decoding.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
