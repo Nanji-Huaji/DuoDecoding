@@ -46,6 +46,8 @@ model_acc_head_map = {
     "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
     "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
     "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
+    "qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
+    "qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
 }
 
 
@@ -568,9 +570,9 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
-for little_model, draft_model, target_model in (llama_series,):
-    for dataset in (EvalDataset.mt_bench,):
-        for mode in [EvalMode.tridecoding, EvalMode.ceesd]:
+for little_model, draft_model, target_model in (qwen_series,):
+    for dataset in EvalDataset:
+        for mode in EvalMode:
             config = create_config(
                 eval_mode=mode,
                 ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
@@ -593,32 +595,6 @@ for little_model, draft_model, target_model in (llama_series,):
                 use_early_stopping=True,
             )
             config_to_run.append(config)
-
-little_model, draft_model, target_model = llama_series
-
-config_to_run.append(
-    create_config(
-        eval_mode=EvalMode.cee_sd_without_arp,
-        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-        ntt_ms_edge_end=NTT_MS_EDGE_END,
-        use_precise=False,
-        use_stochastic_comm=True,
-        edge_end_bandwidth=563,
-        edge_cloud_bandwidth=34.6,
-        cloud_end_bandwidth=34.6,
-        small_draft_threshold=0.8,
-        draft_target_threshold=0.6,
-        transfer_top_k=300,
-        num_shots=0,
-        eval_dataset=EvalDataset.mt_bench,
-        draft_model=draft_model,
-        target_model=target_model,
-        little_model=little_model,
-        use_rl_adapter=True,
-        disable_rl_update=True,
-        use_early_stopping=True,
-    )
-)
 
 
 
