@@ -123,9 +123,10 @@ class EvalSpecbench(Decoding):
         return prompt
 
     def postprocess(self, input_text, output_text):
-        if output_text.startswith(self.tokenizer.bos_token):
+        bos_token = self.tokenizer.bos_token
+        if bos_token and output_text.startswith(bos_token):
             generation = output_text[
-                len(input_text) + len(self.tokenizer.bos_token) + 1 :
+                len(input_text) + len(bos_token) + 1 :
             ]  # tokenizer will add a '<s> ' at the beginning of the text.
         else:
             generation = output_text[len(input_text) :]
@@ -137,8 +138,10 @@ class EvalSpecbench(Decoding):
             "\nprint",
             "\nif",
             "\n```",
-            self.tokenizer.eos_token,
         ]
+        if self.tokenizer.eos_token:
+            stop_words.append(self.tokenizer.eos_token)
+
         for stop_word in stop_words:
             if stop_word in generation:
                 next_line = generation.index(stop_word)
