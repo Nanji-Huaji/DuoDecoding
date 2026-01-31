@@ -6,14 +6,27 @@ import os
 import signal
 import shutil
 import json
+import argparse
 import numpy as np
 from pathlib import Path
 from datetime import datetime
 
+# Model Series Definitions
+MODEL_SERIES = {
+    "llama": ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
+    "vicuna": ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
+    "qwen": ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
+}
+
 class TrainingManager:
-    def __init__(self, start_script="cmds/train_rl_mixed.sh", log_file="train_rl.log"):
+    def __init__(self, model_series_name="llama", start_script="cmds/train_rl_mixed.sh", log_file=None):
+        self.model_series_name = model_series_name
+        self.models = MODEL_SERIES.get(model_series_name)
+        if not self.models:
+            raise ValueError(f"Unknown model series: {model_series_name}")
+            
         self.start_script = start_script
-        self.log_file = log_file
+        self.log_file = log_file or f"train_rl_{model_series_name}.log"
         self.process = None
         
         # Convergence criteria
@@ -36,8 +49,12 @@ class TrainingManager:
         self.reward_history_main = []
         self.reward_history_little = []
         self.best_tps = 0.0
-        self.status_file = Path("checkpoints/training_status.json")
-        self.best_checkpoints_dir = Path("checkpoints/best")
+
+        # Suffix the model series name to the checkpoint directory
+        self.checkpoint_dir = Path(f"checkpoints_{model_series_name}")
+        self.status_file = self.checkpoint_dir / "training_status.json"
+        self.best_checkpoints_dir = self.checkpoint_dir / "best"
+        
         self.top_checkpoints = []
         self._load_existing_top_checkpoints()
 
@@ -85,7 +102,7 @@ class TrainingManager:
             
             print(f"[{datetime.now()}] 发现新的更优性能 (TPS: {tps_val:.3f})，正在保存到 {save_path}...")
             
-            checkpoint_dir = Path("checkpoints")
+            checkpoint_dir = self.checkpoint_dir
             files_to_copy = [
                 "rl_adapter_main.pth", "rl_adapter_main.pth.buffer",
                 "rl_adapter_little.pth", "rl_adapter_little.pth.buffer",
@@ -128,7 +145,10 @@ class TrainingManager:
 
     def prepare_checkpoints(self):
         """Migrate old single checkpoint to new dual checkpoint structure or verify existing ones."""
-        checkpoint_dir = Path("checkpoints")
+        checkpoint_dir = self.checkpoint_dir
+        if not checkpoint_dir.exists():
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            
         old_pth = checkpoint_dir / "rl_adapter.pth"
         old_buffer = checkpoint_dir / "rl_adapter.pth.buffer"
         
@@ -196,8 +216,13 @@ class TrainingManager:
         gpu_id = self.get_best_gpu()
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_id
+        
+        # Pass model series to training script
+        env["LITTLE_MODEL"] = self.models[0]
+        env["DRAFT_MODEL"] = self.models[1]
+        env["TARGET_MODEL"] = self.models[2]
             
-        print(f"[{datetime.now()}] Starting training: {self.start_script} (Env: 34.6Mbps / 0ms)")
+        print(f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: 34.6Mbps / 0ms)")
         
         with open(self.log_file, "w") as out:
             self.process = subprocess.Popen(
@@ -308,7 +333,12 @@ class TrainingManager:
             self.stop_training()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Auto Training Manager")
+    parser.add_argument("--model", type=str, default="llama", choices=["llama", "vicuna", "qwen"],
+                        help="Model series to train (llama, vicuna, qwen)")
+    args = parser.parse_args()
+
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    manager = TrainingManager(start_script="cmds/train_rl_mixed.sh", log_file="train_rl.log")
+    manager = TrainingManager(model_series_name=args.model, start_script="cmds/train_rl_mixed.sh")
     manager.run_manager()
 
