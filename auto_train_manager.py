@@ -37,6 +37,77 @@ class TrainingManager:
         self.reward_history_little = []
         self.best_tps = 0.0
         self.status_file = Path("checkpoints/training_status.json")
+        self.best_checkpoints_dir = Path("checkpoints/best")
+        self.top_checkpoints = []
+        self._load_existing_top_checkpoints()
+
+    def _load_existing_top_checkpoints(self):
+        """扫描 best 目录，填充 top_checkpoints 列表。"""
+        if not self.best_checkpoints_dir.exists():
+            return
+            
+        for folder in self.best_checkpoints_dir.iterdir():
+            if folder.is_dir() and folder.name.startswith("tps_"):
+                try:
+                    # 文件夹格式: tps_X.XXX_MMDD_HHMMSS
+                    parts = folder.name.split('_')
+                    tps = float(parts[1])
+                    self.top_checkpoints.append((tps, folder))
+                except (ValueError, IndexError):
+                    continue
+        
+        self.top_checkpoints.sort(key=lambda x: x[0], reverse=True)
+        # 确保只保留前三个（以防万一）
+        while len(self.top_checkpoints) > 3:
+            _, path = self.top_checkpoints.pop()
+            if path.exists():
+                shutil.rmtree(path)
+        
+        if self.top_checkpoints:
+            self.best_tps = self.top_checkpoints[0][0]
+
+    def save_best_checkpoint(self, tps_val):
+        """如果当前 TPS 是前三名之一，则保存检查点和训练状态。"""
+        if not self.best_checkpoints_dir.exists():
+            self.best_checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+        is_top = False
+        if len(self.top_checkpoints) < 3:
+            is_top = True
+        elif tps_val > min(self.top_checkpoints, key=lambda x: x[0])[0]:
+            is_top = True
+            
+        if is_top:
+            timestamp = datetime.now().strftime("%m%d_%H%M%S")
+            folder_name = f"tps_{tps_val:.3f}_{timestamp}"
+            save_path = self.best_checkpoints_dir / folder_name
+            save_path.mkdir(parents=True, exist_ok=True)
+            
+            print(f"[{datetime.now()}] 发现新的更优性能 (TPS: {tps_val:.3f})，正在保存到 {save_path}...")
+            
+            checkpoint_dir = Path("checkpoints")
+            files_to_copy = [
+                "rl_adapter_main.pth", "rl_adapter_main.pth.buffer",
+                "rl_adapter_little.pth", "rl_adapter_little.pth.buffer",
+                "training_status.json"
+            ]
+            
+            # 同步最新的训练状态
+            self.save_training_status()
+
+            for f_name in files_to_copy:
+                src = checkpoint_dir / f_name
+                if src.exists():
+                    shutil.copy(src, save_path / f_name)
+            
+            self.top_checkpoints.append((tps_val, save_path))
+            self.top_checkpoints.sort(key=lambda x: x[0], reverse=True)
+            
+            if len(self.top_checkpoints) > 3:
+                worst_tps, worst_path = self.top_checkpoints.pop()
+                print(f"[{datetime.now()}] 淘汰旧的检查点: {worst_path} (TPS: {worst_tps:.3f})")
+                if worst_path.exists():
+                    shutil.rmtree(worst_path)
 
     def save_training_status(self):
         """Saves TPS and Loss history to a JSON file for plotting."""
@@ -218,6 +289,8 @@ class TrainingManager:
                             self.tps_history.append(tps_val)
                             if tps_val > self.best_tps:
                                 self.best_tps = tps_val
+                            # 保存最优检查点逻辑
+                            self.save_best_checkpoint(tps_val)
                         
                         if tps_matches or loss_main or loss_little or reward_main or reward_little:
                             self.save_training_status()
