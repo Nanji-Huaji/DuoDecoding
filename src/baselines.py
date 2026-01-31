@@ -67,7 +67,7 @@ class Baselines(Decoding):
 
     def __init__(self, args):
         super().__init__(args)
-        self.load_acc_head()
+        # self.load_acc_head() # Moved to load_model
         if getattr(args, "use_rl_adapter", False):
             # 限制 Main RL Agent (Draft -> Target) 的阈值搜索空间为 0.0..0.4
             # 这里的阈值较低意味着对 Main Model 的拒绝预测更敏感
@@ -92,6 +92,10 @@ class Baselines(Decoding):
 
         self.task = "unknown" # This attribute should be set in the subclass
 
+    def load_model(self):
+        super().load_model()
+        self.load_acc_head()
+
     def load_acc_head(self):
         # Load acc head if adaptive method is used
         args = self.args
@@ -104,6 +108,8 @@ class Baselines(Decoding):
                 self.acc_head_path,
             )
             self.acc_head.eval()
+            if hasattr(self, "draft_model"):
+                self.acc_head.to(self.draft_model.device)
             self.adapter = DecodingAdapter(
                 self.acc_head, draft_target_threshold
             )
@@ -119,6 +125,8 @@ class Baselines(Decoding):
                 )
             )
             self.small_draft_acc_head.eval()
+            if hasattr(self, "little_model"):
+                self.small_draft_acc_head.to(self.little_model.device)
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
             self.draft_target_acc_head = (
                 AcceptancePredictionHead.from_pretrained(
@@ -126,6 +134,8 @@ class Baselines(Decoding):
                 )
             )
             self.draft_target_acc_head.eval()
+            if hasattr(self, "draft_model"):
+                self.draft_target_acc_head.to(self.draft_model.device)
             self.small_draft_adapter = DecodingAdapter(
                 self.small_draft_acc_head, small_draft_threshold
             )
@@ -1704,8 +1714,6 @@ class Baselines(Decoding):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        self.acc_head.to(draft_device)
-
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
 
@@ -2069,6 +2077,7 @@ class Baselines(Decoding):
             self.small_draft_adapter.reset_step()
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
+                assert adapter.device != torch.device("cpu")
                 q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
@@ -2217,6 +2226,7 @@ class Baselines(Decoding):
             self.draft_target_adapter.reset_step()
             for _ in range(self.args.gamma1):
                 adapter = self.draft_target_adapter
+                assert adapter.device != torch.device("cpu")
                 q = draft_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)

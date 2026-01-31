@@ -67,6 +67,10 @@ class DecodingAdapter:
     def device(self):
         return next(self.acc_head.parameters()).device
     
+    def to(self, device):
+        self.acc_head.to(device)
+        return self
+    
     @property
     def dtype(self):
         return next(self.acc_head.parameters()).dtype
