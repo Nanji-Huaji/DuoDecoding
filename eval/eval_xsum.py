@@ -283,10 +283,10 @@ class EvalXSum(Baselines):
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
-    def preprocess(self):
+    def preprocess(self, input_text):
         pass
 
-    def postprocess(self):
+    def postprocess(self, input_text, output_text):
         pass
 
 

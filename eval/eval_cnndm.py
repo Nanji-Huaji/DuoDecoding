@@ -90,6 +90,9 @@ class EvalCNNDM(Baselines):
             prompt = conv.get_prompt() + " "
         return prompt
 
+    def postprocess(self, input_text, output_text):
+        return output_text
+
     @torch.no_grad()
     def eval(self, total: int | None = 80):
         global decoding_metrics

@@ -23,20 +23,20 @@ from tqdm import tqdm
 
 
 class EvalDataset(str, Enum):
-    mt_bench = "eval/eval_mt_bench_noeval.py"
-    humaneval = "eval/eval_humaneval.py"
-    # cnndm = "eval/eval_cnndm.py"
-    # xsum = "eval/eval_xsum.py"
-    gsm8k = "eval/eval_gsm8k.py"
+    # mt_bench = "eval/eval_mt_bench.py"
+    # humaneval = "eval/eval_humaneval.py"
+    cnndm = "eval/eval_cnndm.py"
+    xsum = "eval/eval_xsum.py"
+    # gsm8k = "eval/eval_gsm8k.py"
 
 
 class EvalMode(str, Enum):
     autoregression = "large"
-    dssd = "dist_split_spec"
-    dsd = "dist_spec"
-    cuhlm = "uncertainty_decoding"
-    tridecoding = "tridecoding" # ablation of adaptive tridecoding
-    cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
+    # dssd = "dist_split_spec"
+    # dsd = "dist_spec"
+    # cuhlm = "uncertainty_decoding"
+    # tridecoding = "tridecoding" # ablation of adaptive tridecoding
+    # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
 
 
@@ -52,7 +52,7 @@ model_acc_head_map = {
 
 
 class ExpConfig(TypedDict):
-    CUDA_VISIBLE_DEVICES: Literal["0", "1"]
+    CUDA_VISIBLE_DEVICES: str | int
     eval_mode: str | EvalMode
     edge_end_bandwidth: int | float
     edge_cloud_bandwidth: int | float
@@ -490,7 +490,7 @@ def create_config(
     ntt_ms_edge_end: int | float = 0,
     use_precise: bool = True,
     use_stochastic_comm: bool = False,
-    CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
+    CUDA_VISIBLE_DEVICES: str | int = "0",
     use_rl_adapter: bool = False,
     disable_rl_update: bool = False,
     edge_end_bandwidth: int | float = 100,
@@ -502,7 +502,7 @@ def create_config(
     num_shots: int = 3,
     max_tokens: int = 128,
     use_early_stopping: bool = False,
-    eval_dataset: EvalDataset = EvalDataset.mt_bench,
+    eval_dataset: EvalDataset = EvalDataset.xsum,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
@@ -570,9 +570,13 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
-for little_model, draft_model, target_model in (qwen_series,):
+for little_model, draft_model, target_model in (
+    llama_series,
+    vicuna_series,
+    qwen_series,
+):
     for dataset in EvalDataset:
-        for mode in EvalMode:
+        for mode in (EvalMode.autoregression, EvalMode.ceesd):
             config = create_config(
                 eval_mode=mode,
                 ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
@@ -585,7 +589,8 @@ for little_model, draft_model, target_model in (qwen_series,):
                 small_draft_threshold=0.8,
                 draft_target_threshold=0.6,
                 transfer_top_k=300,
-                num_shots=0,
+                max_tokens=2048,
+                num_shots=8,
                 eval_dataset=dataset,
                 draft_model=draft_model,
                 target_model=target_model,
@@ -595,7 +600,6 @@ for little_model, draft_model, target_model in (qwen_series,):
                 use_early_stopping=True,
             )
             config_to_run.append(config)
-
 
 
 if __name__ == "__main__":

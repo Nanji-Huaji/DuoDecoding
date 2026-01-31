@@ -105,7 +105,7 @@ class EvalGSM8K(Baselines):
         
         return pred_ans == gt_ans
 
-    def postprocess(self, output_text):
+    def postprocess(self, input_text, output_text):
         return output_text.strip()
 
     @torch.no_grad()

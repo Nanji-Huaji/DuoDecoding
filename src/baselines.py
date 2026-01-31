@@ -179,12 +179,15 @@ class Baselines(Decoding):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -298,19 +301,19 @@ class Baselines(Decoding):
             if n < prefix_len + current_gamma - 1:
                 # reject someone, sample from the pos n
 
-                if transfer_top_k is not None and transfer_top_k > 0:
-                    rebuild_probs = comm_simulator._apply_top_k_compression(
-                        approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ],
-                        transfer_top_k,
-                    )
-                    rebuild_probs = comm_simulator.rebuild_full_probs(
-                        rebuild_probs
-                    )
-                    approx_model_cache._prob_history[
-                        :, n, : self.vocab_size
-                    ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
+                # if transfer_top_k is not None and transfer_top_k > 0:
+                #     rebuild_probs = comm_simulator._apply_top_k_compression(
+                #         approx_model_cache._prob_history[
+                #             :, n, : self.vocab_size
+                #         ],
+                #         transfer_top_k,
+                #     )
+                #     rebuild_probs = comm_simulator.rebuild_full_probs(
+                #         rebuild_probs
+                #     )
+                #     approx_model_cache._prob_history[
+                #         :, n, : self.vocab_size
+                #     ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
 
                 # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
                 comm_simulator.transfer(
@@ -516,15 +519,15 @@ class Baselines(Decoding):
 
             n = prefix_len + current_gamma - 1
 
-            if transfer_top_k is not None and transfer_top_k > 0:
-                approx_model_cache._prob_history[
-                    :, -(1 + current_gamma) : -1, :
-                ] = comm_simulator.compress_rebuild_probs(
-                    approx_model_cache._prob_history[
-                        :, -(1 + current_gamma) : -1, :
-                    ],
-                    transfer_top_k,
-                )
+            # if transfer_top_k is not None and transfer_top_k > 0:
+            #     approx_model_cache._prob_history[
+            #         :, -(1 + current_gamma) : -1, :
+            #     ] = comm_simulator.compress_rebuild_probs(
+            #         approx_model_cache._prob_history[
+            #             :, -(1 + current_gamma) : -1, :
+            #         ],
+            #         transfer_top_k,
+            #     )
 
             comm_simulator.transfer(
                 None,
@@ -716,12 +719,15 @@ class Baselines(Decoding):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -835,10 +841,10 @@ class Baselines(Decoding):
                 current_probs, vocab_size
             )
 
-            rebuild_probs = comm_simulator.rebuild_full_probs(compressed_prob)
-            approx_model_cache._prob_history[:, -1, : self.vocab_size] = (
-                rebuild_probs  # 完成概率的重建
-            )
+            # rebuild_probs = comm_simulator.rebuild_full_probs(compressed_prob)
+            # approx_model_cache._prob_history[:, -1, : self.vocab_size] = (
+            #     rebuild_probs  # 完成概率的重建
+            # )
 
             r = torch.rand(1, device=draft_device)
             j = x[:, prefix_len]
@@ -949,16 +955,20 @@ class Baselines(Decoding):
         little_device = self.little_model.device
         draft_device = self.draft_model.device
         target_device = self.target_model.device
+
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -1063,12 +1073,12 @@ class Baselines(Decoding):
 
             if n1 < prefix_len + self.args.gamma2 - 1:
                 # reject someone, sample from the pos n1
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    little_model_cache._prob_history[:, n1, : self.vocab_size]
-                )
-                little_model_cache._prob_history[:, n1, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     little_model_cache._prob_history[:, n1, : self.vocab_size]
+                # )
+                # little_model_cache._prob_history[:, n1, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
@@ -1161,12 +1171,12 @@ class Baselines(Decoding):
                 little_model_cache.rollback(n2 + 1)
             if n2 < prefix_len + new_generated_token.shape[1] + self.args.gamma1 - 1:
 
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size]
-                )
-                draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                # )
+                # draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
@@ -1277,16 +1287,20 @@ class Baselines(Decoding):
         little_device = self.little_model.device
         draft_device = self.draft_model.device
         target_device = self.target_model.device
+
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -1423,12 +1437,12 @@ class Baselines(Decoding):
 
             if n1 < prefix_len + actual_gamma2 - 1:
                 # reject someone, sample from the pos n1
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    little_model_cache._prob_history[:, n1, : self.vocab_size]
-                )
-                little_model_cache._prob_history[:, n1, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     little_model_cache._prob_history[:, n1, : self.vocab_size]
+                # )
+                # little_model_cache._prob_history[:, n1, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
@@ -1557,12 +1571,12 @@ class Baselines(Decoding):
                 little_model_cache.rollback(n2 + 1)
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
 
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size]
-                )
-                draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                # )
+                # draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
@@ -1692,12 +1706,15 @@ class Baselines(Decoding):
 
         self.acc_head.to(draft_device)
 
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -1860,19 +1877,19 @@ class Baselines(Decoding):
             if n < prefix_len + current_gamma - 1:
                 # reject someone, sample from the pos n
 
-                if transfer_top_k is not None and transfer_top_k > 0:
-                    rebuild_probs = comm_simulator._apply_top_k_compression(
-                        approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ],
-                        transfer_top_k,
-                    )
-                    rebuild_probs = comm_simulator.rebuild_full_probs(
-                        rebuild_probs
-                    )
-                    approx_model_cache._prob_history[
-                        :, n, : self.vocab_size
-                    ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
+                # if transfer_top_k is not None and transfer_top_k > 0:
+                #     rebuild_probs = comm_simulator._apply_top_k_compression(
+                #         approx_model_cache._prob_history[
+                #             :, n, : self.vocab_size
+                #         ],
+                #         transfer_top_k,
+                #     )
+                #     rebuild_probs = comm_simulator.rebuild_full_probs(
+                #         rebuild_probs
+                #     )
+                #     approx_model_cache._prob_history[
+                #         :, n, : self.vocab_size
+                #     ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
 
                 # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
                 comm_simulator.transfer(
@@ -1972,16 +1989,20 @@ class Baselines(Decoding):
         little_device = self.little_model.device
         draft_device = self.draft_model.device
         target_device = self.target_model.device
+
+        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
+        draft_top_k = transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0) else self.args.top_k
+
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.target_model, self.args.temp, 0, 0 # 目标模型不压缩
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -2137,12 +2158,12 @@ class Baselines(Decoding):
 
             if n1 < prefix_len + actual_gamma2 - 1:
                 # reject someone, sample from the pos n1
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    little_model_cache._prob_history[:, n1, : self.vocab_size]
-                )
-                little_model_cache._prob_history[:, n1, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     little_model_cache._prob_history[:, n1, : self.vocab_size]
+                # )
+                # little_model_cache._prob_history[:, n1, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
@@ -2288,12 +2309,12 @@ class Baselines(Decoding):
                 little_model_cache.rollback(n2 + 1)
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
 
-                rebuild_probs = comm_simulator.rebuild_full_probs(
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size]
-                )
-                draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
-                    rebuild_probs
-                )
+                # rebuild_probs = comm_simulator.rebuild_full_probs(
+                #     draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                # )
+                # draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
+                #     rebuild_probs
+                # )
 
                 comm_simulator.transfer(
                     None,
