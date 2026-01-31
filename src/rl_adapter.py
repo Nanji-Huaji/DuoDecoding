@@ -215,16 +215,24 @@ class RLNetworkAdapter:
         self.last_action = None
         self.last_reward = None
         
-        self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
-        self.best_model_path = os.path.join("checkpoints", f"{model_name}_best.pth")
+        # 支持直接传入 .pth 路径或使用默认格式
+        if model_name.endswith(".pth"):
+            self.model_path = model_name
+            self.best_model_path = model_name
+        else:
+            self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
+            self.best_model_path = os.path.join("checkpoints", f"{model_name}_best.pth")
+        
         self.best_tps = -1.0
         
         os.makedirs("checkpoints", exist_ok=True)
         # 实验评估时默认加载最优模型
         if os.path.exists(self.best_model_path):
             self.agent.load(self.best_model_path)
-        else:
+        elif os.path.exists(self.model_path):
             self.agent.load(self.model_path)
+        else:
+            print(f"[{model_name}] No checkpoint found at {self.model_path} or {self.best_model_path}")
 
     def _get_current_feature_vector(self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name):
         norm_bw = min(bandwidth_mbps / self.max_bandwidth, 1.0)

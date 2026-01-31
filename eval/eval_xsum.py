@@ -35,24 +35,12 @@ class EvalXSum(Baselines):
 
         self.task = "xsum"
         
-        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
-            self.args.target_model
-        ):
-            self.model_id = "llama-2-chat"
-        elif "Llama-2" in str(self.args.target_model):
-            self.model_id = "vicuna"
-        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(
-            self.args.target_model
-        ):
-            self.model_id = "vicuna"
-        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
-            self.args.target_model
-        ):
+        if "Llama-3.1" in str(self.args.target_model) or "Llama-3.1" in str(self.args.draft_model):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
-            self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
+        elif "Llama-2" in str(self.args.target_model):
+            self.model_id = "llama-2-chat"
         else:
             self.model_id = "vicuna"
 
@@ -131,10 +119,13 @@ class EvalXSum(Baselines):
             article = str(item["document"])
             # qs = f"Summarize the following article:\n\n{article[:1000]}"
             prompt = self.preprocess(article[:1000])
+            if prompt is None:
+                continue
+
             if self.model_id == "llama-3.1" or self.model_id == "qwen":
-                input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
+                input_ids = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt").input_ids
             else:
-                input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
+                input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
             
             input_ids = input_ids.to(self.accelerator.device)
             decoding(input_ids)
@@ -170,11 +161,13 @@ class EvalXSum(Baselines):
                 seed_everything(self.seed)
 
                 prompt = self.preprocess(article[:4000])
+                if prompt is None:
+                    continue
 
                 if self.model_id == "llama-3.1" or self.model_id == "qwen":
-                    input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
+                    input_ids = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt").input_ids
                 else:
-                    input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
+                    input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
 
                 input_ids = input_ids.to(self.accelerator.device)
 

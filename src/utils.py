@@ -342,6 +342,18 @@ def parse_arguments():
         help="Whether to use RL adapter for dynamic k selection.",
     )
     parser.add_argument(
+        "--main_rl_path",
+        type=str,
+        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_main.pth",
+        help="The path of the main RL adapter model.",
+    )
+    parser.add_argument(
+        "--little_rl_path",
+        type=str,
+        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_little.pth",
+        help="The path of the little RL adapter model.",
+    )
+    parser.add_argument(
         "--disable_rl_update",
         action="store_true",
         help="Whether to disable RL adapter update (training).",

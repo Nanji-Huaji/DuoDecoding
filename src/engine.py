@@ -147,8 +147,8 @@ class Decoding(Register, ABC):
         if not hasattr(self, "tokenizer") or self.tokenizer is None:
             return False
             
-        # Check for EOS
-        if (input_ids == self.tokenizer.eos_token_id).any():
+        # Check for EOS at the last position only
+        if input_ids.shape[1] > 0 and input_ids[0, -1].item() == self.tokenizer.eos_token_id:
             return True
             
         # Check for stop sequences

@@ -74,7 +74,7 @@ class Baselines(Decoding):
             main_thresholds = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]
             self.rl_adapter = RLNetworkAdapter(
                 args, 
-                model_name="rl_adapter_main", 
+                model_name=getattr(args, "main_rl_path", "checkpoints/best/tps_20.330_0131_084912/rl_adapter_main.pth"), 
                 threshold_candidates=main_thresholds
             )
             
@@ -83,7 +83,7 @@ class Baselines(Decoding):
             little_thresholds = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
             self.little_rl_adapter = RLNetworkAdapter(
                 args, 
-                model_name="rl_adapter_little", 
+                model_name=getattr(args, "little_rl_path", "checkpoints/best/tps_20.330_0131_084912/rl_adapter_little.pth"), 
                 threshold_candidates=little_thresholds
             )
         else:
