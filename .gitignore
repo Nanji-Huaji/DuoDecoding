@@ -57,3 +57,6 @@ upload.py
 scan_threshold.py
 plot_thresholds_20260117.ipynb
 生成目标.md
+vicuna_scan.json
+vicuna-0shot.json
+checkpoints/training_status.json
