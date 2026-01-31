@@ -44,6 +44,7 @@ class EvalMixed(Baselines):
 
     def load_data(self):
         """实现抽象方法：一次性加载所有任务的数据集"""
+        print(">>> Loading datasets...")
         # 1. MT-Bench
         try:
             mt_data = []
@@ -58,6 +59,7 @@ class EvalMixed(Baselines):
             self.all_data["mt_bench"] = []
 
         # 2. GSM8K
+        print(">>> Loading GSM8K (this may take a while if downloading)...")
         try:
             ds = load_dataset("gsm8k", "main", split="test")
             self.all_data["gsm8k"] = [dict(item) for item in ds]

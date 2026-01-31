@@ -18,6 +18,18 @@ MODEL_SERIES = {
     "qwen": ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
 }
 
+MODEL_ACC_HEAD_MAP = {
+    "llama-68m": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3", # Fallback
+    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+    "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
+    "vicuna-68m": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3", # Fallback
+    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
+    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
+    "qwen/Qwen3-0.6B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3", # Fallback
+    "qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
+    "qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
+}
+
 class TrainingManager:
     def __init__(self, model_series_name="llama", start_script="cmds/train_rl_mixed.sh", log_file=None):
         self.model_series_name = model_series_name
@@ -37,11 +49,11 @@ class TrainingManager:
 
         # Patterns
         self.tps_pattern = re.compile(r"Average Generation Speed: ([\d\.]+) tokens/s")
-        # 支持区分 main 和 little agent
-        self.loss_pattern_main = re.compile(r"\[rl_adapter_main\] Step: \d+, Loss: ([\d\.]+)")
-        self.loss_pattern_little = re.compile(r"\[rl_adapter_little\] Step: \d+, Loss: ([\d\.]+)")
-        self.reward_pattern_main = re.compile(r"\[rl_adapter_main\] Step: \d+, .*Reward: ([\d\.]+)")
-        self.reward_pattern_little = re.compile(r"\[rl_adapter_little\] Step: \d+, .*Reward: ([\d\.]+)")
+        # 支持区分 main 和 little agent，增加对路径形式名称的兼容性
+        self.loss_pattern_main = re.compile(r"\[.*rl_adapter_main.*\] Step: \d+, Loss: ([\d\.]+)")
+        self.loss_pattern_little = re.compile(r"\[.*rl_adapter_little.*\] Step: \d+, Loss: ([\d\.]+)")
+        self.reward_pattern_main = re.compile(r"\[.*rl_adapter_main.*\] Step: \d+, .*Reward: ([\d\.]+)")
+        self.reward_pattern_little = re.compile(r"\[.*rl_adapter_little.*\] Step: \d+, .*Reward: ([\d\.]+)")
         
         self.tps_history = []
         self.loss_history_main = []
@@ -56,6 +68,33 @@ class TrainingManager:
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
         
         self.top_checkpoints = []
+        
+        # 加载之前的训练状态 (如果有)
+        if self.status_file.exists():
+            try:
+                with open(self.status_file, "r") as f:
+                    status = json.load(f)
+                    
+                    # 严格校验模型系列
+                    saved_series = status.get("model_series")
+                    if saved_series and saved_series != self.model_series_name:
+                        print(f"[{datetime.now()}] 错误: 发现不匹配的训练状态!")
+                        print(f"[{datetime.now()}] 路径 {self.status_file} 中的模型为 {saved_series}，但当前请求为 {self.model_series_name}。")
+                        print(f"[{datetime.now()}] 请手动清理或移动 {self.checkpoint_dir} 目录。")
+                        sys.exit(1)
+                        
+                    self.best_tps = status.get("best_tps", 0.0)
+                    self.tps_history = status.get("tps_history", [])
+                    self.loss_history_main = status.get("loss_history_main", [])
+                    self.loss_history_little = status.get("loss_history_little", [])
+                    self.reward_history_main = status.get("reward_history_main", [])
+                    self.reward_history_little = status.get("reward_history_little", [])
+                    print(f"[{datetime.now()}] 加载了现有的训练状态。当前最佳 TPS: {self.best_tps:.3f}")
+            except SystemExit:
+                sys.exit(1)
+            except Exception as e:
+                print(f"[{datetime.now()}] 加载训练状态失败: {e}")
+
         self._load_existing_top_checkpoints()
 
     def _load_existing_top_checkpoints(self):
@@ -65,8 +104,27 @@ class TrainingManager:
             
         for folder in self.best_checkpoints_dir.iterdir():
             if folder.is_dir() and folder.name.startswith("tps_"):
+                # 1. 首先通过文件夹名后缀进行初步筛选
+                if not folder.name.endswith(f"_{self.model_series_name}"):
+                    continue
+                
+                # 2. 进一步检查文件夹内的 training_status.json (如果有的话)
+                status_file = folder / "training_status.json"
+                if status_file.exists():
+                    try:
+                        with open(status_file, "r") as f:
+                            status = json.load(f)
+                        # 如果记录了模型系列，则必须匹配
+                        if "model_series" in status and status["model_series"] != self.model_series_name:
+                            print(f"[{datetime.now()}] 警告: 检查点 {folder.name} 的 model_series ({status['model_series']}) 与当前设置 ({self.model_series_name}) 不符，已忽略。")
+                            continue
+                    except Exception as e:
+                        print(f"[{datetime.now()}] 读取 {status_file} 失败: {e}")
+                        # 如果读取失败但文件夹名对得上，暂时保留还是跳过？
+                        # 为了“严格”，我们在这里保持谨慎，如果不确定就不加载
+                
                 try:
-                    # 文件夹格式: tps_X.XXX_MMDD_HHMMSS
+                    # 文件夹格式: tps_X.XXX_MMDD_HHMMSS_modelname
                     parts = folder.name.split('_')
                     tps = float(parts[1])
                     self.top_checkpoints.append((tps, folder))
@@ -96,7 +154,7 @@ class TrainingManager:
             
         if is_top:
             timestamp = datetime.now().strftime("%m%d_%H%M%S")
-            folder_name = f"tps_{tps_val:.3f}_{timestamp}"
+            folder_name = f"tps_{tps_val:.3f}_{timestamp}_{self.model_series_name}"
             save_path = self.best_checkpoints_dir / folder_name
             save_path.mkdir(parents=True, exist_ok=True)
             
@@ -130,6 +188,7 @@ class TrainingManager:
         """Saves TPS and Loss history to a JSON file for plotting."""
         status = {
             "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model_series": self.model_series_name,
             "best_tps": self.best_tps,
             "tps_history": self.tps_history,
             "loss_history_main": self.loss_history_main,
@@ -216,11 +275,20 @@ class TrainingManager:
         gpu_id = self.get_best_gpu()
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_id
+        env["PYTHONUNBUFFERED"] = "1"
         
         # Pass model series to training script
+        env["MODEL_SERIES_NAME"] = self.model_series_name
         env["LITTLE_MODEL"] = self.models[0]
         env["DRAFT_MODEL"] = self.models[1]
         env["TARGET_MODEL"] = self.models[2]
+
+        env["MAIN_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_main.pth")
+        env["LITTLE_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_little.pth")
+
+        env["ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
+        env["SMALL_DRAFT_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[1], "")
+        env["DRAFT_TARGET_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
             
         print(f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: 34.6Mbps / 0ms)")
         
@@ -268,11 +336,27 @@ class TrainingManager:
         return relative_change < self.stagnation_threshold
 
     def clean_stale_processes(self):
-        """Cleanup old processes."""
-        print(f"[{datetime.now()}] Cleaning up environment...")
+        """Cleanup old processes related to THIS model series only."""
+        print(f"[{datetime.now()}] Cleaning up existing processes for {self.model_series_name}...")
         try:
-            subprocess.run("pkill -9 -f 'eval_mt_bench|eval_gsm8k|eval_cnndm|eval_xsum|eval_humaneval|accelerate'", shell=True)
-            time.sleep(2)
+            # 只针对当前模型系列相关的标记进行清理，避免干扰正在运行的其他模型训练
+            # 我们通过匹配命令行中的模型参数来定位进程
+            patterns = []
+            if self.model_series_name == "llama":
+                patterns = ["llama-68m", "tiny-llama-1.1b", "Llama-2-13b"]
+            elif self.model_series_name == "vicuna":
+                patterns = ["vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"]
+            elif self.model_series_name == "qwen":
+                patterns = ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-14B"]
+
+            for p in patterns:
+                # 使用 pkill -f 匹配包含特定模型路径的进程
+                # 这样可以精准杀掉当前系列的训练进程，而不会误杀其他系列的进程
+                subprocess.run(f"pkill -9 -f '{p}'", shell=True)
+            
+            # 同时也清理属于当前系列的评估脚本（如果有的话）
+            # 虽然 eval_mixed 会随机采样，但它启动时参数里会有对应的模型名
+            time.sleep(1)
         except:
             pass
 
@@ -283,8 +367,11 @@ class TrainingManager:
         last_pos = 0
         try:
             while True:
-                if self.process.poll() is not None:
-                    print(f"[{datetime.now()}] Training process exited (Code: {self.process.returncode})")
+                poll_result = self.process.poll()
+                if poll_result is not None:
+                    print(f"[{datetime.now()}] Training process exited (Code: {poll_result})")
+                    # 重要：即使进程退出了，也要运行一次停止逻辑来清理可能残留的子进程
+                    self.stop_training()
                     break
                 
                 try:
@@ -319,6 +406,11 @@ class TrainingManager:
                         
                         if tps_matches or loss_main or loss_little or reward_main or reward_little:
                             self.save_training_status()
+                            # 定期将最新状态打印到终端，让用户看到进度
+                            if reward_main:
+                                print(f"   [Progress] Step: {len(self.reward_history_main)} | Main Reward: {self.reward_history_main[-1]:.4f} | Little Reward: {self.reward_history_little[-1] if self.reward_history_little else 0:.4f}")
+                            elif tps_matches:
+                                print(f"   [Progress] Step: {len(self.tps_history)} | Latest TPS: {tps_matches[-1]}")
                             
                         for val in tps_matches:
                             if self.check_convergence():
@@ -331,6 +423,10 @@ class TrainingManager:
         except KeyboardInterrupt:
             print("\nStopped by user.")
             self.stop_training()
+        finally:
+            # 最终安全保障
+            if self.process and self.process.poll() is None:
+                self.stop_training()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto Training Manager")

@@ -60,3 +60,9 @@ plot_thresholds_20260117.ipynb
 vicuna_scan.json
 vicuna-0shot.json
 checkpoints/training_status.json
+
+checkpoints/archived
+
+checkpoints_qwen
+
+checkpoints_vicuna

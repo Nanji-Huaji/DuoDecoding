@@ -152,12 +152,16 @@ class DDQNAgent:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def save(self, path):
+        # 尝试获取模型系列名称，用于校验
+        model_series = os.environ.get("MODEL_SERIES_NAME", "unknown")
+        
         torch.save({
             'policy_net': self.policy_net.state_dict(),
             'target_net': self.target_net.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'epsilon': self.epsilon,
-            'update_count': self.update_count
+            'update_count': self.update_count,
+            'model_series': model_series
         }, path)
         buffer_path = path + ".buffer"
         try:
@@ -170,12 +174,21 @@ class DDQNAgent:
         if os.path.exists(path):
             try:
                 checkpoint = torch.load(path, map_location=self.device)
+                
+                # 严格校验模型系列
+                current_series = os.environ.get("MODEL_SERIES_NAME")
+                saved_series = checkpoint.get('model_series')
+                if current_series and saved_series and saved_series != "unknown" and saved_series != current_series:
+                    print(f"CRITICAL WARNING: Checkpoint at {path} belongs to model series '{saved_series}', but current environment is '{current_series}'!")
+                    # 为了向后兼容和避免不必要的崩溃，我们在这里默认只打印警告。
+                    # 如果需要极其严格，可以 raise ValueError。
+                
                 self.policy_net.load_state_dict(checkpoint['policy_net'])
                 self.target_net.load_state_dict(checkpoint['target_net'])
                 self.optimizer.load_state_dict(checkpoint['optimizer'])
                 self.epsilon = checkpoint['epsilon']
                 self.update_count = checkpoint.get('update_count', 0)
-                print(f"Loaded LSTM-RL agent from {path}, steps: {self.update_count}")
+                print(f"Loaded LSTM-RL agent from {path}, series: {saved_series}, steps: {self.update_count}")
             except Exception as e:
                 print(f"Failed to load checkpoint: {e}. Starting fresh.")
 
@@ -200,12 +213,23 @@ class RLNetworkAdapter:
         self.threshold_candidates = threshold_candidates if threshold_candidates is not None else THRESHOLD_CANDIDATES
         self.action_dim = len(self.k_candidates) * len(self.threshold_candidates)
         
+        # Determine agent name and checkpoint paths
+        if model_name.endswith(".pth"):
+            self.model_path = model_name
+            self.best_model_path = model_name
+            # Provide a cleaner name for logging that matches auto_train_manager regex
+            agent_name = os.path.basename(model_name).replace(".pth", "")
+        else:
+            self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
+            self.best_model_path = os.path.join("checkpoints", f"{model_name}_best.pth")
+            agent_name = model_name
+
         self.agent = DDQNAgent(
             feature_dim=self.feature_dim, 
             action_dim=self.action_dim, 
             seq_len=self.seq_len,
             device=device,
-            name=model_name
+            name=agent_name
         )
         
         self.max_bandwidth = 1000.0 
@@ -215,24 +239,20 @@ class RLNetworkAdapter:
         self.last_action = None
         self.last_reward = None
         
-        # 支持直接传入 .pth 路径或使用默认格式
-        if model_name.endswith(".pth"):
-            self.model_path = model_name
-            self.best_model_path = model_name
-        else:
-            self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
-            self.best_model_path = os.path.join("checkpoints", f"{model_name}_best.pth")
-        
         self.best_tps = -1.0
         
-        os.makedirs("checkpoints", exist_ok=True)
+        # Ensure the directory for model_path exists
+        model_dir = os.path.dirname(self.model_path)
+        if model_dir:
+            os.makedirs(model_dir, exist_ok=True)
+            
         # 实验评估时默认加载最优模型
         if os.path.exists(self.best_model_path):
             self.agent.load(self.best_model_path)
         elif os.path.exists(self.model_path):
             self.agent.load(self.model_path)
         else:
-            print(f"[{model_name}] No checkpoint found at {self.model_path} or {self.best_model_path}")
+            print(f"[{agent_name}] No checkpoint found at {self.model_path} or {self.best_model_path}")
 
     def _get_current_feature_vector(self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name):
         norm_bw = min(bandwidth_mbps / self.max_bandwidth, 1.0)

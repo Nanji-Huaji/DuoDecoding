@@ -23,18 +23,18 @@ from tqdm import tqdm
 
 
 class EvalDataset(str, Enum):
-    # mt_bench = "eval/eval_mt_bench.py"
-    # humaneval = "eval/eval_humaneval.py"
-    cnndm = "eval/eval_cnndm.py"
-    xsum = "eval/eval_xsum.py"
-    # gsm8k = "eval/eval_gsm8k.py"
+    mt_bench = "eval/eval_mt_bench_noeval.py"
+    humaneval = "eval/eval_humaneval.py"
+    # cnndm = "eval/eval_cnndm.py"
+    # xsum = "eval/eval_xsum.py"
+    gsm8k = "eval/eval_gsm8k.py"
 
 
 class EvalMode(str, Enum):
     autoregression = "large"
-    # dssd = "dist_split_spec"
-    # dsd = "dist_spec"
-    # cuhlm = "uncertainty_decoding"
+    dssd = "dist_split_spec"
+    dsd = "dist_spec"
+    cuhlm = "uncertainty_decoding"
     # tridecoding = "tridecoding" # ablation of adaptive tridecoding
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
@@ -74,6 +74,8 @@ class ExpConfig(TypedDict):
     little_model: str
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
+    main_rl_path: str
+    little_rl_path: str
     max_tokens: int
     use_early_stopping: bool
 
@@ -148,6 +150,18 @@ def get_file_path(exp_name: str) -> str:
     return ""
 
 
+def get_model_series(model_name: str) -> str:
+    """根据模型名称识别所属系列"""
+    name = model_name.lower()
+    if "llama" in name:
+        return "llama"
+    elif "vicuna" in name:
+        return "vicuna"
+    elif "qwen" in name:
+        return "qwen"
+    return "unknown"
+
+
 def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
     """运行实验并重定向日志"""
     # 创建日志目录
@@ -181,6 +195,18 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             cmd,
             "draft_target_acc_head_path",
             config["draft_target_acc_head_path"],
+        )
+    if config.get("main_rl_path"):
+        cmd = add_args(
+            cmd,
+            "main_rl_path",
+            config["main_rl_path"],
+        )
+    if config.get("little_rl_path"):
+        cmd = add_args(
+            cmd,
+            "little_rl_path",
+            config["little_rl_path"],
         )
 
     # Derive task_name based on eval_dataset or manually
@@ -502,19 +528,29 @@ def create_config(
     num_shots: int = 3,
     max_tokens: int = 128,
     use_early_stopping: bool = False,
-    eval_dataset: EvalDataset = EvalDataset.xsum,
+    eval_dataset: EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
     little_model: str = "vicuna-68m",
     small_draft_acc_head_path: str | None = None,
     draft_target_acc_head_path: str | None = None,
+    main_rl_path: str | None = None,
+    little_rl_path: str | None = None,
 ) -> ExpConfig:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if small_draft_acc_head_path is None:
         small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
     if draft_target_acc_head_path is None:
         draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
+    
+    # 自动推导 RL Adapter 路径
+    series = get_model_series(target_model)
+    if main_rl_path is None:
+        main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
+    if little_rl_path is None:
+        little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
+
     return ExpConfig(
         eval_dataset=eval_dataset,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
@@ -540,6 +576,8 @@ def create_config(
         use_early_stopping=use_early_stopping,
         small_draft_acc_head_path=small_draft_acc_head_path,
         draft_target_acc_head_path=draft_target_acc_head_path,
+        main_rl_path=main_rl_path,
+        little_rl_path=little_rl_path,
     )
 
 
@@ -571,12 +609,12 @@ specified_pairs_qwen = [
 ]
 
 for little_model, draft_model, target_model in (
-    llama_series,
+    # llama_series,
     vicuna_series,
     qwen_series,
 ):
     for dataset in EvalDataset:
-        for mode in (EvalMode.autoregression, EvalMode.ceesd):
+        for mode in EvalMode:
             config = create_config(
                 eval_mode=mode,
                 ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
@@ -589,7 +627,7 @@ for little_model, draft_model, target_model in (
                 small_draft_threshold=0.8,
                 draft_target_threshold=0.6,
                 transfer_top_k=300,
-                max_tokens=2048,
+                max_tokens=128,
                 num_shots=8,
                 eval_dataset=dataset,
                 draft_model=draft_model,
@@ -597,7 +635,7 @@ for little_model, draft_model, target_model in (
                 little_model=little_model,
                 use_rl_adapter=True,
                 disable_rl_update=True,
-                use_early_stopping=True,
+                use_early_stopping=False,
             )
             config_to_run.append(config)
 
