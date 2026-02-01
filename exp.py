@@ -82,7 +82,7 @@ class ExpConfig(TypedDict):
 
 # Global Constants
 
-NTT_MS_EDGE_CLOUD = 0
+NTT_MS_EDGE_CLOUD = 10
 NTT_MS_EDGE_END = 0
 
 cmd_temp = """
@@ -592,8 +592,8 @@ qwen_series = ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
 # Row 2 (Llama-68M): Col 3 (Llama-13B) = x
 specified_pairs_llama = [
     ("llama-68m", "tiny-llama-1.1b"),
-    # ("tiny-llama-1.1b", "llama-2-13b"),
-    # ("llama-68m", "llama-2-13b"),
+    ("tiny-llama-1.1b", "llama-2-13b"),
+    ("llama-68m", "llama-2-13b"),
 ]
 
 specified_pairs_vicuna = [
@@ -608,36 +608,53 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
+edge_cloud_bandwidth = (
+    # 13.7,
+    # 18.6,
+    25.4,
+    # 34.6,
+    # 47.2,
+    # 64.3,
+    # 87.7,
+    # 119.6,
+    # 163.1,
+    # 222.4,
+    # 303.3,
+    # 413.5,
+    # 563.0,
+)
+
 for little_model, draft_model, target_model in (
-    # llama_series,
+    llama_series,
     vicuna_series,
     qwen_series,
 ):
     for dataset in EvalDataset:
         for mode in EvalMode:
-            config = create_config(
-                eval_mode=mode,
-                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                use_precise=False,
-                use_stochastic_comm=True,
-                edge_end_bandwidth=563,
-                edge_cloud_bandwidth=34.6,
-                cloud_end_bandwidth=34.6,
-                small_draft_threshold=0.8,
-                draft_target_threshold=0.6,
-                transfer_top_k=300,
-                max_tokens=128,
-                num_shots=8,
-                eval_dataset=dataset,
-                draft_model=draft_model,
-                target_model=target_model,
-                little_model=little_model,
-                use_rl_adapter=True,
-                disable_rl_update=True,
-                use_early_stopping=False,
-            )
-            config_to_run.append(config)
+            for edge_cloud_bw in edge_cloud_bandwidth:
+                config = create_config(
+                    eval_mode=mode,
+                    ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                    ntt_ms_edge_end=NTT_MS_EDGE_END,
+                    use_precise=False,
+                    use_stochastic_comm=True,
+                    edge_end_bandwidth=563,
+                    edge_cloud_bandwidth=edge_cloud_bw,
+                    cloud_end_bandwidth=edge_cloud_bw,
+                    small_draft_threshold=0.8,
+                    draft_target_threshold=0.6,
+                    transfer_top_k=1024,
+                    max_tokens=128,
+                    num_shots=8,
+                    eval_dataset=dataset,
+                    draft_model=draft_model if mode == EvalMode.ceesd else little_model,
+                    target_model=target_model,
+                    little_model=little_model,
+                    use_rl_adapter=True,
+                    disable_rl_update=True,
+                    use_early_stopping=False,
+                )
+                config_to_run.append(config)
 
 
 if __name__ == "__main__":

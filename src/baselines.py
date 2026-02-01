@@ -2115,16 +2115,18 @@ class Baselines(Decoding):
             n1: int = prefix_len + actual_gamma2 - 1
 
             little_accepted_this_iter = 0
+            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+            if actual_gamma2 > 0:
+                draft_tokens = x[:, prefix_len : prefix_len + actual_gamma2]
+                draft_probs = torch.stack([
+                    little_model_cache._prob_history[:, prefix_len + k - 1, x[:, prefix_len + k]]
+                    for k in range(actual_gamma2)
+                ], dim=1)
+                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+
             for i in range(actual_gamma2):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 reject sampling
-                comm_simulator.transfer(
-                    j,
-                    little_model_cache._prob_history[:, prefix_len + i - 1, j],
-                    "edge_end",
-                )
 
                 if r > (
                     draft_model_cache._prob_history.to(little_device)[
@@ -2133,7 +2135,7 @@ class Baselines(Decoding):
                 ) / (
                     little_model_cache._prob_history[:, prefix_len + i - 1, j]
                 ):
-                    comm_simulator.send_reject_message("edge_end")
+                    # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
                     break
@@ -2165,6 +2167,9 @@ class Baselines(Decoding):
 
             little_model_cache.rollback(n1 + 1)
 
+            prob_bytes = 0.0
+            reject_overhead = 0.0
+
             if n1 < prefix_len + actual_gamma2 - 1:
                 # reject someone, sample from the pos n1
                 # rebuild_probs = comm_simulator.rebuild_full_probs(
@@ -2174,13 +2179,20 @@ class Baselines(Decoding):
                 #     rebuild_probs
                 # )
 
-                comm_simulator.transfer(
-                    None,
-                    little_model_cache._prob_history[:, n1, : self.vocab_size],
-                    "edge_end",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                )
+                # comm_simulator.transfer(
+                #     None,
+                #     little_model_cache._prob_history[:, n1, : self.vocab_size],
+                #     "edge_end",
+                #     transfer_top_k is not None and transfer_top_k > 0,
+                #     transfer_top_k,
+                # )
+                
+                prob_data = little_model_cache._prob_history[:, n1, : self.vocab_size]
+                prob_bytes = prob_data.element_size() * prob_data.numel()
+                if transfer_top_k is not None and transfer_top_k > 0:
+                     prob_bytes = transfer_top_k * prob_data.element_size()
+                
+                reject_overhead = 6.0
 
                 t = sample(
                     max_fn(
@@ -2202,9 +2214,10 @@ class Baselines(Decoding):
 
                 draft_model_cache.rollback(n1 + 2)
 
-            # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            # 传输索引和 token t (一次 RTT)
+            # 包含了 rejection overhead (如果发生) 和 probs (如果发生)
+            total_bytes = INT_SIZE + t.element_size() * t.numel() + prob_bytes + reject_overhead
+            comm_simulator.simulate_transfer(total_bytes, "edge_end")
 
             prefix = torch.cat((prefix, t), dim=1)
             new_generated_token = prefix[:, prefix_len:]
@@ -2264,22 +2277,24 @@ class Baselines(Decoding):
                 new_generated_token.shape[1] + actual_gamma1
             )
 
+            total_gamma = new_generated_token.shape[1] + actual_gamma1
             n2: int = (
-                prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1
+                prefix_len + total_gamma - 1
             )
+            
+            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+            if total_gamma > 0:
+                draft_tokens_second = x[:, prefix_len : prefix_len + total_gamma]
+                draft_probs_second = torch.stack([
+                    draft_model_cache._prob_history[:, prefix_len + k - 1, x[:, prefix_len + k]]
+                    for k in range(total_gamma)
+                ], dim=1)
+                comm_simulator.transfer(draft_tokens_second, draft_probs_second, "edge_cloud")
+
             draft_accepted_this_iter = 0
-            for i in range(
-                new_generated_token.shape[1] + actual_gamma1,
-            ):
+            for i in range(total_gamma):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 reject sampling
-                comm_simulator.transfer(
-                    j,
-                    draft_model_cache._prob_history[:, prefix_len + i - 1, j],
-                    "edge_cloud",
-                )
 
                 if r > (
                     target_model_cache._prob_history.to(draft_device)[
@@ -2287,7 +2302,7 @@ class Baselines(Decoding):
                     ]
                 ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
+                    # comm_simulator.send_reject_message("edge_cloud")
                     break
                 else:
                     draft_accepted_this_iter += 1
@@ -2317,6 +2332,9 @@ class Baselines(Decoding):
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
+            prob_bytes = 0.0
+            reject_overhead = 0.0
+
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
 
                 # rebuild_probs = comm_simulator.rebuild_full_probs(
@@ -2326,13 +2344,21 @@ class Baselines(Decoding):
                 #     rebuild_probs
                 # )
 
-                comm_simulator.transfer(
-                    None,
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size],
-                    "edge_cloud",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                )
+                # comm_simulator.transfer(
+                #     None,
+                #     draft_model_cache._prob_history[:, n2, : self.vocab_size],
+                #     "edge_cloud",
+                #     transfer_top_k is not None and transfer_top_k > 0,
+                #     transfer_top_k,
+                # )
+                
+                prob_data = draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                prob_bytes = prob_data.element_size() * prob_data.numel()
+                if transfer_top_k is not None and transfer_top_k > 0:
+                     prob_bytes = transfer_top_k * prob_data.element_size()
+                
+                reject_overhead = 6.0
+
                 t = sample(
                     max_fn(
                         target_model_cache._prob_history[
@@ -2356,11 +2382,15 @@ class Baselines(Decoding):
                 target_model_cache.rollback(n2 + 2)
 
             prefix = torch.cat((prefix, t), dim=1)
-            # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            # 传输索引和 token t (各链路一次 RTT)
+            token_size = t.element_size() * t.numel()
+            
+            # Merged transfer for Edge-Cloud (Reject + Probs + Index + Token)
+            total_bytes = INT_SIZE + token_size + prob_bytes + reject_overhead
+            comm_simulator.simulate_transfer(total_bytes, "edge_cloud")
+            
+            comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
+
             # 同步
             
             if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
