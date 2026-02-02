@@ -38,6 +38,8 @@ class EvalSpecbench(Decoding):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+            self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
         
@@ -79,7 +81,7 @@ class EvalSpecbench(Decoding):
         task = task_map.get(self.args.sub_domain, "gsm8k")
         few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": few_shot_prompt + input_text}

@@ -39,6 +39,8 @@ class EvalXSum(Baselines):
             self.model_id = "llama-3.1"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+            self.model_id = "gemma"
         elif "Llama-2" in str(self.args.target_model):
             self.model_id = "llama-2-chat"
         else:
@@ -65,7 +67,7 @@ class EvalXSum(Baselines):
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = f"Summarize the following article:\n\n{full_input}"
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}

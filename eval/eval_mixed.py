@@ -38,6 +38,8 @@ class EvalMixed(Baselines):
             return "llama-3.1"
         if "qwen" in target:
             return "qwen"
+        if "gemma" in target:
+            return "gemma"
         if "llama-2" in target:
             return "llama-2-chat"
         return "vicuna"

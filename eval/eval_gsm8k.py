@@ -58,6 +58,8 @@ class EvalGSM8K(Baselines):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+            self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
 
@@ -77,7 +79,7 @@ class EvalGSM8K(Baselines):
         few_shot_prompt = get_few_shot_prompt("gsm8k", self.args.num_shots)
         full_input = few_shot_prompt + "Question: " + input_text
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'."},
                 {"role": "user", "content": full_input}

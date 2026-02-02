@@ -53,6 +53,8 @@ class EvalCNNDM(Baselines):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+            self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
 
@@ -77,7 +79,7 @@ class EvalCNNDM(Baselines):
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = f"Summarize the following article:\n\n{full_input}"
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}
