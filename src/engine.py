@@ -79,6 +79,8 @@ class DecodingMetrics(TypedDict):
     queuing_time: int | float
     arp_overhead_time: float
     dra_overhead_time: float
+    avg_top_k: float
+    avg_draft_len: float
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -103,14 +105,18 @@ def get_empty_metrics() -> DecodingMetrics:
         edge_end_data_bytes=0,
         cloud_end_data_bytes=0,
         loop_times=0,
-        each_loop_draft_tokens=0,
+        each_loop_draft_tokens=0.0,
         comm_energy=0.0,
-        connect_times={"edge_end": 0, "cloud_end": 0, "edge_cloud": 0},
-        accuracy=0,
+        connect_times={},
+        accuracy=None,
         queuing_time=0.0,
         arp_overhead_time=0.0,
         dra_overhead_time=0.0,
+        avg_top_k=0.0,
+        avg_draft_len=0.0,
     )
+
+
 
 
 class Decoding(Register, ABC):
@@ -217,8 +223,8 @@ class Decoding(Register, ABC):
                 device_map="balanced_low_0",
             ).eval()
 
-        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp"]:
-            output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd"]
+        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp", "cee_cuhlm"]:
+            output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd", "cee_cuhlm"]
             self.little_model = loader(
                 self.args.little_model,
                 device_map="cuda:0",

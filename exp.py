@@ -38,6 +38,7 @@ class EvalMode(str, Enum):
     # tridecoding = "tridecoding" # ablation of adaptive tridecoding
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
+    cee_cuhlm = "cee_cuhlm"
 
 
 model_acc_head_map = {
@@ -48,6 +49,7 @@ model_acc_head_map = {
     "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
     "qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
     "qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
+    "llama-2-chat-70b": "src/SpecDec_pp/checkpoints/llama-2-chat-70b/exp-weight6-layer3",
 }
 
 
@@ -87,7 +89,7 @@ NTT_MS_EDGE_END = 0
 
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
-CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} accelerate launch \
+CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.venv/bin/accelerate launch \\
     --num_processes 1 \
     --main_process_port 29051 \
     {eval_dataset} \
@@ -375,7 +377,7 @@ def run_experiment_with_gpu(
 
     # 检测是否为70b模型实验
     is_large_model = "70b" in str(config).lower()
-    needed_gpus = 2 if is_large_model else 1
+    needed_gpus = 4 if is_large_model else 1
 
     try:
         if is_large_model:
@@ -539,17 +541,26 @@ def create_config(
     little_rl_path: str | None = None,
 ) -> ExpConfig:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if small_draft_acc_head_path is None:
-        small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
-    if draft_target_acc_head_path is None:
-        draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
-    
-    # 自动推导 RL Adapter 路径
-    series = get_model_series(target_model)
-    if main_rl_path is None:
-        main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
-    if little_rl_path is None:
-        little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
+    # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
+    if eval_mode in [EvalMode.ceesd, EvalMode.cee_cuhlm]:
+        if small_draft_acc_head_path is None:
+            small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
+        if draft_target_acc_head_path is None:
+            draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
+        
+        # 自动推导 RL Adapter 路径
+        series = get_model_series(target_model)
+        if main_rl_path is None:
+            main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
+        if little_rl_path is None:
+            little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
+            
+    else:
+        # 其他模式不需要
+        small_draft_acc_head_path = ""
+        draft_target_acc_head_path = ""
+        main_rl_path = ""
+        little_rl_path = ""
 
     return ExpConfig(
         eval_dataset=eval_dataset,
@@ -586,6 +597,8 @@ config_to_run = []
 llama_series = ("llama-68m", "tiny-llama-1.1b", "llama-2-13b")
 vicuna_series = ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5")
 qwen_series = ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
+llama_chat_series = ("llama-68m", "llama-2-chat-7b", "llama-2-chat-70b")
+
 
 # 根据 LaTeX 表格定义的模型组合 (Draft, Target)
 # Row 1 (TinyLlama): Col 2 (TinyLlama-1B) = x, Col 3 (Llama-13B) = x
@@ -608,29 +621,32 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
-edge_cloud_bandwidth = (
-    # 13.7,
-    # 18.6,
-    25.4,
-    # 34.6,
-    # 47.2,
-    # 64.3,
-    # 87.7,
-    # 119.6,
-    # 163.1,
-    # 222.4,
-    # 303.3,
-    # 413.5,
-    # 563.0,
-)
+edge_cloud_bandwidth = [
+    # 5.2,  # 弱 4G / 强 3G 边缘
+    # 7.8,  # 8M 宽带的典型实测值
+    # 10.0,  # 标准 10M 宽带
+    # 12.4,  # 繁忙时段的 4G LTE
+    # 15.5,  # ADSL2+ 的理论极限附近
+    # 18.2,  # 20M 宽带的各种损耗后速度
+    # 20.0,  # 标准 20M 宽带
+    23.6,  # 信号良好的 4G 平均值
+    # 25.0,  # FCC 定义的宽带及格线
+    # 28.9,  # 30M 宽带的一般表现
+    # 32.4,  # Wi-Fi 穿墙后的衰减值
+    # 38.7,  # 4G+ (载波聚合) 波动值
+    # 42.1,  # 50M 宽带在高峰期的表现
+    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗值
+    # 48.8,  # 50M 宽带非常接近满速的值
+    # 50.0,  # 标准 50M 宽带满速
+]
 
 for little_model, draft_model, target_model in (
     llama_series,
-    vicuna_series,
-    qwen_series,
+    # vicuna_series,
+    # qwen_series,
 ):
-    for dataset in EvalDataset:
-        for mode in EvalMode:
+    for dataset in [EvalDataset.mt_bench,]:
+        for mode in [EvalMode.cee_cuhlm,]:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
                     eval_mode=mode,
@@ -647,7 +663,7 @@ for little_model, draft_model, target_model in (
                     max_tokens=128,
                     num_shots=8,
                     eval_dataset=dataset,
-                    draft_model=draft_model if mode == EvalMode.ceesd else little_model,
+                    draft_model=draft_model if mode in [EvalMode.ceesd, EvalMode.cee_cuhlm] else little_model,
                     target_model=target_model,
                     little_model=little_model,
                     use_rl_adapter=True,

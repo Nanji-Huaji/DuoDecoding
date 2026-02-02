@@ -59,7 +59,7 @@ def model_zoo(args):
     }
 
     zoo = {
-        "llama-2-7b": "llama/Llama-2-7b-hf",
+        "llama-2-chat-7b": "meta-llama/Llama-2-7b-chat-hf",
         "deepseek-1.3b": "deepseek-1.3b还没部署",
         "deepseek-6.7b": "deepseek-6.7b还没部署",
         "llama-68m-q5-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q5_0.gguf",
@@ -84,13 +84,12 @@ def model_zoo(args):
         "qwen-3-0.6b": "Qwen/Qwen3-0.6B",
         "qwen-3-1.7b": "Qwen/Qwen3-1.7B",
         "qwen-3-14b": "Qwen/Qwen3-14B",
-        "llama-2-70b": "llama/Llama-2-70b-hf",
+        "llama-2-chat-70b": "meta-llama/Llama-2-70b-chat-hf",  # mapping to HuggingFace model
     }
     args.draft_model = zoo.get(args.draft_model, args.draft_model)
     args.target_model = zoo.get(args.target_model, args.target_model)
     args.little_model = zoo.get(args.little_model, args.little_model) if hasattr(args, "little_model") else args.draft_model
     args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
-
 
 
 def parse_arguments():
