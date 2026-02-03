@@ -79,10 +79,19 @@ class EvalGSM8K(Baselines):
         few_shot_prompt = get_few_shot_prompt("gsm8k", self.args.num_shots)
         full_input = few_shot_prompt + "Question: " + input_text
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'."},
                 {"role": "user", "content": full_input}
+            ]
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        elif self.model_id == "gemma":
+            messages = [
+                {"role": "user", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'." + "\n" + full_input}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,

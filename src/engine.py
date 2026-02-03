@@ -16,8 +16,14 @@ from .utils import seed_everything, norm_logits, sample, max_fn
 import time
 from .register import Register
 
-from transformers import StoppingCriteriaList, MaxLengthCriteria
+from transformers import (
+    StoppingCriteriaList,
+    MaxLengthCriteria,
+    BitsAndBytesConfig,
+)
 
+
+import re
 
 from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
 
@@ -117,8 +123,6 @@ def get_empty_metrics() -> DecodingMetrics:
     )
 
 
-
-
 class Decoding(Register, ABC):
     def __init__(self, args):
         Register.__init__(self, args)
@@ -152,11 +156,11 @@ class Decoding(Register, ABC):
     def _check_stopping_criteria(self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None) -> bool:
         if not hasattr(self, "tokenizer") or self.tokenizer is None:
             return False
-            
+
         # Check for EOS at the last position only
         if input_ids.shape[1] > 0 and input_ids[0, -1].item() == self.tokenizer.eos_token_id:
             return True
-            
+
         # Check for stop sequences
         if stop_sequences:
             decoded_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
@@ -171,12 +175,24 @@ class Decoding(Register, ABC):
             f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}",
             3,
         )
+        pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
+        match = re.search(pattern, self.args.target_model)
+        params = match.group(1) if match else 0
+        quantization_config = (
+            BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            if float(params) > 20 and 'awq' not in self.args.target_model.lower()
+            else None
+        )
         loader = partial(AutoModelForCausalLM.from_pretrained, 
                         cache_dir="llama/.cache/huggingface",
-                        local_files_only=True,
+                        local_files_only=False,
                         attn_implementation=attn_impl,
                         trust_remote_code=True,
-                        torch_dtype=torch.bfloat16
+                        torch_dtype=torch.bfloat16,
                         )
         if self.args.eval_mode == "small":
             self.draft_model = loader(
@@ -184,11 +200,19 @@ class Decoding(Register, ABC):
                 device_map="auto",
             ).eval()
         elif self.args.eval_mode == "large":
-            self.target_model = loader(
-                self.args.target_model,
-                device_map="auto",
-            ).eval()
-            
+            # Only pass quantization_config if it's not None (fixes transformers bug)
+            if quantization_config is not None:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="auto",
+                    quantization_config=quantization_config,
+                ).eval()
+            else:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="auto",
+                ).eval()
+
         elif self.args.eval_mode in [
             "sd",
             "dsd",
@@ -199,15 +223,23 @@ class Decoding(Register, ABC):
             "cuhlm",
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
-        ] and not ('70b' in self.args.target_model) :
+        ] :
             self.draft_model = loader(
                 self.args.draft_model,
-                device_map="cuda:0",
-            ).eval()
-            self.target_model = loader(
-                self.args.target_model,
                 device_map="balanced_low_0",
             ).eval()
+            # Only pass quantization_config if it's not None
+            if quantization_config is not None:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                    quantization_config=quantization_config,
+                ).eval()
+            else:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                ).eval()
 
         elif self.args.eval_mode == "adaptive_decoding":
 
@@ -218,16 +250,24 @@ class Decoding(Register, ABC):
                 output_hidden_states=True,
             ).eval()
 
-            self.target_model = loader(
-                self.args.target_model,
-                device_map="balanced_low_0",
-            ).eval()
+            # Only pass quantization_config if it's not None
+            if quantization_config is not None:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                    quantization_config=quantization_config,
+                ).eval()
+            else:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                ).eval()
 
         elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp", "cee_cuhlm"]:
             output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd", "cee_cuhlm"]
             self.little_model = loader(
                 self.args.little_model,
-                device_map="cuda:0",
+                device_map="balanced_low_0",
                 output_hidden_states=output_hidden_states,
             ).eval()
             self.draft_model = loader(
@@ -235,10 +275,18 @@ class Decoding(Register, ABC):
                 device_map="balanced_low_0",
                 output_hidden_states=output_hidden_states,
             ).eval()
-            self.target_model = loader(
-                self.args.target_model,
-                device_map="balanced_low_0",
-            ).eval()
+            # Only pass quantization_config if it's not None
+            if quantization_config is not None:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                    quantization_config=quantization_config,
+                ).eval()
+            else:
+                self.target_model = loader(
+                    self.args.target_model,
+                    device_map="balanced_low_0",
+                ).eval()
 
         self.vocab_size = int(self.args.vocab_size)
 
@@ -267,7 +315,6 @@ class Decoding(Register, ABC):
     @abstractmethod
     def postprocess(self, input_text, output_text):
         pass
-
 
     @Register.register_decoding("large")
     @Register.register_decoding("small")
@@ -310,7 +357,7 @@ class Decoding(Register, ABC):
             queuing_time += batch_delay
             x = model.generate(x, 1)
             target_forward_times += 1
-            
+
             if use_early_stopping and self._check_stopping_criteria(x, stop_sequences):
                 break
 
@@ -474,7 +521,7 @@ class Decoding(Register, ABC):
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
-                
+
             if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
                 break
 
@@ -483,7 +530,7 @@ class Decoding(Register, ABC):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        
+
         batch_delay = getattr(self.args, "batch_delay", 0)
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + queuing_time
@@ -736,7 +783,6 @@ class Decoding(Register, ABC):
 
         return prefix, metrics
 
-
     @torch.no_grad()
     def uncertainty_decoding(
         self,
@@ -860,7 +906,6 @@ class Decoding(Register, ABC):
                     n + 2
                 )  # 等同于rollback(prefix_len + 2)
 
-
                 # 将新采样的token添加到序列中
                 if prefix.shape[1] < max_tokens:
                     prefix = torch.cat((prefix, t), dim=1)
@@ -974,8 +1019,6 @@ class Decoding(Register, ABC):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
 
         return prefix, metrics
-
-
 
     @torch.inference_mode()
     def lookahead_forward(self, prefix, **kwargs):

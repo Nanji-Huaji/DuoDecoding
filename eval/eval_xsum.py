@@ -67,10 +67,15 @@ class EvalXSum(Baselines):
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = f"Summarize the following article:\n\n{full_input}"
-        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}
+            ]
+            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        elif self.model_id == "gemma":
+            messages = [
+                {"role": "user", "content": "You are a helpful assistant.\n" + qs}
             ]
             prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         else:

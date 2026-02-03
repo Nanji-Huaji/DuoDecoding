@@ -157,13 +157,15 @@ class EvalMTBench(Baselines):
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                if self.model_id == "llama-3.1" or self.model_id == "qwen":
                     messages = [
                         {
                             "role": "system",
                             "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
                         },
                     ]
+                elif self.model_id == "gemma":
+                    messages = []
                 else:
                     conv = get_conversation_template(self.model_id)
                     if self.model_id == "llama-2-chat":
@@ -180,7 +182,10 @@ class EvalMTBench(Baselines):
                         qs = few_shot_prompt + qs
 
                     if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
-                        messages.append({"role": "user", "content": qs})
+                        content = qs
+                        if self.model_id == "gemma" and turn_idx == 0:
+                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                        messages.append({"role": "user", "content": content})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
                             tokenize=False,
@@ -208,6 +213,7 @@ class EvalMTBench(Baselines):
                         output_ids, _ = output_ids
                     torch.cuda.synchronize()
                     end_time = time.time()
+
 
                     output_text = self.tokenizer.decode(
                         output_ids[0], spaces_between_special_tokens=False
@@ -246,13 +252,15 @@ class EvalMTBench(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                if self.model_id == "llama-3.1" or self.model_id == "qwen":
                     messages = [
                         {
                             "role": "system",
                             "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
                         },
                     ]
+                elif self.model_id == "gemma":
+                    messages = []
                 else:
                     conv = get_conversation_template(self.model_id)
                     if self.model_id == "llama-2-chat":
@@ -267,7 +275,10 @@ class EvalMTBench(Baselines):
                     qs = question["turns"][turn_idx]
 
                     if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
-                        messages.append({"role": "user", "content": qs})
+                        content = qs
+                        if self.model_id == "gemma" and turn_idx == 0:
+                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                        messages.append({"role": "user", "content": content})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
                             tokenize=False,
@@ -318,6 +329,14 @@ class EvalMTBench(Baselines):
 
                     torch.cuda.synchronize()
                     end_time = time.time()
+
+                    if (output_ids < 0).any() or (output_ids >= self.tokenizer.vocab_size).any():
+                        print(f"DEBUG: Found invalid tokens! vocab_size: {self.tokenizer.vocab_size}")
+                        invalid_mask = (output_ids < 0) | (output_ids >= self.tokenizer.vocab_size)
+                        print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
+                        # Filter invalid tokens
+                        output_ids = output_ids.clone()
+                        output_ids[invalid_mask] = 0 # Replace with unknown or padding (0 usually safe)
 
                     output_text = self.tokenizer.decode(
                         output_ids[0], spaces_between_special_tokens=False

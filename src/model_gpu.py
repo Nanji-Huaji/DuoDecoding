@@ -27,7 +27,12 @@ class KVCacheModel:
 
         self.logits_history: torch.Tensor | None = None # 不确定性方法需要存储logits历史
 
-        self.vocab_size = model.config.vocab_size
+        if hasattr(model.config, "vocab_size"):
+            self.vocab_size = model.config.vocab_size
+        elif hasattr(model.config, "text_config") and hasattr(model.config.text_config, "vocab_size"):
+             self.vocab_size = model.config.text_config.vocab_size
+        else:
+             raise AttributeError("Vocab size not found in model config")
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if self._past_key_values is None:

@@ -113,10 +113,20 @@ class EvalHumaneval(Baselines):
         few_shot_prompt = get_few_shot_prompt("humaneval", self.args.num_shots)
         full_input = few_shot_prompt + input_text
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Please complete the following python code."},
                 {"role": "user", "content": full_input}
+            ]
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            return prompt
+        elif self.model_id == "gemma":
+            messages = [
+                {"role": "user", "content": "Please complete the following python code.\n" + full_input}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,

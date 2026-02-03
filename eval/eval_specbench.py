@@ -81,10 +81,20 @@ class EvalSpecbench(Decoding):
         task = task_map.get(self.args.sub_domain, "gsm8k")
         few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+        if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": few_shot_prompt + input_text}
+            ]
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            return prompt
+        elif self.model_id == "gemma":
+            messages = [
+                {"role": "user", "content": "You are a helpful assistant.\n" + few_shot_prompt + input_text}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,

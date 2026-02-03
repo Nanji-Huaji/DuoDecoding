@@ -207,6 +207,11 @@ class Baselines(Decoding):
         total_drafted_tokens = 0
         queuing_time = 0
         batch_delay = getattr(self.args, "batch_delay", 0)
+        
+        # 追踪 top-k 和 draft length
+        total_draft_steps = 0
+        sum_draft_len = 0.0
+        sum_top_k = 0.0
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -252,6 +257,11 @@ class Baselines(Decoding):
             )
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
+            
+            # 累积追踪指标
+            total_draft_steps += 1
+            sum_draft_len += current_gamma
+            sum_top_k += (draft_top_k if draft_top_k is not None else 0)
 
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
@@ -385,6 +395,8 @@ class Baselines(Decoding):
         )
 
         metrics = get_empty_metrics()
+        metrics["avg_top_k"] = sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+        metrics["avg_draft_len"] = sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
         metrics["generated_tokens"] = generated_tokens
@@ -467,6 +479,11 @@ class Baselines(Decoding):
         total_drafted_tokens = 0
         queuing_time = 0
         batch_delay = getattr(self.args, "batch_delay", 0)
+        
+        # 追踪 top-k 和 draft length
+        total_draft_steps = 0
+        sum_draft_len = 0.0
+        sum_top_k = 0.0
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -517,6 +534,12 @@ class Baselines(Decoding):
             )
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
+            
+            # 累积追踪指标
+            total_draft_steps += 1
+            sum_draft_len += current_gamma
+            sum_top_k += (transfer_top_k if transfer_top_k is not None and transfer_top_k > 0 else self.args.top_k)
+            
             comm_simulator.transfer(x, None, "edge_cloud")
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
@@ -661,6 +684,8 @@ class Baselines(Decoding):
         )
 
         metrics = get_empty_metrics()
+        metrics["avg_top_k"] = sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+        metrics["avg_draft_len"] = sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
         metrics["generated_tokens"] = generated_tokens
@@ -1044,6 +1069,11 @@ class Baselines(Decoding):
             little_model_forward_times += self.args.gamma2
             draft_model_forward_times += 1
             total_little_model_generated_tokens += self.args.gamma2
+            
+            # 累积追踪指标 - 记录第一层 draft
+            total_draft_steps += 1
+            sum_draft_len += self.args.gamma2
+            sum_top_k += (draft_top_k if draft_top_k is not None else 0)
 
             n1: int = prefix_len + self.args.gamma2 - 1
 
@@ -1240,6 +1270,8 @@ class Baselines(Decoding):
         )
 
         metrics = get_empty_metrics()
+        metrics["avg_top_k"] = sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+        metrics["avg_draft_len"] = sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
         metrics["little_forward_times"] = little_model_forward_times
         metrics["draft_forward_times"] = draft_model_forward_times
         metrics["target_forward_times"] = target_model_forward_times

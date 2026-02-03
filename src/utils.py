@@ -72,7 +72,7 @@ def model_zoo(args):
         "vicuna-68m": "vicuna/vicuna-68m",
         "vicuna-7b-v1.5": "vicuna-7b-v1.5还没部署",
         "vicuna-7b-v1.3": "vicuna-7b-v1.3还没部署",
-        "llama-2-7b-chat": "llama/Llama-2-7b-chat-hf",
+        "llama-2-7b-chat": "meta-llama/Llama-2-7b-chat-hf",
         "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
         "llama-3.2-1b": "llama/llama-3.2-1b",
         "llama-2-13b": "llama/Llama-2-13b-hf",
@@ -84,6 +84,7 @@ def model_zoo(args):
         "qwen-3-0.6b": "Qwen/Qwen3-0.6B",
         "qwen-3-1.7b": "Qwen/Qwen3-1.7B",
         "qwen-3-14b": "Qwen/Qwen3-14B",
+        "Qwen/Qwen3-32B-FP8": "Qwen/Qwen3-32B-FP8",
         "llama-2-chat-70b": "meta-llama/Llama-2-70b-chat-hf",  # mapping to HuggingFace model
     }
     args.draft_model = zoo.get(args.draft_model, args.draft_model)
@@ -559,7 +560,25 @@ def get_vocab_size(model_name: str) -> int:
             vocab_size = config.get("vocab_size", None)
             if vocab_size is not None:
                 return vocab_size
-            else:
-                raise ValueError(f"Vocab size not found in config for model {model_name}.")
-    except FileNotFoundError:
-        raise ValueError(f"Config file for model {model_name} not found.")
+            
+            # Check text_config for multimodal models
+            if "text_config" in config and isinstance(config["text_config"], dict):
+                vocab_size = config["text_config"].get("vocab_size", None)
+                if vocab_size is not None:
+                    return vocab_size
+
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    
+    # Fallback to AutoConfig if not found in JSON or file missing
+    try:
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        if hasattr(config, "vocab_size"):
+            return config.vocab_size
+        if hasattr(config, "text_config") and hasattr(config.text_config, "vocab_size"):
+            return config.text_config.vocab_size
+    except Exception:
+        pass
+
+    raise ValueError(f"Vocab size not found in config for model {model_name}.")
