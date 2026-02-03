@@ -30,8 +30,8 @@ DRAFT_TARGET_ACC_HEAD_PATH=${DRAFT_TARGET_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpo
 
 # 训练参数
 TOTAL_SAMPLES=2000 # 混合训练的总样本数
-BW=34.6
-LATENCY=0
+BW=23.6
+LATENCY=10
 END_BW=563
 
 # 加速启动命令
