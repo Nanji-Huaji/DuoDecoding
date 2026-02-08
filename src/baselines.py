@@ -850,7 +850,7 @@ class Baselines(Decoding):
 
                 # 接受draft token - 仿照接受所有token的情况
                 accepted_token = x[:, -1:]  # draft token
-                prefix = torch.cat((prefix, accepted_token), dim=1)
+                prefix = torch.cat((prefix.to(accepted_token.device), accepted_token), dim=1)
 
                 comm_simulator.send_accept_message(
                     linktype="edge_cloud"
