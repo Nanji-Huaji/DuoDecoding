@@ -93,6 +93,11 @@ class CommunicationSimulator:
             "cloud_end": 0,
             "edge_cloud": 0
         }
+        
+        # 用于记录 edge-cloud 的瞬时带宽、top-k 和起草长度历史
+        self.edge_cloud_bandwidth_history = []
+        self.edge_cloud_topk_history = []
+        self.edge_cloud_draft_len_history = []
 
         self.use_stochastic = use_stochastic
         self.dimension = dimension
@@ -208,11 +213,15 @@ class CommunicationSimulator:
         data_size_bytes: int | float,
         link_type: Literal["edge_cloud", "edge_end", "cloud_end"],
         add_to_stats=True,
+        topk: int = 0,
+        draft_len: int = 0,
     ) -> float:
         """
         执行一次传输模拟。
         - data_size_bytes: 传输的数据大小，单位bytes
         - link_type: 传输链路类型，"edge_cloud", "edge_end", "cloud_end"
+        - topk: 可选，记录此次传输关联的 top-k 值
+        - draft_len: 可选，记录此次传输关联的草稿长度
         """
         if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
             current_bw = self.trace_data[self.trace_index]
@@ -249,8 +258,25 @@ class CommunicationSimulator:
                 data_size_bytes=data_size_bytes, transfer_time=transfer_time
             )
             self.stats[link_type].append(transfer_unit)
+            
+            # 记录 edge-cloud 的瞬时带宽、Top-K 和 Draft Length
+            if link_type == "edge_cloud":
+                bandwidth_mbps = bandwidth / (1024 * 1024 / 8)  # 转换为 Mbps
+                self.edge_cloud_bandwidth_history.append(bandwidth_mbps)
+                self.record_edge_cloud_draft_info(topk, draft_len)
 
         return transfer_time
+
+    def record_edge_cloud_draft_info(self, topk: int, draft_len: int):
+        """
+        记录 edge-cloud 传输时的 top-k 和起草长度信息
+        
+        Args:
+            topk: 传输使用的 top-k 值
+            draft_len: 起草的序列长度
+        """
+        self.edge_cloud_topk_history.append(topk)
+        self.edge_cloud_draft_len_history.append(draft_len)
 
     @staticmethod
     def _apply_top_k_compression(
@@ -407,8 +433,19 @@ class CommunicationSimulator:
                 seq_length = 1
             prob_size = compressed_k * prob.element_size() * seq_length
             total_bytes = token_bytes + prob_size + self.protocol_overhead_bytes
+        
+        # 计算 topk 和 draft_len
+        topk_val = 0
+        draft_len_val = 0
+        if link_type == "edge_cloud":
+            topk_val = compressed_k if (is_compressed and compressed_k is not None) else 0
+            draft_len_val = tokens.numel() if (tokens is not None and tokens.numel() > 0) else 0
 
-        return self.simulate_transfer(total_bytes, link_type)
+        transfer_time = self.simulate_transfer(
+            total_bytes, link_type, topk=topk_val, draft_len=draft_len_val
+        )
+        
+        return transfer_time
 
     def send_reject_message(
         self, linktype: Literal["edge_cloud", "edge_end", "cloud_end"]

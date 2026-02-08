@@ -87,6 +87,9 @@ class DecodingMetrics(TypedDict):
     dra_overhead_time: float
     avg_top_k: float
     avg_draft_len: float
+    edge_cloud_bandwidth_history: List[float]
+    edge_cloud_topk_history: List[int]
+    edge_cloud_draft_len_history: List[int]
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -120,6 +123,9 @@ def get_empty_metrics() -> DecodingMetrics:
         dra_overhead_time=0.0,
         avg_top_k=0.0,
         avg_draft_len=0.0,
+        edge_cloud_bandwidth_history=[],
+        edge_cloud_topk_history=[],
+        edge_cloud_draft_len_history=[],
     )
 
 
@@ -169,48 +175,116 @@ class Decoding(Register, ABC):
                     return True
         return False
 
+    def _get_device_map_strategy(self, model_name: str, num_gpus_available: int) -> str:
+        """
+        Determine the appropriate device_map strategy based on model size and available GPUs.
+        
+        新策略：避免单模型跨卡，大模型使用Q4量化放在单卡
+        
+        Args:
+            model_name: Name of the model to load
+            num_gpus_available: Number of GPUs available for model loading
+            
+        Returns:
+            device_map strategy string
+        """
+        # Extract model size
+        pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
+        match = re.search(pattern, model_name)
+        params = float(match.group(1)) if match else 0
+        
+        # 对于所有模型，优先使用单卡加载，避免跨卡通信
+        # 大模型会在load_model中使用Q4量化
+        return "auto"
+
+    def _get_available_gpu_count(self) -> int:
+        """
+        Get the number of available GPUs, considering CUDA_VISIBLE_DEVICES.
+        
+        Returns:
+            Number of available GPUs
+        """
+        if "CUDA_VISIBLE_DEVICES" in os.environ:
+            visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
+            if visible_devices:
+                # Count the number of devices in CUDA_VISIBLE_DEVICES
+                return len([d for d in visible_devices.split(",") if d.strip()])
+        
+        # Fallback to torch.cuda.device_count()
+        return torch.cuda.device_count()
+
     def load_model(self):
         # * load models according to different evaluation methods.
         self.color_print(
             f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}",
             3,
         )
-        pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
-        match = re.search(pattern, self.args.target_model)
-        params = match.group(1) if match else 0
-        quantization_config = (
-            BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            if float(params) > 20 and 'awq' not in self.args.target_model.lower()
-            else None
-        )
+        
+        # Get available GPU count
+        num_gpus = self._get_available_gpu_count()
+        self.color_print(f"Available GPUs: {num_gpus}", 3)
+        
+        # Helper function to extract model size
+        def get_model_size(model_name):
+            pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
+            match = re.search(pattern, model_name)
+            return float(match.group(1)) if match else 0
+        
+        # Helper function to determine if model needs quantization
+        # A6000 有 48GB 显存，约可容纳 ~24B 全精度或 ~16B bf16模型
+        # 使用保守阈值：>20B 使用 Q4 量化
+        def should_quantize(model_name):
+            size = get_model_size(model_name)
+            is_awq = 'awq' in model_name.lower()
+            return size > 20 and not is_awq
+        
+        # Helper function to get quantization config
+        def get_quant_config(model_name):
+            if should_quantize(model_name):
+                print(f"📦 Model {model_name} ({get_model_size(model_name)}B) will use 4-bit quantization")
+                return BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+            return None
+        
         loader = partial(AutoModelForCausalLM.from_pretrained, 
-                        cache_dir="llama/.cache/huggingface",
                         local_files_only=False,
                         attn_implementation=attn_impl,
                         trust_remote_code=True,
                         torch_dtype=torch.bfloat16,
                         )
         if self.args.eval_mode == "small":
-            self.draft_model = loader(
-                self.args.draft_model,
-                device_map="auto",
-            ).eval()
+            device_map = "cuda:0"
+            self.color_print(f"Loading draft model on {device_map}", 3)
+            draft_quant = get_quant_config(self.args.draft_model)
+            if draft_quant:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=device_map,
+                    quantization_config=draft_quant,
+                ).eval()
+            else:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=device_map,
+                ).eval()
+                
         elif self.args.eval_mode == "large":
-            # Only pass quantization_config if it's not None (fixes transformers bug)
-            if quantization_config is not None:
+            device_map = "cuda:0"
+            self.color_print(f"Loading target model on {device_map}", 3)
+            target_quant = get_quant_config(self.args.target_model)
+            if target_quant:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="auto",
-                    quantization_config=quantization_config,
+                    device_map=device_map,
+                    quantization_config=target_quant,
                 ).eval()
             else:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="auto",
+                    device_map=device_map,
                 ).eval()
 
         elif self.args.eval_mode in [
@@ -224,71 +298,229 @@ class Decoding(Register, ABC):
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
         ] :
-            self.draft_model = loader(
-                self.args.draft_model,
-                device_map="balanced_low_0",
-            ).eval()
-            # Only pass quantization_config if it's not None
-            if quantization_config is not None:
+            # 双模型场景：大模型在一张卡，小模型在另一张卡
+            draft_size = get_model_size(self.args.draft_model)
+            target_size = get_model_size(self.args.target_model)
+            
+            # 将大模型放在GPU 0，小模型放在GPU 1（如果有多个GPU）
+            if target_size > draft_size:
+                draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
+                target_device = "cuda:0"
+                print(f"🎯 Target ({target_size}B) -> GPU 0, Draft ({draft_size}B) -> GPU {1 if num_gpus > 1 else 0}")
+            else:
+                draft_device = "cuda:0"
+                target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
+                print(f"🎯 Draft ({draft_size}B) -> GPU 0, Target ({target_size}B) -> GPU {1 if num_gpus > 1 else 0}")
+            
+            self.color_print(f"Loading draft model on {draft_device}", 3)
+            draft_quant = get_quant_config(self.args.draft_model)
+            if draft_quant:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                    quantization_config=draft_quant,
+                ).eval()
+            else:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                ).eval()
+            
+            self.color_print(f"Loading target model on {target_device}", 3)
+            target_quant = get_quant_config(self.args.target_model)
+            if target_quant:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
-                    quantization_config=quantization_config,
+                    device_map=target_device,
+                    quantization_config=target_quant,
                 ).eval()
             else:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
+                    device_map=target_device,
                 ).eval()
 
         elif self.args.eval_mode == "adaptive_decoding":
+            # adaptive_decoding: 将大模型放GPU 0，小模型放GPU 1
+            draft_size = get_model_size(self.args.draft_model)
+            target_size = get_model_size(self.args.target_model)
+            
+            if target_size > draft_size:
+                draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
+                target_device = "cuda:0"
+            else:
+                draft_device = "cuda:0"
+                target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
+            
+            self.color_print(f"Loading draft model on {draft_device}", 3)
+            draft_quant = get_quant_config(self.args.draft_model)
+            if draft_quant:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                    output_hidden_states=True,
+                    quantization_config=draft_quant,
+                ).eval()
+            else:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                    output_hidden_states=True,
+                ).eval()
 
-            self.draft_model = loader(
-                self.args.draft_model,
-                device_map="cuda:0",
-                torch_dtype=torch.bfloat16,
-                output_hidden_states=True,
-            ).eval()
-
-            # Only pass quantization_config if it's not None
-            if quantization_config is not None:
+            self.color_print(f"Loading target model on {target_device}", 3)
+            target_quant = get_quant_config(self.args.target_model)
+            if target_quant:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
-                    quantization_config=quantization_config,
+                    device_map=target_device,
+                    quantization_config=target_quant,
                 ).eval()
             else:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
+                    device_map=target_device,
                 ).eval()
 
-        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp", "cee_cuhlm"]:
+        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp", "cee_cuhlm", "cee_dsd", "cee_dssd"]:
             output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd", "cee_cuhlm"]
-            self.little_model = loader(
-                self.args.little_model,
-                device_map="balanced_low_0",
-                output_hidden_states=output_hidden_states,
-            ).eval()
-            self.draft_model = loader(
-                self.args.draft_model,
-                device_map="balanced_low_0",
-                output_hidden_states=output_hidden_states,
-            ).eval()
-            # Only pass quantization_config if it's not None
-            if quantization_config is not None:
+            
+            # 智能分配策略：
+            # 1. 计算三个模型的大小
+            # 2. 将最大的模型放在一张卡上（使用Q4量化如果需要）
+            # 3. 将其余两个模型放在另一张卡上
+            # 4. 避免单模型跨卡
+            
+            little_size = get_model_size(self.args.little_model)
+            draft_size = get_model_size(self.args.draft_model)
+            target_size = get_model_size(self.args.target_model)
+            
+            model_sizes = [
+                (little_size, "little", self.args.little_model),
+                (draft_size, "draft", self.args.draft_model),
+                (target_size, "target", self.args.target_model)
+            ]
+            model_sizes.sort(reverse=True, key=lambda x: x[0])  # 按大小降序
+            
+            largest_model = model_sizes[0]
+            print(f"🎯 Largest model: {largest_model[1]} ({largest_model[0]}B) -> GPU 0")
+            print(f"📍 Other models: {model_sizes[1][1]} ({model_sizes[1][0]}B), {model_sizes[2][1]} ({model_sizes[2][0]}B) -> GPU 1")
+            
+            # 分配设备
+            little_device = "cuda:1" if largest_model[1] != "little" else "cuda:0"
+            draft_device = "cuda:1" if largest_model[1] != "draft" else "cuda:0"
+            target_device = "cuda:1" if largest_model[1] != "target" else "cuda:0"
+            
+            # 如果只有1个GPU，全部放在cuda:0
+            if num_gpus == 1:
+                little_device = draft_device = target_device = "cuda:0"
+                print("⚠️  Only 1 GPU available, all models will be loaded on cuda:0")
+            
+            self.color_print(f"Loading little model on {little_device}", 3)
+            little_quant = get_quant_config(self.args.little_model)
+            if little_quant:
+                self.little_model = loader(
+                    self.args.little_model,
+                    device_map=little_device,
+                    output_hidden_states=output_hidden_states,
+                    quantization_config=little_quant,
+                ).eval()
+            else:
+                self.little_model = loader(
+                    self.args.little_model,
+                    device_map=little_device,
+                    output_hidden_states=output_hidden_states,
+                ).eval()
+            
+            self.color_print(f"Loading draft model on {draft_device}", 3)
+            draft_quant = get_quant_config(self.args.draft_model)
+            if draft_quant:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                    output_hidden_states=output_hidden_states,
+                    quantization_config=draft_quant,
+                ).eval()
+            else:
+                self.draft_model = loader(
+                    self.args.draft_model,
+                    device_map=draft_device,
+                    output_hidden_states=output_hidden_states,
+                ).eval()
+            
+            self.color_print(f"Loading target model on {target_device}", 3)
+            target_quant = get_quant_config(self.args.target_model)
+            if target_quant:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
-                    quantization_config=quantization_config,
+                    device_map=target_device,
+                    quantization_config=target_quant,
                 ).eval()
             else:
                 self.target_model = loader(
                     self.args.target_model,
-                    device_map="balanced_low_0",
+                    device_map=target_device,
                 ).eval()
 
-        self.vocab_size = int(self.args.vocab_size)
+        # 从实际模型embedding层获取vocab_size，这是最权威的来源
+        # Qwen3等模型的config.vocab_size和tokenizer.vocab_size都可能不准确
+        if hasattr(self, 'target_model') and self.target_model is not None:
+            actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
+            self.vocab_size = actual_vocab_size
+            print(f"✅ Using vocab_size from target model embedding: {self.vocab_size}")
+        elif hasattr(self, 'tokenizer') and self.tokenizer is not None:
+            self.vocab_size = self.tokenizer.vocab_size
+            print(f"⚠️  Using vocab_size from tokenizer: {self.vocab_size}")
+        else:
+            self.vocab_size = int(self.args.vocab_size)
+            print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
+        
+        # Print device allocation for loaded models
+        self._print_model_device_info()
+
+    def _print_model_device_info(self):
+        """Print device allocation information for all loaded models."""
+        self.color_print("=" * 60, 3)
+        self.color_print("Model Device Allocation:", 3)
+        self.color_print("=" * 60, 3)
+        
+        if hasattr(self, 'little_model') and self.little_model is not None:
+            self._print_single_model_device_info('Little Model', self.little_model)
+            
+        if hasattr(self, 'draft_model') and self.draft_model is not None:
+            self._print_single_model_device_info('Draft Model', self.draft_model)
+            
+        if hasattr(self, 'target_model') and self.target_model is not None:
+            self._print_single_model_device_info('Target Model', self.target_model)
+            
+        self.color_print("=" * 60, 3)
+
+    def _print_single_model_device_info(self, model_name: str, model):
+        """Print device allocation for a single model."""
+        self.color_print(f"\n{model_name}:", 3)
+        
+        if hasattr(model, 'hf_device_map'):
+            device_map = model.hf_device_map
+            device_summary = {}
+            
+            for layer_name, device in device_map.items():
+                device_str = str(device)
+                if device_str not in device_summary:
+                    device_summary[device_str] = []
+                device_summary[device_str].append(layer_name)
+            
+            for device, layers in sorted(device_summary.items()):
+                self.color_print(f"  {device}: {len(layers)} layers", 3)
+                
+        elif hasattr(model, 'device'):
+            self.color_print(f"  Device: {model.device}", 3)
+        else:
+            # Try to get device from first parameter
+            try:
+                first_param = next(model.parameters())
+                self.color_print(f"  Device: {first_param.device}", 3)
+            except StopIteration:
+                self.color_print(f"  Device: Unknown (no parameters)", 3)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -296,8 +528,7 @@ class Decoding(Register, ABC):
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.args.target_model,
             trust_remote_code=True,
-            cache_dir="llama/.cache/huggingface",
-            local_files_only=True,
+            local_files_only=False,
         )
         self.tokenizer.padding_side = "right"
 

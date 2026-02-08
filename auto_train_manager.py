@@ -10,24 +10,39 @@ import argparse
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+import re
+import subprocess
+import os
+import signal
+import time
+import shutil
+import json
+import sys
+import numpy as np
+import argparse
 
 # Model Series Definitions
 MODEL_SERIES = {
     "llama": ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
     "vicuna": ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
-    "qwen": ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
+    "qwen": ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B"),
+    "qwen-32b": ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B"),
+    "qwen15": ("Qwen/Qwen3-0.6B", "Qwen/Qwen1.5-1.8B-Chat", "Qwen/Qwen1.5-7B-Chat"),
 }
 
 MODEL_ACC_HEAD_MAP = {
-    "llama-68m": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3", # Fallback
+    "llama-68m": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",  # Fallback
     "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
     "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
-    "vicuna-68m": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3", # Fallback
+    "vicuna-68m": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",  # Fallback
     "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
     "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
-    "qwen/Qwen3-0.6B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3", # Fallback
-    "qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
-    "qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
+    "Qwen/Qwen3-0.6B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",  # Fallback
+    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
+    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
+    "Qwen/Qwen3-32B": "src/SpecDec_pp/checkpoints/qwen-3-32b/exp-weight6-layer3",
+    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-1.8b/exp-weight-layer3",
+    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-7b/exp-weight6-layer3",
 }
 
 class TrainingManager:
@@ -62,8 +77,8 @@ class TrainingManager:
         self.reward_history_little = []
         self.best_tps = 0.0
 
-        # Suffix the model series name to the checkpoint directory
-        self.checkpoint_dir = Path(f"checkpoints_{model_series_name}")
+        # 使用统一的 checkpoints/ 目录，按系列名称组织子目录
+        self.checkpoint_dir = Path(f"checkpoints/{model_series_name}")
         self.status_file = self.checkpoint_dir / "training_status.json"
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
         
@@ -140,7 +155,95 @@ class TrainingManager:
         
         if self.top_checkpoints:
             self.best_tps = self.top_checkpoints[0][0]
-
+    def extract_model_size(self, model_name):
+        """从模型名称中提取参数大小（单位：B）。
+        
+        Examples:
+            'llama-2-13b' -> 13
+            'Qwen/Qwen3-34B' -> 34
+            'tiny-llama-1.1b' -> 1.1
+            'vicuna-68m' -> 0.068
+        """
+        # 匹配各种参数大小格式：68m, 1.1b, 13b, 34B 等
+        pattern = r'(\d+\.?\d*)([mMbB])'
+        match = re.search(pattern, model_name)
+        
+        if not match:
+            return 0.0
+        
+        size = float(match.group(1))
+        unit = match.group(2).lower()
+        
+        # 转换为 B (十亿参数)
+        if unit == 'm':
+            size = size / 1000.0  # M to B
+        # unit == 'b' 已经是 B
+        
+        return size
+    
+    def get_required_gpu_count(self):
+        """根据模型系列中所有模型的总参数量决定需要的GPU数量。
+        
+        注意：训练时会同时加载 little + draft + target 三个模型，
+        因此需要计算总显存需求。
+        """
+        total_size = 0.0
+        model_sizes = []
+        for model_name in self.models:
+            size = self.extract_model_size(model_name)
+            total_size += size
+            model_sizes.append(f"{size:.2f}B")
+        
+        print(f"[{datetime.now()}] 模型参数量: {' + '.join(model_sizes)} = {total_size:.2f}B (total)")
+        
+        # 根据总参数大小分配GPU数量
+        # 考虑到额外的显存开销（激活、梯度、优化器状态等），使用保守估计
+        # 一般来说，加载模型需要约 2x 参数量的显存（FP16/BF16）+ 训练开销
+        if total_size >= 70:  # 70B+需要4个GPU (例如 1.7B + 14B + 70B = 85.7B)
+            return 4
+        elif total_size >= 35:  # 35B+需要3个GPU (例如 1.7B + 14B + 32B = 47.7B)
+            return 3
+        elif total_size >= 15:  # 15B+需要2个GPU (例如 0.6B + 1.7B + 14B = 16.3B)
+            return 2
+        else:
+            return 1  # 默认单GPU
+    
+    def get_best_gpus(self, count=1):
+        """找到具有最多空闲显存的count个GPU。
+        
+        Args:
+            count: 需要的GPU数量
+            
+        Returns:
+            str: GPU ID列表，用逗号分隔，如 "0" 或 "0,1"
+        """
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, check=True
+            )
+            
+            gpu_memory = []
+            for line in result.stdout.strip().split('\n'):
+                if line:
+                    parts = line.split(',')
+                    gpu_id = int(parts[0].strip())
+                    free_mem = int(parts[1].strip())
+                    gpu_memory.append((gpu_id, free_mem))
+            
+            if not gpu_memory:
+                return "0" if count == 1 else ",".join(str(i) for i in range(count))
+            
+            # 按空闲内存降序排序
+            gpu_memory.sort(key=lambda x: x[1], reverse=True)
+            
+            # 选择前count个GPU
+            selected_gpus = [str(gpu_memory[i][0]) for i in range(min(count, len(gpu_memory)))]
+            
+            return ",".join(selected_gpus)
+        except Exception as e:
+            print(f"[{datetime.now()}] GPU检测失败: {e}，使用默认GPU配置")
+            return "0" if count == 1 else ",".join(str(i) for i in range(count))
     def save_best_checkpoint(self, tps_val):
         """如果当前 TPS 是前三名之一，则保存检查点和训练状态。"""
         if not self.best_checkpoints_dir.exists():
@@ -242,27 +345,6 @@ class TrainingManager:
             else:
                 print(f"[{datetime.now()}] 未发现任何历史检查点 (old or new)。Agent 将从头开始训练。")
 
-    def get_best_gpu(self):
-        """Finds the GPU with the most free memory."""
-        try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, check=True
-            )
-            
-            gpu_memory = []
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    idx, mem_used = map(int, line.split(','))
-                    gpu_memory.append((idx, mem_used))
-            
-            if not gpu_memory:
-                return "0"
-            gpu_memory.sort(key=lambda x: x[1])
-            return str(gpu_memory[0][0])
-        except Exception as e:
-            return "0"
-
     def start_training(self):
         """Starts the training process."""
         self.prepare_checkpoints()
@@ -271,11 +353,16 @@ class TrainingManager:
         if os.path.exists(self.log_file):
             os.remove(self.log_file)
 
-        # Select GPU
-        gpu_id = self.get_best_gpu()
+        # 根据模型大小自动选择GPU数量
+        required_gpu_count = self.get_required_gpu_count()
+        gpu_ids = self.get_best_gpus(required_gpu_count)
+        
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = gpu_id
+        env["CUDA_VISIBLE_DEVICES"] = gpu_ids
         env["PYTHONUNBUFFERED"] = "1"
+        
+        print(f"[{datetime.now()}] 模型系列 {self.model_series_name} 需要 {required_gpu_count} 个GPU")
+        print(f"[{datetime.now()}] 已分配 GPU: {gpu_ids}")
         
         # Pass model series to training script
         env["MODEL_SERIES_NAME"] = self.model_series_name
@@ -290,7 +377,7 @@ class TrainingManager:
         env["SMALL_DRAFT_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[1], "")
         env["DRAFT_TARGET_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
             
-        print(f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: 34.6Mbps / 0ms)")
+        print(f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: mmWave Trace / 10ms NTT)")
         
         with open(self.log_file, "w") as out:
             self.process = subprocess.Popen(
@@ -301,7 +388,7 @@ class TrainingManager:
                 env=env
             )
         
-        print(f"[{datetime.now()}] Training started with PID: {self.process.pid} on GPU {gpu_id}")
+        print(f"[{datetime.now()}] Training started with PID: {self.process.pid} on GPU {gpu_ids}")
 
     def stop_training(self):
         """Stops the training process."""
@@ -348,6 +435,10 @@ class TrainingManager:
                 patterns = ["vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"]
             elif self.model_series_name == "qwen":
                 patterns = ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-14B"]
+            elif self.model_series_name == "qwen-32b":
+                patterns = ["Qwen3-1.7B", "Qwen3-14B", "Qwen3-32B"]
+            elif self.model_series_name == "qwen15":
+                patterns = ["Qwen3-0.6B", "Qwen1.5-1.8B", "Qwen1.5-7B"]
 
             for p in patterns:
                 # 使用 pkill -f 匹配包含特定模型路径的进程
@@ -430,11 +521,10 @@ class TrainingManager:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto Training Manager")
-    parser.add_argument("--model", type=str, default="llama", choices=["llama", "vicuna", "qwen"],
-                        help="Model series to train (llama, vicuna, qwen)")
+    parser.add_argument("--model", type=str, default="llama", choices=["llama", "vicuna", "qwen", "qwen-32b", "qwen15"],
+                        help="Model series to train (llama, vicuna, qwen, qwen-32b, qwen15)")
     args = parser.parse_args()
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     manager = TrainingManager(model_series_name=args.model, start_script="cmds/train_rl_mixed.sh")
     manager.run_manager()
-

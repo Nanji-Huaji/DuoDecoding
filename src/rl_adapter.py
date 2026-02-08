@@ -9,7 +9,7 @@ from typing import List, Tuple, Dict
 import os
 
 # 定义候选的 K 值
-K_CANDIDATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+TOPK_CANDIDATES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
 # 定义候选的阈值
 THRESHOLD_CANDIDATES = [0.1, 0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99]
 
@@ -209,9 +209,9 @@ class RLNetworkAdapter:
             maxlen=self.seq_len
         )
         
-        self.k_candidates = k_candidates if k_candidates is not None else K_CANDIDATES
+        self.topk_candidates = k_candidates if k_candidates is not None else TOPK_CANDIDATES
         self.threshold_candidates = threshold_candidates if threshold_candidates is not None else THRESHOLD_CANDIDATES
-        self.action_dim = len(self.k_candidates) * len(self.threshold_candidates)
+        self.action_dim = len(self.topk_candidates) * len(self.threshold_candidates)
         
         # Determine agent name and checkpoint paths
         if model_name.endswith(".pth"):
@@ -280,17 +280,17 @@ class RLNetworkAdapter:
 
         action_idx = self.agent.select_action(state_seq, training=training)
         
-        k_idx = action_idx // len(self.threshold_candidates)
-        t_idx = action_idx % len(self.threshold_candidates)
+        topk_idx = action_idx // len(self.threshold_candidates)
+        threshold_idx = action_idx % len(self.threshold_candidates)
         
-        selected_k = self.k_candidates[k_idx]
-        selected_threshold = self.threshold_candidates[t_idx]
+        selected_topk = self.topk_candidates[topk_idx]
+        selected_threshold = self.threshold_candidates[threshold_idx]
         
         self.last_state_seq = state_seq
         self.last_action = action_idx
         self.last_reward = None
         
-        return selected_k, selected_threshold
+        return selected_topk, selected_threshold
 
     def step(self, reward: float):
         self.last_reward = reward

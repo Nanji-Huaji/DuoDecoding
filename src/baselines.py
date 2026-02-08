@@ -95,6 +95,14 @@ class Baselines(Decoding):
     def load_model(self):
         super().load_model()
         self.load_acc_head()
+        
+        # 确保vocab_size从实际模型获取，而不是从config
+        if hasattr(self, 'target_model') and self.target_model is not None:
+            self.vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
+            print(f"✅ Baselines: Using actual vocab_size from target model: {self.vocab_size}")
+        elif hasattr(self, 'draft_model') and self.draft_model is not None:
+            self.vocab_size = self.draft_model.get_input_embeddings().weight.shape[0]
+            print(f"✅ Baselines: Using actual vocab_size from draft model: {self.vocab_size}")
 
     def load_acc_head(self):
         # Load acc head if adaptive method is used
@@ -420,6 +428,11 @@ class Baselines(Decoding):
             metrics["throughput"] = (
                 metrics["generated_tokens"] / metrics["wall_time"]
             )
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -709,6 +722,11 @@ class Baselines(Decoding):
             metrics["throughput"] = (
                 metrics["generated_tokens"] / metrics["wall_time"]
             )
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -969,6 +987,11 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -1039,6 +1062,9 @@ class Baselines(Decoding):
         queuing_time = 0
         batch_delay = getattr(self.args, "batch_delay", 0)
         wall_time = 0
+        total_draft_steps = 0
+        sum_draft_len = 0
+        sum_top_k = 0
 
         idx = 0
 
@@ -1078,16 +1104,18 @@ class Baselines(Decoding):
             n1: int = prefix_len + self.args.gamma2 - 1
 
             little_accepted_this_iter = 0
+            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+            if self.args.gamma2 > 0:
+                draft_tokens = x[:, prefix_len : prefix_len + self.args.gamma2]
+                draft_probs = torch.stack([
+                    little_model_cache._prob_history[:, prefix_len + k - 1, x[:, prefix_len + k]]
+                    for k in range(self.args.gamma2)
+                ], dim=1)
+                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+
             for i in range(self.args.gamma2):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 reject sampling
-                comm_simulator.transfer(
-                    j,
-                    little_model_cache._prob_history[:, prefix_len + i - 1, j],
-                    "edge_end",
-                )
 
                 if r > (
                     draft_model_cache._prob_history.to(little_device)[
@@ -1096,7 +1124,7 @@ class Baselines(Decoding):
                 ) / (
                     little_model_cache._prob_history[:, prefix_len + i - 1, j]
                 ):
-                    comm_simulator.send_reject_message("edge_end")
+                    # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
                     break
@@ -1175,22 +1203,24 @@ class Baselines(Decoding):
                 new_generated_token.shape[1] + self.args.gamma1
             )
 
+            total_gamma = new_generated_token.shape[1] + self.args.gamma1
             n2: int = (
-                prefix_len + new_generated_token.shape[1] + self.args.gamma1 - 1
+                prefix_len + total_gamma - 1
             )
+            
+            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+            if total_gamma > 0:
+                draft_tokens_second = x[:, prefix_len : prefix_len + total_gamma]
+                draft_probs_second = torch.stack([
+                    draft_model_cache._prob_history[:, prefix_len + k - 1, x[:, prefix_len + k]]
+                    for k in range(total_gamma)
+                ], dim=1)
+                comm_simulator.transfer(draft_tokens_second, draft_probs_second, "edge_cloud")
+
             draft_accepted_this_iter = 0
-            for i in range(
-                new_generated_token.shape[1] + self.args.gamma1,
-            ):
+            for i in range(total_gamma):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 reject sampling
-                comm_simulator.transfer(
-                    j,
-                    draft_model_cache._prob_history[:, prefix_len + i - 1, j],
-                    "edge_cloud",
-                )
 
                 if r > (
                     target_model_cache._prob_history.to(draft_device)[
@@ -1198,13 +1228,15 @@ class Baselines(Decoding):
                     ]
                 ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
+                    # comm_simulator.send_reject_message("edge_cloud")
                     break
                 else:
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            assert n2 >= prefix_len - 1, f"n {n2}, prefix_len {prefix_len}"
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -1305,6 +1337,11 @@ class Baselines(Decoding):
             metrics["throughput"] = (
                 metrics["generated_tokens"] / metrics["wall_time"]
             )
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -1700,6 +1737,11 @@ class Baselines(Decoding):
             self.rl_adapter.save(metrics.get("throughput"))
         if self.little_rl_adapter is not None:
             self.little_rl_adapter.save(metrics.get("throughput"))
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -1832,10 +1874,10 @@ class Baselines(Decoding):
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                next_topk, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
                 
-                # Update parameters for next step or current behavior
-                self.args.gamma = next_k
+                # 更新 top-k 压缩参数和 ARP 阈值
+                transfer_top_k = next_topk
                 self.adapter.threshold = next_threshold
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
@@ -2015,6 +2057,11 @@ class Baselines(Decoding):
 
         if self.rl_adapter is not None:
             self.rl_adapter.save(metrics.get("throughput"))
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -2033,6 +2080,11 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        # DEBUG: 确保输入 prefix 是 long 类型
+        if prefix.dtype != torch.long:
+            print(f"🔍 DEBUG [adaptive_tridecoding entry]: prefix dtype={prefix.dtype}, converting to long")
+            prefix = prefix.long()
+        
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -2116,13 +2168,30 @@ class Baselines(Decoding):
             # )
 
             x = prefix.clone().to(little_device)
+            # DEBUG: 确保 x 是 long 类型
+            if x.dtype != torch.long:
+                print(f"🔍 DEBUG [adaptive_tridecoding]: prefix dtype={x.dtype}, converting to long")
+                x = x.long()
+            
             self.small_draft_adapter.reset_step()
             for _ in range(self.args.gamma2):
                 adapter = self.small_draft_adapter
                 assert adapter.device != torch.device("cpu")
                 q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
+                
+                # DEBUG: 检查 next_tok 的 dtype
+                if next_tok.dtype != torch.long:
+                    print(f"🔍 DEBUG [adaptive_tridecoding]: next_tok dtype={next_tok.dtype}, value={next_tok.item()}, converting to long")
+                    next_tok = next_tok.long()
+                
                 x = torch.cat((x, next_tok), dim=1)
+                
+                # DEBUG: 检查拼接后的 dtype
+                if x.dtype != torch.long:
+                    print(f"🔍 DEBUG [adaptive_tridecoding]: x dtype after cat={x.dtype}, converting to long")
+                    x = x.long()
+                
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
                 
@@ -2141,13 +2210,19 @@ class Baselines(Decoding):
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                next_k, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
-                self.args.gamma2 = next_k
+                next_topk, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
+                # transfer_top_k = next_topk  # edge-end 通常不压缩
                 self.small_draft_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
 
             actual_gamma2 = x.shape[1] - prefix_len
 
+            # DEBUG: 确保传给 draft_model 的 x 是 long 类型
+            if x.dtype != torch.long:
+                print(f"🔍 DEBUG [before draft_model]: x dtype={x.dtype}, converting to long")
+                x = x.long()
+            
             _ = draft_model_cache.generate(x.to(draft_device), 1)
 
             little_model_forward_times += actual_gamma2
@@ -2160,6 +2235,11 @@ class Baselines(Decoding):
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if actual_gamma2 > 0:
                 draft_tokens = x[:, prefix_len : prefix_len + actual_gamma2]
+                
+                # DEBUG: 检查 draft_tokens 的 dtype
+                if draft_tokens.dtype != torch.long:
+                    print(f"🔍 DEBUG [draft_tokens]: dtype={draft_tokens.dtype}, converting to long")
+                    draft_tokens = draft_tokens.long()
                 draft_probs = torch.stack([
                     little_model_cache._prob_history[:, prefix_len + k - 1, x[:, prefix_len + k]]
                     for k in range(actual_gamma2)
@@ -2303,8 +2383,9 @@ class Baselines(Decoding):
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
-                self.args.gamma1 = next_k
+                next_topk, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                # 更新 top-k 压缩参数和 ARP 阈值
+                transfer_top_k = next_topk
                 self.draft_target_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
 
@@ -2429,7 +2510,9 @@ class Baselines(Decoding):
             
             # Merged transfer for Edge-Cloud (Reject + Probs + Index + Token)
             total_bytes = INT_SIZE + token_size + prob_bytes + reject_overhead
-            comm_simulator.simulate_transfer(total_bytes, "edge_cloud")
+            comm_simulator.simulate_transfer(
+                total_bytes, "edge_cloud", topk=transfer_top_k, draft_len=total_gamma
+            )
             
             comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
 
@@ -2486,6 +2569,11 @@ class Baselines(Decoding):
             dra_start = time.time()
             self.little_rl_adapter.save(metrics.get("throughput"))
             metrics["dra_overhead_time"] += time.time() - dra_start
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -2607,8 +2695,9 @@ class Baselines(Decoding):
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                next_k, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
-                self.args.gamma2 = next_k
+                next_topk, next_threshold = self.little_rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
+                # transfer_top_k = next_topk  # edge-end 通常不压缩
                 self.small_draft_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
 
@@ -2737,8 +2826,9 @@ class Baselines(Decoding):
                 probs = torch.softmax(q, dim=-1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
                 task_name = getattr(self, "task", "unknown")
-                next_k, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
-                self.args.gamma1 = next_k
+                next_topk, next_threshold = self.rl_adapter.select_config(bandwidth, latency, acc_probs, entropy, task_name)
+                # 更新 top-k 压缩参数和 ARP 阈值
+                transfer_top_k = next_topk
                 self.draft_target_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
 
@@ -2780,7 +2870,9 @@ class Baselines(Decoding):
                     prob_size = vocab_size * 4 # float32
                     token_size = 8 # int64
                     total_bytes_transfer = token_size + prob_size
-                    comm_simulator.simulate_transfer(total_bytes_transfer, "edge_cloud")
+                    comm_simulator.simulate_transfer(
+                        total_bytes_transfer, "edge_cloud", topk=vocab_size, draft_len=1
+                    )
                     
                     # Rejection Sampling
                     r = torch.rand(1, device=draft_device)
@@ -2857,7 +2949,9 @@ class Baselines(Decoding):
             # Transfer the final sampled token t
             token_size = t.element_size() * t.numel()
             total_bytes = INT_SIZE + token_size + prob_bytes + reject_overhead
-            comm_simulator.simulate_transfer(total_bytes, "edge_cloud")
+            comm_simulator.simulate_transfer(
+                total_bytes, "edge_cloud", topk=transfer_top_k, draft_len=total_gamma
+            )
             comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
@@ -2911,6 +3005,11 @@ class Baselines(Decoding):
             dra_start = time.time()
             self.little_rl_adapter.save(metrics.get("throughput"))
             metrics["dra_overhead_time"] += time.time() - dra_start
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -3225,6 +3324,11 @@ class Baselines(Decoding):
             metrics["throughput"] = (
                 metrics["generated_tokens"] / metrics["wall_time"]
             )
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
@@ -3549,6 +3653,11 @@ class Baselines(Decoding):
             metrics["throughput"] = (
                 metrics["generated_tokens"] / metrics["wall_time"]
             )
+        
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = comm_simulator.edge_cloud_bandwidth_history.copy()
+        metrics["edge_cloud_topk_history"] = comm_simulator.edge_cloud_topk_history.copy()
+        metrics["edge_cloud_draft_len_history"] = comm_simulator.edge_cloud_draft_len_history.copy()
 
         return prefix, metrics
 
