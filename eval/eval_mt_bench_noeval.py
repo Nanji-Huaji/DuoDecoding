@@ -80,18 +80,22 @@ class EvalMTBench(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
         elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
 
     def load_data(self):
         # * load evaluation data
@@ -106,7 +110,7 @@ class EvalMTBench(Baselines):
     def preprocess(self, input_text):
         few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
         qs = few_shot_prompt + input_text
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}
@@ -141,102 +145,83 @@ class EvalMTBench(Baselines):
         )
         out_f = open(out_path, "a")
 
-        # warmup
+        # warmup - 只做第一轮对话以加快速度
         print(f"Start warm up...")
-        n = 5
+        n = 2  # 减少到2次warmup
+        warmup_count = 0
         for question in tqdm.tqdm(
             self.data,
             total=len(self.data),
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-            n -= 1
-            if n == 0:
+            if warmup_count >= n:
                 break
-            choices = []
-            # set random seed. Ensure each experiment runs with a unique random seed.
-            for i in range(1):
+            
+            # Warmup只处理第一轮对话
+            turn_idx = 0
+            qs = question["turns"][turn_idx]
+            if self.args.num_shots > 0:
+                few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
+                qs = few_shot_prompt + qs
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
-                        },
-                    ]
-                elif self.model_id == "gemma":
-                    messages = []
-                else:
-                    conv = get_conversation_template(self.model_id)
-                    if self.model_id == "llama-2-chat":
-                        sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
-                        conv.system_message = sys_p
+            if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
+                    },
+                ]
+                messages.append({"role": "user", "content": qs})
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                input_ids = torch.tensor(
+                    self.tokenizer(
+                        [prompt],
+                        add_special_tokens=False,
+                    ).input_ids
+                )
+            elif self.model_id == "gemma":
+                content = qs
+                content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                messages = [{"role": "user", "content": content}]
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                input_ids = torch.tensor(
+                    self.tokenizer(
+                        [prompt],
+                        add_special_tokens=False,
+                    ).input_ids
+                )
+            else:
+                conv = get_conversation_template(self.model_id)
+                if self.model_id == "llama-2-chat":
+                    sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+                    conv.system_message = sys_p
+                conv.append_message(conv.roles[0], qs)
+                conv.append_message(conv.roles[1], None)
+                prompt = conv.get_prompt() + " "
+                input_ids = torch.tensor(
+                    self.tokenizer.encode(prompt)
+                ).unsqueeze(0)
 
-                turns = []
-                wall_time = []
-                num_token = []
-                for turn_idx in range(len(question["turns"])):
-                    qs = question["turns"][turn_idx]
-                    if turn_idx == 0 and self.args.num_shots > 0:
-                        few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
-                        qs = few_shot_prompt + qs
-
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
-                        content = qs
-                        if self.model_id == "gemma" and turn_idx == 0:
-                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
-                        messages.append({"role": "user", "content": content})
-                        prompt = self.tokenizer.apply_chat_template(
-                            messages,
-                            tokenize=False,
-                            add_generation_prompt=True,
-                        )
-                        input_ids = torch.tensor(
-                            self.tokenizer(
-                                [prompt],
-                                add_special_tokens=False,
-                            ).input_ids
-                        )
-
-                    else:
-                        conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
-                        prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
-
-                    torch.cuda.synchronize()
-                    start_time = time.time()
-                    output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
-                        output_ids, _ = output_ids
-                    torch.cuda.synchronize()
-                    end_time = time.time()
-
-
-                    output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
-                    )
-
-                    for (
-                        special_token
-                    ) in self.tokenizer.special_tokens_map.values():
-                        if isinstance(special_token, list):
-                            for special_tok in special_token:
-                                output_text = output_text.replace(
-                                    special_tok, ""
-                                )
-                        else:
-                            output_text = output_text.replace(special_token, "")
-                    output_text = output_text.strip()
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
-                        messages.append(
-                            {"role": "assistant", "content": output_text}
-                        )
-                    else:
-                        conv.messages[-1][-1] = output_text
-                    turns.append(output_text)
+            print(f"[Warmup {warmup_count+1}/{n}] Input tokens: {input_ids.shape[1]}")
+            torch.cuda.synchronize()
+            start_time = time.time()
+            output_ids = decoding(input_ids)
+            if isinstance(output_ids, tuple) and len(output_ids) == 2:
+                output_ids, _ = output_ids
+            torch.cuda.synchronize()
+            elapsed = time.time() - start_time
+            print(f"[Warmup {warmup_count+1}/{n}] Generated {output_ids.shape[1] - input_ids.shape[1]} tokens in {elapsed:.2f}s ({(output_ids.shape[1] - input_ids.shape[1])/elapsed:.2f} tokens/s)")
+            
+            warmup_count += 1
 
         for question in tqdm.tqdm(
             self.data,
@@ -252,7 +237,7 @@ class EvalMTBench(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
+                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     messages = [
                         {
                             "role": "system",
@@ -274,7 +259,7 @@ class EvalMTBench(Baselines):
 
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
                             content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
@@ -353,7 +338,7 @@ class EvalMTBench(Baselines):
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
                         messages.append(
                             {"role": "assistant", "content": output_text}
                         )
@@ -435,8 +420,14 @@ class EvalMTBench(Baselines):
                 / decoding_metrics["wall_time"]
             )
 
+        # 过滤掉历史数据字段以避免打印过长
+        metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                             if k not in ['edge_cloud_bandwidth_history', 
+                                          'edge_cloud_topk_history', 
+                                          'edge_cloud_draft_len_history']}
+        
         metrics_str = f"""
-        {json.dumps(decoding_metrics, indent = 4)}
+        {json.dumps(metrics_for_print, indent = 4)}
         """
 
         metrics_str += """

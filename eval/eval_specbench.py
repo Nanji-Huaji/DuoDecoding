@@ -32,9 +32,13 @@ class EvalSpecbench(Decoding):
             self.model_id = "vicuna"
         elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
@@ -126,12 +130,8 @@ class EvalSpecbench(Decoding):
             elif self.args.sub_domain == "rag":
                 prompt = few_shot_prompt + input_text
             else:
-                text = (few_shot_prompt + input_text).strip()
-                conv = get_conversation_template("vicuna")
-                conv.append_message(conv.roles[0], text)
-                conv.append_message(conv.roles[1], None)
-                conv.stop_str = "</s>"
-                prompt = conv.get_prompt()
+                # 其他子域使用简单格式，避免对话标记导致的格式冲突
+                prompt = (few_shot_prompt + input_text).strip()
         return prompt
 
     def postprocess(self, input_text, output_text):

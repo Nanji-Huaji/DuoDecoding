@@ -66,9 +66,13 @@ class EvalHumaneval(Baselines):
             self.model_id = "vicuna"
         elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
@@ -113,7 +117,7 @@ class EvalHumaneval(Baselines):
         few_shot_prompt = get_few_shot_prompt("humaneval", self.args.num_shots)
         full_input = few_shot_prompt + input_text
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant. Please complete the following python code."},
                 {"role": "user", "content": full_input}
@@ -324,8 +328,14 @@ class EvalHumaneval(Baselines):
             else:
                 decoding_metrics["throughput"] = 0.0
 
+            # 过滤掉历史数据字段以避免打印过长
+            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                                 if k not in ['edge_cloud_bandwidth_history', 
+                                              'edge_cloud_topk_history', 
+                                              'edge_cloud_draft_len_history']}
+            
             self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{decoding_metrics}")
+            self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
 
             # Save summaries

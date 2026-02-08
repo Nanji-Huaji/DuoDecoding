@@ -125,18 +125,22 @@ class EvalMTBench(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
         elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
 
     def load_data(self):
         # * load evaluation data
@@ -191,7 +195,7 @@ class EvalMTBench(Baselines):
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
+                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     messages = [
                         {
                             "role": "system",
@@ -215,7 +219,7 @@ class EvalMTBench(Baselines):
                         few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
                         qs = few_shot_prompt + qs
 
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
                             content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
@@ -285,7 +289,7 @@ class EvalMTBench(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
+                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     messages = [
                         {
                             "role": "system",
@@ -307,7 +311,7 @@ class EvalMTBench(Baselines):
 
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
                             content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
@@ -379,7 +383,7 @@ class EvalMTBench(Baselines):
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
+                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
                         messages.append(
                             {"role": "assistant", "content": output_text}
                         )
@@ -487,8 +491,14 @@ class EvalMTBench(Baselines):
              decoding_metrics["accuracy"] = avg_score
              self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
 
+        # 过滤掉历史数据字段以避免打印过长
+        metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                             if k not in ['edge_cloud_bandwidth_history', 
+                                          'edge_cloud_topk_history', 
+                                          'edge_cloud_draft_len_history']}
+        
         metrics_str = f"""
-        {json.dumps(decoding_metrics, indent = 4)}
+        {json.dumps(metrics_for_print, indent = 4)}
         """
 
         metrics_str += """

@@ -20,18 +20,22 @@ class Eval(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
         elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
         
     @staticmethod
     def get_class_methods(target_class: Type[Baselines]) -> List[str]:

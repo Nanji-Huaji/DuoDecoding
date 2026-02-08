@@ -25,10 +25,52 @@ class EvalMixed(Baselines):
         self.device = self.accelerator.device # 显式定义 device 属性
         self.load_tokenizer()
         self.load_model()
+        
+        # 获取真实的vocab_size：从实际模型的embedding层获取
+        # 这比tokenizer.vocab_size或config.vocab_size更准确
+        if hasattr(self, 'target_model') and self.target_model is not None:
+            actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
+            print(f"[Token Safety] Actual embedding size: {actual_vocab_size}")
+        elif hasattr(self, 'draft_model') and self.draft_model is not None:
+            actual_vocab_size = self.draft_model.get_input_embeddings().weight.shape[0]
+            print(f"[Token Safety] Actual embedding size from draft: {actual_vocab_size}")
+        else:
+            actual_vocab_size = self.tokenizer.vocab_size
+            print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
+        
+        self.vocab_size = actual_vocab_size
+        self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+        print(f"[Token Safety] Final vocab_size: {self.vocab_size}, pad_token_id: {self.pad_token_id}")
+        
         self.all_data = {}
         self.load_data() # 改为调用抽象方法
         self.model_id = self._determine_model_id()
         self.color_print(f"Using Model ID: {self.model_id}", 2)
+    
+    def clamp_token_ids(self, input_ids):
+        """将超出vocab_size范围的token ID钳位到pad_token_id。
+        
+        Args:
+            input_ids: torch.Tensor, shape (batch_size, seq_len)
+            
+        Returns:
+            torch.Tensor: 钳位后的token IDs
+        """
+        # 检查是否有越界的token
+        max_id = input_ids.max().item()
+        min_id = input_ids.min().item()
+        
+        if max_id >= self.vocab_size or min_id < 0:
+            print(f"⚠️  [Token Clamp Warning] Found out-of-range token IDs! min={min_id}, max={max_id}, vocab_size={self.vocab_size}")
+            # 将越界的token替换为pad_token
+            input_ids = torch.where(
+                (input_ids >= 0) & (input_ids < self.vocab_size),
+                input_ids,
+                torch.full_like(input_ids, self.pad_token_id)
+            )
+            print(f"   Replaced with pad_token_id={self.pad_token_id}. New range: min={input_ids.min().item()}, max={input_ids.max().item()}")
+        
+        return input_ids
 
     def _determine_model_id(self):
         target = str(self.args.target_model).lower()
@@ -134,11 +176,15 @@ class EvalMixed(Baselines):
         if self.model_id in ["llama-3.1", "qwen"]:
              messages = [{"role": "user", "content": prompt_text}]
              return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        else:
+        elif "vicuna" in self.model_id or "llama-2-chat" in self.model_id:
+            # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], prompt_text)
             conv.append_message(conv.roles[1], None)
             return conv.get_prompt()
+        else:
+            # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
+            return prompt_text
 
     @torch.no_grad()
     def eval(self):
@@ -178,6 +224,9 @@ class EvalMixed(Baselines):
             # 5. 构建输入
             prompt = self.preprocess_prompt(task, item)
             input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
+            
+            # 钳位token IDs，防止越界
+            input_ids = self.clamp_token_ids(input_ids)
             
             # 6. 执行解码 (此过程会触发 RL RLNetworkAdapter 的 select_config 和 update)
             print(f"[{step+1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20}")

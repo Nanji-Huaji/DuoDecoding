@@ -45,11 +45,15 @@ class EvalCNNDM(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
@@ -79,7 +83,7 @@ class EvalCNNDM(Baselines):
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = f"Summarize the following article:\n\n{full_input}"
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}
@@ -90,11 +94,15 @@ class EvalCNNDM(Baselines):
                 {"role": "user", "content": "You are a helpful assistant.\n" + qs}
             ]
             prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        else:
+        elif "vicuna" in self.model_id or "llama-2-chat" in self.model_id:
+            # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt() + " "
+        else:
+            # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
+            prompt = qs + "\n\nSummary:"
         return prompt
 
     def postprocess(self, input_text, output_text):
@@ -141,7 +149,7 @@ class EvalCNNDM(Baselines):
             article = str(item["article"])
             # qs = f"Summarize the following article:\n\n{article[:1000]}"
             prompt = self.preprocess(article[:1000])
-            if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                 input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
             else:
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
@@ -181,7 +189,7 @@ class EvalCNNDM(Baselines):
 
                 prompt = self.preprocess(article[:4000])
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
+                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
                 else:
                     input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
@@ -271,8 +279,14 @@ class EvalCNNDM(Baselines):
             else:
                 decoding_metrics["throughput"] = 0.0
 
+            # 过滤掉历史数据字段以避免打印过长
+            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                                 if k not in ['edge_cloud_bandwidth_history', 
+                                              'edge_cloud_topk_history', 
+                                              'edge_cloud_draft_len_history']}
+            
             self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{decoding_metrics}")
+            self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
 
             # Save summaries

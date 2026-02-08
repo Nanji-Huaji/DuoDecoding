@@ -30,11 +30,40 @@ def extract_answer_from_gold(completion):
         return INVALID_ANS
 
 def extract_answer_from_output(completion):
-    text = completion.replace(",", "")
-    pred = [s for s in re.findall(r'-?\d+\.?\d*', text)]
-    if not pred:
-        return INVALID_ANS
-    return pred[-1]
+    """改进的答案提取逻辑，按优先级尝试多种方法"""
+    # 方法 1: 寻找 #### 标记（官方 GSM8K 格式）
+    if "####" in completion:
+        try:
+            answer = completion.split("####")[1].strip()
+            answer = answer.split("\n")[0].strip()  # 取第一行
+            answer = answer.replace(",", "").replace("$", "")
+            # 提取数字
+            numbers = re.findall(r'-?\d+\.?\d*', answer)
+            if numbers:
+                return numbers[0]
+        except:
+            pass
+    
+    # 方法 2: 寻找 "The answer is" 格式
+    answer_patterns = [
+        r"[Tt]he answer is:?\s*([\-\$]?[\d,\.]+)",
+        r"[Aa]nswer:?\s*([\-\$]?[\d,\.]+)",
+        r"^####\s*([\-\$]?[\d,\.]+)"
+    ]
+    
+    for pattern in answer_patterns:
+        match = re.search(pattern, completion)
+        if match:
+            answer = match.group(1).replace(",", "").replace("$", "")
+            return answer
+    
+    # 方法 3: 提取最后一个数字（作为后备）
+    text = completion.replace(",", "").replace("$", "")
+    numbers = re.findall(r'-?\d+\.?\d*', text)
+    if numbers:
+        return numbers[-1]
+    
+    return INVALID_ANS
 
 class EvalGSM8K(Baselines):
     def __init__(self, args):
@@ -52,9 +81,13 @@ class EvalGSM8K(Baselines):
             self.model_id = "vicuna"
         elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
             self.model_id = "vicuna"
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
             self.model_id = "llama-3.1"
-        elif "llama" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
             self.model_id = "vicuna"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
@@ -79,10 +112,11 @@ class EvalGSM8K(Baselines):
         few_shot_prompt = get_few_shot_prompt("gsm8k", self.args.num_shots)
         full_input = few_shot_prompt + "Question: " + input_text
 
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        # 使用与官方 GSM8K CoT 一致的提示格式
+        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
-                {"role": "system", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'."},
-                {"role": "user", "content": full_input}
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": full_input + "\n\nPlease solve this step by step and put your final answer after #### at the end."}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -91,7 +125,7 @@ class EvalGSM8K(Baselines):
             )
         elif self.model_id == "gemma":
             messages = [
-                {"role": "user", "content": "You are a helpful assistant. Solve the math problem step by step and end your answer with 'The answer is <number>'." + "\n" + full_input}
+                {"role": "user", "content": full_input + "\n\nPlease solve this step by step and put your final answer after #### at the end."}
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -99,10 +133,9 @@ class EvalGSM8K(Baselines):
                 add_generation_prompt=True,
             )
         else:
-            conv = get_conversation_template(self.model_id)
-            conv.append_message(conv.roles[0], f"{full_input}\nAnswer:")
-            conv.append_message(conv.roles[1], None)
-            prompt = conv.get_prompt()
+            # Llama-2 和其他模型：使用简单的文本续写格式，避免对话标记冲突
+            # 直接续写Few-shot示例，不添加额外的对话结构
+            prompt = full_input + "\nAnswer:"
         return prompt
 
     def is_correct(self, model_completion, gt_completion):
@@ -114,13 +147,22 @@ class EvalGSM8K(Baselines):
         # But GSM8K eval often just looks for the last number
         pred_ans = extract_answer_from_output(model_completion)
         
-        return pred_ans == gt_ans
+        if pred_ans == INVALID_ANS:
+            return False
+        
+        # 使用数值比较而不是字符串比较（与 test/eval_gsm8k_vllm.py 一致）
+        try:
+            # 转换为浮点数进行比较，处理小数情况
+            return abs(float(gt_ans) - float(pred_ans)) < 1e-6
+        except:
+            # 如果无法转换为数字，进行字符串比较
+            return gt_ans.strip() == pred_ans.strip()
 
     def postprocess(self, input_text, output_text):
         return output_text.strip()
 
     @torch.no_grad()
-    def eval(self, total: int | None = 80):
+    def eval(self, total: int | None = None):
         global decoding_metrics
         # Select decoding method
         decoding = self.get_decoding_method()
@@ -159,7 +201,7 @@ class EvalGSM8K(Baselines):
             
             prompt = self.preprocess(question)
             
-            if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                 input_ids = torch.tensor(
                     self.tokenizer([prompt], add_special_tokens=False).input_ids
                 )
@@ -241,8 +283,14 @@ class EvalGSM8K(Baselines):
             else:
                 decoding_metrics["throughput"] = 0.0
 
+            # 过滤掉历史数据字段以避免打印过长
+            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                                 if k not in ['edge_cloud_bandwidth_history', 
+                                              'edge_cloud_topk_history', 
+                                              'edge_cloud_draft_len_history']}
+            
             self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{decoding_metrics}")
+            self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
 
             # Save summaries

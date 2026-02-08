@@ -35,14 +35,20 @@ class EvalXSum(Baselines):
 
         self.task = "xsum"
         
-        if "Llama-3.1" in str(self.args.target_model) or "Llama-3.1" in str(self.args.draft_model):
+        if "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+            self.model_id = "llama-3.2"
+        elif "Llama-3.1" in str(self.args.target_model) or "Llama-3.1" in str(self.args.draft_model):
             self.model_id = "llama-3.1"
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+            self.model_id = "llama-3"
         elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
             self.model_id = "qwen"
         elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
             self.model_id = "gemma"
         elif "Llama-2" in str(self.args.target_model):
             self.model_id = "llama-2-chat"
+        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+            self.model_id = "vicuna"
         else:
             self.model_id = "vicuna"
 
@@ -67,7 +73,7 @@ class EvalXSum(Baselines):
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = f"Summarize the following article:\n\n{full_input}"
-        if self.model_id == "llama-3.1" or self.model_id == "qwen":
+        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs}
@@ -78,11 +84,15 @@ class EvalXSum(Baselines):
                 {"role": "user", "content": "You are a helpful assistant.\n" + qs}
             ]
             prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        else:
+        elif "vicuna" in self.model_id or "llama-2-chat" in self.model_id:
+            # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt() + " "
+        else:
+            # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
+            prompt = qs + "\n\nSummary:"
         return prompt
 
     @torch.no_grad()
@@ -129,7 +139,7 @@ class EvalXSum(Baselines):
             if prompt is None:
                 continue
 
-            if self.model_id == "llama-3.1" or self.model_id == "qwen":
+            if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                 input_ids = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt").input_ids
             else:
                 input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
@@ -171,7 +181,7 @@ class EvalXSum(Baselines):
                 if prompt is None:
                     continue
 
-                if self.model_id == "llama-3.1" or self.model_id == "qwen":
+                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     input_ids = self.tokenizer([prompt], add_special_tokens=False, return_tensors="pt").input_ids
                 else:
                     input_ids = self.tokenizer.encode(prompt, return_tensors="pt")
@@ -247,8 +257,14 @@ class EvalXSum(Baselines):
             self.color_print(f"Average ROUGE-2: {avg_r2:.4f}", 2)
             self.color_print(f"Average ROUGE-L: {avg_rl:.4f}", 2)
             
+            # 过滤掉历史数据字段以避免打印过长
+            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
+                                 if k not in ['edge_cloud_bandwidth_history', 
+                                              'edge_cloud_topk_history', 
+                                              'edge_cloud_draft_len_history']}
+            
             self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{decoding_metrics}")
+            self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
 
             # Save summaries
