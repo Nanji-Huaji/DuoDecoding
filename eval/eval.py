@@ -1,7 +1,9 @@
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Callable, Type
-from src.baselines import Baselines
 import inspect
+from abc import abstractmethod
+from typing import Callable, List, Type
+
+from src.baselines import Baselines
+
 
 class Eval(Baselines):
     def __init__(self, args):
@@ -20,28 +22,42 @@ class Eval(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
-        
+            raise NotImplementedError(
+                f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}"
+            )
+
     @staticmethod
     def get_class_methods(target_class: Type[Baselines]) -> List[str]:
         """获取类中定义的所有方法（不包括继承的方法和__init__）"""
         methods = []
-        for name, method in inspect.getmembers(target_class, predicate=inspect.isfunction):
+        for name, method in inspect.getmembers(
+            target_class, predicate=inspect.isfunction
+        ):
             # 检查方法是否在当前类中定义（而非继承）
             if name in target_class.__dict__ and name != "__init__":
                 methods.append(name)
@@ -75,10 +91,7 @@ class Eval(Baselines):
             decoding = self.uncertainty_decoding
         elif self.args.eval_mode == "speculative_decoding_with_bandwidth":
             decoding = self.speculative_decoding_with_bandwidth
-        elif (
-            self.args.eval_mode
-            == "speculative_decoding_with_bandwidth_full_prob"
-        ):
+        elif self.args.eval_mode == "speculative_decoding_with_bandwidth_full_prob":
             decoding = self.speculative_decoding_with_bandwidth_full_prob
         elif self.args.eval_mode in self.get_class_methods(Baselines):
             decoding = getattr(self, self.args.eval_mode)
@@ -117,5 +130,3 @@ class Eval(Baselines):
         Wrap the input_text into a model-specific prompt
         """
         pass
-    
-    

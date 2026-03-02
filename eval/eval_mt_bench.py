@@ -2,44 +2,33 @@ import os
 import sys
 
 sys.path.append(os.path.join(sys.path[0], "../"))
-import torch
-import json
-import tqdm
-import time
-import random
-import shortuuid
-from src.utils import seed_everything, parse_arguments
-from src.engine import Decoding
-from fastchat.model import get_conversation_template
-from typing import List, Tuple
-
-
-from src.baselines import get_empty_metrics, DecodingMetrics
-
-
-from src.baselines import Baselines
-
-from few_shot_examples import get_few_shot_prompt
-
-from functools import partial
-
-import inspect
-
-from collections import Counter
-
-import re
-import multiprocessing
 import asyncio
+import inspect
+import json
+import random
+import re
+import time
+from functools import partial
+from typing import List
+
+import shortuuid
+import torch
+import tqdm
+from fastchat.model import get_conversation_template
+from few_shot_examples import get_few_shot_prompt
 from openai import AsyncOpenAI
 
-async def grade_mt_bench_async(question, answer, judge_model="gpt-4", api_key=None, api_base=None):
+from src.baselines import Baselines, get_empty_metrics
+from src.utils import parse_arguments, seed_everything
+
+
+async def grade_mt_bench_async(
+    question, answer, judge_model="gpt-4", api_key=None, api_base=None
+):
     if not api_key:
         return 0
 
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url=api_base
-    )
+    client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
     prompt_template = """
 [Instruction]
@@ -52,15 +41,18 @@ Please act as an impartial judge and evaluate the quality of the response provid
 {answer}
 [The End of Assistant's Answer]
 """
-    
+
     prompt = prompt_template.format(question=question, answer=answer)
-    
+
     try:
         response = await client.chat.completions.create(
             model=judge_model,
             messages=[
-                {"role": "system", "content": "You are a helpful and precise assistant for checking the quality of the answer."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": "You are a helpful and precise assistant for checking the quality of the answer.",
+                },
+                {"role": "user", "content": prompt},
             ],
             temperature=0.2,
             max_tokens=2048,
@@ -74,6 +66,7 @@ Please act as an impartial judge and evaluate the quality of the response provid
     except Exception as e:
         print(f"Error in grading: {e}")
         return 0
+
 
 decoding_metrics = get_empty_metrics()
 
@@ -125,26 +118,38 @@ class EvalMTBench(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
+            raise NotImplementedError(
+                f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}"
+            )
 
     def load_data(self):
         # * load evaluation data
-        self.color_print(f"Loading MT-bench data...", 3)
+        self.color_print("Loading MT-bench data...", 3)
         data = []
         with open(os.path.join(self.args.data_path, "mt_bench.jsonl")) as f:
             for line in f.readlines():
@@ -163,7 +168,6 @@ class EvalMTBench(Baselines):
         global decoding_metrics
         decoding = self.get_decoding_method()
 
-
         decoding = partial(
             decoding,
             transfer_top_k=self.args.transfer_top_k,
@@ -180,7 +184,7 @@ class EvalMTBench(Baselines):
         out_f = open(out_path, "a")
 
         # warmup
-        print(f"Start warm up...")
+        print("Start warm up...")
         n = 10
         for question in tqdm.tqdm(
             self.data,
@@ -194,7 +198,6 @@ class EvalMTBench(Baselines):
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):
-
                 if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                     messages = [
                         {
@@ -216,13 +219,25 @@ class EvalMTBench(Baselines):
                 for turn_idx in range(len(question["turns"])):
                     qs = question["turns"][turn_idx]
                     if turn_idx == 0 and self.args.num_shots > 0:
-                        few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
+                        few_shot_prompt = get_few_shot_prompt(
+                            "mt_bench", self.args.num_shots
+                        )
                         qs = few_shot_prompt + qs
 
-                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
+                    if self.model_id in [
+                        "llama-3.1",
+                        "llama-3.2",
+                        "llama-3",
+                        "qwen",
+                        "gemma",
+                    ]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
-                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                            content = (
+                                "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+                                + "\n"
+                                + qs
+                            )
                         messages.append({"role": "user", "content": content})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
@@ -256,21 +271,19 @@ class EvalMTBench(Baselines):
                         output_ids[0], spaces_between_special_tokens=False
                     )
 
-                    for (
-                        special_token
-                    ) in self.tokenizer.special_tokens_map.values():
+                    for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
                             for special_tok in special_token:
-                                output_text = output_text.replace(
-                                    special_tok, ""
-                                )
+                                output_text = output_text.replace(special_tok, "")
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id == "llama-3.1" or self.model_id == "qwen" or self.model_id == "gemma":
-                        messages.append(
-                            {"role": "assistant", "content": output_text}
-                        )
+                    if (
+                        self.model_id == "llama-3.1"
+                        or self.model_id == "qwen"
+                        or self.model_id == "gemma"
+                    ):
+                        messages.append({"role": "assistant", "content": output_text})
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
@@ -281,7 +294,6 @@ class EvalMTBench(Baselines):
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(self.args.num_samples_per_task):
@@ -308,13 +320,22 @@ class EvalMTBench(Baselines):
                 wall_time = []
                 num_token = []
                 for turn_idx in range(len(question["turns"])):
-
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
+                    if self.model_id in [
+                        "llama-3.1",
+                        "llama-3.2",
+                        "llama-3",
+                        "qwen",
+                        "gemma",
+                    ]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
-                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                            content = (
+                                "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+                                + "\n"
+                                + qs
+                            )
                         messages.append({"role": "user", "content": content})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
@@ -342,28 +363,35 @@ class EvalMTBench(Baselines):
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, metrics = output_ids
                         for key in decoding_metrics.keys():
-                            if key in metrics and key not in [
-                                "little_acceptance_rate",
-                                "draft_acceptance_rate",
-                                "accuracy"
-                            ] and hasattr(metrics[key], "__add__"):
+                            if (
+                                key in metrics
+                                and key
+                                not in [
+                                    "little_acceptance_rate",
+                                    "draft_acceptance_rate",
+                                    "accuracy",
+                                ]
+                                and hasattr(metrics[key], "__add__")
+                            ):
                                 decoding_metrics[key] += metrics[key]
-                                assert (
-                                    decoding_metrics[key] is not None
-                                ), f"Metric {key} is None, please check your decoding function."
+                                assert decoding_metrics[key] is not None, (
+                                    f"Metric {key} is None, please check your decoding function."
+                                )
                             else:
                                 # 如果传入一个字典，尝试将字典的值进行累加
                                 if isinstance(metrics[key], dict):
                                     try:
                                         for sub_key in metrics[key]:
                                             if sub_key in decoding_metrics[key]:
-                                                decoding_metrics[key][sub_key] += metrics[key][sub_key]
+                                                decoding_metrics[key][sub_key] += (
+                                                    metrics[key][sub_key]
+                                                )
                                             else:
-                                                decoding_metrics[key][sub_key] = metrics[key][sub_key]
+                                                decoding_metrics[key][sub_key] = (
+                                                    metrics[key][sub_key]
+                                                )
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
-                                        
-
 
                     torch.cuda.synchronize()
                     end_time = time.time()
@@ -372,21 +400,21 @@ class EvalMTBench(Baselines):
                         output_ids[0], spaces_between_special_tokens=False
                     )
 
-                    for (
-                        special_token
-                    ) in self.tokenizer.special_tokens_map.values():
+                    for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
                             for special_tok in special_token:
-                                output_text = output_text.replace(
-                                    special_tok, ""
-                                )
+                                output_text = output_text.replace(special_tok, "")
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
-                        messages.append(
-                            {"role": "assistant", "content": output_text}
-                        )
+                    if self.model_id in [
+                        "llama-3.1",
+                        "llama-3.2",
+                        "llama-3",
+                        "qwen",
+                        "gemma",
+                    ]:
+                        messages.append({"role": "assistant", "content": output_text})
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
@@ -417,18 +445,29 @@ class EvalMTBench(Baselines):
                         tasks = []
                         for idx, turn in enumerate(choice["turns"]):
                             qs = question["turns"][idx]
-                            tasks.append(grade_mt_bench_async(qs, turn, self.args.judge_model, self.args.openai_api_key, self.args.openai_api_base))
-                        
+                            tasks.append(
+                                grade_mt_bench_async(
+                                    qs,
+                                    turn,
+                                    self.args.judge_model,
+                                    self.args.openai_api_key,
+                                    self.args.openai_api_base,
+                                )
+                            )
+
                         # Run tasks concurrently
                         async def run_grading_tasks():
-                             return await asyncio.gather(*tasks)
+                            return await asyncio.gather(*tasks)
 
                         scores = asyncio.run(run_grading_tasks())
                         choice["score"] = sum(scores) / len(scores) if scores else 0
-                        
+
                         # update metrics
-                        if "accuracy" not in decoding_metrics or decoding_metrics["accuracy"] == 0:
-                             decoding_metrics["accuracy"] = []
+                        if (
+                            "accuracy" not in decoding_metrics
+                            or decoding_metrics["accuracy"] == 0
+                        ):
+                            decoding_metrics["accuracy"] = []
                         decoding_metrics["accuracy"].append(choice["score"])
 
                 out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
@@ -482,23 +521,35 @@ class EvalMTBench(Baselines):
 
         if decoding_metrics["wall_time"] != 0:
             decoding_metrics["throughput"] = (
-                decoding_metrics["generated_tokens"]
-                / decoding_metrics["wall_time"]
+                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
             )
 
-        if self.accelerator.is_main_process and "accuracy" in decoding_metrics and isinstance(decoding_metrics["accuracy"], list) and len(decoding_metrics["accuracy"]) > 0:
-             avg_score = sum(decoding_metrics["accuracy"]) / len(decoding_metrics["accuracy"])
-             decoding_metrics["accuracy"] = avg_score
-             self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
+        if (
+            self.accelerator.is_main_process
+            and "accuracy" in decoding_metrics
+            and isinstance(decoding_metrics["accuracy"], list)
+            and len(decoding_metrics["accuracy"]) > 0
+        ):
+            avg_score = sum(decoding_metrics["accuracy"]) / len(
+                decoding_metrics["accuracy"]
+            )
+            decoding_metrics["accuracy"] = avg_score
+            self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
 
         # 过滤掉历史数据字段以避免打印过长
-        metrics_for_print = {k: v for k, v in decoding_metrics.items() 
-                             if k not in ['edge_cloud_bandwidth_history', 
-                                          'edge_cloud_topk_history', 
-                                          'edge_cloud_draft_len_history']}
-        
+        metrics_for_print = {
+            k: v
+            for k, v in decoding_metrics.items()
+            if k
+            not in [
+                "edge_cloud_bandwidth_history",
+                "edge_cloud_topk_history",
+                "edge_cloud_draft_len_history",
+            ]
+        }
+
         metrics_str = f"""
-        {json.dumps(metrics_for_print, indent = 4)}
+        {json.dumps(metrics_for_print, indent=4)}
         """
 
         metrics_str += """
@@ -521,12 +572,10 @@ class EvalMTBench(Baselines):
         self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
-        self.color_print(
-            f"Decoding metrics saved to {decoding_metrics_path}", 2
-        )
-
+        self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
         self.accelerator.wait_for_everyone()
+
 
 if __name__ == "__main__":
     args = parse_arguments()

@@ -1,12 +1,11 @@
-import numpy as np
-from typing import TypedDict, List, Tuple, Literal, Union, Optional, Any
-import torch
-import math
-
-import warnings
-
 import logging
-from src.utils import return_closest_mean_index, read_trace_file
+import math
+import warnings
+from typing import List, Literal, Optional, Tuple, TypedDict
+
+import torch
+
+from src.utils import read_trace_file, return_closest_mean_index
 
 
 class TransferUnit(TypedDict):
@@ -25,9 +24,7 @@ LinkType = Literal["edge_cloud", "edge_end", "cloud_end"]
 Dimension = Literal["Mbps", "MBps", "bps", "Bps"]
 
 
-def _convert_to_bytes_per_second(
-    bandwidth: float, dimension: Dimension
-) -> float:
+def _convert_to_bytes_per_second(bandwidth: float, dimension: Dimension) -> float:
     """
     将带宽转换为bytes/second
     """
@@ -66,7 +63,7 @@ class CommunicationSimulator:
         ntt_ms_edge_cloud: float = 200,
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
-        mode: Literal["driving", "static", "walking"] = "static"
+        mode: Literal["driving", "static", "walking"] = "static",
     ):
         self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
             bandwidth_edge_cloud, dimension
@@ -88,12 +85,8 @@ class CommunicationSimulator:
         self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
         self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
 
-        self.connect_times = {
-            "edge_end": 0, 
-            "cloud_end": 0,
-            "edge_cloud": 0
-        }
-        
+        self.connect_times = {"edge_end": 0, "cloud_end": 0, "edge_cloud": 0}
+
         # 用于记录 edge-cloud 的瞬时带宽、top-k 和起草长度历史
         self.edge_cloud_bandwidth_history = []
         self.edge_cloud_topk_history = []
@@ -103,8 +96,12 @@ class CommunicationSimulator:
         self.dimension = dimension
         if self.use_stochastic:
             if set_mean_bandwidth:
-                assert bandwidth_edge_end is not None and bandwidth_edge_cloud is not None, "When set_mean_bandwidth is True, bandwidth_edge_end and bandwidth_edge_cloud must not be None"
-            
+                assert (
+                    bandwidth_edge_end is not None and bandwidth_edge_cloud is not None
+                ), (
+                    "When set_mean_bandwidth is True, bandwidth_edge_end and bandwidth_edge_cloud must not be None"
+                )
+
             # Calculate conversion factor from Mbps to the current dimension unit
             # This is needed because trace data is always in Mbps
             if dimension == "Mbps":
@@ -117,7 +114,7 @@ class CommunicationSimulator:
                 mbps_to_dim = 1e6 / 8.0
             else:
                 mbps_to_dim = 1.0
-            
+
             floor_val = 5.0 * mbps_to_dim
             self.trace_file_dict = {
                 "driving": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/driving/5g/throughput.list",
@@ -132,34 +129,43 @@ class CommunicationSimulator:
                 # target_mean is in the current dimension
                 target_mean = max(0.1 * mbps_to_dim, bandwidth_edge_cloud)
                 # return_closest_mean_index expects Mbps
-                run_id = return_closest_mean_index(trace_file, target_mean / mbps_to_dim)
+                run_id = return_closest_mean_index(
+                    trace_file, target_mean / mbps_to_dim
+                )
                 if run_id == -1:
                     run_id = 1
-                
+
                 raw_data = read_trace_file(trace_file, run_id)
                 if raw_data:
-                    current_mean = sum(raw_data) / len(raw_data) # This is in Mbps
+                    current_mean = sum(raw_data) / len(raw_data)  # This is in Mbps
                     if current_mean > 0:
                         scale_factor = (target_mean / mbps_to_dim) / current_mean
                         # Apply scale factor and ensure a reasonable floor (5 Mbps in current dimension)
-                        self.trace_data = [max(floor_val, x * scale_factor * mbps_to_dim) for x in raw_data]
-                        
+                        self.trace_data = [
+                            max(floor_val, x * scale_factor * mbps_to_dim)
+                            for x in raw_data
+                        ]
+
                         # Re-calculate mean and adjust to match exactly if needed
                         actual_mean = sum(self.trace_data) / len(self.trace_data)
                         if actual_mean > 0:
                             re_scale = target_mean / actual_mean
-                            self.trace_data = [max(floor_val, x * re_scale) for x in self.trace_data]
+                            self.trace_data = [
+                                max(floor_val, x * re_scale) for x in self.trace_data
+                            ]
                     else:
                         self.trace_data = [target_mean] * len(raw_data)
                 else:
                     self.trace_data = [target_mean]
             else:
-                self.trace_data = read_trace_file(trace_file, 1) # This is in Mbps
+                self.trace_data = read_trace_file(trace_file, 1)  # This is in Mbps
                 if not self.trace_data:
                     run_id = return_closest_mean_index(trace_file, None)
                     self.trace_data = read_trace_file(trace_file, run_id)
                 # Convert from Mbps to target dimension and apply floor
-                self.trace_data = [max(floor_val, x * mbps_to_dim) for x in self.trace_data]
+                self.trace_data = [
+                    max(floor_val, x * mbps_to_dim) for x in self.trace_data
+                ]
 
     @property
     def edge_cloud_comm_time(self):
@@ -207,7 +213,6 @@ class CommunicationSimulator:
     def get_connect_times(self) -> dict:
         return self.connect_times
 
-
     def simulate_transfer(
         self,
         data_size_bytes: int | float,
@@ -225,7 +230,9 @@ class CommunicationSimulator:
         """
         if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
             current_bw = self.trace_data[self.trace_index]
-            self.bandwidth_edge_cloud = _convert_to_bytes_per_second(current_bw, self.dimension)
+            self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
+                current_bw, self.dimension
+            )
             self.trace_index = (self.trace_index + 1) % len(self.trace_data)
 
         if link_type == "edge_cloud":
@@ -258,7 +265,7 @@ class CommunicationSimulator:
                 data_size_bytes=data_size_bytes, transfer_time=transfer_time
             )
             self.stats[link_type].append(transfer_unit)
-            
+
             # 记录 edge-cloud 的瞬时带宽、Top-K 和 Draft Length
             if link_type == "edge_cloud":
                 bandwidth_mbps = bandwidth / (1024 * 1024 / 8)  # 转换为 Mbps
@@ -270,7 +277,7 @@ class CommunicationSimulator:
     def record_edge_cloud_draft_info(self, topk: int, draft_len: int):
         """
         记录 edge-cloud 传输时的 top-k 和起草长度信息
-        
+
         Args:
             topk: 传输使用的 top-k 值
             draft_len: 起草的序列长度
@@ -279,9 +286,7 @@ class CommunicationSimulator:
         self.edge_cloud_draft_len_history.append(draft_len)
 
     @staticmethod
-    def _apply_top_k_compression(
-        probs: torch.Tensor | None, k: int
-    ) -> torch.Tensor:
+    def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
         """
         probs: torch.Tensor，当前词表概率分布，形状为(..., V)
         k: int，保留的top-k数量
@@ -354,9 +359,7 @@ class CommunicationSimulator:
             return torch.empty(0)
 
         if probs.dim() != 3:
-            raise ValueError(
-                f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建"
-            )
+            raise ValueError(f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建")
 
         if k >= probs.shape[-1]:
             return probs  # 无需压缩
@@ -367,15 +370,11 @@ class CommunicationSimulator:
         flat_probs = probs.view(-1, vocab_size)
 
         # 批量获取top-k
-        top_k_values, top_k_indices = torch.topk(
-            flat_probs, k, dim=-1, sorted=True
-        )
+        top_k_values, top_k_indices = torch.topk(flat_probs, k, dim=-1, sorted=True)
 
         # 创建压缩的概率分布
         compressed_probs = torch.zeros_like(flat_probs)
-        batch_indices = (
-            torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
-        )
+        batch_indices = torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
         compressed_probs[batch_indices, top_k_indices] = top_k_values
 
         # 重建概率分布
@@ -390,9 +389,7 @@ class CommunicationSimulator:
             torch.zeros_like(residual_mass),
         )
 
-        rebuilt_flat_probs = torch.where(
-            zero_mask, uniform_prob, compressed_probs
-        )
+        rebuilt_flat_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
 
         # 恢复原始形状
         return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
@@ -433,18 +430,22 @@ class CommunicationSimulator:
                 seq_length = 1
             prob_size = compressed_k * prob.element_size() * seq_length
             total_bytes = token_bytes + prob_size + self.protocol_overhead_bytes
-        
+
         # 计算 topk 和 draft_len
         topk_val = 0
         draft_len_val = 0
         if link_type == "edge_cloud":
-            topk_val = compressed_k if (is_compressed and compressed_k is not None) else 0
-            draft_len_val = tokens.numel() if (tokens is not None and tokens.numel() > 0) else 0
+            topk_val = (
+                compressed_k if (is_compressed and compressed_k is not None) else 0
+            )
+            draft_len_val = (
+                tokens.numel() if (tokens is not None and tokens.numel() > 0) else 0
+            )
 
         transfer_time = self.simulate_transfer(
             total_bytes, link_type, topk=topk_val, draft_len=draft_len_val
         )
-        
+
         return transfer_time
 
     def send_reject_message(
@@ -461,9 +462,7 @@ class CommunicationSimulator:
         self,
         tokens: torch.Tensor,
         prob_history: Optional[torch.Tensor] = None,
-        link_type: Literal[
-            "edge_cloud", "edge_end", "cloud_end"
-        ] = "edge_cloud",
+        link_type: Literal["edge_cloud", "edge_end", "cloud_end"] = "edge_cloud",
         prob_history_dtype=torch.float16,
         is_compressed: bool = False,
         compressed_k: Optional[int] = 300,
@@ -522,7 +521,7 @@ class CUHLM(CommunicationSimulator):
         ntt_ms_edge_cloud: float = 200,
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
-        mode: Literal["driving", "static", "walking"] = "static"
+        mode: Literal["driving", "static", "walking"] = "static",
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
         super().__init__(
@@ -534,7 +533,7 @@ class CUHLM(CommunicationSimulator):
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             use_stochastic=use_stochastic,
             set_mean_bandwidth=set_mean_bandwidth,
-            mode=mode
+            mode=mode,
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -568,9 +567,7 @@ class CUHLM(CommunicationSimulator):
         perturbed_probs = torch.softmax(perturbed_logits, dim=-1)
 
         # 批量采样
-        perturbed_tokens = torch.multinomial(perturbed_probs, 1).squeeze(
-            1
-        )  # [M]
+        perturbed_tokens = torch.multinomial(perturbed_probs, 1).squeeze(1)  # [M]
 
         # 计算分歧
         disagreements = (perturbed_tokens != draft_token).sum().item()
@@ -649,18 +646,14 @@ class CUHLM(CommunicationSimulator):
         if uncertainty >= self.uncertainty_threshold:  # 不确定度高，传输
             vocab_size = max(
                 1,
-                self._calculate_compressed_vocab_size(
-                    uncertainty, current_probs
-                ),
+                self._calculate_compressed_vocab_size(uncertainty, current_probs),
             )
             return True, vocab_size
         else:  # 大模型直接接受当前输出
             return False, 0
 
     @staticmethod
-    def _apply_top_k_compression(
-        probs: torch.Tensor | None, k: int
-    ) -> torch.Tensor:
+    def _apply_top_k_compression(probs: torch.Tensor | None, k: int) -> torch.Tensor:
         """
         probs: torch.Tensor，当前词表概率分布，形状为(..., V)
         k: int，保留的top-k数量
@@ -709,9 +702,7 @@ class CUHLM(CommunicationSimulator):
         beta_d = max(0, min(1, a * uncertainty + b))
 
         # Step 2: 对概率分布排序
-        sorted_probs, sorted_indices = torch.sort(
-            current_probs, descending=True
-        )
+        sorted_probs, sorted_indices = torch.sort(current_probs, descending=True)
 
         # Step 3: 获取draft token概率
         if draft_token is None:
@@ -771,9 +762,7 @@ class CUHLM(CommunicationSimulator):
         形状为(vocab_size,)
         """
         if current_probs is None and logits is None:
-            warnings.warn(
-                "警告：current_probs和logits均为空，无法获取终端概率分布"
-            )
+            warnings.warn("警告：current_probs和logits均为空，无法获取终端概率分布")
             return torch.empty(0)
 
         if logits is None:
@@ -784,9 +773,7 @@ class CUHLM(CommunicationSimulator):
             if current_probs.dim() == 1:
                 logits = log_probs - torch.max(log_probs)
             else:
-                logits = (
-                    log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
-                )
+                logits = log_probs - torch.max(log_probs, dim=-1, keepdim=True)[0]
 
         uncertainty = self.calculate_uncertainty(logits)
         should_transfer_prob, vocab_size = self.determine_transfer_strategy(
@@ -795,9 +782,7 @@ class CUHLM(CommunicationSimulator):
         if not should_transfer_prob:
             return current_probs
         if vocab_size < self.vocab_size:
-            compressed_probs = self._apply_top_k_compression(
-                current_probs, vocab_size
-            )
+            compressed_probs = self._apply_top_k_compression(current_probs, vocab_size)
             rebuilt_probs = self.rebuild_full_probs(compressed_probs)
             return rebuilt_probs
         else:
@@ -823,13 +808,13 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         ntt_ms_edge_end: float = 20,
         ntt_ms_edge_cloud: float = 200,
         edge_cloud_args: dict | None = None,
-        edge_end_args: dict | None = None
+        edge_end_args: dict | None = None,
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
         if not getattr(PreciseCommunicationSimulator, "_has_logged", False):
             logging.info(
-                f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+                f"信道容量: {channel_capacity_bps / 1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
             )
             PreciseCommunicationSimulator._has_logged = True
 
@@ -837,8 +822,14 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             edge_cloud_bandwidth = channel_capacity_bps / 10
         else:
             try:
-                edge_cloud_SNR = edge_cloud_args["channel_gain"] * edge_cloud_args["send_power_watt"] / edge_cloud_args["noise_power_watt"]
-                edge_cloud_bandwidth = edge_cloud_args["bandwidth_hz"] * math.log2(1 + edge_cloud_SNR)
+                edge_cloud_SNR = (
+                    edge_cloud_args["channel_gain"]
+                    * edge_cloud_args["send_power_watt"]
+                    / edge_cloud_args["noise_power_watt"]
+                )
+                edge_cloud_bandwidth = edge_cloud_args["bandwidth_hz"] * math.log2(
+                    1 + edge_cloud_SNR
+                )
             except KeyError:
                 edge_cloud_bandwidth = channel_capacity_bps / 10
 
@@ -846,8 +837,14 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             edge_end_bandwidth = channel_capacity_bps / 10
         else:
             try:
-                edge_end_SNR = edge_end_args["channel_gain"] * edge_end_args["send_power_watt"] / edge_end_args["noise_power_watt"]
-                edge_end_bandwidth = edge_end_args["bandwidth_hz"] * math.log2(1 + edge_end_SNR)
+                edge_end_SNR = (
+                    edge_end_args["channel_gain"]
+                    * edge_end_args["send_power_watt"]
+                    / edge_end_args["noise_power_watt"]
+                )
+                edge_end_bandwidth = edge_end_args["bandwidth_hz"] * math.log2(
+                    1 + edge_end_SNR
+                )
             except KeyError:
                 edge_end_bandwidth = channel_capacity_bps / 10
 
@@ -856,8 +853,8 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             channel_capacity_bps,
             edge_end_bandwidth,
             dimension="bps",
-            ntt_ms_edge_end = ntt_ms_edge_end,
-            ntt_ms_edge_cloud = ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
         )  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
@@ -909,7 +906,7 @@ class PreciseCUHLM(CUHLM):
 
         if not getattr(PreciseCUHLM, "_has_logged", False):
             print(
-                f"信道容量: {channel_capacity_bps/1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+                f"信道容量: {channel_capacity_bps / 1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
             )
             PreciseCUHLM._has_logged = True
 
@@ -943,5 +940,3 @@ class PreciseCUHLM(CUHLM):
             for unit in self.stats[link_type]:
                 energy += unit["transfer_time"] * self.send_power_watt
         return energy
-
-

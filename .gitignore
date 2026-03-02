@@ -43,7 +43,11 @@ experiment_results_table.md
 .vscode
 .vscode/*
 
-qwen/*
+Qwen/*
+Qwen
+
+google/*
+google
 
 hf_download.py
 
@@ -52,7 +56,7 @@ confidence_data.json
 venv_docker/
 hyperparametertable.md
 plot_thresholds_20260117.ipynb
-.gitignore
+
 upload.py
 scan_threshold.py
 plot_thresholds_20260117.ipynb
@@ -63,6 +67,44 @@ checkpoints/training_status.json
 
 checkpoints/archived
 
-checkpoints_qwen
+
 
 checkpoints_vicuna
+
+# --- Recommended Additions ---
+
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# Python Cache & Build
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Model Checkpoints & Large Files
+checkpoints/
+checkpoints_*/
+*.tar.gz
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Experiment Results & Logs (General patterns)
+archive_log/
+exp_logs/
+datastore/
+data/
+
+# Generated Plots & Reports
+*.png
+*.pdf
+*.svg
+active_learning_metrics.json
+consistency_data.json
+acc.json

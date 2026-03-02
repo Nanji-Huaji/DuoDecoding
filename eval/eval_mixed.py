@@ -1,81 +1,95 @@
-import os
-import sys
-import torch
 import json
+import os
 import random
+import sys
 import time
-import numpy as np
-from typing import List, Tuple, Dict, Any
+
+import torch
 from datasets import load_dataset
 from fastchat.model import get_conversation_template
+
 # 添加父目录到路径，确保能导入 src 模块
 sys.path.append(os.path.join(sys.path[0], "../"))
-from src.utils import seed_everything, parse_arguments
-from src.baselines import Baselines, get_empty_metrics
 from functools import partial
+
 from few_shot_examples import get_few_shot_prompt
-import inspect
+
+from src.baselines import Baselines
+from src.utils import parse_arguments, seed_everything
 
 # 同步 rl_adapter.py 中的定义
 KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
 
+
 class EvalMixed(Baselines):
     def __init__(self, args):
         super().__init__(args)
-        self.device = self.accelerator.device # 显式定义 device 属性
+        self.device = self.accelerator.device  # 显式定义 device 属性
         self.load_tokenizer()
         self.load_model()
-        
+
         # 获取真实的vocab_size：从实际模型的embedding层获取
         # 这比tokenizer.vocab_size或config.vocab_size更准确
-        if hasattr(self, 'target_model') and self.target_model is not None:
+        if hasattr(self, "target_model") and self.target_model is not None:
             actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
             print(f"[Token Safety] Actual embedding size: {actual_vocab_size}")
-        elif hasattr(self, 'draft_model') and self.draft_model is not None:
+        elif hasattr(self, "draft_model") and self.draft_model is not None:
             actual_vocab_size = self.draft_model.get_input_embeddings().weight.shape[0]
-            print(f"[Token Safety] Actual embedding size from draft: {actual_vocab_size}")
+            print(
+                f"[Token Safety] Actual embedding size from draft: {actual_vocab_size}"
+            )
         else:
             actual_vocab_size = self.tokenizer.vocab_size
             print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
-        
+
         self.vocab_size = actual_vocab_size
-        self.pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
-        print(f"[Token Safety] Final vocab_size: {self.vocab_size}, pad_token_id: {self.pad_token_id}")
-        
+        self.pad_token_id = (
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else 0
+        )
+        print(
+            f"[Token Safety] Final vocab_size: {self.vocab_size}, pad_token_id: {self.pad_token_id}"
+        )
+
         self.all_data = {}
-        self.load_data() # 改为调用抽象方法
+        self.load_data()  # 改为调用抽象方法
         self.model_id = self._determine_model_id()
         self.color_print(f"Using Model ID: {self.model_id}", 2)
-    
+
     def clamp_token_ids(self, input_ids):
         """将超出vocab_size范围的token ID钳位到pad_token_id。
-        
+
         Args:
             input_ids: torch.Tensor, shape (batch_size, seq_len)
-            
+
         Returns:
             torch.Tensor: 钳位后的token IDs
         """
         # 检查是否有越界的token
         max_id = input_ids.max().item()
         min_id = input_ids.min().item()
-        
+
         if max_id >= self.vocab_size or min_id < 0:
-            print(f"⚠️  [Token Clamp Warning] Found out-of-range token IDs! min={min_id}, max={max_id}, vocab_size={self.vocab_size}")
+            print(
+                f"⚠️  [Token Clamp Warning] Found out-of-range token IDs! min={min_id}, max={max_id}, vocab_size={self.vocab_size}"
+            )
             # 将越界的token替换为pad_token
             input_ids = torch.where(
                 (input_ids >= 0) & (input_ids < self.vocab_size),
                 input_ids,
-                torch.full_like(input_ids, self.pad_token_id)
+                torch.full_like(input_ids, self.pad_token_id),
             )
-            print(f"   Replaced with pad_token_id={self.pad_token_id}. New range: min={input_ids.min().item()}, max={input_ids.max().item()}")
-        
+            print(
+                f"   Replaced with pad_token_id={self.pad_token_id}. New range: min={input_ids.min().item()}, max={input_ids.max().item()}"
+            )
+
         return input_ids
 
     def _determine_model_id(self):
         target = str(self.args.target_model).lower()
         draft = str(self.args.draft_model).lower()
-        
+
         if "llama-3" in target:
             return "llama-3.1"
         if "qwen" in target:
@@ -95,7 +109,8 @@ class EvalMixed(Baselines):
             mt_path = os.path.join(self.args.data_path, "mt_bench.jsonl")
             if os.path.exists(mt_path):
                 with open(mt_path) as f:
-                    for line in f: mt_data.append(json.loads(line))
+                    for line in f:
+                        mt_data.append(json.loads(line))
             self.all_data["mt_bench"] = mt_data
             self.color_print(f"Loaded {len(mt_data)} MT-Bench samples.", 2)
         except Exception as e:
@@ -134,7 +149,9 @@ class EvalMixed(Baselines):
         try:
             ds = load_dataset("openai_humaneval", split="test")
             self.all_data["humaneval"] = [dict(item) for item in ds]
-            self.color_print(f"Loaded {len(self.all_data['humaneval'])} HumanEval samples.", 2)
+            self.color_print(
+                f"Loaded {len(self.all_data['humaneval'])} HumanEval samples.", 2
+            )
         except Exception as e:
             self.color_print(f"Error loading HumanEval: {e}", 1)
             self.all_data["humaneval"] = []
@@ -144,8 +161,10 @@ class EvalMixed(Baselines):
         for task_name, samples in self.all_data.items():
             for sample in samples:
                 self.flattened_data.append((task_name, sample))
-        
-        self.color_print(f"Total global sample pool size: {len(self.flattened_data)}", 3)
+
+        self.color_print(
+            f"Total global sample pool size: {len(self.flattened_data)}", 3
+        )
 
     def preprocess(self, input_text):
         """实现抽象方法"""
@@ -158,15 +177,24 @@ class EvalMixed(Baselines):
     def preprocess_prompt(self, task, item):
         """为不同任务构建合适的 Prompt"""
         few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
-        
+
         if task == "mt_bench":
             prompt_text = few_shot_prompt + item["turns"][0]
         elif task == "gsm8k":
-            prompt_text = few_shot_prompt + f"Question: {item['question']}\nSolve the following math problem step by step and end your answer with 'The answer is <number>'.\nAnswer:"
+            prompt_text = (
+                few_shot_prompt
+                + f"Question: {item['question']}\nSolve the following math problem step by step and end your answer with 'The answer is <number>'.\nAnswer:"
+            )
         elif task == "cnndm":
-            prompt_text = few_shot_prompt + f"Article: {item['article']}\nSummarize the following article in a few sentences:\nSummary:"
+            prompt_text = (
+                few_shot_prompt
+                + f"Article: {item['article']}\nSummarize the following article in a few sentences:\nSummary:"
+            )
         elif task == "xsum":
-            prompt_text = few_shot_prompt + f"Article: {item['document']}\nSummarize the following news article in one sentence:\nSummary:"
+            prompt_text = (
+                few_shot_prompt
+                + f"Article: {item['document']}\nSummarize the following news article in one sentence:\nSummary:"
+            )
         elif task == "humaneval":
             prompt_text = few_shot_prompt + item["prompt"]
         else:
@@ -174,8 +202,10 @@ class EvalMixed(Baselines):
 
         # 应用模型模板
         if self.model_id in ["llama-3.1", "qwen"]:
-             messages = [{"role": "user", "content": prompt_text}]
-             return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            messages = [{"role": "user", "content": prompt_text}]
+            return self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         elif "vicuna" in self.model_id or "llama-2-chat" in self.model_id:
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
@@ -191,46 +221,55 @@ class EvalMixed(Baselines):
         # 训练轮数
         total_steps = self.args.eval_data_num if self.args.eval_data_num else 500
         mode = "adaptive_tridecoding"
-        
+
         # 获取所有有数据的任务列表
-        available_tasks = [t for t in KNOWN_TASKS if t in self.all_data and self.all_data[t]]
-        
+        available_tasks = [
+            t for t in KNOWN_TASKS if t in self.all_data and self.all_data[t]
+        ]
+
         if not available_tasks:
             self.color_print("Critical: No data loaded for any task!", 1)
             return
 
-        self.color_print(f"\n>>> Starting Mixed Multi-Task Training Loop ({total_steps} total steps) <<<\n", 3)
-        self.color_print(f"Sampling Strategy: [Random Task] -> [Random Sample in Task]", 3)
+        self.color_print(
+            f"\n>>> Starting Mixed Multi-Task Training Loop ({total_steps} total steps) <<<\n",
+            3,
+        )
+        self.color_print(
+            "Sampling Strategy: [Random Task] -> [Random Sample in Task]", 3
+        )
         self.color_print(f"Available Tasks: {available_tasks}", 3)
-        
+
         for step in range(total_steps):
             # 1. 先随机选择一个任务种类
             task = random.choice(available_tasks)
             # 2. 再从该任务的数据集中随机抽取一个样本
             item = random.choice(self.all_data[task])
-            
+
             # 3. 正确设置 self.task 保证 RL Adapter 的 One-Hot 向量正确
-            self.task = task 
-            
+            self.task = task
+
             # 4. 模式固定为 tridecoding
             decoding_fn = getattr(self, mode)
-            
+
             # 4. 环境参数随机模拟 (模仿 train_rl.sh)
             # 随机化网络带宽和延迟，模拟真实场景的多样性
-            self.args.edge_cloud_bandwidth = random.uniform(20.0, 50.0) # 20-50 Mbps
-            self.args.ntt_ms_edge_cloud = random.uniform(0.0, 5.0)      # 0-5 ms 延迟
-            self.args.edge_end_bandwidth = random.uniform(300.0, 800.0) # 300-800 Mbps
+            self.args.edge_cloud_bandwidth = random.uniform(20.0, 50.0)  # 20-50 Mbps
+            self.args.ntt_ms_edge_cloud = random.uniform(0.0, 5.0)  # 0-5 ms 延迟
+            self.args.edge_end_bandwidth = random.uniform(300.0, 800.0)  # 300-800 Mbps
 
             # 5. 构建输入
             prompt = self.preprocess_prompt(task, item)
-            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
-            
+            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(
+                self.device
+            )
+
             # 钳位token IDs，防止越界
             input_ids = self.clamp_token_ids(input_ids)
-            
+
             # 6. 执行解码 (此过程会触发 RL RLNetworkAdapter 的 select_config 和 update)
-            print(f"[{step+1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20}")
-            
+            print(f"[{step + 1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20}")
+
             fn = partial(
                 decoding_fn,
                 transfer_top_k=self.args.transfer_top_k,
@@ -239,33 +278,39 @@ class EvalMixed(Baselines):
                 ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
                 ntt_ms_edge_end=self.args.ntt_ms_edge_end,
             )
-            
+
             try:
                 # 运行解码
                 output_ids, metrics = fn(input_ids)
-                
+
                 # 打印单步结果
-                tps = metrics.get('throughput', 0)
-                acc = metrics.get('draft_accepted_tokens', 0) / (metrics.get('draft_generated_tokens', 1) + 1e-6)
+                tps = metrics.get("throughput", 0)
+                acc = metrics.get("draft_accepted_tokens", 0) / (
+                    metrics.get("draft_generated_tokens", 1) + 1e-6
+                )
                 # 修改这里的输出格式，以匹配 auto_train_manager.py 中的正则表达式
                 print(f"Average Generation Speed: {tps:.2f} tokens/s")
-                print(f"   -> Result: Latency={metrics.get('wall_time',0):.2f}s | Speed={tps:.2f} tokens/s | Acc={acc:.1%}")
+                print(
+                    f"   -> Result: Latency={metrics.get('wall_time', 0):.2f}s | Speed={tps:.2f} tokens/s | Acc={acc:.1%}"
+                )
             except Exception as e:
                 print(f"   -> [Step Error]: {e}")
                 import traceback
+
                 traceback.print_exc()
 
         self.color_print("\n>>> Mixed Training Finished! <<<", 3)
 
+
 if __name__ == "__main__":
     args = parse_arguments()
-    
+
     # 如果是 RL 训练模式，且没有手动设置特殊的种子，则使用基于时间的随机种子
     if args.use_rl_adapter and args.seed == 1234:
         new_seed = int(time.time() * 1000) % 10000
         print(f"Detected RL Training mode. Randomizing seed to: {new_seed}")
         seed_everything(new_seed)
         args.seed = new_seed
-        
+
     evaluator = EvalMixed(args)
     evaluator.eval()

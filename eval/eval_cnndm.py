@@ -2,26 +2,20 @@ import os
 import sys
 
 sys.path.append(os.path.join(sys.path[0], "../"))
-import torch
 import json
-import tqdm
-import time
 import random
-import shortuuid
-from src.utils import seed_everything, parse_arguments
-from src.engine import Decoding
-from fastchat.model import get_conversation_template
-from typing import List, Tuple, Dict, Any
-
-from src.baselines import get_empty_metrics, DecodingMetrics
-from src.baselines import Baselines
-from eval_mt_bench import get_class_methods
-
+import time
 from functools import partial
+
+import shortuuid
+import torch
+import tqdm
+from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
-import inspect
 from rouge_score import rouge_scorer
-import numpy as np
+
+from src.baselines import Baselines, get_empty_metrics
+from src.utils import parse_arguments, seed_everything
 
 decoding_metrics = get_empty_metrics()
 
@@ -32,9 +26,9 @@ class EvalCNNDM(Baselines):
         self.load_tokenizer()
         self.load_model()
         self.load_data()
-        
+
         self.task = "cnndm"
-        
+
         if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
             self.args.target_model
         ):
@@ -45,33 +39,47 @@ class EvalCNNDM(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
 
     def load_data(self):
-        self.color_print(f"Loading CNN/DailyMail data...", 3)
+        self.color_print("Loading CNN/DailyMail data...", 3)
         try:
             import datasets
+
             dataset = datasets.load_dataset("cnn_dailymail", "3.0.0", split="test")
             self.data = [dict(item) for item in dataset]
-            
+
             # Filter data if needed (e.g. for testing)
-            if hasattr(self.args, 'eval_data_num') and self.args.eval_data_num is not None:
-                self.data = self.data[:self.args.eval_data_num]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                self.data = self.data[: self.args.eval_data_num]
 
             self.color_print(f"Loaded {len(self.data)} samples.", 3)
         except Exception as e:
@@ -86,14 +94,18 @@ class EvalCNNDM(Baselines):
         if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": qs}
+                {"role": "user", "content": qs},
             ]
-            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         elif self.model_id == "gemma":
             messages = [
                 {"role": "user", "content": "You are a helpful assistant.\n" + qs}
             ]
-            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         elif "vicuna" in self.model_id or "llama-2-chat" in self.model_id:
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
@@ -129,12 +141,14 @@ class EvalCNNDM(Baselines):
         # Ensure directory exists
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         out_f = open(out_path, "a")
-        
-        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+
+        scorer = rouge_scorer.RougeScorer(
+            ["rouge1", "rouge2", "rougeL"], use_stemmer=True
+        )
         rouge1_scores, rouge2_scores, rougeL_scores = [], [], []
 
         # Warmup
-        print(f"Start warm up...")
+        print("Start warm up...")
         n = 5
         for item in tqdm.tqdm(
             self.data,
@@ -145,25 +159,26 @@ class EvalCNNDM(Baselines):
             n -= 1
             if n == 0:
                 break
-            
+
             article = str(item["article"])
             # qs = f"Summarize the following article:\n\n{article[:1000]}"
             prompt = self.preprocess(article[:1000])
             if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
+                input_ids = torch.tensor(
+                    self.tokenizer([prompt], add_special_tokens=False).input_ids
+                )
             else:
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
-            
+
             input_ids = input_ids.to(self.accelerator.device)
             decoding(input_ids)
-
 
         total_wall_time = []
         total_num_tokens = []
 
         loop_index = 0
 
-        print(f"Start evaluation...")
+        print("Start evaluation...")
         for item in tqdm.tqdm(
             self.data,
             total=min(len(self.data), total) if total is not None else len(self.data),
@@ -172,7 +187,7 @@ class EvalCNNDM(Baselines):
         ):
             if total is not None and loop_index >= total:
                 break
-            
+
             article = str(item["article"])
             reference = str(item["highlights"])
             # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
@@ -190,7 +205,9 @@ class EvalCNNDM(Baselines):
                 prompt = self.preprocess(article[:4000])
 
                 if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                    input_ids = torch.tensor(self.tokenizer([prompt], add_special_tokens=False).input_ids)
+                    input_ids = torch.tensor(
+                        self.tokenizer([prompt], add_special_tokens=False).input_ids
+                    )
                 else:
                     input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
@@ -201,34 +218,51 @@ class EvalCNNDM(Baselines):
                 try:
                     output_ids = decoding(input_ids)
                     if isinstance(output_ids, tuple):
-                        output_ids, metrics = output_ids[:2] # Handle 2 or 3 return values
+                        output_ids, metrics = output_ids[
+                            :2
+                        ]  # Handle 2 or 3 return values
                         for key in decoding_metrics.keys():
-                            if key in metrics and key not in ["little_acceptance_rate", "draft_acceptance_rate"] and hasattr(metrics[key], "__add__"):
+                            if (
+                                key in metrics
+                                and key
+                                not in [
+                                    "little_acceptance_rate",
+                                    "draft_acceptance_rate",
+                                ]
+                                and hasattr(metrics[key], "__add__")
+                            ):
                                 decoding_metrics[key] += metrics[key]
                             elif isinstance(metrics.get(key), dict):
                                 if isinstance(decoding_metrics[key], dict):
                                     for sub_key in metrics[key]:
-                                        decoding_metrics[key][sub_key] = decoding_metrics[key].get(sub_key, 0) + metrics[key][sub_key]
+                                        decoding_metrics[key][sub_key] = (
+                                            decoding_metrics[key].get(sub_key, 0)
+                                            + metrics[key][sub_key]
+                                        )
                 except Exception as e:
                     print(f"Error during decoding: {e}")
-                    output_ids = torch.tensor([[self.tokenizer.eos_token_id]]).to(self.accelerator.device)
+                    output_ids = torch.tensor([[self.tokenizer.eos_token_id]]).to(
+                        self.accelerator.device
+                    )
 
                 torch.cuda.synchronize()
                 end_time = time.time()
 
                 # Slice generated part
                 if output_ids.shape[1] > input_ids.shape[1]:
-                     generated_ids = output_ids[0][input_ids.shape[1]:]
-                     output_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
+                    output_text = self.tokenizer.decode(
+                        generated_ids, skip_special_tokens=True
+                    )
                 else:
-                     output_text = ""
-                
+                    output_text = ""
+
                 # Calculate ROUGE
                 scores = scorer.score(reference, output_text)
-                rouge1_scores.append(scores['rouge1'].fmeasure)
-                rouge2_scores.append(scores['rouge2'].fmeasure)
-                rougeL_scores.append(scores['rougeL'].fmeasure)
-                
+                rouge1_scores.append(scores["rouge1"].fmeasure)
+                rouge2_scores.append(scores["rouge2"].fmeasure)
+                rougeL_scores.append(scores["rougeL"].fmeasure)
+
                 wall_time = end_time - start_time
                 num_tokens = output_ids.shape[1] - input_ids.shape[1]
                 total_wall_time.append(wall_time)
@@ -238,13 +272,13 @@ class EvalCNNDM(Baselines):
                     "id": item.get("id", str(shortuuid.uuid())),
                     "reference": reference,
                     "prediction": output_text,
-                    "rouge1": scores['rouge1'].fmeasure,
-                    "rouge2": scores['rouge2'].fmeasure,
-                    "rougeL": scores['rougeL'].fmeasure,
+                    "rouge1": scores["rouge1"].fmeasure,
+                    "rouge2": scores["rouge2"].fmeasure,
+                    "rougeL": scores["rougeL"].fmeasure,
                     "wall_time": wall_time,
-                    "num_tokens": num_tokens
+                    "num_tokens": num_tokens,
                 }
-                
+
                 if self.accelerator.is_main_process:
                     out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
                     out_f.flush()
@@ -254,37 +288,52 @@ class EvalCNNDM(Baselines):
         self.accelerator.wait_for_everyone()
 
         if self.accelerator.is_main_process:
-            avg_speed = sum(total_num_tokens) / sum(total_wall_time) if sum(total_wall_time) > 0 else 0
-            avg_r1 = sum(rouge1_scores) / len(rouge1_scores) if len(rouge1_scores) > 0 else 0
-            avg_r2 = sum(rouge2_scores) / len(rouge2_scores) if len(rouge2_scores) > 0 else 0
-            avg_rl = sum(rougeL_scores) / len(rougeL_scores) if len(rougeL_scores) > 0 else 0
+            avg_speed = (
+                sum(total_num_tokens) / sum(total_wall_time)
+                if sum(total_wall_time) > 0
+                else 0
+            )
+            avg_r1 = (
+                sum(rouge1_scores) / len(rouge1_scores) if len(rouge1_scores) > 0 else 0
+            )
+            avg_r2 = (
+                sum(rouge2_scores) / len(rouge2_scores) if len(rouge2_scores) > 0 else 0
+            )
+            avg_rl = (
+                sum(rougeL_scores) / len(rougeL_scores) if len(rougeL_scores) > 0 else 0
+            )
 
             self.color_print(f"Eval Mode: {self.args.eval_mode}", 0)
             self.color_print(f"Average Generation Speed: {avg_speed:.2f} tokens/s", 2)
             self.color_print(f"Average ROUGE-1: {avg_r1:.4f}", 2)
             self.color_print(f"Average ROUGE-2: {avg_r2:.4f}", 2)
             self.color_print(f"Average ROUGE-L: {avg_rl:.4f}", 2)
-            
+
             decoding_metrics["accuracy"] = {
                 "rouge1": avg_r1,
                 "rouge2": avg_r2,
-                "rougeL": avg_rl
+                "rougeL": avg_rl,
             }
 
             if decoding_metrics["wall_time"] != 0:
                 decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"]
-                    / decoding_metrics["wall_time"]
+                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
                 )
             else:
                 decoding_metrics["throughput"] = 0.0
 
             # 过滤掉历史数据字段以避免打印过长
-            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
-                                 if k not in ['edge_cloud_bandwidth_history', 
-                                              'edge_cloud_topk_history', 
-                                              'edge_cloud_draft_len_history']}
-            
+            metrics_for_print = {
+                k: v
+                for k, v in decoding_metrics.items()
+                if k
+                not in [
+                    "edge_cloud_bandwidth_history",
+                    "edge_cloud_topk_history",
+                    "edge_cloud_draft_len_history",
+                ]
+            }
+
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
@@ -307,9 +356,7 @@ class EvalCNNDM(Baselines):
             os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
             with open(decoding_metrics_path, "w") as f:
                 json.dump(eval_result, f, indent=4)
-            self.color_print(
-                f"Decoding metrics saved to {decoding_metrics_path}", 2
-            )
+            self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
 
 if __name__ == "__main__":

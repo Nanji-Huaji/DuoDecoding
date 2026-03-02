@@ -1,40 +1,32 @@
-import torch
-import json
-import torch.distributed as dist
-import numpy as np
 import os
-import transformers
 import warnings
+
+import torch
+import torch.distributed as dist
+import transformers
 
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import re
 from abc import ABC, abstractmethod
-from accelerate import Accelerator
-from .model_gpu import KVCacheModel
-from .utils import seed_everything, norm_logits, sample, max_fn
-import time
-from .register import Register
+from typing import Any, List, Optional, Tuple, TypedDict
 
+from accelerate import Accelerator
 from transformers import (
-    StoppingCriteriaList,
-    MaxLengthCriteria,
+    AutoModelForCausalLM,
+    AutoTokenizer,
     BitsAndBytesConfig,
 )
 
-
-import re
-
-from typing import List, Tuple, Dict, Any, TypedDict, Union, Optional
-
 from .communication import (
-    CommunicationSimulator,
     CUHLM,
+    CommunicationSimulator,
     PreciseCommunicationSimulator,
     PreciseCUHLM,
 )
-
-from typing import Literal
+from .model_gpu import KVCacheModel
+from .register import Register
+from .utils import max_fn, sample, seed_everything
 
 try:
     import flash_attn
@@ -159,12 +151,17 @@ class Decoding(Register, ABC):
 
         self.vocab_size = -1
 
-    def _check_stopping_criteria(self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None) -> bool:
+    def _check_stopping_criteria(
+        self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None
+    ) -> bool:
         if not hasattr(self, "tokenizer") or self.tokenizer is None:
             return False
 
         # Check for EOS at the last position only
-        if input_ids.shape[1] > 0 and input_ids[0, -1].item() == self.tokenizer.eos_token_id:
+        if (
+            input_ids.shape[1] > 0
+            and input_ids[0, -1].item() == self.tokenizer.eos_token_id
+        ):
             return True
 
         # Check for stop sequences
@@ -178,13 +175,13 @@ class Decoding(Register, ABC):
     def _get_device_map_strategy(self, model_name: str, num_gpus_available: int) -> str:
         """
         Determine the appropriate device_map strategy based on model size and available GPUs.
-        
+
         新策略：避免单模型跨卡，大模型使用Q4量化放在单卡
-        
+
         Args:
             model_name: Name of the model to load
             num_gpus_available: Number of GPUs available for model loading
-            
+
         Returns:
             device_map strategy string
         """
@@ -192,7 +189,7 @@ class Decoding(Register, ABC):
         pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
         match = re.search(pattern, model_name)
         params = float(match.group(1)) if match else 0
-        
+
         # 对于所有模型，优先使用单卡加载，避免跨卡通信
         # 大模型会在load_model中使用Q4量化
         return "auto"
@@ -200,7 +197,7 @@ class Decoding(Register, ABC):
     def _get_available_gpu_count(self) -> int:
         """
         Get the number of available GPUs, considering CUDA_VISIBLE_DEVICES.
-        
+
         Returns:
             Number of available GPUs
         """
@@ -209,7 +206,7 @@ class Decoding(Register, ABC):
             if visible_devices:
                 # Count the number of devices in CUDA_VISIBLE_DEVICES
                 return len([d for d in visible_devices.split(",") if d.strip()])
-        
+
         # Fallback to torch.cuda.device_count()
         return torch.cuda.device_count()
 
@@ -219,42 +216,45 @@ class Decoding(Register, ABC):
             f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}",
             3,
         )
-        
+
         # Get available GPU count
         num_gpus = self._get_available_gpu_count()
         self.color_print(f"Available GPUs: {num_gpus}", 3)
-        
+
         # Helper function to extract model size
         def get_model_size(model_name):
             pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
             match = re.search(pattern, model_name)
             return float(match.group(1)) if match else 0
-        
+
         # Helper function to determine if model needs quantization
         # A6000 有 48GB 显存，约可容纳 ~24B 全精度或 ~16B bf16模型
         # 使用保守阈值：>20B 使用 Q4 量化
         def should_quantize(model_name):
             size = get_model_size(model_name)
-            is_awq = 'awq' in model_name.lower()
+            is_awq = "awq" in model_name.lower()
             return size > 20 and not is_awq
-        
+
         # Helper function to get quantization config
         def get_quant_config(model_name):
             if should_quantize(model_name):
-                print(f"📦 Model {model_name} ({get_model_size(model_name)}B) will use 4-bit quantization")
+                print(
+                    f"📦 Model {model_name} ({get_model_size(model_name)}B) will use 4-bit quantization"
+                )
                 return BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_compute_dtype=torch.bfloat16,
                 )
             return None
-        
-        loader = partial(AutoModelForCausalLM.from_pretrained, 
-                        local_files_only=False,
-                        attn_implementation=attn_impl,
-                        trust_remote_code=True,
-                        torch_dtype=torch.bfloat16,
-                        )
+
+        loader = partial(
+            AutoModelForCausalLM.from_pretrained,
+            local_files_only=False,
+            attn_implementation=attn_impl,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+        )
         if self.args.eval_mode == "small":
             device_map = "cuda:0"
             self.color_print(f"Loading draft model on {device_map}", 3)
@@ -270,7 +270,7 @@ class Decoding(Register, ABC):
                     self.args.draft_model,
                     device_map=device_map,
                 ).eval()
-                
+
         elif self.args.eval_mode == "large":
             device_map = "cuda:0"
             self.color_print(f"Loading target model on {device_map}", 3)
@@ -297,21 +297,25 @@ class Decoding(Register, ABC):
             "cuhlm",
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
-        ] :
+        ]:
             # 双模型场景：大模型在一张卡，小模型在另一张卡
             draft_size = get_model_size(self.args.draft_model)
             target_size = get_model_size(self.args.target_model)
-            
+
             # 将大模型放在GPU 0，小模型放在GPU 1（如果有多个GPU）
             if target_size > draft_size:
                 draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
                 target_device = "cuda:0"
-                print(f"🎯 Target ({target_size}B) -> GPU 0, Draft ({draft_size}B) -> GPU {1 if num_gpus > 1 else 0}")
+                print(
+                    f"🎯 Target ({target_size}B) -> GPU 0, Draft ({draft_size}B) -> GPU {1 if num_gpus > 1 else 0}"
+                )
             else:
                 draft_device = "cuda:0"
                 target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-                print(f"🎯 Draft ({draft_size}B) -> GPU 0, Target ({target_size}B) -> GPU {1 if num_gpus > 1 else 0}")
-            
+                print(
+                    f"🎯 Draft ({draft_size}B) -> GPU 0, Target ({target_size}B) -> GPU {1 if num_gpus > 1 else 0}"
+                )
+
             self.color_print(f"Loading draft model on {draft_device}", 3)
             draft_quant = get_quant_config(self.args.draft_model)
             if draft_quant:
@@ -325,7 +329,7 @@ class Decoding(Register, ABC):
                     self.args.draft_model,
                     device_map=draft_device,
                 ).eval()
-            
+
             self.color_print(f"Loading target model on {target_device}", 3)
             target_quant = get_quant_config(self.args.target_model)
             if target_quant:
@@ -344,14 +348,14 @@ class Decoding(Register, ABC):
             # adaptive_decoding: 将大模型放GPU 0，小模型放GPU 1
             draft_size = get_model_size(self.args.draft_model)
             target_size = get_model_size(self.args.target_model)
-            
+
             if target_size > draft_size:
                 draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
                 target_device = "cuda:0"
             else:
                 draft_device = "cuda:0"
                 target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-            
+
             self.color_print(f"Loading draft model on {draft_device}", 3)
             draft_quant = get_quant_config(self.args.draft_model)
             if draft_quant:
@@ -382,40 +386,57 @@ class Decoding(Register, ABC):
                     device_map=target_device,
                 ).eval()
 
-        elif self.args.eval_mode in ["tridecoding", "adaptive_tridecoding", "cee_sd", "ceesd_without_arp", "ceesd_w/o_arp", "cee_cuhlm", "cee_dsd", "cee_dssd"]:
-            output_hidden_states = self.args.eval_mode in ["adaptive_tridecoding", "cee_sd", "cee_cuhlm"]
-            
+        elif self.args.eval_mode in [
+            "tridecoding",
+            "adaptive_tridecoding",
+            "cee_sd",
+            "ceesd_without_arp",
+            "ceesd_w/o_arp",
+            "cee_cuhlm",
+            "cee_dsd",
+            "cee_dssd",
+        ]:
+            output_hidden_states = self.args.eval_mode in [
+                "adaptive_tridecoding",
+                "cee_sd",
+                "cee_cuhlm",
+            ]
+
             # 智能分配策略：
             # 1. 计算三个模型的大小
             # 2. 将最大的模型放在一张卡上（使用Q4量化如果需要）
             # 3. 将其余两个模型放在另一张卡上
             # 4. 避免单模型跨卡
-            
+
             little_size = get_model_size(self.args.little_model)
             draft_size = get_model_size(self.args.draft_model)
             target_size = get_model_size(self.args.target_model)
-            
+
             model_sizes = [
                 (little_size, "little", self.args.little_model),
                 (draft_size, "draft", self.args.draft_model),
-                (target_size, "target", self.args.target_model)
+                (target_size, "target", self.args.target_model),
             ]
             model_sizes.sort(reverse=True, key=lambda x: x[0])  # 按大小降序
-            
+
             largest_model = model_sizes[0]
-            print(f"🎯 Largest model: {largest_model[1]} ({largest_model[0]}B) -> GPU 0")
-            print(f"📍 Other models: {model_sizes[1][1]} ({model_sizes[1][0]}B), {model_sizes[2][1]} ({model_sizes[2][0]}B) -> GPU 1")
-            
+            print(
+                f"🎯 Largest model: {largest_model[1]} ({largest_model[0]}B) -> GPU 0"
+            )
+            print(
+                f"📍 Other models: {model_sizes[1][1]} ({model_sizes[1][0]}B), {model_sizes[2][1]} ({model_sizes[2][0]}B) -> GPU 1"
+            )
+
             # 分配设备
             little_device = "cuda:1" if largest_model[1] != "little" else "cuda:0"
             draft_device = "cuda:1" if largest_model[1] != "draft" else "cuda:0"
             target_device = "cuda:1" if largest_model[1] != "target" else "cuda:0"
-            
+
             # 如果只有1个GPU，全部放在cuda:0
             if num_gpus == 1:
                 little_device = draft_device = target_device = "cuda:0"
                 print("⚠️  Only 1 GPU available, all models will be loaded on cuda:0")
-            
+
             self.color_print(f"Loading little model on {little_device}", 3)
             little_quant = get_quant_config(self.args.little_model)
             if little_quant:
@@ -431,7 +452,7 @@ class Decoding(Register, ABC):
                     device_map=little_device,
                     output_hidden_states=output_hidden_states,
                 ).eval()
-            
+
             self.color_print(f"Loading draft model on {draft_device}", 3)
             draft_quant = get_quant_config(self.args.draft_model)
             if draft_quant:
@@ -447,7 +468,7 @@ class Decoding(Register, ABC):
                     device_map=draft_device,
                     output_hidden_states=output_hidden_states,
                 ).eval()
-            
+
             self.color_print(f"Loading target model on {target_device}", 3)
             target_quant = get_quant_config(self.args.target_model)
             if target_quant:
@@ -462,19 +483,18 @@ class Decoding(Register, ABC):
                     device_map=target_device,
                 ).eval()
 
-        # 从实际模型embedding层获取vocab_size，这是最权威的来源
-        # Qwen3等模型的config.vocab_size和tokenizer.vocab_size都可能不准确
-        if hasattr(self, 'target_model') and self.target_model is not None:
+        # 从实际模型embedding层获取vocab_size
+        if hasattr(self, "target_model") and self.target_model is not None:
             actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
             self.vocab_size = actual_vocab_size
             print(f"✅ Using vocab_size from target model embedding: {self.vocab_size}")
-        elif hasattr(self, 'tokenizer') and self.tokenizer is not None:
+        elif hasattr(self, "tokenizer") and self.tokenizer is not None:
             self.vocab_size = self.tokenizer.vocab_size
             print(f"⚠️  Using vocab_size from tokenizer: {self.vocab_size}")
         else:
             self.vocab_size = int(self.args.vocab_size)
             print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
-        
+
         # Print device allocation for loaded models
         self._print_model_device_info()
 
@@ -483,36 +503,36 @@ class Decoding(Register, ABC):
         self.color_print("=" * 60, 3)
         self.color_print("Model Device Allocation:", 3)
         self.color_print("=" * 60, 3)
-        
-        if hasattr(self, 'little_model') and self.little_model is not None:
-            self._print_single_model_device_info('Little Model', self.little_model)
-            
-        if hasattr(self, 'draft_model') and self.draft_model is not None:
-            self._print_single_model_device_info('Draft Model', self.draft_model)
-            
-        if hasattr(self, 'target_model') and self.target_model is not None:
-            self._print_single_model_device_info('Target Model', self.target_model)
-            
+
+        if hasattr(self, "little_model") and self.little_model is not None:
+            self._print_single_model_device_info("Little Model", self.little_model)
+
+        if hasattr(self, "draft_model") and self.draft_model is not None:
+            self._print_single_model_device_info("Draft Model", self.draft_model)
+
+        if hasattr(self, "target_model") and self.target_model is not None:
+            self._print_single_model_device_info("Target Model", self.target_model)
+
         self.color_print("=" * 60, 3)
 
     def _print_single_model_device_info(self, model_name: str, model):
         """Print device allocation for a single model."""
         self.color_print(f"\n{model_name}:", 3)
-        
-        if hasattr(model, 'hf_device_map'):
+
+        if hasattr(model, "hf_device_map"):
             device_map = model.hf_device_map
             device_summary = {}
-            
+
             for layer_name, device in device_map.items():
                 device_str = str(device)
                 if device_str not in device_summary:
                     device_summary[device_str] = []
                 device_summary[device_str].append(layer_name)
-            
+
             for device, layers in sorted(device_summary.items()):
                 self.color_print(f"  {device}: {len(layers)} layers", 3)
-                
-        elif hasattr(model, 'device'):
+
+        elif hasattr(model, "device"):
             self.color_print(f"  Device: {model.device}", 3)
         else:
             # Try to get device from first parameter
@@ -520,7 +540,7 @@ class Decoding(Register, ABC):
                 first_param = next(model.parameters())
                 self.color_print(f"  Device: {first_param.device}", 3)
             except StopIteration:
-                self.color_print(f"  Device: Unknown (no parameters)", 3)
+                self.color_print("  Device: Unknown (no parameters)", 3)
 
     def load_tokenizer(self):
         # * load tokenizers
@@ -551,11 +571,11 @@ class Decoding(Register, ABC):
     @Register.register_decoding("small")
     @torch.inference_mode()
     def autoregressive_sampling(
-        self, 
-        prefix, 
+        self,
+        prefix,
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
-        **kwargs
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if self.args.eval_mode == "small":
             model = self.draft_model
@@ -566,9 +586,7 @@ class Decoding(Register, ABC):
                 "Auto-Regressive Decoding can be used only in small / large eval mode!"
             )
         prefix = prefix.to(model.device)
-        model = KVCacheModel(
-            model, self.args.temp, self.args.top_k, self.args.top_p
-        )
+        model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
         model.vocab_size = self.args.vocab_size
 
         prefix_len = prefix.shape[1]
@@ -613,12 +631,12 @@ class Decoding(Register, ABC):
     @Register.register_decoding("sd")
     @torch.inference_mode()
     def speculative_decoding(
-        self, 
-        prefix, 
+        self,
+        prefix,
         transfer_top_k: int | None = 300,
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
-        **kwargs
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
@@ -649,7 +667,6 @@ class Decoding(Register, ABC):
         start_event.record(stream=torch.cuda.current_stream())
 
         while prefix.shape[1] < max_tokens:
-
             loop_idx += 1
 
             prefix_len = prefix.shape[1]
@@ -680,9 +697,7 @@ class Decoding(Register, ABC):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(
-                prefix.to(draft_device), current_gamma
-            )
+            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -708,9 +723,7 @@ class Decoding(Register, ABC):
                 j = x[:, prefix_len + i]
 
                 if r > (
-                    target_model_cache._prob_history.to(draft_device)[
-                        :, target_idx, j
-                    ]
+                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
                 ) / (approx_model_cache._prob_history[:, draft_idx, j]):
                     n = prefix_len + i - 1
                     break
@@ -733,12 +746,10 @@ class Decoding(Register, ABC):
                 # reject someone, sample from the pos n
                 t = sample(
                     max_fn(
-                        target_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ].to(draft_device)
-                        - approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ]
+                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
+                            draft_device
+                        )
+                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
                     )
                 )
                 target_model_cache.rollback(n + 1)
@@ -753,7 +764,9 @@ class Decoding(Register, ABC):
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
 
-            if use_early_stopping and self._check_stopping_criteria(prefix, stop_sequences):
+            if use_early_stopping and self._check_stopping_criteria(
+                prefix, stop_sequences
+            ):
                 break
 
         end_event.record(stream=torch.cuda.current_stream())
@@ -836,7 +849,6 @@ class Decoding(Register, ABC):
         idx: int = 0
 
         while prefix.shape[1] < max_tokens:
-
             prefix_len = prefix.shape[1]
 
             idx += 1
@@ -864,9 +876,7 @@ class Decoding(Register, ABC):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(
-                prefix.to(draft_device), current_gamma
-            )
+            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -902,9 +912,7 @@ class Decoding(Register, ABC):
                 )
 
                 if r > (
-                    target_model_cache._prob_history.to(draft_device)[
-                        :, target_idx, j
-                    ]
+                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
                 ) / (approx_model_cache._prob_history[:, draft_idx, j]):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
@@ -929,17 +937,13 @@ class Decoding(Register, ABC):
 
                 if transfer_top_k is not None and transfer_top_k > 0:
                     rebuild_probs = comm_simulator._apply_top_k_compression(
-                        approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ],
+                        approx_model_cache._prob_history[:, n, : self.vocab_size],
                         transfer_top_k,
                     )
-                    rebuild_probs = comm_simulator.rebuild_full_probs(
-                        rebuild_probs
+                    rebuild_probs = comm_simulator.rebuild_full_probs(rebuild_probs)
+                    approx_model_cache._prob_history[:, n, : self.vocab_size] = (
+                        rebuild_probs  # 如果用了top-k压缩，先重建概率分布
                     )
-                    approx_model_cache._prob_history[
-                        :, n, : self.vocab_size
-                    ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
 
                 # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
                 comm_simulator.transfer(
@@ -952,18 +956,14 @@ class Decoding(Register, ABC):
 
                 t = sample(
                     max_fn(
-                        target_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ].to(draft_device)
-                        - approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ]
+                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
+                            draft_device
+                        )
+                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
                     )
                 )
 
-                new_generated_tokens = (
-                    prefix.shape[1] - current_tokens.shape[1] + 1
-                )
+                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
 
                 target_model_cache.rollback(n + 1)
             else:
@@ -973,9 +973,7 @@ class Decoding(Register, ABC):
                 ).to(draft_device)
                 target_model_cache.rollback(n + 2)
 
-                new_generated_tokens = (
-                    prefix.shape[1] - current_tokens.shape[1] + 1
-                )
+                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
 
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
@@ -994,9 +992,7 @@ class Decoding(Register, ABC):
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
 
-        throughput = (
-            generated_tokens / wall_time if wall_time > 0 else 0
-        )
+        throughput = generated_tokens / wall_time if wall_time > 0 else 0
 
         metrics = get_empty_metrics()
         metrics["draft_forward_times"] = draft_forward_times
@@ -1086,19 +1082,13 @@ class Decoding(Register, ABC):
 
             # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
-            current_logit = approx_model_cache.logits_history[
-                :, -1, : self.vocab_size
-            ]
-            assert (
-                current_logit is not None
-            ), "Logits history should not be None"
+            current_logit = approx_model_cache.logits_history[:, -1, : self.vocab_size]
+            assert current_logit is not None, "Logits history should not be None"
             uncertainty = comm_simulator.calculate_uncertainty(
                 current_logit, M=20, theta_max=2.0, draft_token=x[0, -1].item()
             )
-            should_transfer, vocab_size = (
-                comm_simulator.determine_transfer_strategy(
-                    uncertainty, current_logit
-                )
+            should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(
+                uncertainty, current_logit
             )
 
             draft_forward_times += 1
@@ -1113,7 +1103,6 @@ class Decoding(Register, ABC):
             n = prefix_len + 1 - 1
 
             if not should_transfer:
-
                 is_accepted_last_step = True
 
                 # 接受draft token - 仿照接受所有token的情况
@@ -1133,9 +1122,7 @@ class Decoding(Register, ABC):
                 # rollback target_model_cache，因为我们已经消费了它的输出
                 # 这里n相当于prefix_len（接受了1个token）
                 n = prefix_len  # 接受了位置为prefix_len的token
-                target_model_cache.rollback(
-                    n + 2
-                )  # 等同于rollback(prefix_len + 2)
+                target_model_cache.rollback(n + 2)  # 等同于rollback(prefix_len + 2)
 
                 # 将新采样的token添加到序列中
                 if prefix.shape[1] < max_tokens:
@@ -1172,9 +1159,7 @@ class Decoding(Register, ABC):
             )
 
             if r > (
-                target_model_cache._prob_history.to(draft_device)[
-                    :, prefix_len - 1, j
-                ]
+                target_model_cache._prob_history.to(draft_device)[:, prefix_len - 1, j]
             ) / (approx_model_cache._prob_history[:, prefix_len - 1, j]):
                 n = prefix_len - 1
                 comm_simulator.send_reject_message(
@@ -1199,12 +1184,10 @@ class Decoding(Register, ABC):
                 # reject someone, sample from the pos n
                 t = sample(
                     max_fn(
-                        target_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ].to(draft_device)
-                        - approx_model_cache._prob_history[
-                            :, n, : self.vocab_size
-                        ]
+                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
+                            draft_device
+                        )
+                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
                     )
                 )
                 target_model_cache.rollback(n + 1)
@@ -1278,7 +1261,6 @@ class Decoding(Register, ABC):
         r = torch.rand(1, device=target_prob.device)
 
         if r > target_prob[:, 0, first_token_k_seq[0]]:
-
             t = torch.where(target_prob[0, 0, :] == 1)[0].unsqueeze(0)
             resampled_token_id = t
             idx = 0

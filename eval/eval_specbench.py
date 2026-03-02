@@ -2,19 +2,19 @@ import os
 import sys
 
 sys.path.append(os.path.join(sys.path[0], "../"))
-import torch
 import json
-import tqdm
-import time
-import ipdb
 import random
-from src.utils import seed_everything, parse_arguments
-from src.engine import Decoding
-from collections import Counter
-from fastchat.model import get_conversation_template
-
+import time
 from functools import partial
+
+import torch
+import tqdm
+from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
+
+from src.engine import Decoding
+from src.utils import parse_arguments, seed_everything
+
 
 class EvalSpecbench(Decoding):
     def __init__(self, args):
@@ -25,28 +25,44 @@ class EvalSpecbench(Decoding):
         self.load_model()
 
         self.task = "specbench"
-        
-        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
+
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-2-chat"
         elif "Llama-2" in str(self.args.target_model):
             self.model_id = "vicuna"
-        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
-        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
-        
+
         self.load_data()
 
         self.draft_time = []
@@ -88,7 +104,7 @@ class EvalSpecbench(Decoding):
         if self.model_id == "llama-3.1" or self.model_id == "qwen":
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": few_shot_prompt + input_text}
+                {"role": "user", "content": few_shot_prompt + input_text},
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -98,7 +114,12 @@ class EvalSpecbench(Decoding):
             return prompt
         elif self.model_id == "gemma":
             messages = [
-                {"role": "user", "content": "You are a helpful assistant.\n" + few_shot_prompt + input_text}
+                {
+                    "role": "user",
+                    "content": "You are a helpful assistant.\n"
+                    + few_shot_prompt
+                    + input_text,
+                }
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -120,13 +141,15 @@ class EvalSpecbench(Decoding):
                 prompt = few_shot_prompt + text + " TL;DR: "
             elif self.args.sub_domain == "translation":
                 prompt = (
-                    few_shot_prompt +
-                    "Translate German to English. German: "
+                    few_shot_prompt
+                    + "Translate German to English. German: "
                     + input_text[len("Translate German to English: ") :]
                     + " English: "
                 )
             elif self.args.sub_domain == "math_reasoning":
-                prompt = f"{few_shot_prompt}{input_text} Let's think step by step.\nStep 1:"
+                prompt = (
+                    f"{few_shot_prompt}{input_text} Let's think step by step.\nStep 1:"
+                )
             elif self.args.sub_domain == "rag":
                 prompt = few_shot_prompt + input_text
             else:
@@ -191,7 +214,7 @@ class EvalSpecbench(Decoding):
 
             # warm up
             n = 10
-            print(f"Start warm up...")
+            print("Start warm up...")
             for datum in tqdm.tqdm(
                 self.data,
                 total=len(self.data),
@@ -223,7 +246,6 @@ class EvalSpecbench(Decoding):
                 torch.cuda.synchronize()
                 end_time = time.time()
                 if self.accelerator.is_main_process:
-
                     wall_times["time"].append(end_time - start_time)
                     wall_times["num_tokens"].append(
                         generate_ids.shape[1] - input_ids.shape[1]
@@ -285,7 +307,6 @@ class EvalSpecbench(Decoding):
                 )
             except:
                 pass
-
 
 
 if __name__ == "__main__":

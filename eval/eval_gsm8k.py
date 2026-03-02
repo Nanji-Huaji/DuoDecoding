@@ -2,25 +2,24 @@ import os
 import sys
 
 sys.path.append(os.path.join(sys.path[0], "../"))
-import torch
 import json
-import tqdm
-import time
 import re
-import numpy as np
-
-from src.utils import seed_everything, parse_arguments
-from src.baselines import Baselines, get_empty_metrics
-from fastchat.model import get_conversation_template
-from datasets import load_dataset
-from eval_mt_bench import get_class_methods
-
+import time
 from functools import partial
+
+import numpy as np
+import torch
+import tqdm
+from datasets import load_dataset
 from few_shot_examples import get_few_shot_prompt
+
+from src.baselines import Baselines, get_empty_metrics
+from src.utils import parse_arguments
 
 decoding_metrics = get_empty_metrics()
 
 INVALID_ANS = "[invalid]"
+
 
 def extract_answer_from_gold(completion):
     if completion.find("####") >= 0:
@@ -28,6 +27,7 @@ def extract_answer_from_gold(completion):
         return ans.replace(",", "")
     else:
         return INVALID_ANS
+
 
 def extract_answer_from_output(completion):
     """改进的答案提取逻辑，按优先级尝试多种方法"""
@@ -38,32 +38,33 @@ def extract_answer_from_output(completion):
             answer = answer.split("\n")[0].strip()  # 取第一行
             answer = answer.replace(",", "").replace("$", "")
             # 提取数字
-            numbers = re.findall(r'-?\d+\.?\d*', answer)
+            numbers = re.findall(r"-?\d+\.?\d*", answer)
             if numbers:
                 return numbers[0]
         except:
             pass
-    
+
     # 方法 2: 寻找 "The answer is" 格式
     answer_patterns = [
         r"[Tt]he answer is:?\s*([\-\$]?[\d,\.]+)",
         r"[Aa]nswer:?\s*([\-\$]?[\d,\.]+)",
-        r"^####\s*([\-\$]?[\d,\.]+)"
+        r"^####\s*([\-\$]?[\d,\.]+)",
     ]
-    
+
     for pattern in answer_patterns:
         match = re.search(pattern, completion)
         if match:
             answer = match.group(1).replace(",", "").replace("$", "")
             return answer
-    
+
     # 方法 3: 提取最后一个数字（作为后备）
     text = completion.replace(",", "").replace("$", "")
-    numbers = re.findall(r'-?\d+\.?\d*', text)
+    numbers = re.findall(r"-?\d+\.?\d*", text)
     if numbers:
         return numbers[-1]
-    
+
     return INVALID_ANS
+
 
 class EvalGSM8K(Baselines):
     def __init__(self, args):
@@ -73,25 +74,41 @@ class EvalGSM8K(Baselines):
         self.load_data()
 
         self.task = "gsm8k"
-        
+
         # Determine model_id for chat template
-        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(self.args.target_model):
+        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-2-chat"
         elif "Llama-2" in str(self.args.target_model):
             self.model_id = "vicuna"
-        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(self.args.target_model):
+        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
-        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(self.args.target_model):
+        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
+            self.args.target_model
+        ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
             self.model_id = "vicuna"
@@ -99,7 +116,7 @@ class EvalGSM8K(Baselines):
         self.acc_list = []
 
     def load_data(self):
-        self.color_print(f"Loading GSM8K data...", 3)
+        self.color_print("Loading GSM8K data...", 3)
         try:
             dataset = load_dataset("gsm8k", "main", split="test")
             self.data = [dict(item) for item in dataset]
@@ -116,7 +133,11 @@ class EvalGSM8K(Baselines):
         if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": full_input + "\n\nPlease solve this step by step and put your final answer after #### at the end."}
+                {
+                    "role": "user",
+                    "content": full_input
+                    + "\n\nPlease solve this step by step and put your final answer after #### at the end.",
+                },
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -125,7 +146,11 @@ class EvalGSM8K(Baselines):
             )
         elif self.model_id == "gemma":
             messages = [
-                {"role": "user", "content": full_input + "\n\nPlease solve this step by step and put your final answer after #### at the end."}
+                {
+                    "role": "user",
+                    "content": full_input
+                    + "\n\nPlease solve this step by step and put your final answer after #### at the end.",
+                }
             ]
             prompt = self.tokenizer.apply_chat_template(
                 messages,
@@ -142,14 +167,14 @@ class EvalGSM8K(Baselines):
         gt_ans = extract_answer_from_gold(gt_completion)
         if gt_ans == INVALID_ANS:
             return False
-            
+
         # Try to find the ground truth number in the model's output specifically at the end
         # But GSM8K eval often just looks for the last number
         pred_ans = extract_answer_from_output(model_completion)
-        
+
         if pred_ans == INVALID_ANS:
             return False
-        
+
         # 使用数值比较而不是字符串比较（与 test/eval_gsm8k_vllm.py 一致）
         try:
             # 转换为浮点数进行比较，处理小数情况
@@ -184,9 +209,9 @@ class EvalGSM8K(Baselines):
         wall_times = {"time": [], "num_tokens": []}
 
         # Warmup
-        print(f"Start warm up...")
+        print("Start warm up...")
         # (Simplified warmup to save tokens/time if needed, or keep standard)
-        
+
         eval_data = self.data
         if total is not None:
             eval_data = self.data[:total]
@@ -198,9 +223,9 @@ class EvalGSM8K(Baselines):
         ):
             question = datum["question"]
             answer_gt = datum["answer"]
-            
+
             prompt = self.preprocess(question)
-            
+
             if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
                 input_ids = torch.tensor(
                     self.tokenizer([prompt], add_special_tokens=False).input_ids
@@ -209,11 +234,11 @@ class EvalGSM8K(Baselines):
                 input_ids = torch.tensor(
                     self.tokenizer.encode(prompt, add_special_tokens=True)
                 ).unsqueeze(0)
-            
+
             # Run Decoding
             torch.cuda.synchronize()
             start_time = time.time()
-            
+
             output_ids = decoding(input_ids)
             if isinstance(output_ids, tuple):
                 output_ids, metrics = output_ids
@@ -221,16 +246,15 @@ class EvalGSM8K(Baselines):
                 for key in decoding_metrics.keys():
                     if key in metrics and hasattr(metrics[key], "__add__"):
                         decoding_metrics[key] += metrics[key]
-            
+
             torch.cuda.synchronize()
             end_time = time.time()
-            
+
             # Decode output
             output_text = self.tokenizer.decode(
-                output_ids[0][input_ids.shape[1]:], 
-                skip_special_tokens=True
+                output_ids[0][input_ids.shape[1] :], skip_special_tokens=True
             )
-            
+
             # Check correctness
             clean_output = output_text.strip()
             is_correct = self.is_correct(clean_output, answer_gt)
@@ -241,54 +265,61 @@ class EvalGSM8K(Baselines):
                 new_tokens = output_ids.shape[1] - input_ids.shape[1]
                 wall_times["time"].append(end_time - start_time)
                 wall_times["num_tokens"].append(new_tokens)
-                
+
                 result_json = {
                     "question": question,
                     "generated_answer": clean_output,
                     "ground_truth": answer_gt,
                     "correct": is_correct,
                     "time": end_time - start_time,
-                    "new_tokens": new_tokens
+                    "new_tokens": new_tokens,
                 }
                 out_f.write(json.dumps(result_json, ensure_ascii=False) + "\n")
                 out_f.flush()
 
         out_f.close()
-        
+
         self.accelerator.wait_for_everyone()
 
         if self.accelerator.is_main_process:
             # Calculate Speed
             if len(wall_times["time"]) > 0 and sum(wall_times["time"]) > 0:
                 speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
-                speed_std = np.std(np.array(wall_times["num_tokens"]) / np.array(wall_times["time"]))
+                speed_std = np.std(
+                    np.array(wall_times["num_tokens"]) / np.array(wall_times["time"])
+                )
                 self.color_print(
                     f"generate speed (tokens / second):  {speed:.2f} with std {speed_std:.2f}",
                     2,
                 )
             else:
-                 self.color_print("No generation time recorded.", 3)
+                self.color_print("No generation time recorded.", 3)
 
             # Calculate Accuracy
             if len(self.acc_list) > 0:
                 acc = sum(self.acc_list) / len(self.acc_list)
                 decoding_metrics["accuracy"] = acc
                 self.color_print(f"GSM8K Accuracy: {acc:.4f}", 2)
-            
+
             if decoding_metrics["wall_time"] != 0:
                 decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"]
-                    / decoding_metrics["wall_time"]
+                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
                 )
             else:
                 decoding_metrics["throughput"] = 0.0
 
             # 过滤掉历史数据字段以避免打印过长
-            metrics_for_print = {k: v for k, v in decoding_metrics.items() 
-                                 if k not in ['edge_cloud_bandwidth_history', 
-                                              'edge_cloud_topk_history', 
-                                              'edge_cloud_draft_len_history']}
-            
+            metrics_for_print = {
+                k: v
+                for k, v in decoding_metrics.items()
+                if k
+                not in [
+                    "edge_cloud_bandwidth_history",
+                    "edge_cloud_topk_history",
+                    "edge_cloud_draft_len_history",
+                ]
+            }
+
             self.color_print("-------Decoding Metrics-------")
             self.color_print(f"{metrics_for_print}")
             self.color_print("-------Decoding Metrics-------")
@@ -312,6 +343,7 @@ class EvalGSM8K(Baselines):
             with open(decoding_metrics_path, "w") as f:
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
+
 
 if __name__ == "__main__":
     args = parse_arguments()

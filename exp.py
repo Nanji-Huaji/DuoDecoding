@@ -1,23 +1,13 @@
-import subprocess
-import os
 import json
+import os
+import subprocess
 import threading
 import time
-from pathlib import Path
-
-from typing import TypedDict
-
-from typing import Literal
-
-from typing import List
-
-from typing import Dict
-
-from datetime import datetime
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
+from typing import List, TypedDict
 
 from tqdm import tqdm
 
@@ -35,10 +25,12 @@ class EvalMode(str, Enum):
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
-    # tridecoding = "tridecoding" # ablation of adaptive tridecoding
+    tridecoding = "tridecoding"  # ablation of adaptive tridecoding
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
     cee_cuhlm = "cee_cuhlm"
+    cee_dssd = "cee_dssd"
+    cee_dsd = "cee_dsd"
 
 
 model_acc_head_map = {
@@ -47,9 +39,11 @@ model_acc_head_map = {
     "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
     "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
     "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
-    "qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
-    "qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
+    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
+    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
     "llama-2-chat-70b": "src/SpecDec_pp/checkpoints/llama-2-chat-70b/exp-weight6-layer3",
+    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-1.8b/exp-weight-layer3",
+    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-7b/exp-weight6-layer3",
 }
 
 
@@ -159,6 +153,8 @@ def get_model_series(model_name: str) -> str:
         return "llama"
     elif "vicuna" in name:
         return "vicuna"
+    elif "qwen1.5" in name:
+        return "qwen15"
     elif "qwen" in name:
         return "qwen"
     return "unknown"
@@ -231,17 +227,13 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
 
     cmd = add_args(cmd, "task_name", task_name)
 
-    print(
-        f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}"
-    )
+    print(f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}")
     print(f"日志文件: {log_file}")
 
     try:
         # 重定向输出到日志文件
         with open(log_file, "w", encoding="utf-8") as f:
-            f.write(
-                f"实验配置: {json.dumps(config, indent=2, ensure_ascii=False)}\n"
-            )
+            f.write(f"实验配置: {json.dumps(config, indent=2, ensure_ascii=False)}\n")
             f.write(f"执行命令: {cmd}\n")
             f.write("=" * 80 + "\n")
 
@@ -269,7 +261,7 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
                     "log_file": log_file,
                     "status": "success",
                 }
-            except json.JSONDecodeError as e:
+            except json.JSONDecodeError:
                 return {
                     "exp_name": config["exp_name"],
                     "result": {
@@ -295,7 +287,7 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             print(f"--- Error Log Content ({log_file}) ---")
             with open(log_file, "r", encoding="utf-8") as f:
                 print(f.read())
-            print(f"--- End Error Log ---")
+            print("--- End Error Log ---")
 
         return {
             "exp_name": config["exp_name"],
@@ -307,7 +299,12 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
 
 class GPUManager:
     def __init__(self):
-        self.available_gpus = set(self.get_available_gpus())
+        # 初始检测一次，获取所有被管理器追踪的GPU ID（包括当前空闲的）
+        # 这里假设启动时检测到的空闲GPU就是我们能管理的所有资源池
+        # 如果需要更复杂的管理（例如动态发现），逻辑需要修改
+        initial_gpus = self.get_available_gpus()
+        self.available_gpus = set(initial_gpus)
+        self.all_gpu_ids = set(initial_gpus)  # 记录总容量用于容量检查
         self.lock = threading.Lock()
         print(f"初始化GPU管理器，可用GPU: {sorted(self.available_gpus)}")
 
@@ -332,13 +329,9 @@ class GPUManager:
             # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
             if mem_used_mb < 1024 and gpu_util < 5:
                 available_gpus.append(i)
-                print(
-                    f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-                )
+                print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
             else:
-                print(
-                    f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-                )
+                print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
 
         return available_gpus
 
@@ -377,29 +370,34 @@ def run_experiment_with_gpu(
 
     # 检测是否为70b模型实验
     is_large_model = "70b" in str(config).lower()
-    needed_gpus = 4 if is_large_model else 1
+    is_middle_model = "27b" in str(config).lower() or "32b" in str(config).lower()
+    needed_gpus = 4 if is_large_model else 2 if is_middle_model else 1
+
+    # 死锁预防：检查系统总GPU数是否满足需求
+    # 注意：这里检查的是GPU管理器初始识别到的总数（包括忙碌的），而不是当前空闲的
+    total_tracked_gpus = len(gpu_manager.all_gpu_ids)
+    if needed_gpus > total_tracked_gpus:
+        msg = f"跳过实验 {config['exp_name']}: 需要 {needed_gpus} 个GPU，但管理器只追踪了 {total_tracked_gpus} 个GPU"
+        print(msg)
+        return {
+            "exp_name": config["exp_name"],
+            "result": {"error": msg},
+            "log_file": "",
+            "status": "skipped_capacity_mismatch",
+        }
 
     try:
-        if is_large_model:
-            # 70b模型：如果资源不足直接跳过
+        # 等待直到有可用GPU
+        waiting_printed = False
+        while gpu_ids is None:
             gpu_ids = gpu_manager.acquire_gpu(needed_gpus)
             if gpu_ids is None:
-                msg = f"跳过实验 {config['exp_name']}: 70b模型需要{needed_gpus}个GPU，资源不足"
-                print(msg)
-                return {
-                    "exp_name": config["exp_name"],
-                    "result": {"error": msg},
-                    "log_file": "",
-                    "status": "skipped",
-                    "config": config.copy(),
-                }
-        else:
-            # 普通模型：等待直到有可用GPU
-            while gpu_ids is None:
-                gpu_ids = gpu_manager.acquire_gpu(needed_gpus)
-                if gpu_ids is None:
-                    print(f"等待可用GPU运行实验: {config['exp_name']}")
-                    time.sleep(5)
+                if not waiting_printed:
+                    print(
+                        f"等待可用GPU运行实验: {config['exp_name']} (需要 {needed_gpus} GPUs)"
+                    )
+                    waiting_printed = True
+                time.sleep(10)
 
         # 更新配置中的GPU设备
         config["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
@@ -456,9 +454,7 @@ def run_experiments_parallel(
             try:
                 result = future.result()
                 all_results.append(result)
-                print(
-                    f"实验完成: {config['exp_name']}, 状态: {result['status']}"
-                )
+                print(f"实验完成: {config['exp_name']}, 状态: {result['status']}")
             except Exception as exc:
                 import traceback
 
@@ -501,13 +497,9 @@ def get_available_gpus() -> List[int]:
         # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
         if mem_used_mb < 1024 and gpu_util < 5:  # type: ignore
             available_gpus.append(i)
-            print(
-                f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-            )
+            print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
         else:
-            print(
-                f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-            )
+            print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
 
     return available_gpus
 
@@ -540,21 +532,22 @@ def create_config(
     main_rl_path: str | None = None,
     little_rl_path: str | None = None,
 ) -> ExpConfig:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 使用微秒级时间戳确保唯一性
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
     if eval_mode in [EvalMode.ceesd, EvalMode.cee_cuhlm]:
         if small_draft_acc_head_path is None:
             small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
         if draft_target_acc_head_path is None:
             draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
-        
+
         # 自动推导 RL Adapter 路径
         series = get_model_series(target_model)
         if main_rl_path is None:
             main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
         if little_rl_path is None:
             little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
-            
+
     else:
         # 其他模式不需要
         small_draft_acc_head_path = ""
@@ -596,9 +589,28 @@ config_to_run = []
 
 llama_series = ("llama-68m", "tiny-llama-1.1b", "llama-2-13b")
 vicuna_series = ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5")
-qwen_series = ("qwen/Qwen3-0.6B", "qwen/Qwen3-1.7B", "qwen/Qwen3-14B")
-llama_chat_series = ("llama-68m", "llama-2-chat-7b", "llama-2-chat-70b")
-
+qwen_series = ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B")
+qwen_series_large = ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B")
+llama_chat_series = (
+    "llama-68m",
+    "meta-llama/Llama-2-7b-chat-hf",
+    "meta-llama/Llama-2-70b-chat-hf",
+)
+gemma_3_it_series = (
+    "google/gemma-2-2b-it",
+    "google/gemma-2-9b-it",
+    "google/gemma-2-27b-it",
+)
+llama_3_series = (
+    "llama-68m",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+)
+qwen_1_5_series = (
+    "Qwen/Qwen1.5-0.5B-Chat",
+    "Qwen/Qwen1.5-1.8B-Chat",
+    "Qwen/Qwen1.5-7B-Chat",
+)
 
 # 根据 LaTeX 表格定义的模型组合 (Draft, Target)
 # Row 1 (TinyLlama): Col 2 (TinyLlama-1B) = x, Col 3 (Llama-13B) = x
@@ -643,10 +655,20 @@ edge_cloud_bandwidth = [
 for little_model, draft_model, target_model in (
     llama_series,
     # vicuna_series,
-    # qwen_series,
+    qwen_series,
+    # llama_chat_series,
+    # qwen_series_fp8,
+    # gemma_3_it_series,
+    # qwen_series_large,
+    # llama_3_series,
+    qwen_1_5_series,
 ):
-    for dataset in [EvalDataset.mt_bench,]:
-        for mode in [EvalMode.cee_cuhlm,]:
+    for dataset in [
+        EvalDataset.gsm8k,
+    ]:
+        for mode in [
+            EvalMode.cuhlm,
+        ]:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
                     eval_mode=mode,
@@ -660,15 +682,24 @@ for little_model, draft_model, target_model in (
                     small_draft_threshold=0.8,
                     draft_target_threshold=0.6,
                     transfer_top_k=1024,
-                    max_tokens=128,
-                    num_shots=8,
+                    max_tokens=1024,
+                    num_shots=5,
                     eval_dataset=dataset,
-                    draft_model=draft_model if mode in [EvalMode.ceesd, EvalMode.cee_cuhlm] else little_model,
+                    draft_model=draft_model
+                    if mode
+                    in [
+                        EvalMode.ceesd,
+                        EvalMode.cee_cuhlm,
+                        EvalMode.tridecoding,
+                        EvalMode.cee_dsd,
+                        EvalMode.dssd,
+                    ]
+                    else little_model,
                     target_model=target_model,
                     little_model=little_model,
                     use_rl_adapter=True,
                     disable_rl_update=True,
-                    use_early_stopping=False,
+                    use_early_stopping=True,
                 )
                 config_to_run.append(config)
 
@@ -679,9 +710,7 @@ if __name__ == "__main__":
     Path(log_dir).mkdir(exist_ok=True)
 
     # 提前确定汇总结果文件名
-    summary_file = (
-        f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    )
+    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
     # 并行运行实验
     all_results = run_experiments_parallel(

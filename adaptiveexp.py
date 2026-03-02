@@ -1,21 +1,12 @@
-import subprocess
-import os
 import json
+import os
+import subprocess
 import threading
 import time
-from pathlib import Path
-
-from typing import TypedDict
-
-from typing import Literal
-
-from typing import List
-
-from typing import Dict
-
-from datetime import datetime
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import List, Literal, TypedDict
 
 
 class ExpConfig(TypedDict):
@@ -107,17 +98,13 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
     if config.get("disable_rl_update", False):
         cmd = add_args(cmd, "disable_rl_update")
 
-    print(
-        f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}"
-    )
+    print(f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}")
     print(f"日志文件: {log_file}")
 
     try:
         # 重定向输出到日志文件
         with open(log_file, "w", encoding="utf-8") as f:
-            f.write(
-                f"实验配置: {json.dumps(config, indent=2, ensure_ascii=False)}\n"
-            )
+            f.write(f"实验配置: {json.dumps(config, indent=2, ensure_ascii=False)}\n")
             f.write(f"执行命令: {cmd}\n")
             f.write("=" * 80 + "\n")
 
@@ -145,7 +132,7 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
                     "log_file": log_file,
                     "status": "success",
                 }
-            except json.JSONDecodeError as e:
+            except json.JSONDecodeError:
                 return {
                     "exp_name": config["exp_name"],
                     "result": {
@@ -171,7 +158,7 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             print(f"--- Error Log Content ({log_file}) ---")
             with open(log_file, "r", encoding="utf-8") as f:
                 print(f.read())
-            print(f"--- End Error Log ---")
+            print("--- End Error Log ---")
 
         return {
             "exp_name": config["exp_name"],
@@ -208,13 +195,9 @@ class GPUManager:
             # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
             if mem_used_mb < 1024 and gpu_util < 5:
                 available_gpus.append(i)
-                print(
-                    f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-                )
+                print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
             else:
-                print(
-                    f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-                )
+                print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
 
         return available_gpus
 
@@ -300,9 +283,7 @@ def run_experiments_parallel(
             try:
                 result = future.result()
                 all_results.append(result)
-                print(
-                    f"实验完成: {config['exp_name']}, 状态: {result['status']}"
-                )
+                print(f"实验完成: {config['exp_name']}, 状态: {result['status']}")
             except Exception as exc:
                 import traceback
 
@@ -340,13 +321,9 @@ def get_available_gpus() -> List[int]:
         # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
         if mem_used_mb < 1024 and gpu_util < 5:  # type: ignore
             available_gpus.append(i)
-            print(
-                f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-            )
+            print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
         else:
-            print(
-                f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)"
-            )
+            print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
 
     return available_gpus
 
@@ -357,9 +334,9 @@ def create_config(
     ntt_ms_edge_end: int | float = NTT_MS_EDGE_END,
     use_precise: bool = True,
     CUDA_VISIBLE_DEVICES: Literal["0", "1"] = "0",
-    edge_end_bandwidth: int | float=100,
-    edge_cloud_bandwidth: int | float=100,
-    cloud_end_bandwidth: int | float=100,
+    edge_end_bandwidth: int | float = 100,
+    edge_cloud_bandwidth: int | float = 100,
+    cloud_end_bandwidth: int | float = 100,
     transfer_top_k: int = 300,
     small_draft_threshold: float = 0.8,
     draft_target_threshold: float = 0.8,
@@ -403,7 +380,9 @@ edge_cloud_bw = 34.6
 transfer_top_k = 300
 
 threshold_config = [
-    (little_draft / 10, draft_target / 10) for little_draft in range(1, 8, 1) for draft_target in range(1, 8, 1)
+    (little_draft / 10, draft_target / 10)
+    for little_draft in range(1, 8, 1)
+    for draft_target in range(1, 8, 1)
 ]
 
 for small_draft_threshold, draft_target_threshold in threshold_config:
@@ -418,7 +397,7 @@ for small_draft_threshold, draft_target_threshold in threshold_config:
             cloud_end_bandwidth=edge_cloud_bw,
             transfer_top_k=transfer_top_k,
         )
-        )
+    )
     config_to_run[-1]["small_draft_threshold"] = small_draft_threshold
     config_to_run[-1]["draft_target_threshold"] = draft_target_threshold
 
@@ -433,9 +412,7 @@ if __name__ == "__main__":
     )
 
     # 保存汇总结果
-    summary_file = (
-        f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    )
+    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 

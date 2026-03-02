@@ -1,10 +1,10 @@
-import math
-import time
-import json
-import torch
+import ctypes
+
+import llama_cpp
 import numpy as np
-import llama_cpp, ctypes
-from .utils import norm_logits, sample, norm_numpy_logits
+import torch
+
+from .utils import norm_logits, norm_numpy_logits, sample
 
 
 class KVCacheCppModel:
@@ -224,11 +224,9 @@ class KVCacheCppModel:
 
         else:
             for i in range(k):
-
                 if i == 0:
                     input = input_ids + [start_tokens[i], second_token]
                     if gen_token - 1 > 0:
-
                         output = self._generate_llama_cpp_kseq(input, gen_token - 1)
                     else:
                         output = input

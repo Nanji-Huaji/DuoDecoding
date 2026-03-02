@@ -1,9 +1,6 @@
 import torch
+
 from .utils import norm_logits, sample
-from typing import Tuple
-from typing import Literal
-
-
 
 
 class KVCacheModel:
@@ -25,43 +22,55 @@ class KVCacheModel:
 
         self.hidden_states: torch.Tensor | None = None
 
-        self.logits_history: torch.Tensor | None = None # 不确定性方法需要存储logits历史
+        self.logits_history: torch.Tensor | None = (
+            None  # 不确定性方法需要存储logits历史
+        )
 
         if hasattr(model.config, "vocab_size"):
             self.vocab_size = model.config.vocab_size
-        elif hasattr(model.config, "text_config") and hasattr(model.config.text_config, "vocab_size"):
-             self.vocab_size = model.config.text_config.vocab_size
+        elif hasattr(model.config, "text_config") and hasattr(
+            model.config.text_config, "vocab_size"
+        ):
+            self.vocab_size = model.config.text_config.vocab_size
         else:
-             raise AttributeError("Vocab size not found in model config")
+            raise AttributeError("Vocab size not found in model config")
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         # 确保 input_ids 是 long 类型
         if input_ids.dtype != torch.long:
-            print(f"🔍 DEBUG [_forward_with_kvcache]: input_ids dtype={input_ids.dtype}, converting to long")
+            print(
+                f"🔍 DEBUG [_forward_with_kvcache]: input_ids dtype={input_ids.dtype}, converting to long"
+            )
             input_ids = input_ids.long()
-        
+
         # 使用实际模型embedding层的vocab_size进行验证
         actual_vocab_size = self._model.get_input_embeddings().weight.shape[0]
         original_max = input_ids.max().item()
         original_min = input_ids.min().item()
         if original_max >= actual_vocab_size or original_min < 0:
-            print(f"⚠️  [Token Clamp Warning] Detected out-of-range token IDs: min={original_min}, max={original_max}, actual_vocab_size={actual_vocab_size}")
+            print(
+                f"⚠️  [Token Clamp Warning] Detected out-of-range token IDs: min={original_min}, max={original_max}, actual_vocab_size={actual_vocab_size}"
+            )
             input_ids = torch.clamp(input_ids, 0, actual_vocab_size - 1)
-            print(f"   Clamped to valid range: min={input_ids.min().item()}, max={input_ids.max().item()}")
-        
+            print(
+                f"   Clamped to valid range: min={input_ids.min().item()}, max={input_ids.max().item()}"
+            )
+
         if self._past_key_values is None:
             outputs = self._model(input_ids)
             self._prob_history = outputs.logits[:, :, : self.vocab_size]
             self.logits_history = outputs.logits
-            
+
             # 检查logits是否包含inf/nan
             if torch.isnan(outputs.logits).any() or torch.isinf(outputs.logits).any():
-                print(f"⚠️  [NaN/Inf Warning] Model forward produced invalid logits!")
+                print("⚠️  [NaN/Inf Warning] Model forward produced invalid logits!")
                 print(f"   NaN count: {torch.isnan(outputs.logits).sum().item()}")
                 print(f"   Inf count: {torch.isinf(outputs.logits).sum().item()}")
                 print(f"   Logits shape: {outputs.logits.shape}")
-                print(f"   Logits range: [{outputs.logits.min().item():.2f}, {outputs.logits.max().item():.2f}]")
-            
+                print(
+                    f"   Logits range: [{outputs.logits.min().item():.2f}, {outputs.logits.max().item():.2f}]"
+                )
+
             for i in range(self._prob_history.shape[-2]):
                 self._prob_history[:, i, :] = norm_logits(
                     self._prob_history[:, i, :],
@@ -79,30 +88,42 @@ class KVCacheModel:
             last_input_id = input_ids[:, cached_len:]
             if last_input_id.dim() == 1:
                 last_input_id = torch.unsqueeze(last_input_id, 0)
-            
+
             # 确保是 long 类型
             if last_input_id.dtype != torch.long:
-                print(f"🔍 DEBUG [_forward_with_kvcache cached]: last_input_id dtype={last_input_id.dtype}, converting to long")
+                print(
+                    f"🔍 DEBUG [_forward_with_kvcache cached]: last_input_id dtype={last_input_id.dtype}, converting to long"
+                )
                 last_input_id = last_input_id.long()
-            
+
             # 钳位input_ids，防止越界访问
             original_max = last_input_id.max().item()
             original_min = last_input_id.min().item()
             if original_max >= self.vocab_size or original_min < 0:
-                print(f"⚠️  [Token Clamp Warning] Detected out-of-range token IDs in cached forward: min={original_min}, max={original_max}, vocab_size={self.vocab_size}")
+                print(
+                    f"⚠️  [Token Clamp Warning] Detected out-of-range token IDs in cached forward: min={original_min}, max={original_max}, vocab_size={self.vocab_size}"
+                )
                 last_input_id = torch.clamp(last_input_id, 0, self.vocab_size - 1)
-                print(f"   Clamped to valid range: min={last_input_id.min().item()}, max={last_input_id.max().item()}")
+                print(
+                    f"   Clamped to valid range: min={last_input_id.min().item()}, max={last_input_id.max().item()}"
+                )
 
-            outputs = self._model(last_input_id, past_key_values=self._past_key_values, use_cache=True)
+            outputs = self._model(
+                last_input_id, past_key_values=self._past_key_values, use_cache=True
+            )
 
             not_cached_q = outputs.logits[:, :, : self.vocab_size]
-            self.logits_history = torch.cat([self.logits_history, outputs.logits], dim=1)
+            self.logits_history = torch.cat(
+                [self.logits_history, outputs.logits], dim=1
+            )
 
             if not_cached_q.dim() == 2:
                 not_cached_q = torch.unsqueeze(not_cached_q, 0)
 
             for i in range(not_cached_q.shape[-2]):
-                not_cached_q[:, i, :] = norm_logits(not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p)
+                not_cached_q[:, i, :] = norm_logits(
+                    not_cached_q[:, i, :], self._temperature, self._top_k, self._top_p
+                )
 
             self._prob_history = torch.cat([self._prob_history, not_cached_q], dim=1)
 
@@ -129,28 +150,34 @@ class KVCacheModel:
             Torch.Tensor: prefix+generated tokens
         """
         x = prefix
-        
+
         # 确保输入是 long 类型
         if x.dtype != torch.long:
-            print(f"🔍 DEBUG [_generate_with_kvcache]: prefix dtype={x.dtype}, converting to long")
+            print(
+                f"🔍 DEBUG [_generate_with_kvcache]: prefix dtype={x.dtype}, converting to long"
+            )
             x = x.long()
 
         for _ in range(gamma):
             q = self._forward_with_kvcache(x)
             next_tok = sample(q)
-            
+
             # 确保 next_tok 是 long 类型
             if next_tok.dtype != torch.long:
-                print(f"🔍 DEBUG [_generate_with_kvcache]: next_tok dtype={next_tok.dtype}, converting to long")
+                print(
+                    f"🔍 DEBUG [_generate_with_kvcache]: next_tok dtype={next_tok.dtype}, converting to long"
+                )
                 next_tok = next_tok.long()
-            
+
             x = torch.cat((x, next_tok), dim=1)
-            
+
             # 确保拼接后仍是 long 类型
             if x.dtype != torch.long:
-                print(f"🔍 DEBUG [_generate_with_kvcache]: x after cat dtype={x.dtype}, converting to long")
+                print(
+                    f"🔍 DEBUG [_generate_with_kvcache]: x after cat dtype={x.dtype}, converting to long"
+                )
                 x = x.long()
-        
+
         return x
 
     @torch.no_grad()
@@ -164,7 +191,7 @@ class KVCacheModel:
         if self._past_key_values is None:
             return
 
-        if hasattr(self._past_key_values, 'crop'):
+        if hasattr(self._past_key_values, "crop"):
             self._past_key_values.crop(end_pos)
         else:
             past_key_values_trimmed = []

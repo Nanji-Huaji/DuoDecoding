@@ -2,33 +2,21 @@ import os
 import sys
 
 sys.path.append(os.path.join(sys.path[0], "../"))
-import torch
-import json
-import tqdm
-import time
-import random
-import shortuuid
-from src.utils import seed_everything, parse_arguments
-from src.engine import Decoding
-from fastchat.model import get_conversation_template
-from typing import List, Tuple
-
-
-from src.baselines import get_empty_metrics, DecodingMetrics
-
-
-from src.baselines import Baselines
-
-from functools import partial
-
 import inspect
+import json
+import random
+import time
+from functools import partial
+from typing import List
 
-from collections import Counter
-
-
-from src.baselines import get_decoding_fn
-
+import shortuuid
+import torch
+import tqdm
+from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
+
+from src.baselines import Baselines, get_empty_metrics
+from src.utils import parse_arguments, seed_everything
 
 decoding_metrics = get_empty_metrics()
 
@@ -80,26 +68,38 @@ class EvalMTBench(Baselines):
             self.args.target_model
         ):
             self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(self.args.draft_model):
+        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3.2"
         elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
             self.args.target_model
         ):
             self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(self.args.draft_model):
+        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
+            self.args.draft_model
+        ):
             self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(self.args.target_model):
+        elif "llama" in str(self.args.draft_model) or "llama" in str(
+            self.args.target_model
+        ):
             self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(self.args.target_model):
+        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
+            self.args.target_model
+        ):
             self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(self.args.draft_model):
+        elif "gemma" in str(self.args.target_model) or "gemma" in str(
+            self.args.draft_model
+        ):
             self.model_id = "gemma"
         else:
-            raise NotImplementedError(f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}")
+            raise NotImplementedError(
+                f"Unsupported model combination: draft={self.args.draft_model}, target={self.args.target_model}"
+            )
 
     def load_data(self):
         # * load evaluation data
-        self.color_print(f"Loading MT-bench data...", 3)
+        self.color_print("Loading MT-bench data...", 3)
         data = []
         with open(os.path.join(self.args.data_path, "mt_bench.jsonl")) as f:
             for line in f.readlines():
@@ -113,9 +113,11 @@ class EvalMTBench(Baselines):
         if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": qs}
+                {"role": "user", "content": qs},
             ]
-            prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         else:
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
@@ -146,7 +148,7 @@ class EvalMTBench(Baselines):
         out_f = open(out_path, "a")
 
         # warmup - 只做第一轮对话以加快速度
-        print(f"Start warm up...")
+        print("Start warm up...")
         n = 2  # 减少到2次warmup
         warmup_count = 0
         for question in tqdm.tqdm(
@@ -157,7 +159,7 @@ class EvalMTBench(Baselines):
         ):
             if warmup_count >= n:
                 break
-            
+
             # Warmup只处理第一轮对话
             turn_idx = 0
             qs = question["turns"][turn_idx]
@@ -186,7 +188,11 @@ class EvalMTBench(Baselines):
                 )
             elif self.model_id == "gemma":
                 content = qs
-                content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                content = (
+                    "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+                    + "\n"
+                    + qs
+                )
                 messages = [{"role": "user", "content": content}]
                 prompt = self.tokenizer.apply_chat_template(
                     messages,
@@ -207,11 +213,9 @@ class EvalMTBench(Baselines):
                 conv.append_message(conv.roles[0], qs)
                 conv.append_message(conv.roles[1], None)
                 prompt = conv.get_prompt() + " "
-                input_ids = torch.tensor(
-                    self.tokenizer.encode(prompt)
-                ).unsqueeze(0)
+                input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
-            print(f"[Warmup {warmup_count+1}/{n}] Input tokens: {input_ids.shape[1]}")
+            print(f"[Warmup {warmup_count + 1}/{n}] Input tokens: {input_ids.shape[1]}")
             torch.cuda.synchronize()
             start_time = time.time()
             output_ids = decoding(input_ids)
@@ -219,8 +223,10 @@ class EvalMTBench(Baselines):
                 output_ids, _ = output_ids
             torch.cuda.synchronize()
             elapsed = time.time() - start_time
-            print(f"[Warmup {warmup_count+1}/{n}] Generated {output_ids.shape[1] - input_ids.shape[1]} tokens in {elapsed:.2f}s ({(output_ids.shape[1] - input_ids.shape[1])/elapsed:.2f} tokens/s)")
-            
+            print(
+                f"[Warmup {warmup_count + 1}/{n}] Generated {output_ids.shape[1] - input_ids.shape[1]} tokens in {elapsed:.2f}s ({(output_ids.shape[1] - input_ids.shape[1]) / elapsed:.2f} tokens/s)"
+            )
+
             warmup_count += 1
 
         for question in tqdm.tqdm(
@@ -229,7 +235,6 @@ class EvalMTBench(Baselines):
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(self.args.num_samples_per_task):
@@ -256,13 +261,22 @@ class EvalMTBench(Baselines):
                 wall_time = []
                 num_token = []
                 for turn_idx in range(len(question["turns"])):
-
                     qs = question["turns"][turn_idx]
 
-                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
+                    if self.model_id in [
+                        "llama-3.1",
+                        "llama-3.2",
+                        "llama-3",
+                        "qwen",
+                        "gemma",
+                    ]:
                         content = qs
                         if self.model_id == "gemma" and turn_idx == 0:
-                            content = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information." + "\n" + qs
+                            content = (
+                                "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+                                + "\n"
+                                + qs
+                            )
                         messages.append({"role": "user", "content": content})
                         prompt = self.tokenizer.apply_chat_template(
                             messages,
@@ -290,58 +304,73 @@ class EvalMTBench(Baselines):
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, metrics = output_ids
                         for key in decoding_metrics.keys():
-                            if key in metrics and key not in [
-                                "little_acceptance_rate",
-                                "draft_acceptance_rate",
-                            ] and hasattr(metrics[key], "__add__"):
+                            if (
+                                key in metrics
+                                and key
+                                not in [
+                                    "little_acceptance_rate",
+                                    "draft_acceptance_rate",
+                                ]
+                                and hasattr(metrics[key], "__add__")
+                            ):
                                 decoding_metrics[key] += metrics[key]
-                                assert (
-                                    decoding_metrics[key] is not None
-                                ), f"Metric {key} is None, please check your decoding function."
+                                assert decoding_metrics[key] is not None, (
+                                    f"Metric {key} is None, please check your decoding function."
+                                )
                             else:
                                 # 如果传入一个字典，尝试将字典的值进行累加
                                 if isinstance(metrics[key], dict):
                                     try:
                                         for sub_key in metrics[key]:
                                             if sub_key in decoding_metrics[key]:
-                                                decoding_metrics[key][sub_key] += metrics[key][sub_key]
+                                                decoding_metrics[key][sub_key] += (
+                                                    metrics[key][sub_key]
+                                                )
                                             else:
-                                                decoding_metrics[key][sub_key] = metrics[key][sub_key]
+                                                decoding_metrics[key][sub_key] = (
+                                                    metrics[key][sub_key]
+                                                )
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
-                                        
-
 
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    if (output_ids < 0).any() or (output_ids >= self.tokenizer.vocab_size).any():
-                        print(f"DEBUG: Found invalid tokens! vocab_size: {self.tokenizer.vocab_size}")
-                        invalid_mask = (output_ids < 0) | (output_ids >= self.tokenizer.vocab_size)
+                    if (output_ids < 0).any() or (
+                        output_ids >= self.tokenizer.vocab_size
+                    ).any():
+                        print(
+                            f"DEBUG: Found invalid tokens! vocab_size: {self.tokenizer.vocab_size}"
+                        )
+                        invalid_mask = (output_ids < 0) | (
+                            output_ids >= self.tokenizer.vocab_size
+                        )
                         print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
                         # Filter invalid tokens
                         output_ids = output_ids.clone()
-                        output_ids[invalid_mask] = 0 # Replace with unknown or padding (0 usually safe)
+                        output_ids[invalid_mask] = (
+                            0  # Replace with unknown or padding (0 usually safe)
+                        )
 
                     output_text = self.tokenizer.decode(
                         output_ids[0], spaces_between_special_tokens=False
                     )
 
-                    for (
-                        special_token
-                    ) in self.tokenizer.special_tokens_map.values():
+                    for special_token in self.tokenizer.special_tokens_map.values():
                         if isinstance(special_token, list):
                             for special_tok in special_token:
-                                output_text = output_text.replace(
-                                    special_tok, ""
-                                )
+                                output_text = output_text.replace(special_tok, "")
                         else:
                             output_text = output_text.replace(special_token, "")
                     output_text = output_text.strip()
-                    if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma"]:
-                        messages.append(
-                            {"role": "assistant", "content": output_text}
-                        )
+                    if self.model_id in [
+                        "llama-3.1",
+                        "llama-3.2",
+                        "llama-3",
+                        "qwen",
+                        "gemma",
+                    ]:
+                        messages.append({"role": "assistant", "content": output_text})
                     else:
                         conv.messages[-1][-1] = output_text
                     turns.append(output_text)
@@ -416,18 +445,23 @@ class EvalMTBench(Baselines):
 
         if decoding_metrics["wall_time"] != 0:
             decoding_metrics["throughput"] = (
-                decoding_metrics["generated_tokens"]
-                / decoding_metrics["wall_time"]
+                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
             )
 
         # 过滤掉历史数据字段以避免打印过长
-        metrics_for_print = {k: v for k, v in decoding_metrics.items() 
-                             if k not in ['edge_cloud_bandwidth_history', 
-                                          'edge_cloud_topk_history', 
-                                          'edge_cloud_draft_len_history']}
-        
+        metrics_for_print = {
+            k: v
+            for k, v in decoding_metrics.items()
+            if k
+            not in [
+                "edge_cloud_bandwidth_history",
+                "edge_cloud_topk_history",
+                "edge_cloud_draft_len_history",
+            ]
+        }
+
         metrics_str = f"""
-        {json.dumps(metrics_for_print, indent = 4)}
+        {json.dumps(metrics_for_print, indent=4)}
         """
 
         metrics_str += """
@@ -450,12 +484,10 @@ class EvalMTBench(Baselines):
         self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
-        self.color_print(
-            f"Decoding metrics saved to {decoding_metrics_path}", 2
-        )
-
+        self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
         self.accelerator.wait_for_everyone()
+
 
 if __name__ == "__main__":
     args = parse_arguments()
