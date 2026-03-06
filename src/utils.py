@@ -391,7 +391,7 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
     """
 
     Args:
-        logits (torch.Tensorpe_): 2D tensor with shape (batch, vocab)
+        logits (torch.Tensor): Tensor with shape (batch, vocab) or (batch, seq_len, vocab)
         top_k (int, optional): top_k. Defaults to 0.
         top_p (float, optional): top_p. Defaults to 0.0.
 
@@ -399,16 +399,27 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
         torch.Tensor: a renormalized logits
     """
     if top_k > 0:
-        filter = torch.topk(logits, min(top_k, logits.size(-1)))[0]
-        logits[logits < filter[:, [-1]]] = float("-inf")
+        # Avoid out of bounds if top_k > vocab_size
+        k = min(top_k, logits.size(-1))
+        # Support multi-dimensional tensor (e.g. 3D: [batch, seq_len, vocab])
+        filter_value = torch.topk(logits, k, dim=-1)[0][..., -1, None]
+        logits = logits.masked_fill(logits < filter_value, float("-inf"))
+
     if top_p > 0.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-        filter = cumulative_probs > top_p
-        filter[..., 1:] = filter[..., :-1].clone()
-        filter[..., 0] = 0
-        indices_to_remove = filter.scatter(1, sorted_indices, filter)
-        logits[indices_to_remove] = float("-inf")
+
+        # Determine elements to remove
+        filter_mask = cumulative_probs > top_p
+
+        # Shift mask to the right to keep the first token that exceeds top_p
+        filter_mask[..., 1:] = filter_mask[..., :-1].clone()
+        filter_mask[..., 0] = 0
+
+        # Scatter the mask back to the original index positions
+        indices_to_remove = filter_mask.scatter(-1, sorted_indices, filter_mask)
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
+
     return logits
 
 
@@ -418,23 +429,23 @@ def norm_logits(
     """
 
     Args:
-        logits (torch.Tensor): shape (1, vocab)
+        logits (torch.Tensor): shape (batch, vocab) or (batch, seq_len, vocab)
         temperature (float): temperature
         top_k (float): top_k
         top_p (float): top_p
 
     Returns:
-        torch.Tensor: next token with shape as (batch,  1)
+        torch.Tensor: probs with same shape as logits
     """
-    assert logits.dim() == 2
     if temperature == 0:
-        idx = logits.argmax(dim=1)
+        idx = logits.argmax(dim=-1, keepdim=True)
         new_logits = torch.zeros_like(logits, device=logits.device)
-        new_logits[:, idx] = 1
+        new_logits.scatter_(-1, idx, 1)
         return new_logits.float()
+
     logits = logits / temperature
     logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
-    probs = F.softmax(logits, dim=1)
+    probs = F.softmax(logits, dim=-1)
     return probs
 
 

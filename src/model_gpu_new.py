@@ -57,44 +57,6 @@ class KVCacheModel:
     def logits_history(self, value):
         pass
 
-    def _ensure_buffer_size(
-        self, batch_size: int, seq_len: int, device: torch.device, dtype: torch.dtype
-    ):
-        # Dynamically resize buffers to prevent OOM on large context while maintaining contiguous memory access
-        if self._prob_buffer is None:
-            self.max_length = max(2048, seq_len + 1024)
-            self._prob_buffer = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
-            self._logits_buffer = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
-            return
-
-        if seq_len > self.max_length:
-            old_len = self.max_length
-            self.max_length = max(self.max_length * 2, seq_len + 1024)
-
-            new_prob = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
-            new_prob[:, :old_len, :] = self._prob_buffer
-            self._prob_buffer = new_prob
-
-            new_logits = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
-            new_logits[:, :old_len, :] = self._logits_buffer
-            self._logits_buffer = new_logits
-
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if input_ids.dtype != torch.long:
             input_ids = input_ids.to(torch.long)
@@ -109,12 +71,19 @@ class KVCacheModel:
             outputs = self._model(input_ids)
             logits = outputs.logits
 
-            self._ensure_buffer_size(
-                batch_size, seq_length, logits.device, logits.dtype
+            self._prob_buffer = torch.empty(
+                (batch_size, self.max_length, self.vocab_size),
+                device=logits.device,
+                dtype=logits.dtype,
+            )
+            self._logits_buffer = torch.empty(
+                (batch_size, self.max_length, logits.shape[-1]),
+                device=logits.device,
+                dtype=logits.dtype,
             )
 
+            self._logits_buffer[:, :seq_length, :] = logits
             sliced_logits = logits[..., : self.vocab_size]
-            self._logits_buffer[:, :seq_length, :] = sliced_logits
 
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p
@@ -139,12 +108,13 @@ class KVCacheModel:
             new_len = last_input_id.shape[1]
             end_pos = self._current_seq_len + new_len
 
-            self._ensure_buffer_size(
-                batch_size, end_pos, outputs.logits.device, outputs.logits.dtype
-            )
+            if end_pos > self.max_length:
+                raise RuntimeError(
+                    f"Sequence length {end_pos} exceeds pre-allocated max_length {self.max_length}"
+                )
 
+            self._logits_buffer[:, self._current_seq_len : end_pos, :] = outputs.logits
             sliced_logits = outputs.logits[..., : self.vocab_size]
-            self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
 
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p

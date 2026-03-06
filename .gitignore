@@ -94,6 +94,7 @@ checkpoints_*/
 *.pth
 *.bin
 *.safetensors
+qwen/*
 
 # Experiment Results & Logs (General patterns)
 archive_log/
