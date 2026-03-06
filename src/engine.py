@@ -9,7 +9,7 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 import re
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple, TypedDict
+from typing import Any, List, Optional, Tuple, TypedDict, Literal
 
 from accelerate import Accelerator
 from transformers import (
@@ -150,6 +150,101 @@ class Decoding(Register, ABC):
         self.prob_with_flag = []
 
         self.vocab_size = -1
+        self.stop_tokens_matrix = None
+
+    def _prepare_stop_tokens(self, stop_sequences: List[str]):
+        """
+        预处理停止词序列，将其转换为 GPU 上的张量矩阵，以便在生成过程中进行高效的广播检查。
+        """
+        if not stop_sequences or not getattr(self, "tokenizer", None):
+            raise ValueError("Stop sequences provided but tokenizer is not available.")
+
+        # 1. 获取完整的 ID 序列
+        stop_ids_list = [
+            self.tokenizer.encode(s, add_special_tokens=False) for s in stop_sequences
+        ]
+
+        if not stop_ids_list:
+            self.stop_tokens_matrix = None
+            return
+
+        # 2. 找出最长的停止词长度
+        max_len = max(len(ids) for ids in stop_ids_list)
+
+        # 3. 填充并转为 Tensor (用 -1 填充左侧，方便右对齐比对)
+        # 形状: [停止词个数, 最长长度]
+        # 确保 device 正确，这里假设 self.target_model 已经加载
+        device = (
+            self.target_model.device
+            if hasattr(self, "target_model") and self.target_model is not None
+            else "cpu"
+        )
+
+        matrix = torch.full(
+            (len(stop_ids_list), max_len),
+            -1,
+            dtype=torch.long,
+            device=device,
+        )
+        for i, ids in enumerate(stop_ids_list):
+            matrix[i, -len(ids) :] = torch.tensor(ids, device=device)
+
+        self.stop_tokens_matrix = matrix
+
+    def _should_stop(
+        self,
+        prefix: torch.Tensor,
+        max_tokens: int,
+        use_early_stopping: bool = False,
+    ) -> bool:
+        """
+        Unified stopping criteria check.
+        Prioritizes checks on GPU to minimize synchronization overhead.
+        """
+        # 1. Length check
+        if prefix.shape[1] >= max_tokens:
+            return True
+
+        if not use_early_stopping:
+            return False
+
+        # 2. EOS check
+        if hasattr(self, "tokenizer") and self.tokenizer is not None:
+            # prefix: [batch, seq_len]
+            if prefix[0, -1] == self.tokenizer.eos_token_id:
+                return True
+
+        # 3. Stop tokens matrix check
+        if self.stop_tokens_matrix is not None:
+            max_stop_len = self.stop_tokens_matrix.size(1)
+            # Only check a reasonable window at the end
+            check_window = max(64, max_stop_len + 10)
+
+            # Get the trailing sequence
+            seq = prefix[0, -check_window:]
+
+            # If sequence is shorter than any stop token, skip
+            if seq.size(0) < max_stop_len:
+                return False
+
+            # Use unfold to create sliding windows: [num_windows, max_stop_len]
+            windows = seq.unfold(0, max_stop_len, 1)
+
+            # Broadcasting comparison:
+            # windows: [1, W, L]
+            # matrix:  [S, 1, L]
+            targets = windows.unsqueeze(0)
+            stops = self.stop_tokens_matrix.unsqueeze(1)
+
+            # Check matches, treating -1 in stops as always matching (padding)
+            matches = (targets == stops) | (stops == -1)
+
+            # Check if any full sequence matches in any window
+            # dimensions: [S, W, L] -> all(dim=-1) -> [S, W] -> any() -> bool
+            if matches.all(dim=-1).any():
+                return True
+
+        return False
 
     def _check_stopping_criteria(
         self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None
@@ -171,6 +266,181 @@ class Decoding(Register, ABC):
                 if decoded_text.endswith(stop_seq):
                     return True
         return False
+
+    @staticmethod
+    def _verify_draft_sequence(
+        draft_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        x: torch.Tensor,
+        prefix_len: int,
+        gamma: int,
+        comm_simulator: Optional[CommunicationSimulator] = None,
+        comm_link: Literal["edge_cloud", "edge_end", "cloud_end"] = "edge_cloud",
+        transfer_mode: Literal["none", "serial", "batch_before"] = "serial",
+        send_reject_message: bool = True,
+        draft_probs_override: Optional[torch.Tensor] = None,
+        decoding_metrics: Optional[DecodingMetrics] = None,
+    ) -> Tuple[int, int]:
+        """
+        Verify draft sequence using rejection sampling with target model probabilities.
+
+        This function supports multiple verification scenarios used across different decoding methods:
+        - Standard speculative decoding (dist_spec)
+        - Tridecoding (two-layer verification)
+        - Adaptive decoding (with serial transfer)
+        - Uncertainty-based methods
+
+        Args:
+            draft_model_cache: KVCache of the draft/approximation model
+            target_model_cache: KVCache of the target/verification model
+            x: Generated token sequence [batch_size, seq_len]
+            prefix_len: Length of the prefix before draft tokens
+            gamma: Number of draft tokens to verify
+            comm_simulator: Communication simulator (optional)
+            comm_link: Communication link type ("edge_cloud", "edge_end", "cloud_end")
+            transfer_mode: How to handle token/prob transfer:
+                - "none": No transfer (already transferred externally)
+                - "serial": Transfer token and prob one by one during verification
+                - "batch_before": Batch transfer before verification (caller handles this)
+            send_reject_message: Whether to send reject message on rejection
+            draft_probs_override: Override draft probs (if None, use draft_model_cache._prob_history)
+            decoding_metrics: Optional metrics dict to update
+
+        Returns:
+            Tuple[int, int]: (accepted_count, final_position)
+                - accepted_count: Number of tokens accepted
+                - final_position: Final position index (n)
+        """
+        n = prefix_len + gamma - 1  # Assume all accepted initially
+        draft_device = draft_model_cache.device
+
+        # Determine which probability tensor to use for draft model
+        draft_probs = (
+            draft_probs_override
+            if draft_probs_override is not None
+            else draft_model_cache._prob_history
+        )
+
+        # Batch transfer mode: transfer all tokens and probs before verification
+        if transfer_mode == "batch_before" and comm_simulator is not None:
+            draft_tokens = x[:, prefix_len : prefix_len + gamma]
+            # Stack probabilities for all draft tokens
+            batch_probs = torch.stack(
+                [
+                    draft_model_cache._prob_history[
+                        :, prefix_len + k - 1, x[:, prefix_len + k]
+                    ]
+                    for k in range(gamma)
+                ],
+                dim=1,
+            )
+            comm_simulator.transfer(draft_tokens, batch_probs, comm_link)
+
+        # Verification loop
+        for i in range(gamma):
+            draft_idx = target_idx = prefix_len + i - 1
+
+            # Boundary checks
+            if draft_idx >= draft_probs.shape[1]:
+                if send_reject_message and comm_simulator:
+                    comm_simulator.send_reject_message(comm_link)
+                break
+            if target_idx >= target_model_cache._prob_history.shape[1]:
+                if send_reject_message and comm_simulator:
+                    comm_simulator.send_reject_message(comm_link)
+                break
+
+            # Get current token
+            j = x[:, prefix_len + i]
+
+            # Serial transfer mode: transfer token and prob one by one
+            if transfer_mode == "serial" and comm_simulator is not None:
+                comm_simulator.transfer(
+                    j, draft_model_cache._prob_history[:, draft_idx, j], comm_link
+                )
+
+            # Rejection sampling
+            r = torch.rand(1, device=draft_device)
+
+            # Get probabilities
+            draft_prob = draft_probs[:, draft_idx, j]
+            target_prob = target_model_cache._prob_history.to(draft_device)[
+                :, target_idx, j
+            ]
+
+            # Check rejection condition
+            if r > (target_prob / draft_prob):
+                n = prefix_len + i - 1
+                if send_reject_message and comm_simulator:
+                    comm_simulator.send_reject_message(comm_link)
+                break
+
+        # Update metrics if provided
+        if decoding_metrics is not None:
+            decoding_metrics["draft_generated_tokens"] += gamma
+            decoding_metrics["draft_accepted_tokens"] += n - prefix_len + 1
+
+        accepted_count = n - prefix_len + 1
+        return accepted_count, n
+
+    @staticmethod
+    def _finalize_verification(
+        approx_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        x: torch.Tensor,
+        prefix_len: int,
+        gamma: int,
+        n: int,
+    ) -> torch.Tensor:
+        """
+        Finalize the verification phase by rolling back KV caches and sampling the next token.
+
+        Args:
+            approx_model_cache: KVCache of the draft/approximation model
+            target_model_cache: KVCache of the target/verification model
+            x: The full draft sequence [batch_size, seq_len] before rejection
+            prefix_len: Original prefix length before drafting
+            gamma: Number of drafted tokens
+            n: Index of the last accepted token (or rejection position)
+
+        Returns:
+            torch.Tensor: The new prefix truncated to accepted length with the newly sampled token appended.
+        """
+        # Truncate x to the accepted prefix length
+        prefix = x[:, : n + 1]
+
+        # Roll back both KV caches unconditionally to the length n + 1
+        approx_model_cache.rollback(n + 1)
+        target_model_cache.rollback(n + 1)
+
+        # Check if we rejected a token
+        if n < prefix_len + gamma - 1:
+            # Rejection: Sample from residual distribution max(0, target_prob - approx_prob)
+            target_prob = target_model_cache._prob_history[
+                :, n, : target_model_cache.vocab_size
+            ]
+            approx_prob = approx_model_cache._prob_history[
+                :, n, : approx_model_cache.vocab_size
+            ]
+
+            # Align devices if necessary
+            if approx_prob.device != target_prob.device:
+                approx_prob = approx_prob.to(target_prob.device)
+
+            t = sample(max_fn(target_prob - approx_prob))
+        else:
+            # All accepted: Sample straight from target distribution at position n
+            target_prob = target_model_cache._prob_history[
+                :, n, : target_model_cache.vocab_size
+            ]
+            t = sample(target_prob)
+
+        # Move the new token to the same device as our prefix tensor
+        if t.device != prefix.device:
+            t = t.to(prefix.device)
+
+        # Append the new sampled token
+        return torch.cat((prefix, t), dim=1)
 
     def _get_device_map_strategy(self, model_name: str, num_gpus_available: int) -> str:
         """
@@ -402,7 +672,7 @@ class Decoding(Register, ABC):
                 "cee_cuhlm",
             ]
 
-            # 智能分配策略：
+            # 分配策略：
             # 1. 计算三个模型的大小
             # 2. 将最大的模型放在一张卡上（使用Q4量化如果需要）
             # 3. 将其余两个模型放在另一张卡上
@@ -734,35 +1004,20 @@ class Decoding(Register, ABC):
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x[:, : n + 1]
 
-            approx_model_cache.rollback(n + 1)
-
-            # 检查是否还有空间添加一个token
-            if prefix.shape[1] >= max_tokens:
+            # 检查是否还有空间添加一个token（在接受序列过长时提前截断）
+            if n + 1 >= max_tokens:
+                prefix = x[:, :max_tokens]
                 break
 
-            if n < prefix_len + current_gamma - 1:
-                # reject someone, sample from the pos n
-                t = sample(
-                    max_fn(
-                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
-                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
-                    )
-                )
-                target_model_cache.rollback(n + 1)
-            else:
-                # all approx model decoding accepted
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                target_model_cache.rollback(n + 2)
-
-            # 最后检查添加token后是否会超出限制
-            if prefix.shape[1] < max_tokens:
-                prefix = torch.cat((prefix, t), dim=1)
+            prefix = self._finalize_verification(
+                approx_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+                n=n,
+            )
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences

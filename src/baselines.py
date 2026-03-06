@@ -294,15 +294,9 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, target_idx, j
-                        ]
-                    )
-                    / (approx_model_cache._prob_history[:, draft_idx, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
+                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -593,15 +587,9 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, target_idx, j
-                        ]
-                    )
-                    / (approx_model_cache._prob_history[:, draft_idx, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
+                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -906,15 +894,9 @@ class Baselines(Decoding):
                 f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
             )
 
-            if (
-                r
-                > (
-                    target_model_cache._prob_history.to(draft_device)[
-                        :, prefix_len - 1, j
-                    ]
-                )
-                / (approx_model_cache._prob_history[:, prefix_len - 1, j])
-            ):
+            if r > (
+                target_model_cache._prob_history.to(draft_device)[:, prefix_len - 1, j]
+            ) / (approx_model_cache._prob_history[:, prefix_len - 1, j]):
                 n = prefix_len - 1
                 comm_simulator.send_reject_message(
                     linktype="edge_cloud"
@@ -1134,15 +1116,11 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -1242,15 +1220,11 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (draft_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     # comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -1258,9 +1232,9 @@ class Baselines(Decoding):
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            assert n2 >= prefix_len - 1, (
-                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
-            )
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -1512,15 +1486,11 @@ class Baselines(Decoding):
                     "edge_end",
                 )
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -1653,15 +1623,11 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (draft_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -1690,9 +1656,9 @@ class Baselines(Decoding):
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
-            assert n2 >= prefix_len - 1, (
-                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
-            )
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -1986,15 +1952,9 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, target_idx, j
-                        ]
-                    )
-                    / (approx_model_cache._prob_history[:, draft_idx, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
+                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -2353,15 +2313,11 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -2535,15 +2491,11 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (draft_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     # comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -2572,9 +2524,9 @@ class Baselines(Decoding):
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
-            assert n2 >= prefix_len - 1, (
-                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
-            )
+            assert (
+                n2 >= prefix_len - 1
+            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -2865,15 +2817,11 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n1 = prefix_len + i - 1
                     break
                 else:
@@ -3290,15 +3238,11 @@ class Baselines(Decoding):
                     "edge_end",
                 )
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
                     break
@@ -3384,15 +3328,11 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (draft_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -3624,15 +3564,11 @@ class Baselines(Decoding):
 
                 # No individual transfer here
 
-                if (
-                    r
-                    > (
-                        draft_model_cache._prob_history.to(little_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (little_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    draft_model_cache._prob_history.to(little_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (little_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
                     break
@@ -3719,15 +3655,11 @@ class Baselines(Decoding):
 
                 # No individual transfer
 
-                if (
-                    r
-                    > (
-                        target_model_cache._prob_history.to(draft_device)[
-                            :, prefix_len + i - 1, j
-                        ]
-                    )
-                    / (draft_model_cache._prob_history[:, prefix_len + i - 1, j])
-                ):
+                if r > (
+                    target_model_cache._prob_history.to(draft_device)[
+                        :, prefix_len + i - 1, j
+                    ]
+                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break

@@ -1,12 +1,12 @@
+import argparse
+import json
 import os
 import random
-import argparse
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import re
 
-import json
 
 def seed_everything(seed: int):
     "set all random seed for reproducible results."
@@ -89,7 +89,11 @@ def model_zoo(args):
     }
     args.draft_model = zoo.get(args.draft_model, args.draft_model)
     args.target_model = zoo.get(args.target_model, args.target_model)
-    args.little_model = zoo.get(args.little_model, args.little_model) if hasattr(args, "little_model") else args.draft_model
+    args.little_model = (
+        zoo.get(args.little_model, args.little_model)
+        if hasattr(args, "little_model")
+        else args.draft_model
+    )
     args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
 
 
@@ -128,9 +132,15 @@ def parse_arguments():
         default=1234,
         help="set a random seed, which can makes the result reproducible",
     )
-    parser.add_argument("--max_tokens", type=int, default=1024, help="max token number generated.")
-    parser.add_argument("--temp", type=float, default=0.2, help="temperature for generating new tokens.")
-    parser.add_argument("--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy.")
+    parser.add_argument(
+        "--max_tokens", type=int, default=1024, help="max token number generated."
+    )
+    parser.add_argument(
+        "--temp", type=float, default=0.2, help="temperature for generating new tokens."
+    )
+    parser.add_argument(
+        "--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy."
+    )
     parser.add_argument(
         "--top_p",
         type=float,
@@ -361,7 +371,7 @@ def parse_arguments():
     parser.add_argument(
         "--batch_delay",
         type=float,
-        default=50e-3, # 50 ms
+        default=50e-3,  # 50 ms
         help="The delay time added to each batch in seconds.",
     )
     parser.add_argument(
@@ -402,7 +412,9 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
     return logits
 
 
-def norm_logits(logits: torch.Tensor, temperature: float, top_k: float, top_p: float) -> torch.Tensor:
+def norm_logits(
+    logits: torch.Tensor, temperature: float, top_k: float, top_p: float
+) -> torch.Tensor:
     """
 
     Args:
@@ -426,7 +438,9 @@ def norm_logits(logits: torch.Tensor, temperature: float, top_k: float, top_p: f
     return probs
 
 
-def norm_numpy_logits(logits: np.ndarray, temperature: float, top_k: float, top_p: float) -> np.ndarray:
+def norm_numpy_logits(
+    logits: np.ndarray, temperature: float, top_k: float, top_p: float
+) -> np.ndarray:
     assert logits.ndim == 2
     if temperature == 0:
         idx = logits.argmax(axis=1)
@@ -452,24 +466,25 @@ def max_fn(x):
     x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
     return x_max / x_max_sum
 
+
 def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
     """Read trace file and return a list of floats."""
     with open(trace_file, "r") as f:
         content = f.read()
-    
+
     # Split by the separator
     blocks = content.split("###############################")
-    
+
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        
-        lines = block.split('\n')
+
+        lines = block.split("\n")
         # Find the line starting with Run
         run_id = -1
         data_line = ""
-        
+
         for line in lines:
             line = line.strip()
             if line.startswith("Run"):
@@ -480,7 +495,7 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
             elif line:
                 # Assume this is the data line
                 data_line = line
-        
+
         if run_id == read_idx and data_line:
             data = [float(x) for x in data_line.split(",")]
             # 1. First pop trailing values that are less than 5.0
@@ -488,8 +503,9 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
                 data.pop()
             # 2. Then apply clamping to the remaining values (middle and start)
             return [max(5.0, x) for x in data]
-            
+
     raise ValueError(f"Run ID {read_idx} not found in trace file.")
+
 
 def return_closest_mean_index(trace_file: str, mean_value: float | None = None) -> int:
     """
@@ -498,19 +514,19 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
     """
     with open(trace_file, "r") as f:
         content = f.read()
-    
+
     blocks = content.split("###############################")
     run_means = {}
-    
+
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        
-        lines = block.split('\n')
+
+        lines = block.split("\n")
         run_id = -1
         data_line = ""
-        
+
         for line in lines:
             line = line.strip()
             if line.startswith("Run"):
@@ -521,7 +537,7 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
             elif line:
                 # Assume this is the data line
                 data_line = line
-        
+
         if run_id != -1 and data_line:
             try:
                 # Use the same logic as read_trace_file: pop trailing < 5.0, then clamp remaining
@@ -529,7 +545,7 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
                 while data and data[-1] < 5.0:
                     data.pop()
                 processed_data = [max(5.0, x) for x in data]
-                
+
                 if processed_data:
                     run_means[run_id] = sum(processed_data) / len(processed_data)
             except ValueError:
@@ -540,16 +556,16 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
 
     if mean_value is None:
         mean_value = sum(run_means.values()) / len(run_means)
-    
+
     closest_run_id = -1
     min_diff = float("inf")
-    
+
     for run_id, r_mean in run_means.items():
         diff = abs(r_mean - mean_value)
         if diff < min_diff:
             min_diff = diff
             closest_run_id = run_id
-            
+
     return closest_run_id
 
 
@@ -560,7 +576,7 @@ def get_vocab_size(model_name: str) -> int:
             vocab_size = config.get("vocab_size", None)
             if vocab_size is not None:
                 return vocab_size
-            
+
             # Check text_config for multimodal models
             if "text_config" in config and isinstance(config["text_config"], dict):
                 vocab_size = config["text_config"].get("vocab_size", None)
@@ -569,10 +585,11 @@ def get_vocab_size(model_name: str) -> int:
 
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    
+
     # Fallback to AutoConfig if not found in JSON or file missing
     try:
         from transformers import AutoConfig
+
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         if hasattr(config, "vocab_size"):
             return config.vocab_size
