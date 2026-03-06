@@ -321,59 +321,83 @@ class Decoding(Register, ABC):
             else draft_model_cache._prob_history
         )
 
+        # Vectorized verification (requires moving target probabilities to draft device once)
+        # Slices context windows: [batch, prefix_len-1 : prefix_len-1+gamma]
+        max_idx = min(
+            prefix_len + gamma - 1,
+            draft_probs.shape[1],
+            target_model_cache._prob_history.shape[1],
+        )
+        actual_gamma = max_idx - (prefix_len - 1)
+        if actual_gamma <= 0:
+            return 0, prefix_len - 1
+
+        # Fetch required probability distributions as full batches
+        draft_probs_batch = draft_probs[:, prefix_len - 1 : max_idx, :]
+        target_probs_batch = target_model_cache._prob_history[
+            :, prefix_len - 1 : max_idx, :
+        ].to(draft_device)
+
         # Batch transfer mode: transfer all tokens and probs before verification
         if transfer_mode == "batch_before" and comm_simulator is not None:
-            draft_tokens = x[:, prefix_len : prefix_len + gamma]
-            # Stack probabilities for all draft tokens
-            batch_probs = torch.stack(
-                [
-                    draft_model_cache._prob_history[
-                        :, prefix_len + k - 1, x[:, prefix_len + k]
-                    ]
-                    for k in range(gamma)
-                ],
-                dim=1,
+            draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
+            draft_tokens_exp = draft_tokens.unsqueeze(-1)
+            # gather the probabilities using the draft tokens
+            batch_probs = torch.gather(draft_probs_batch, 2, draft_tokens_exp).squeeze(
+                -1
             )
             comm_simulator.transfer(draft_tokens, batch_probs, comm_link)
 
-        # Verification loop
-        for i in range(gamma):
-            draft_idx = target_idx = prefix_len + i - 1
+        # Check conditions
+        n = prefix_len + actual_gamma - 1  # Assume max possible accepted
 
-            # Boundary checks
-            if draft_idx >= draft_probs.shape[1]:
-                if send_reject_message and comm_simulator:
-                    comm_simulator.send_reject_message(comm_link)
-                break
-            if target_idx >= target_model_cache._prob_history.shape[1]:
-                if send_reject_message and comm_simulator:
-                    comm_simulator.send_reject_message(comm_link)
-                break
+        # Prepare tokens for gather: x[:, prefix_len : prefix_len + actual_gamma]
+        draft_tokens_indices = x[:, prefix_len : prefix_len + actual_gamma].unsqueeze(
+            -1
+        )  # [batch_size, actual_gamma, 1]
 
-            # Get current token
-            j = x[:, prefix_len + i]
+        # Gather exact probabilities for the sampled tokens
+        selected_draft_p = torch.gather(
+            draft_probs_batch, 2, draft_tokens_indices
+        ).squeeze(
+            -1
+        )  # [batch_size, actual_gamma]
+        selected_target_p = torch.gather(
+            target_probs_batch, 2, draft_tokens_indices
+        ).squeeze(
+            -1
+        )  # [batch_size, actual_gamma]
 
-            # Serial transfer mode: transfer token and prob one by one
-            if transfer_mode == "serial" and comm_simulator is not None:
+        # Rejection sampling masking
+        r = torch.rand((x.shape[0], actual_gamma), device=draft_device)
+
+        # accept_mask is True for accepted, False for rejected
+        accept_mask = r <= (selected_target_p / selected_draft_p)
+
+        # We need continuous True values. cummin takes min sequentially: [True, True, False, True] -> [True, True, False, False]
+        # In PyTorch, cummin works on integers: [1, 1, 0, 1] -> [1, 1, 0, 0]
+        continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
+
+        # Assuming batch size = 1 for index n tracking (standard autoregressive shape logic)
+        accepted_counts = continuous_accept[0].sum().item()
+
+        # Determine the earliest reject position
+        if accepted_counts < actual_gamma:
+            n = prefix_len + accepted_counts - 1
+            if send_reject_message and comm_simulator:
+                comm_simulator.send_reject_message(comm_link)
+
+        # Simulate serial transfer correctly even when computing is vectorized
+        if transfer_mode == "serial" and comm_simulator is not None:
+            # Just transfer up to the rejected token
+            for i in range(
+                accepted_counts + (1 if accepted_counts < actual_gamma else 0)
+            ):
                 comm_simulator.transfer(
-                    j, draft_model_cache._prob_history[:, draft_idx, j], comm_link
+                    draft_tokens_indices[0, i, 0],
+                    draft_probs_batch[:, i, :].squeeze(0),
+                    comm_link,
                 )
-
-            # Rejection sampling
-            r = torch.rand(1, device=draft_device)
-
-            # Get probabilities
-            draft_prob = draft_probs[:, draft_idx, j]
-            target_prob = target_model_cache._prob_history.to(draft_device)[
-                :, target_idx, j
-            ]
-
-            # Check rejection condition
-            if r > (target_prob / draft_prob):
-                n = prefix_len + i - 1
-                if send_reject_message and comm_simulator:
-                    comm_simulator.send_reject_message(comm_link)
-                break
 
         # Update metrics if provided
         if decoding_metrics is not None:
@@ -394,17 +418,7 @@ class Decoding(Register, ABC):
     ) -> torch.Tensor:
         """
         Finalize the verification phase by rolling back KV caches and sampling the next token.
-
-        Args:
-            approx_model_cache: KVCache of the draft/approximation model
-            target_model_cache: KVCache of the target/verification model
-            x: The full draft sequence [batch_size, seq_len] before rejection
-            prefix_len: Original prefix length before drafting
-            gamma: Number of drafted tokens
-            n: Index of the last accepted token (or rejection position)
-
-        Returns:
-            torch.Tensor: The new prefix truncated to accepted length with the newly sampled token appended.
+        Optimized to reduce device transfer overhead and graph breaks.
         """
         # Truncate x to the accepted prefix length
         prefix = x[:, : n + 1]
@@ -413,27 +427,25 @@ class Decoding(Register, ABC):
         approx_model_cache.rollback(n + 1)
         target_model_cache.rollback(n + 1)
 
-        # Check if we rejected a token
+        # Pre-fetch target probabilities for position n, minimizing transfers
+        target_prob_slice = target_model_cache._prob_history[
+            :, n, : target_model_cache.vocab_size
+        ]
+
         if n < prefix_len + gamma - 1:
             # Rejection: Sample from residual distribution max(0, target_prob - approx_prob)
-            target_prob = target_model_cache._prob_history[
-                :, n, : target_model_cache.vocab_size
-            ]
-            approx_prob = approx_model_cache._prob_history[
+            approx_prob_slice = approx_model_cache._prob_history[
                 :, n, : approx_model_cache.vocab_size
             ]
 
-            # Align devices if necessary
-            if approx_prob.device != target_prob.device:
-                approx_prob = approx_prob.to(target_prob.device)
+            # Move target_prob to approx_prob device only once
+            if target_prob_slice.device != approx_prob_slice.device:
+                target_prob_slice = target_prob_slice.to(approx_prob_slice.device)
 
-            t = sample(max_fn(target_prob - approx_prob))
+            t = sample(max_fn(target_prob_slice - approx_prob_slice))
         else:
             # All accepted: Sample straight from target distribution at position n
-            target_prob = target_model_cache._prob_history[
-                :, n, : target_model_cache.vocab_size
-            ]
-            t = sample(target_prob)
+            t = sample(target_prob_slice)
 
         # Move the new token to the same device as our prefix tensor
         if t.device != prefix.device:
@@ -978,27 +990,16 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            n = prefix_len + current_gamma - 1
-            for i in range(current_gamma):
-                # 检查索引是否合法
-                draft_idx = prefix_len + i - 1
-                target_idx = prefix_len + i - 1
+            this_step_accepted_tokens, n = self._verify_draft_sequence(
+                draft_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+                transfer_mode="none",
+                send_reject_message=False,
+            )
 
-                if draft_idx >= approx_model_cache._prob_history.shape[1]:
-                    break
-                if target_idx >= target_model_cache._prob_history.shape[1]:
-                    break
-
-                r = torch.rand(1, device=draft_device)
-                j = x[:, prefix_len + i]
-
-                if r > (
-                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
-                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
-                    n = prefix_len + i - 1
-                    break
-
-            this_step_accepted_tokens = n - prefix_len + 1
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
@@ -1143,53 +1144,31 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            n = prefix_len + current_gamma - 1
-            for i in range(current_gamma):
-                # 检查索引是否合法
-                draft_idx = prefix_len + i - 1
-                target_idx = prefix_len + i - 1
+            this_step_accepted_tokens, n = self._verify_draft_sequence(
+                draft_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+                comm_simulator=comm_simulator,
+                comm_link="edge_cloud",
+                transfer_mode="serial",
+                send_reject_message=True,
+            )
 
-                if draft_idx >= approx_model_cache._prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-                if target_idx >= target_model_cache._prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
-                r = torch.rand(1, device=draft_device)
-                j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 rejection sampling
-                comm_simulator.transfer(
-                    j,
-                    approx_model_cache._prob_history[:, draft_idx, j],
-                    "edge_cloud",
-                )
-
-                if r > (
-                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
-                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
-                    n = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
-            this_step_accepted_tokens = n - prefix_len + 1
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x[:, : n + 1]
-
-            approx_model_cache.rollback(n + 1)
 
             # 检查是否还有空间添加一个token
-            if prefix.shape[1] >= max_tokens:
+            if n + 1 >= max_tokens:
+                prefix = x[:, :max_tokens]
                 break
 
+            # 针对使用了通信压缩的传输逻辑
             if n < prefix_len + current_gamma - 1:
-                # reject someone, sample from the pos n
-
                 if transfer_top_k is not None and transfer_top_k > 0:
                     rebuild_probs = comm_simulator._apply_top_k_compression(
                         approx_model_cache._prob_history[:, n, : self.vocab_size],
@@ -1197,10 +1176,9 @@ class Decoding(Register, ABC):
                     )
                     rebuild_probs = comm_simulator.rebuild_full_probs(rebuild_probs)
                     approx_model_cache._prob_history[:, n, : self.vocab_size] = (
-                        rebuild_probs  # 如果用了top-k压缩，先重建概率分布
+                        rebuild_probs
                     )
 
-                # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
                 comm_simulator.transfer(
                     None,
                     approx_model_cache._prob_history[:, n, : self.vocab_size],
@@ -1209,30 +1187,15 @@ class Decoding(Register, ABC):
                     transfer_top_k,
                 )
 
-                t = sample(
-                    max_fn(
-                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
-                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
-                    )
-                )
-
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
-
-                target_model_cache.rollback(n + 1)
-            else:
-                # all approx model decoding accepted
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                target_model_cache.rollback(n + 2)
-
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
-
-            # 最后检查添加token后是否会超出限制
-            if prefix.shape[1] < max_tokens:
-                prefix = torch.cat((prefix, t), dim=1)
+            # finalize_verification自动回流状态与重新采样（或简单采样下一个字符）
+            prefix = self._finalize_verification(
+                approx_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+                n=n,
+            )
 
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")

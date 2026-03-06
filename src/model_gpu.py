@@ -208,6 +208,10 @@ class KVCacheModel:
         self.logits_history = self.logits_history[:, :end_pos, :]
 
     @property
+    def device(self) -> torch.device:
+        return next(self._model.parameters()).device
+
+    @property
     def current_length(self) -> int:
         # 当前KVCache的长度
         if self._past_key_values is None:
