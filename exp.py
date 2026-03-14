@@ -13,15 +13,17 @@ from tqdm import tqdm
 
 
 class EvalDataset(str, Enum):
-    mt_bench = "eval/eval_mt_bench_noeval.py"
+    mt_bench = "eval/eval_mt_bench.py"
     humaneval = "eval/eval_humaneval.py"
     # cnndm = "eval/eval_cnndm.py"
     # xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
+    mt_bench_noeval = "eval/eval_mt_bench_noeval.py"
 
 
 class EvalMode(str, Enum):
     autoregression = "large"
+    sd = "sd"
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
@@ -664,10 +666,11 @@ for little_model, draft_model, target_model in (
     qwen_1_5_series,
 ):
     for dataset in [
-        EvalDataset.gsm8k,
+        EvalDataset.mt_bench_noeval,
     ]:
         for mode in [
-            EvalMode.cuhlm,
+            # EvalMode.cuhlm,
+            EvalMode.dssd,
         ]:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
@@ -682,7 +685,7 @@ for little_model, draft_model, target_model in (
                     small_draft_threshold=0.8,
                     draft_target_threshold=0.6,
                     transfer_top_k=1024,
-                    max_tokens=1024,
+                    max_tokens=128,
                     num_shots=5,
                     eval_dataset=dataset,
                     draft_model=draft_model
