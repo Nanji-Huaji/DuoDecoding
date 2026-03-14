@@ -10,7 +10,13 @@ Firstly, install the requirements with:
 pip install -r requirements.txt
 ```
 
-Then, download models in the following:
+Then, prepare the models you want to evaluate. The repository currently supports:
+
+- local aliases defined in `src/utils.py::model_zoo`
+- direct local paths
+- Hugging Face model IDs
+
+The following are commonly used local alias targets:
 
 Llama Series:
 
@@ -24,56 +30,153 @@ Vicuna Series:
 - [TinyVicuna-1B](https://huggingface.co/Jiayi-Pan/Tiny-Vicuna-1B)
 - [Vicuna-13B-v1.5](https://huggingface.co/lmsys/vicuna-13b-v1.5)
 
-And put them to:
+For the local alias-based workflow, place them under paths expected by `model_zoo`, for example:
 ```
-./<llama or vicuna>/<your-model-dir>
+./llama/<your-model-dir>
+./vicuna/<your-model-dir>
 ```
 
-If you occur an path problem, you can modify model path on `src/utils.py`.
+Some newer models, such as Qwen variants, are already mapped to Hugging Face IDs in `model_zoo`, so they do not need to follow the `./llama/...` or `./vicuna/...` layout.
+
+If a path does not match your environment, modify `model_zoo` in `src/utils.py`.
 
 Model paths are defined on the `zoo` dict on the `model_zoo` function. And their vocab sizes are defined on the `vocab_size` dict on the same function.
 
-## Run
+## Usage
 
+There are two main ways to use this repository now:
 
-Run experiments via `./exp.py`:
+1. Run a single evaluation script in `eval/` with `accelerate launch`.
+2. Run a batch of predefined experiments through `exp.py`.
+
+Model names can be passed as:
+
+- aliases defined in `src/utils.py::model_zoo`, such as `llama-68m`, `tiny-llama-1.1b`, `llama-2-13b`, `tiny-vicuna-1b`, `vicuna-13b-v1.5`, `qwen-3-1.7b`, `qwen-3-14b`
+- a local model path
+- a Hugging Face model ID
+
+### Run a Single Evaluation
+
+The most direct workflow is to launch one task script under `eval/`.
+
+Example: MT-Bench without judge:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 accelerate launch \
+    --num_processes 1 \
+    --main_process_port 29051 \
+    eval/eval_mt_bench_noeval.py \
+    --eval_mode dist_spec \
+    --draft_model tiny-llama-1.1b \
+    --target_model llama-2-13b \
+    --little_model llama-68m \
+    --max_tokens 128 \
+    --num_shots 5 \
+    --temp 0.0 \
+    --exp_name demo_mt_bench
+```
+
+Example: GSM8K with communication simulation:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 accelerate launch \
+    --num_processes 1 \
+    --main_process_port 29052 \
+    eval/eval_gsm8k.py \
+    --eval_mode dist_split_spec \
+    --draft_model tiny-llama-1.1b \
+    --target_model llama-2-13b \
+    --little_model llama-68m \
+    --max_tokens 128 \
+    --num_shots 8 \
+    --edge_cloud_bandwidth 23.6 \
+    --edge_end_bandwidth 563 \
+    --cloud_end_bandwidth 23.6 \
+    --transfer_top_k 1024 \
+    --use_stochastic_comm \
+    --exp_name demo_gsm8k
+```
+
+The output directory is created as:
+
+```text
+exp/<exp_name>/
+```
+
+### Supported `eval_mode`
+
+The currently registered decoding modes are:
+
+- `small`
+- `large`
+- `dist_spec` / `dsd`
+- `dist_split_spec` / `dssd`
+- `uncertainty_decoding` / `cuhlm`
+- `tridecoding`
+- `adaptive_decoding`
+- `adaptive_tridecoding` / `cee_sd`
+- `cee_cuhlm`
+- `cee_dsd`
+- `cee_dssd`
+- `ceesd_without_arp` / `ceesd_w/o_arp`
+
+### Important Arguments
+
+The common arguments are defined in `src/utils.py::parse_arguments()`.
+
+| Argument | Meaning |
+| --- | --- |
+| `--eval_mode` | Decoding mode to run. |
+| `--draft_model` | Draft model used by speculative methods. |
+| `--target_model` | Target model used for verification or autoregressive baseline. |
+| `--little_model` | The smallest model used by tri-decoding style methods. |
+| `--gamma` | Draft length for two-model speculative decoding. |
+| `--gamma1`, `--gamma2` | Draft lengths for the two stages in tri-decoding. |
+| `--max_tokens` | Maximum number of generated tokens. |
+| `--num_shots` | Few-shot examples for supported tasks. |
+| `--eval_data_num` | Number of evaluation samples to run. |
+| `--temp`, `--top_k`, `--top_p` | Sampling parameters. |
+| `--edge_cloud_bandwidth`, `--edge_end_bandwidth`, `--cloud_end_bandwidth` | Link bandwidths for communication simulation. |
+| `--ntt_ms_edge_cloud`, `--ntt_ms_edge_end` | Extra link latency in milliseconds. |
+| `--transfer_top_k` | Top-k compression size for transmitted logits / probabilities. |
+| `--use_precise` | Use the physics-level communication simulator. |
+| `--use_stochastic_comm` | Use stochastic communication simulation. |
+| `--use_early_stopping` | Enable early stopping inside supported decoding loops. |
+| `--acc_head_path` | Acceptance head path for `adaptive_decoding`. |
+| `--small_draft_acc_head_path`, `--draft_target_acc_head_path` | Acceptance head paths for `adaptive_tridecoding` and `cee_cuhlm`. |
+| `--use_rl_adapter` | Enable RL-based threshold selection. |
+| `--main_rl_path`, `--little_rl_path` | RL adapter checkpoints. |
+| `--disable_rl_update` | Freeze RL adapter updates during evaluation / inference. |
+
+>[!NOTE]
+> `adaptive_decoding` and `adaptive_tridecoding` depend on acceptance prediction heads. Some checkpoint paths are already wired in `exp.py` through `model_acc_head_map`, but if your local paths differ you still need to pass the correct head checkpoints explicitly.
+
+### Batch Experiments via `exp.py`
+
+`exp.py` is a batch runner, not a generic CLI wrapper. It does the following:
+
+- builds `config_to_run` in Python
+- detects idle GPUs with NVML
+- launches experiments in parallel
+- writes per-run logs to `exp_logs/`
+- writes a summary JSON to the repository root as `experiment_summary_<timestamp>.json`
+
+Run it with:
+
 ```bash
 python exp.py
 ```
 
-### Args
+Before doing that, edit the `create_config(...)` calls near the bottom of `exp.py` to match the experiments you actually want to run.
 
-This script is used to run given experiments automatically. Basically, the following args are needed:
-
-| Args  Name                      | Meaning                                                      | Choice                                                       |
-| ------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
-| eval_mode                       | The decoding method selected for the experiment              | `dist_spec`, `dist_split_spec`, `tridecoding`, `uncertainty_decoding`, `adaptive_decoding` |
-| draft_model                     | The draft model for speculative decoding methods             | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `llama-68m`,  and `vicuna-68m` are available |
-| target_model                    | The target model for speculative decoding methods            | Currently, `tiny-llama-1.1b`, `tiny-vicuna-1b`, `Llama-2-13b,` and `vicuna-13b-v1.5` are available. |
-| small_model                     | The smallest model for tridecoding methods                   | Currently, `llama-68m`,  and `vicuna-68m` are available      |
-| gamma                           | The number of drafted tokens on speculative decoding. <br>Automatically ignored on autoregressive or tridecoding methods. | An int                                                       |
-| gamma1                          | The number of drafted tokens in end-edge level of the tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
-| gamma2                          | The number of drafted tokens in the edge-cloud level of tri-decoding method. <br>Automatically ignored on other methods. | An int                                                       |
-| edge_end_bandwidth              | The bandwidth between the edge and the end device. <br>Only available on the methods implemented for transmission simulation. | A float                                                      |
-| edge_cloud_bandwidth            | The bandwidth between the edge and the cloud device. <br/>Ibid. | A float                                                      |
-| cloud_end_bandwidth             | The bandwidth between the edge and the end device. <br>Ibid. | A float                                                      |
-| max_tokens                      | Max tokens for each sample of the dataset.                   | An int                                                       |
-| temp                            | Temperature for the target model. Default: 0.0               | A float                                                      |
-| exp_name                        | The name of your experiment.                                 | A str                                                        |
-| ntt_ms_edge_cloud [Depreciated] | The non-transmission time between the edge and the cloud device. | A float                                                      |
-| ntt_ms_edge_end [Depreciated]   | Ibid.                                                        | A float                                                      |
-| transfer_top_k                  | Args for top-k compression on the methods that were implemented for transmission simulation. | An int                                                       |
-
-
->[!NOTE]
-> Adaptive Decoding and Triadaptive Decoding require the acceptance prediction head path, whose checkpoints for tinyllama-1.1b and llama-2-13b are available on [here](https://drive.google.com/file/d/1i41ysUj0DlKkeZ-HUla1WFRlw4r8GaWr/view?usp=sharing).
+Current caveat: `exp.py` launches `accelerate` through the hard-coded path `/home/tiantianyi/code/DuoDecoding/.venv/bin/accelerate`. If your environment is different, update `cmd_temp` in `exp.py` first.
 
 ### Debug Checks
 
 The repository provides two optional debug checks that are disabled by default:
 
-- `DUODEC_DEBUG_NUMERICS=1`: Enable probability / acceptance-ratio validity checks during generation. This is useful for debugging `NaN`, `Inf`, negative probabilities, or invalid acceptance ratios. Because these checks run inside the decoding loop and trigger extra reductions and device synchronizations, they can reduce throughput.
-- `DUODEC_DEBUG_TOKEN_CHECKS=1`: Enable output token range checks in MT-Bench evaluation. This is useful for diagnosing tokenizer / special-token issues. This check runs only after a sequence is generated, so the performance impact is much smaller.
+- `DUODEC_DEBUG_NUMERICS=1`: enable probability / acceptance-ratio validity checks during generation
+- `DUODEC_DEBUG_TOKEN_CHECKS=1`: enable output token range checks in MT-Bench evaluation
 
 Example:
 
@@ -83,42 +186,14 @@ DUODEC_DEBUG_NUMERICS=1 DUODEC_DEBUG_TOKEN_CHECKS=1 python exp.py
 
 Leave both variables unset for normal benchmarking.
 
-### Adding New Experiments
+### Reading Results
 
-Experiments are defined based on the following Typeddict:
-```python
-class ExpConfig(TypedDict):
-    CUDA_VISIBLE_DEVICES: Literal['0', '1'] # Sorry for only considered only for the machines having 1 or 2 gpus.
-    eval_mode: str
-    edge_end_bandwidth: int
-    edge_cloud_bandwidth: int
-    cloud_end_bandwidth: int
-    transfer_top_k: int
-    exp_name: str
-    use_precise: bool
-    ntt_ms_edge_cloud: int | float
-    ntt_ms_edge_end: int | float
-```
+- Single-run outputs are written under `exp/<exp_name>/`.
+- Batch logs are written under `exp_logs/`.
+- Batch summaries are written as `experiment_summary_<timestamp>.json`.
+- `table_generator_ver2.ipynb` can be pointed to a summary JSON for result aggregation.
 
-`ExpConfig` is not the same as the table above, for currently only do the experiments for llama series. You can add args on the table above to the typeddict and pass them to the scripts if you need.
+### Bash Scripts and vLLM Test Scripts
 
-After defined your experiment configs, you can append them to the `config_to_run` list. And the experiment configs are to be run if the script is executed.
-
-
-### Reading the Results
-
-`table_generator_ver2.ipynb` is used for generating the table of experiment results.
-
-After you executed the experiment script, it automatically generates a json file named `experiment_summary_<experiment_date>.json`. You can change the `file_path` var to your json file and run the jupyter notebook:
-
-```python
-# ... exixting codes
-def main():
-    # 读取实验数据
-    file_path = "experiment_summary_20250920_145859.json" # change heres
-# ... existing codes
-```
-
-## Run via Bash Script
-
-There are some experiment scirpts on `cmds`. Run them directly can also run the experiments.
+- `cmds/` contains project-specific shell scripts such as `cmds/test.sh` and `cmds/train_rl.sh`.
+- `test/` contains separate vLLM-based evaluation utilities. See `test/README.md` and `test/QUICKSTART.md` if you want a lightweight benchmarking path outside the main `eval/` pipeline.
