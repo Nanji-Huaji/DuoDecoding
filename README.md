@@ -68,6 +68,21 @@ This script is used to run given experiments automatically. Basically, the follo
 >[!NOTE]
 > Adaptive Decoding and Triadaptive Decoding require the acceptance prediction head path, whose checkpoints for tinyllama-1.1b and llama-2-13b are available on [here](https://drive.google.com/file/d/1i41ysUj0DlKkeZ-HUla1WFRlw4r8GaWr/view?usp=sharing).
 
+### Debug Checks
+
+The repository provides two optional debug checks that are disabled by default:
+
+- `DUODEC_DEBUG_NUMERICS=1`: Enable probability / acceptance-ratio validity checks during generation. This is useful for debugging `NaN`, `Inf`, negative probabilities, or invalid acceptance ratios. Because these checks run inside the decoding loop and trigger extra reductions and device synchronizations, they can reduce throughput.
+- `DUODEC_DEBUG_TOKEN_CHECKS=1`: Enable output token range checks in MT-Bench evaluation. This is useful for diagnosing tokenizer / special-token issues. This check runs only after a sequence is generated, so the performance impact is much smaller.
+
+Example:
+
+```bash
+DUODEC_DEBUG_NUMERICS=1 DUODEC_DEBUG_TOKEN_CHECKS=1 python exp.py
+```
+
+Leave both variables unset for normal benchmarking.
+
 ### Adding New Experiments
 
 Experiments are defined based on the following Typeddict:

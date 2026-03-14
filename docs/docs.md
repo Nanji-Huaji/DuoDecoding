@@ -52,3 +52,47 @@ $$
 
 - float，为传输所花费的时间
 
+## 调试检查开关
+
+仓库里有两类可选调试检查，默认关闭，避免对正常实验和跑分造成额外开销。
+
+### `DUODEC_DEBUG_NUMERICS`
+
+用途：
+
+- 检查概率张量是否包含 `NaN`、`Inf`、负值或行和异常
+- 检查 acceptance ratio 是否非法
+
+主要代码位置：
+
+- `src/utils.py` 中的 `log_prob_tensor_if_invalid`
+- `src/utils.py` 中的 `log_ratio_if_invalid`
+- 调用点包括 `src/model_gpu.py` 和 `src/engine.py`
+
+说明：
+
+- 该开关作用在生成内循环中
+- 打开后会增加额外的 `detach().float()`、reduction 和 `.item()` 同步开销
+- 只建议在排查数值稳定性问题时启用
+
+### `DUODEC_DEBUG_TOKEN_CHECKS`
+
+用途：
+
+- 在 MT-Bench 评测末尾检查输出 token 是否落在 `len(tokenizer)` 范围内
+- 用于定位 tokenizer / added special tokens 相关问题
+
+主要代码位置：
+
+- `eval/eval_mt_bench_noeval.py`
+
+说明：
+
+- 该检查只在单次生成完成后执行一次
+- 相比数值检查，性能影响较小
+
+示例：
+
+```bash
+DUODEC_DEBUG_NUMERICS=1 DUODEC_DEBUG_TOKEN_CHECKS=1 python exp.py
+```

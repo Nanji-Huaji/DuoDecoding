@@ -21,6 +21,10 @@ from src.utils import parse_arguments, seed_everything
 decoding_metrics = get_empty_metrics()
 
 
+def _token_debug_checks_enabled() -> bool:
+    return os.environ.get("DUODEC_DEBUG_TOKEN_CHECKS", "0") == "1"
+
+
 def get_class_methods(cls) -> List[str]:
     """获取类中定义的所有方法（不包括继承的方法和__init__）"""
     methods = []
@@ -336,21 +340,25 @@ class EvalMTBench(Baselines):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    if (output_ids < 0).any() or (
-                        output_ids >= self.tokenizer.vocab_size
-                    ).any():
-                        print(
-                            f"DEBUG: Found invalid tokens! vocab_size: {self.tokenizer.vocab_size}"
-                        )
-                        invalid_mask = (output_ids < 0) | (
-                            output_ids >= self.tokenizer.vocab_size
-                        )
-                        print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
-                        # Filter invalid tokens
-                        output_ids = output_ids.clone()
-                        output_ids[invalid_mask] = (
-                            0  # Replace with unknown or padding (0 usually safe)
-                        )
+                    if _token_debug_checks_enabled():
+                        tokenizer_size = len(self.tokenizer)
+                        if (output_ids < 0).any() or (
+                            output_ids >= tokenizer_size
+                        ).any():
+                            print(
+                                "DEBUG: Found invalid tokens! "
+                                f"tokenizer.vocab_size: {self.tokenizer.vocab_size}, "
+                                f"len(tokenizer): {tokenizer_size}"
+                            )
+                            invalid_mask = (output_ids < 0) | (
+                                output_ids >= tokenizer_size
+                            )
+                            print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
+                            # Filter invalid tokens
+                            output_ids = output_ids.clone()
+                            output_ids[invalid_mask] = (
+                                0  # Replace with unknown or padding (0 usually safe)
+                            )
 
                     output_text = self.tokenizer.decode(
                         output_ids[0], spaces_between_special_tokens=False

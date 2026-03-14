@@ -1,111 +1,81 @@
-*.pyc
-*/__pycache__/*
-src/model/rest/DraftRetriever/target/*
-exp/*
-
-*.log
-
-
-
-vicuna/*
-llama/*
-
-.vscode/*
-
-read_results.ipynb
-best_results.json
-cmds/exp.sh
-all_results_summary.json
-all_results_detailed.json
-experiment_report.txt
-exp_res/*
-
-*.sh
-.idea/DuoDecoding.iml
-.idea/modules.xml
-.idea/vcs.xml
-.idea/inspectionProfiles/profiles_settings.xml
-test.py
-
-.vscode/launch.json
-.vscode/settings.json
-exp_cmd.ipynb
-.idea/misc.xml
-
-experiment_summary_*.json
-sorted_experiments.json
-experiment_results_table.md
-.vscode/settings.json
-
-.idea
-.idea/*
-
-.vscode
-.vscode/*
-
-Qwen/*
-Qwen
-
-google/*
-google
-
-hf_download.py
-
-src/quantize/data/*
-confidence_data.json
-venv_docker/
-hyperparametertable.md
-plot_thresholds_20260117.ipynb
-
-upload.py
-scan_threshold.py
-plot_thresholds_20260117.ipynb
-生成目标.md
-vicuna_scan.json
-vicuna-0shot.json
-checkpoints/training_status.json
-
-checkpoints/archived
-
-
-
-checkpoints_vicuna
-
-# --- Recommended Additions ---
-
-# Virtual Environment
-.venv/
-env/
-venv/
-
-# Python Cache & Build
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-*.egg-info/
-dist/
-build/
+.ipynb_checkpoints/
+.coverage
 
-# Model Checkpoints & Large Files
-checkpoints/
-checkpoints_*/
-*.tar.gz
+# Virtual environments
+.venv/
+env/
+venv/
+venv_docker/
+
+# Editors and local workspace files
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary local files
+._____temp/
+*.log
+*.tmp
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Rust build output
+src/model/rest/DraftRetriever/target/
+
+# Local model directories
+/Qwen/
+/google/
+/llama/
+/meta-llama/
+/vicuna/
+
+# Downloaded or generated checkpoints and weights
+/checkpoints_archived.zip
+/checkpoints/**
+!/checkpoints/readme.md
+/checkpoints_*/
+/checkpoint_series/
+/src/SpecDec_pp/checkpoints/
 *.pt
 *.pth
+*.pth.buffer
 *.bin
 *.safetensors
-qwen/*
+*.tar.gz
 
-# Experiment Results & Logs (General patterns)
-archive_log/
-exp_logs/
-datastore/
-data/
+# Experiment outputs
+/archive/
+/archive_log/
+/exp/
+/exp_logs/
+/exp_res/
+/result/
+/plots/
+/experiment_summary_*.json
+/all_results_summary.json
+/all_results_detailed.json
+/best_results.json
+/sorted_experiments.json
+/experiment_report.txt
+/debug_res.json
+/exp_res.json
 
-# Generated Plots & Reports
-*.png
-*.pdf
-*.svg
-active_learning_metrics.json
-consistency_data.json
-acc.json
+# Generated analysis data
+/active_learning_metrics.json
+/confidence_data.json
+/consistency_data.json
+
+# Assets and resources
+/assets/
+
+# Intermidiate Jupyter notebook outputs
+*.ipynb
