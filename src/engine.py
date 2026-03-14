@@ -1,5 +1,7 @@
 import os
 import warnings
+import logging
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
@@ -26,7 +28,13 @@ from .communication import (
 )
 from .model_gpu import KVCacheModel
 from .register import Register
-from .utils import max_fn, sample, seed_everything
+from .utils import (
+    log_prob_tensor_if_invalid,
+    log_ratio_if_invalid,
+    max_fn,
+    sample,
+    seed_everything,
+)
 
 try:
     import flash_attn
@@ -38,10 +46,124 @@ from functools import partial
 # from .register import Register
 
 flash_attn_available = "flash_attn" in globals()
+logger = logging.getLogger(__name__)
 
 attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 
 INT_SIZE = 4
+
+
+@dataclass
+class VerificationInputs:
+    draft_probs_batch: torch.Tensor
+    target_probs_batch: torch.Tensor
+    draft_tokens: torch.Tensor
+    draft_token_indices: torch.Tensor
+    prefix_len: int
+    gamma: int
+    actual_gamma: int
+    max_idx: int
+
+
+@dataclass
+class AcceptanceResult:
+    accepted_count: int
+    n: int
+    selected_draft_p: torch.Tensor
+    selected_target_p: torch.Tensor
+    accept_mask: torch.Tensor
+
+
+@dataclass
+class RollbackPlan:
+    draft_end_pos: int
+    target_end_pos_reject: int
+    target_end_pos_accept: int
+    all_accepted: bool
+
+
+def _sd_alignment_debug_enabled() -> bool:
+    return os.environ.get("DUODEC_DEBUG_SD_ALIGNMENT", "0") == "1"
+
+
+def _format_cache_state(name: str, cache: KVCacheModel) -> str:
+    state = cache.debug_state()
+    return (
+        f"{name}(current={state['current_length']}, "
+        f"tracked={state['tracked_seq_len']}, "
+        f"prob={state['prob_history_len']}, "
+        f"logits={state['logits_history_len']}, "
+        f"max={state['max_length']})"
+    )
+
+
+def _log_sd_alignment_snapshot(
+    stage: str,
+    prefix_len: int,
+    approx_model_cache: KVCacheModel,
+    target_model_cache: KVCacheModel,
+    *,
+    x_len: Optional[int] = None,
+    gamma: Optional[int] = None,
+    note: str = "",
+) -> None:
+    if not _sd_alignment_debug_enabled():
+        return
+
+    message = (
+        f"[SD-ALIGN] stage={stage}, prefix_len={prefix_len}, "
+        f"x_len={x_len}, gamma={gamma}, "
+        f"{_format_cache_state('approx', approx_model_cache)}, "
+        f"{_format_cache_state('target', target_model_cache)}"
+    )
+    if note:
+        message += f", note={note}"
+    logger.warning(message)
+
+
+def _log_invalid_batch_details(
+    *,
+    prefix_len: int,
+    gamma: int,
+    max_idx: int,
+    actual_gamma: int,
+    x: torch.Tensor,
+    draft_model_cache: KVCacheModel,
+    target_model_cache: KVCacheModel,
+    draft_probs_batch: torch.Tensor,
+    target_probs_batch: torch.Tensor,
+    selected_draft_p: torch.Tensor,
+    selected_target_p: torch.Tensor,
+) -> None:
+    draft_row_sums = draft_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
+    target_row_sums = target_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
+    draft_tokens = x[:, prefix_len : prefix_len + actual_gamma].detach().cpu().tolist()
+
+    target_window_start = max(0, prefix_len - 2)
+    target_window_end = max_idx + 2
+    approx_window_start = max(0, prefix_len - 2)
+    approx_window_end = max_idx + 2
+
+    logger.warning(
+        "[SD-ALIGN][invalid-batch] prefix_len=%s gamma=%s max_idx=%s actual_gamma=%s "
+        "draft_tokens=%s selected_draft_p=%s selected_target_p=%s "
+        "draft_row_sums=%s target_row_sums=%s "
+        "target_window_row_sums=%s approx_window_row_sums=%s "
+        "%s %s",
+        prefix_len,
+        gamma,
+        max_idx,
+        actual_gamma,
+        draft_tokens,
+        selected_draft_p.detach().float().cpu().tolist(),
+        selected_target_p.detach().float().cpu().tolist(),
+        draft_row_sums,
+        target_row_sums,
+        target_model_cache.debug_row_sums(target_window_start, target_window_end),
+        draft_model_cache.debug_row_sums(approx_window_start, approx_window_end),
+        _format_cache_state("draft", draft_model_cache),
+        _format_cache_state("target", target_model_cache),
+    )
 
 
 class DecodingMetrics(TypedDict):
@@ -268,6 +390,182 @@ class Decoding(Register, ABC):
         return False
 
     @staticmethod
+    def _prepare_verification_inputs(
+        draft_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        x: torch.Tensor,
+        prefix_len: int,
+        gamma: int,
+        draft_probs_override: Optional[torch.Tensor] = None,
+    ) -> VerificationInputs:
+        draft_device = draft_model_cache.device
+        draft_probs = (
+            draft_probs_override
+            if draft_probs_override is not None
+            else draft_model_cache._prob_history
+        )
+        if draft_probs is None or target_model_cache._prob_history is None:
+            raise ValueError("Probability history is not initialized for verification")
+
+        max_idx = min(
+            prefix_len + gamma - 1,
+            draft_probs.shape[1],
+            target_model_cache._prob_history.shape[1],
+        )
+        actual_gamma = max_idx - (prefix_len - 1)
+        if actual_gamma <= 0:
+            empty_tokens = x[:, 0:0]
+            empty_indices = empty_tokens.unsqueeze(-1)
+            empty_probs = draft_probs[:, 0:0, :]
+            return VerificationInputs(
+                draft_probs_batch=empty_probs,
+                target_probs_batch=target_model_cache._prob_history[:, 0:0, :].to(
+                    draft_device
+                ),
+                draft_tokens=empty_tokens,
+                draft_token_indices=empty_indices,
+                prefix_len=prefix_len,
+                gamma=gamma,
+                actual_gamma=0,
+                max_idx=max_idx,
+            )
+
+        draft_probs_batch = draft_probs[:, prefix_len - 1 : max_idx, :]
+        target_probs_batch = target_model_cache._prob_history[
+            :, prefix_len - 1 : max_idx, :
+        ].to(draft_device)
+        draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
+        draft_token_indices = draft_tokens.unsqueeze(-1)
+
+        return VerificationInputs(
+            draft_probs_batch=draft_probs_batch,
+            target_probs_batch=target_probs_batch,
+            draft_tokens=draft_tokens,
+            draft_token_indices=draft_token_indices,
+            prefix_len=prefix_len,
+            gamma=gamma,
+            actual_gamma=actual_gamma,
+            max_idx=max_idx,
+        )
+
+    @staticmethod
+    def _compute_acceptance_result(
+        verification_inputs: VerificationInputs,
+        *,
+        r: Optional[torch.Tensor] = None,
+    ) -> AcceptanceResult:
+        if verification_inputs.actual_gamma <= 0:
+            return AcceptanceResult(
+                accepted_count=0,
+                n=verification_inputs.prefix_len - 1,
+                selected_draft_p=verification_inputs.draft_probs_batch[:, 0:0, 0],
+                selected_target_p=verification_inputs.target_probs_batch[:, 0:0, 0],
+                accept_mask=torch.zeros(
+                    (verification_inputs.draft_probs_batch.shape[0], 0),
+                    dtype=torch.bool,
+                    device=verification_inputs.draft_probs_batch.device,
+                ),
+            )
+
+        selected_draft_p = torch.gather(
+            verification_inputs.draft_probs_batch,
+            2,
+            verification_inputs.draft_token_indices,
+        ).squeeze(-1)
+        selected_target_p = torch.gather(
+            verification_inputs.target_probs_batch,
+            2,
+            verification_inputs.draft_token_indices,
+        ).squeeze(-1)
+
+        if r is None:
+            r = torch.rand(
+                (selected_draft_p.shape[0], verification_inputs.actual_gamma),
+                device=selected_draft_p.device,
+            )
+
+        accept_mask = r <= (selected_target_p / selected_draft_p)
+        continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
+        accepted_count = int(continuous_accept[0].sum().item())
+        n = verification_inputs.prefix_len + accepted_count - 1
+
+        if accepted_count == verification_inputs.actual_gamma:
+            n = verification_inputs.prefix_len + verification_inputs.actual_gamma - 1
+
+        return AcceptanceResult(
+            accepted_count=accepted_count,
+            n=int(n),
+            selected_draft_p=selected_draft_p,
+            selected_target_p=selected_target_p,
+            accept_mask=accept_mask,
+        )
+
+    @staticmethod
+    def _compute_residual_distribution(
+        target_probs: torch.Tensor,
+        draft_probs: torch.Tensor,
+    ) -> torch.Tensor:
+        return max_fn(target_probs - draft_probs)
+
+    @staticmethod
+    def _build_rollback_plan(prefix_len: int, gamma: int, n: int) -> RollbackPlan:
+        all_accepted = n >= prefix_len + gamma - 1
+        return RollbackPlan(
+            draft_end_pos=n + 1,
+            target_end_pos_reject=n + 1,
+            target_end_pos_accept=n + 2,
+            all_accepted=all_accepted,
+        )
+
+    @staticmethod
+    def _apply_rollback(
+        draft_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        rollback_plan: RollbackPlan,
+    ) -> None:
+        draft_model_cache.rollback(rollback_plan.draft_end_pos)
+        if rollback_plan.all_accepted:
+            target_model_cache.rollback(rollback_plan.target_end_pos_accept)
+        else:
+            target_model_cache.rollback(rollback_plan.target_end_pos_reject)
+
+    @staticmethod
+    def _sample_reject_token(
+        target_probs: torch.Tensor,
+        draft_probs: torch.Tensor,
+        output_device: Optional[torch.device] = None,
+    ) -> torch.Tensor:
+        if target_probs.device != draft_probs.device:
+            target_probs = target_probs.to(draft_probs.device)
+
+        residual_probs = Decoding._compute_residual_distribution(
+            target_probs,
+            draft_probs,
+        )
+        log_prob_tensor_if_invalid(
+            residual_probs,
+            "Decoding._sample_reject_token.residual_probs",
+        )
+        token = sample(residual_probs)
+        if output_device is not None and token.device != output_device:
+            token = token.to(output_device)
+        return token
+
+    @staticmethod
+    def _sample_accept_token(
+        target_next_probs: torch.Tensor,
+        output_device: Optional[torch.device] = None,
+    ) -> torch.Tensor:
+        log_prob_tensor_if_invalid(
+            target_next_probs,
+            "Decoding._sample_accept_token.target_next_probs",
+        )
+        token = sample(target_next_probs)
+        if output_device is not None and token.device != output_device:
+            token = token.to(output_device)
+        return token
+
+    @staticmethod
     def _verify_draft_sequence(
         draft_model_cache: KVCacheModel,
         target_model_cache: KVCacheModel,
@@ -311,79 +609,82 @@ class Decoding(Register, ABC):
                 - accepted_count: Number of tokens accepted
                 - final_position: Final position index (n)
         """
-        n = prefix_len + gamma - 1  # Assume all accepted initially
         draft_device = draft_model_cache.device
-
-        # Determine which probability tensor to use for draft model
-        draft_probs = (
-            draft_probs_override
-            if draft_probs_override is not None
-            else draft_model_cache._prob_history
+        _log_sd_alignment_snapshot(
+            "verify_enter",
+            prefix_len,
+            draft_model_cache,
+            target_model_cache,
+            x_len=x.shape[1],
+            gamma=gamma,
         )
 
-        # Vectorized verification (requires moving target probabilities to draft device once)
-        # Slices context windows: [batch, prefix_len-1 : prefix_len-1+gamma]
-        max_idx = min(
-            prefix_len + gamma - 1,
-            draft_probs.shape[1],
-            target_model_cache._prob_history.shape[1],
+        verification_inputs = Decoding._prepare_verification_inputs(
+            draft_model_cache=draft_model_cache,
+            target_model_cache=target_model_cache,
+            x=x,
+            prefix_len=prefix_len,
+            gamma=gamma,
+            draft_probs_override=draft_probs_override,
         )
-        actual_gamma = max_idx - (prefix_len - 1)
-        if actual_gamma <= 0:
+        if verification_inputs.actual_gamma <= 0:
             return 0, prefix_len - 1
 
-        # Fetch required probability distributions as full batches
-        draft_probs_batch = draft_probs[:, prefix_len - 1 : max_idx, :]
-        target_probs_batch = target_model_cache._prob_history[
-            :, prefix_len - 1 : max_idx, :
-        ].to(draft_device)
+        draft_probs_batch = verification_inputs.draft_probs_batch
+        target_probs_batch = verification_inputs.target_probs_batch
+        invalid_draft_probs = log_prob_tensor_if_invalid(
+            draft_probs_batch,
+            "Decoding._verify_draft_sequence.draft_probs_batch",
+        )
+        invalid_target_probs = log_prob_tensor_if_invalid(
+            target_probs_batch,
+            "Decoding._verify_draft_sequence.target_probs_batch",
+        )
 
         # Batch transfer mode: transfer all tokens and probs before verification
         if transfer_mode == "batch_before" and comm_simulator is not None:
-            draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
-            draft_tokens_exp = draft_tokens.unsqueeze(-1)
-            # gather the probabilities using the draft tokens
-            batch_probs = torch.gather(draft_probs_batch, 2, draft_tokens_exp).squeeze(
-                -1
+            batch_probs = torch.gather(
+                draft_probs_batch,
+                2,
+                verification_inputs.draft_token_indices,
+            ).squeeze(-1)
+            comm_simulator.transfer(
+                verification_inputs.draft_tokens,
+                batch_probs,
+                comm_link,
             )
-            comm_simulator.transfer(draft_tokens, batch_probs, comm_link)
-
-        # Check conditions
-        n = prefix_len + actual_gamma - 1  # Assume max possible accepted
-
-        # Prepare tokens for gather: x[:, prefix_len : prefix_len + actual_gamma]
-        draft_tokens_indices = x[:, prefix_len : prefix_len + actual_gamma].unsqueeze(
-            -1
-        )  # [batch_size, actual_gamma, 1]
-
-        # Gather exact probabilities for the sampled tokens
-        selected_draft_p = torch.gather(
-            draft_probs_batch, 2, draft_tokens_indices
-        ).squeeze(
-            -1
-        )  # [batch_size, actual_gamma]
-        selected_target_p = torch.gather(
-            target_probs_batch, 2, draft_tokens_indices
-        ).squeeze(
-            -1
-        )  # [batch_size, actual_gamma]
 
         # Rejection sampling masking
-        r = torch.rand((x.shape[0], actual_gamma), device=draft_device)
-
-        # accept_mask is True for accepted, False for rejected
-        accept_mask = r <= (selected_target_p / selected_draft_p)
-
-        # We need continuous True values. cummin takes min sequentially: [True, True, False, True] -> [True, True, False, False]
-        # In PyTorch, cummin works on integers: [1, 1, 0, 1] -> [1, 1, 0, 0]
-        continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
-
-        # Assuming batch size = 1 for index n tracking (standard autoregressive shape logic)
-        accepted_counts = continuous_accept[0].sum().item()
-
-        # Determine the earliest reject position
-        if accepted_counts < actual_gamma:
-            n = prefix_len + accepted_counts - 1
+        r = torch.rand(
+            (x.shape[0], verification_inputs.actual_gamma),
+            device=draft_device,
+        )
+        acceptance_result = Decoding._compute_acceptance_result(
+            verification_inputs,
+            r=r,
+        )
+        invalid_acceptance_ratio = log_ratio_if_invalid(
+            acceptance_result.selected_target_p,
+            acceptance_result.selected_draft_p,
+            "Decoding._verify_draft_sequence.acceptance_ratio",
+        )
+        if invalid_draft_probs or invalid_target_probs or invalid_acceptance_ratio:
+            _log_invalid_batch_details(
+                prefix_len=prefix_len,
+                gamma=gamma,
+                max_idx=verification_inputs.max_idx,
+                actual_gamma=verification_inputs.actual_gamma,
+                x=x,
+                draft_model_cache=draft_model_cache,
+                target_model_cache=target_model_cache,
+                draft_probs_batch=draft_probs_batch,
+                target_probs_batch=target_probs_batch,
+                selected_draft_p=acceptance_result.selected_draft_p,
+                selected_target_p=acceptance_result.selected_target_p,
+            )
+        accepted_counts = acceptance_result.accepted_count
+        n = acceptance_result.n
+        if accepted_counts < verification_inputs.actual_gamma:
             if send_reject_message and comm_simulator:
                 comm_simulator.send_reject_message(comm_link)
 
@@ -391,10 +692,11 @@ class Decoding(Register, ABC):
         if transfer_mode == "serial" and comm_simulator is not None:
             # Just transfer up to the rejected token
             for i in range(
-                accepted_counts + (1 if accepted_counts < actual_gamma else 0)
+                accepted_counts
+                + (1 if accepted_counts < verification_inputs.actual_gamma else 0)
             ):
                 comm_simulator.transfer(
-                    draft_tokens_indices[0, i, 0],
+                    verification_inputs.draft_token_indices[0, i, 0],
                     draft_probs_batch[:, i, :].squeeze(0),
                     comm_link,
                 )
@@ -402,10 +704,9 @@ class Decoding(Register, ABC):
         # Update metrics if provided
         if decoding_metrics is not None:
             decoding_metrics["draft_generated_tokens"] += gamma
-            decoding_metrics["draft_accepted_tokens"] += n - prefix_len + 1
+            decoding_metrics["draft_accepted_tokens"] += int(n - prefix_len + 1)
 
-        accepted_count = n - prefix_len + 1
-        return accepted_count, n
+        return acceptance_result.accepted_count, int(n)
 
     @staticmethod
     def _finalize_verification(
@@ -418,38 +719,43 @@ class Decoding(Register, ABC):
     ) -> torch.Tensor:
         """
         Finalize the verification phase by rolling back KV caches and sampling the next token.
-        Optimized to reduce device transfer overhead and graph breaks.
         """
         # Truncate x to the accepted prefix length
         prefix = x[:, : n + 1]
+        rollback_plan = Decoding._build_rollback_plan(prefix_len, gamma, n)
 
-        # Roll back both KV caches unconditionally to the length n + 1
-        approx_model_cache.rollback(n + 1)
-        target_model_cache.rollback(n + 1)
+        # Finalize-time cache invariants:
+        # - during verification: target.current_length == draft.current_length + 1
+        # - after finalize: draft.current_length == target.current_length
+        # - after finalize: cache.current_length == len(prefix) - 1, because the
+        #   new sampled token is appended to `prefix` before it is forwarded
+        approx_model_cache.rollback(rollback_plan.draft_end_pos)
 
-        # Pre-fetch target probabilities for position n, minimizing transfers
-        target_prob_slice = target_model_cache._prob_history[
-            :, n, : target_model_cache.vocab_size
-        ]
-
-        if n < prefix_len + gamma - 1:
+        if not rollback_plan.all_accepted:
             # Rejection: Sample from residual distribution max(0, target_prob - approx_prob)
+            target_prob_slice = target_model_cache._prob_history[
+                :, n, : target_model_cache.vocab_size
+            ]
             approx_prob_slice = approx_model_cache._prob_history[
                 :, n, : approx_model_cache.vocab_size
             ]
 
-            # Move target_prob to approx_prob device only once
-            if target_prob_slice.device != approx_prob_slice.device:
-                target_prob_slice = target_prob_slice.to(approx_prob_slice.device)
-
-            t = sample(max_fn(target_prob_slice - approx_prob_slice))
+            t = Decoding._sample_reject_token(
+                target_prob_slice,
+                approx_prob_slice,
+                output_device=prefix.device,
+            )
+            target_model_cache.rollback(rollback_plan.target_end_pos_reject)
         else:
-            # All accepted: Sample straight from target distribution at position n
-            t = sample(target_prob_slice)
-
-        # Move the new token to the same device as our prefix tensor
-        if t.device != prefix.device:
-            t = t.to(prefix.device)
+            # All accepted: sample the already-computed next-token distribution.
+            next_target_probs = target_model_cache._prob_history[
+                :, -1, : target_model_cache.vocab_size
+            ]
+            t = Decoding._sample_accept_token(
+                next_target_probs,
+                output_device=prefix.device,
+            )
+            target_model_cache.rollback(rollback_plan.target_end_pos_accept)
 
         # Append the new sampled token
         return torch.cat((prefix, t), dim=1)
@@ -834,8 +1140,12 @@ class Decoding(Register, ABC):
         )
         self.tokenizer.padding_side = "right"
 
-        # for llama models
-        self.tokenizer.pad_token_id = 2
+        if self.tokenizer.pad_token_id is None:
+            model_name = str(self.args.target_model).lower()
+            if "llama" in model_name:
+                self.tokenizer.pad_token_id = 2
+            elif self.tokenizer.eos_token_id is not None:
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
     @abstractmethod
     def load_data(self):
@@ -983,6 +1293,8 @@ class Decoding(Register, ABC):
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
+            # Verification-time cache invariant: approx has forwarded states up to
+            # x[:, :-1], while target forwards the full x and ends up one step ahead.
             _ = target_model_cache.generate(x.to(target_device), 1)
             target_forward_times += 1
 
@@ -998,6 +1310,15 @@ class Decoding(Register, ABC):
                 gamma=current_gamma,
                 transfer_mode="none",
                 send_reject_message=False,
+            )
+            _log_sd_alignment_snapshot(
+                "verify_exit",
+                prefix_len,
+                approx_model_cache,
+                target_model_cache,
+                x_len=x.shape[1],
+                gamma=current_gamma,
+                note=f"accepted={this_step_accepted_tokens}, n={n}",
             )
 
             total_accepted_tokens += this_step_accepted_tokens
@@ -1018,6 +1339,14 @@ class Decoding(Register, ABC):
                 prefix_len=prefix_len,
                 gamma=current_gamma,
                 n=n,
+            )
+            _log_sd_alignment_snapshot(
+                "finalize_exit",
+                prefix.shape[1],
+                approx_model_cache,
+                target_model_cache,
+                x_len=prefix.shape[1],
+                gamma=current_gamma,
             )
 
             if use_early_stopping and self._check_stopping_criteria(

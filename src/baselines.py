@@ -138,6 +138,22 @@ class Baselines(Decoding):
                 self.draft_target_acc_head, draft_target_threshold
             )
 
+    @staticmethod
+    def _collect_dssd_uplink_payload(
+        prob_history: torch.Tensor,
+        x: torch.Tensor,
+        prefix_len: int,
+        gamma: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        draft_tokens = x[:, prefix_len : prefix_len + gamma]
+        draft_prob_rows = prob_history[
+            :, prefix_len - 1 : prefix_len + gamma - 1, :
+        ]
+        draft_token_probs = torch.gather(
+            draft_prob_rows, 2, draft_tokens.unsqueeze(-1)
+        ).squeeze(-1)
+        return draft_tokens, draft_token_probs
+
     @Register.register_decoding("dist_split_spec")
     @Register.register_decoding("dssd")
     @torch.no_grad()
@@ -154,9 +170,15 @@ class Baselines(Decoding):
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         """
-        串行传输 token 和 prob 的 speculative decoding
-        - transfer_top_k: 用于传输的top-k压缩参数，None或0表示不压缩
-        - use_precise_comm_sim: 是否使用物理的通信模拟器
+        Distributed Split Speculative Decoding (DSSD) under a symmetric-link
+        assumption.
+
+        Protocol-level behavior:
+        - Uplink: send draft token ids and scalar q_j(x_j) values only.
+        - Edge: verify accept/reject with target probabilities.
+        - Reject path: downlink sends the full target distribution P_j(x) for the
+          rejected position, and the device resamples locally from norm(max(P-Q, 0)).
+        - All-accepted path: downlink sends only the next sampled token.
         """
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
@@ -262,6 +284,13 @@ class Baselines(Decoding):
             sum_draft_len += current_gamma
             sum_top_k += draft_top_k if draft_top_k is not None else 0
 
+            draft_tokens, draft_token_probs = self._collect_dssd_uplink_payload(
+                approx_model_cache._prob_history, x, prefix_len, current_gamma
+            )
+
+            # DSSD uplink only carries token ids and the scalar q_j(x_j) values.
+            comm_simulator.transfer(draft_tokens, draft_token_probs, "edge_cloud")
+
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
@@ -271,100 +300,69 @@ class Baselines(Decoding):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            n = prefix_len + current_gamma - 1
-            for i in range(current_gamma):
-                # 检查索引是否合法
-                draft_idx = prefix_len + i - 1
-                target_idx = prefix_len + i - 1
+            verification_inputs = self._prepare_verification_inputs(
+                draft_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+            )
+            acceptance_result = self._compute_acceptance_result(verification_inputs)
+            n = acceptance_result.n
 
-                if draft_idx >= approx_model_cache._prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-                if target_idx >= target_model_cache._prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
-                r = torch.rand(1, device=draft_device)
-                j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 rejection sampling
-                comm_simulator.transfer(
-                    j,
-                    approx_model_cache._prob_history[:, draft_idx, j],
-                    "edge_cloud",
-                )
-
-                if r > (
-                    target_model_cache._prob_history.to(draft_device)[:, target_idx, j]
-                ) / (approx_model_cache._prob_history[:, draft_idx, j]):
-                    n = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
-            this_step_accepted_tokens = n - prefix_len + 1
+            this_step_accepted_tokens = acceptance_result.accepted_count
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
-
-            approx_model_cache.rollback(n + 1)
+            rollback_plan = self._build_rollback_plan(
+                prefix_len,
+                verification_inputs.actual_gamma,
+                n,
+            )
 
             # 检查是否还有空间添加一个token
             if prefix.shape[1] >= max_tokens:
+                self._apply_rollback(
+                    approx_model_cache,
+                    target_model_cache,
+                    rollback_plan,
+                )
                 break
 
-            if n < prefix_len + current_gamma - 1:
-                # reject someone, sample from the pos n
+            if not rollback_plan.all_accepted:
+                # Reject path: edge sends the rejected position and the full target
+                # distribution P_j(x); the device resamples locally using its own
+                # cached Q_j(x).
+                rejection_offset = n - (prefix_len - 1)
+                target_prob_row = verification_inputs.target_probs_batch[
+                    :, rejection_offset, :
+                ]
+                comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+                comm_simulator.transfer(None, target_prob_row, "edge_cloud")
 
-                # if transfer_top_k is not None and transfer_top_k > 0:
-                #     rebuild_probs = comm_simulator._apply_top_k_compression(
-                #         approx_model_cache._prob_history[
-                #             :, n, : self.vocab_size
-                #         ],
-                #         transfer_top_k,
-                #     )
-                #     rebuild_probs = comm_simulator.rebuild_full_probs(
-                #         rebuild_probs
-                #     )
-                #     approx_model_cache._prob_history[
-                #         :, n, : self.vocab_size
-                #     ] = rebuild_probs  # 如果用了top-k压缩，先重建概率分布
-
-                # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
-                comm_simulator.transfer(
-                    None,
+                t = self._sample_reject_token(
+                    target_prob_row,
                     approx_model_cache._prob_history[:, n, : self.vocab_size],
-                    "edge_cloud",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
+                    output_device=prefix.device,
                 )
-
-                t = sample(
-                    max_fn(
-                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
-                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
-                    )
-                )
-
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
-
-                target_model_cache.rollback(n + 1)
             else:
-                # all approx model decoding accepted
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                target_model_cache.rollback(n + 2)
+                # All-accepted path: edge sends only the next token.
+                t = self._sample_accept_token(
+                    target_model_cache._prob_history[:, -1, : self.vocab_size],
+                    output_device=prefix.device,
+                )
 
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
+            self._apply_rollback(
+                approx_model_cache,
+                target_model_cache,
+                rollback_plan,
+            )
 
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
-                t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
@@ -372,7 +370,8 @@ class Baselines(Decoding):
             ):
                 break
 
-            # 传输新生成的 token id
+            # Downlink returns the final continuation token and its position index.
+            comm_simulator.transfer(t, None, "edge_cloud")
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
         end_event.record(stream=torch.cuda.current_stream())
@@ -553,16 +552,6 @@ class Baselines(Decoding):
                 self.target_forward_times += 1
 
             n = prefix_len + current_gamma - 1
-
-            # if transfer_top_k is not None and transfer_top_k > 0:
-            #     approx_model_cache._prob_history[
-            #         :, -(1 + current_gamma) : -1, :
-            #     ] = comm_simulator.compress_rebuild_probs(
-            #         approx_model_cache._prob_history[
-            #             :, -(1 + current_gamma) : -1, :
-            #         ],
-            #         transfer_top_k,
-            #     )
 
             comm_simulator.transfer(
                 None,

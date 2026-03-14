@@ -78,4 +78,3 @@ src/model/rest/DraftRetriever/target/
 /assets/
 
 # Intermidiate Jupyter notebook outputs
-*.ipynb

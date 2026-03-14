@@ -1,11 +1,146 @@
 import argparse
 import json
+import logging
 import os
 import random
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+
+logger = logging.getLogger(__name__)
+_LIMITED_WARNING_COUNTS: dict[str, int] = {}
+
+
+def _env_flag_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default) == "1"
+
+
+def numeric_debug_checks_enabled() -> bool:
+    return _env_flag_enabled("DUODEC_DEBUG_NUMERICS")
+
+
+def _log_limited_warning(label: str, message: str, max_warnings: int = 5) -> None:
+    count = _LIMITED_WARNING_COUNTS.get(label, 0)
+    _LIMITED_WARNING_COUNTS[label] = count + 1
+
+    if count < max_warnings:
+        logger.warning(message)
+    elif count == max_warnings:
+        logger.warning("[%s] additional warnings suppressed", label)
+
+
+def log_prob_tensor_if_invalid(
+    probs: torch.Tensor | None,
+    label: str,
+    *,
+    expected_sum: float = 1.0,
+    atol: float = 1e-3,
+    max_warnings: int = 5,
+) -> bool:
+    if not numeric_debug_checks_enabled():
+        return False
+
+    if probs is None or probs.numel() == 0:
+        return False
+
+    probs_float = probs.detach().float()
+    if probs_float.dim() == 0:
+        probs_float = probs_float.reshape(1, 1)
+    elif probs_float.dim() == 1:
+        probs_float = probs_float.unsqueeze(0)
+    else:
+        probs_float = probs_float.reshape(-1, probs_float.shape[-1])
+
+    has_nan = torch.isnan(probs_float).any().item()
+    has_posinf = torch.isposinf(probs_float).any().item()
+    has_neginf = torch.isneginf(probs_float).any().item()
+    negative_count = int((probs_float < -atol).sum().item())
+
+    row_sums = probs_float.sum(dim=-1)
+    finite_sum_mask = torch.isfinite(row_sums)
+    bad_sum_mask = finite_sum_mask & ((row_sums - expected_sum).abs() > atol)
+
+    if not (has_nan or has_posinf or has_neginf or negative_count > 0 or bad_sum_mask.any().item()):
+        return False
+
+    finite_values = probs_float[torch.isfinite(probs_float)]
+    if finite_values.numel() > 0:
+        min_prob = float(finite_values.min().item())
+        max_prob = float(finite_values.max().item())
+    else:
+        min_prob = float("nan")
+        max_prob = float("nan")
+
+    finite_row_sums = row_sums[finite_sum_mask]
+    if finite_row_sums.numel() > 0:
+        min_sum = float(finite_row_sums.min().item())
+        max_sum = float(finite_row_sums.max().item())
+    else:
+        min_sum = float("nan")
+        max_sum = float("nan")
+
+    _log_limited_warning(
+        label,
+        (
+            f"[{label}] invalid probability tensor detected: "
+            f"shape={tuple(probs.shape)}, "
+            f"nan={bool(has_nan)}, posinf={bool(has_posinf)}, neginf={bool(has_neginf)}, "
+            f"negative_count={negative_count}, "
+            f"bad_sum_rows={int(bad_sum_mask.sum().item())}/{row_sums.numel()}, "
+            f"sum_range=[{min_sum:.6g}, {max_sum:.6g}], "
+            f"value_range=[{min_prob:.6g}, {max_prob:.6g}]"
+        ),
+        max_warnings=max_warnings,
+    )
+    return True
+
+
+def log_ratio_if_invalid(
+    numerator: torch.Tensor,
+    denominator: torch.Tensor,
+    label: str,
+    *,
+    atol: float = 1e-12,
+    max_warnings: int = 5,
+) -> bool:
+    if not numeric_debug_checks_enabled():
+        return False
+
+    numerator = numerator.detach().float()
+    denominator = denominator.detach().float()
+    ratio = numerator / denominator
+
+    invalid_numerator = ~torch.isfinite(numerator) | (numerator < -atol)
+    invalid_denominator = ~torch.isfinite(denominator) | (denominator <= atol)
+    invalid_ratio = ~torch.isfinite(ratio) | (ratio < -atol)
+    issue_mask = invalid_numerator | invalid_denominator | invalid_ratio
+
+    if not issue_mask.any().item():
+        return False
+
+    finite_ratio = ratio[torch.isfinite(ratio)]
+    if finite_ratio.numel() > 0:
+        min_ratio = float(finite_ratio.min().item())
+        max_ratio = float(finite_ratio.max().item())
+    else:
+        min_ratio = float("nan")
+        max_ratio = float("nan")
+
+    _log_limited_warning(
+        label,
+        (
+            f"[{label}] invalid acceptance ratio detected: "
+            f"shape={tuple(ratio.shape)}, "
+            f"invalid_numerator={int(invalid_numerator.sum().item())}, "
+            f"invalid_denominator={int(invalid_denominator.sum().item())}, "
+            f"invalid_ratio={int(invalid_ratio.sum().item())}, "
+            f"finite_ratio_range=[{min_ratio:.6g}, {max_ratio:.6g}]"
+        ),
+        max_warnings=max_warnings,
+    )
+    return True
 
 
 def seed_everything(seed: int):
@@ -465,6 +600,25 @@ def norm_numpy_logits(
 
 
 def sample(probs: torch.Tensor, num_samples: int = 1):
+    probs = probs.float()
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    probs = probs.clamp_min(0.0)
+
+    probs_sum = probs.sum(dim=-1, keepdim=True)
+    invalid_rows = probs_sum.squeeze(-1) <= 0
+
+    if invalid_rows.any():
+        fallback = torch.zeros_like(probs[invalid_rows])
+        fallback.scatter_(
+            -1,
+            probs[invalid_rows].argmax(dim=-1, keepdim=True),
+            1.0,
+        )
+        probs = probs.clone()
+        probs[invalid_rows] = fallback
+        probs_sum = probs.sum(dim=-1, keepdim=True)
+
+    probs = probs / probs_sum
     idx_next = torch.multinomial(probs, num_samples=num_samples)
     return idx_next
 
@@ -473,9 +627,26 @@ def max_fn(x):
     """
     norm(max (x, 0))
     """
+    x = torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
-    return x_max / x_max_sum
+
+    valid_rows = x_max_sum.squeeze(-1) > 0
+    result = torch.zeros_like(x_max)
+
+    if valid_rows.any():
+        result[valid_rows] = x_max[valid_rows] / x_max_sum[valid_rows]
+
+    if (~valid_rows).any():
+        fallback = torch.zeros_like(x_max[~valid_rows])
+        fallback.scatter_(
+            -1,
+            x[~valid_rows].argmax(dim=-1, keepdim=True),
+            1.0,
+        )
+        result[~valid_rows] = fallback
+
+    return result
 
 
 def read_trace_file(trace_file: str, read_idx: int = 1) -> list:

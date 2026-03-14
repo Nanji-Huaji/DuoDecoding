@@ -1,6 +1,6 @@
 import torch
 
-from .utils import norm_logits, sample
+from .utils import log_prob_tensor_if_invalid, norm_logits, sample
 
 
 class KVCacheModel:
@@ -119,6 +119,10 @@ class KVCacheModel:
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p
             )
+            log_prob_tensor_if_invalid(
+                probs[:, -1, :],
+                "KVCacheModel._forward_with_kvcache.initial_probs",
+            )
             self._prob_buffer[:, :seq_length, :] = probs
 
             self._current_seq_len = seq_length
@@ -148,6 +152,10 @@ class KVCacheModel:
 
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p
+            )
+            log_prob_tensor_if_invalid(
+                probs,
+                "KVCacheModel._forward_with_kvcache.cached_probs",
             )
             self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
 
@@ -198,7 +206,9 @@ class KVCacheModel:
                 past_key_values_trimmed.append((k, v))
             self._past_key_values = tuple(past_key_values_trimmed)
 
-        self._current_seq_len = end_pos
+        # Keep history length aligned with the real cache length. Rolling back beyond
+        # the cache should not expose uninitialized rows from the preallocated buffers.
+        self._current_seq_len = min(end_pos, self.current_length)
 
     @property
     def device(self) -> torch.device:
@@ -211,6 +221,29 @@ class KVCacheModel:
         if hasattr(self._past_key_values, "get_seq_length"):
             return self._past_key_values.get_seq_length()
         return self._past_key_values[0][0].shape[2]
+
+    def debug_state(self) -> dict[str, int]:
+        prob_history_len = 0 if self._prob_buffer is None else self._current_seq_len
+        logits_history_len = 0 if self._logits_buffer is None else self._current_seq_len
+        return {
+            "current_length": self.current_length,
+            "tracked_seq_len": self._current_seq_len,
+            "prob_history_len": prob_history_len,
+            "logits_history_len": logits_history_len,
+            "max_length": self.max_length,
+        }
+
+    def debug_row_sums(self, start: int, end: int) -> list[float]:
+        if self._prob_buffer is None or self._current_seq_len <= 0:
+            return []
+
+        start = max(0, min(start, self._current_seq_len))
+        end = max(start, min(end, self._current_seq_len))
+        if end <= start:
+            return []
+
+        row_sums = self._prob_buffer[0, start:end, :].detach().float().sum(dim=-1)
+        return [float(v.item()) for v in row_sums]
 
     def __len__(self) -> int:
         return self.current_length
