@@ -2,33 +2,80 @@ import torch
 
 from .utils import log_prob_tensor_if_invalid, norm_logits, sample
 
+from collections.abc import Sequence
+from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard
+
+class TextConfigLike(Protocol):
+    vocab_size: int
+
+class ConfigLike(Protocol):
+    vocab_size: int
+    text_config: TextConfigLike
+
+
+KVPair: TypeAlias = tuple[torch.Tensor, torch.Tensor]
+LegacyPastKeyValues: TypeAlias = tuple[KVPair, ...]
+
+
+class EmbeddingLike(Protocol):
+    weight: torch.Tensor
+
+
+class CacheLike(Protocol):
+    def crop(self, end_pos: int) -> None: ...
+    def get_seq_length(self) -> int: ...
+    def __iter__(self) -> Iterator[KVPair]: ...
+
+
+PastKeyValues: TypeAlias = CacheLike | LegacyPastKeyValues | None
+
+
+class ModelOutputLike(Protocol):
+    logits: torch.Tensor | None
+    past_key_values: PastKeyValues
+    hidden_states: Sequence[torch.Tensor] | None
+
+
+def _is_cache_like(value: PastKeyValues) -> TypeGuard[CacheLike]:
+    return value is not None and hasattr(value, "get_seq_length")
+
+
+def _is_legacy_past(value: PastKeyValues) -> TypeGuard[LegacyPastKeyValues]:
+    return isinstance(value, tuple)
+
+class CausalModel(Protocol):
+    config: ConfigLike
+    def __call__(self, *args: Any, **kwargs: Any) -> ModelOutputLike: ...
+    def get_input_embeddings(self) -> EmbeddingLike: ...
+    def parameters(self, recurse: bool = True) -> Iterator[torch.nn.Parameter]: ...
+
 
 class KVCacheModel:
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: CausalModel,
         temperature: float = 1,
         top_k: int = 0,
         top_p: float = 0,
         return_hidden_states: bool = False,
         max_length: int = 16384,
     ) -> None:
-        self._model = model
-        self._past_key_values = None
+        self._model: CausalModel = model
+        self._past_key_values: PastKeyValues = None
 
-        self._temperature = temperature
-        self._top_k = top_k
-        self._top_p = top_p
-        self.max_length = max_length
+        self._temperature: float = temperature
+        self._top_k: int = top_k
+        self._top_p: float = top_p
+        self.max_length: int = max_length
 
-        self.hidden_states: torch.Tensor | None = None
+        self.hidden_states: Sequence[torch.Tensor] | None = None
 
         if hasattr(model.config, "vocab_size"):
-            self.vocab_size = model.config.vocab_size
+            self.vocab_size = int(model.config.vocab_size)
         elif hasattr(model.config, "text_config") and hasattr(
             model.config.text_config, "vocab_size"
         ):
-            self.vocab_size = model.config.text_config.vocab_size
+            self.vocab_size = int(model.config.text_config.vocab_size)
         else:
             raise AttributeError("Vocab size not found in model config")
 
@@ -92,7 +139,8 @@ class KVCacheModel:
                 device=device,
                 dtype=dtype,
             )
-            new_logits[:, :old_len, :] = self._logits_buffer
+            if self._logits_buffer is not None:
+                new_logits[:, :old_len, :] = self._logits_buffer
             self._logits_buffer = new_logits
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -108,13 +156,16 @@ class KVCacheModel:
             seq_length = input_ids.shape[1]
             outputs = self._model(input_ids)
             logits = outputs.logits
+            if logits is None:
+                raise RuntimeError("Model returned logits=None in initial forward")
 
             self._ensure_buffer_size(
                 batch_size, seq_length, logits.device, logits.dtype
             )
 
             sliced_logits = logits[..., : self.vocab_size]
-            self._logits_buffer[:, :seq_length, :] = sliced_logits
+            if self._logits_buffer is not None:
+                self._logits_buffer[:, :seq_length, :] = sliced_logits
 
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p
@@ -123,7 +174,8 @@ class KVCacheModel:
                 probs[:, -1, :],
                 "KVCacheModel._forward_with_kvcache.initial_probs",
             )
-            self._prob_buffer[:, :seq_length, :] = probs
+            if self._prob_buffer is not None:
+                self._prob_buffer[:, :seq_length, :] = probs
 
             self._current_seq_len = seq_length
             self._past_key_values = outputs.past_key_values
@@ -139,16 +191,20 @@ class KVCacheModel:
             outputs = self._model(
                 last_input_id, past_key_values=self._past_key_values, use_cache=True
             )
+            logits = outputs.logits
+            if logits is None:
+                raise RuntimeError("Model returned logits=None in cached forward")
 
             new_len = last_input_id.shape[1]
             end_pos = self._current_seq_len + new_len
 
             self._ensure_buffer_size(
-                batch_size, end_pos, outputs.logits.device, outputs.logits.dtype
+                batch_size, end_pos, logits.device, logits.dtype
             )
 
-            sliced_logits = outputs.logits[..., : self.vocab_size]
-            self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
+            sliced_logits = logits[..., : self.vocab_size]
+            if self._logits_buffer is not None:
+                self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
 
             probs = norm_logits(
                 sliced_logits, self._temperature, self._top_k, self._top_p
@@ -157,7 +213,8 @@ class KVCacheModel:
                 probs,
                 "KVCacheModel._forward_with_kvcache.cached_probs",
             )
-            self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
+            if self._prob_buffer is not None:
+                self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
 
             self._current_seq_len = end_pos
             self._past_key_values = outputs.past_key_values
@@ -195,10 +252,13 @@ class KVCacheModel:
         if self._past_key_values is None:
             return
 
-        if hasattr(self._past_key_values, "crop"):
+        if _is_cache_like(self._past_key_values) and hasattr(
+            self._past_key_values, "crop"
+        ):
             self._past_key_values.crop(end_pos)
         else:
-            past_key_values_trimmed = []
+            assert _is_legacy_past(self._past_key_values)
+            past_key_values_trimmed: list[KVPair] = []
             for kv in self._past_key_values:
                 k, v = kv
                 k = k[:, :, :end_pos, :]
@@ -212,14 +272,15 @@ class KVCacheModel:
 
     @property
     def device(self) -> torch.device:
-        return next(self._model.parameters()).device
+        return next(iter(self._model.parameters())).device
 
     @property
     def current_length(self) -> int:
         if self._past_key_values is None:
             return 0
-        if hasattr(self._past_key_values, "get_seq_length"):
+        if _is_cache_like(self._past_key_values):
             return self._past_key_values.get_seq_length()
+        assert _is_legacy_past(self._past_key_values)
         return self._past_key_values[0][0].shape[2]
 
     def debug_state(self) -> dict[str, int]:
