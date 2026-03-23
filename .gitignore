@@ -68,6 +68,7 @@ src/model/rest/DraftRetriever/target/
 /experiment_report.txt
 /debug_res.json
 /exp_res.json
+results_*.json*
 
 # Generated analysis data
 /active_learning_metrics.json
@@ -78,3 +79,4 @@ src/model/rest/DraftRetriever/target/
 /assets/
 
 # Intermidiate Jupyter notebook outputs
+*.ipynb
