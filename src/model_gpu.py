@@ -181,7 +181,7 @@ class KVCacheModel:
         return probs[:, -1, :]
 
     @torch.inference_mode()
-    @torch.compile()
+    @torch.compile(dynamic=True)
     def _decode_step(self, last_input_id: torch.Tensor) -> torch.Tensor:
         """
         Decode one cached step (or a short cached suffix) after prefill.
