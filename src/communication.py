@@ -1,7 +1,7 @@
 import logging
 import math
 import warnings
-from typing import List, Literal, Optional, Tuple, TypedDict
+from typing import List, Literal, Optional, Tuple, TypedDict, cast
 
 import torch
 
@@ -231,7 +231,7 @@ class CommunicationSimulator:
         if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
             current_bw = self.trace_data[self.trace_index]
             self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
-                current_bw, self.dimension
+                current_bw, cast(Dimension, self.dimension)
             )
             self.trace_index = (self.trace_index + 1) % len(self.trace_data)
 

@@ -229,6 +229,8 @@ def model_zoo(args):
         if hasattr(args, "little_model")
         else args.draft_model
     )
+    if args.draft_model is None:
+        args.draft_model = ""
     args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
 
 
@@ -514,6 +516,11 @@ def parse_arguments():
         action="store_true",
         help="Whether to use early stopping during decoding.",
     )
+    parser.add_argument(
+        "--dump_network_stats",
+        action="store_true",
+        help="Whether to dump network statistics during decoding.",
+    )
 
     args = parser.parse_args()
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
@@ -579,7 +586,7 @@ def norm_logits(
         return new_logits.float()
 
     logits = logits / temperature
-    logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
+    logits = top_k_top_p_filter(logits, top_k=int(top_k), top_p=top_p)
     probs = F.softmax(logits, dim=-1)
     return probs
 

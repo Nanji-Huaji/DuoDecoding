@@ -18,7 +18,7 @@ from .communication import (
     PreciseCommunicationSimulator,
     PreciseCUHLM,
 )
-from .engine import INT_SIZE, Decoding, DecodingMetrics, get_empty_metrics
+from .engine import INT_SIZE, Decoding, DecodingMetrics, get_empty_metrics, MetricsDumpFactoryLike
 from .model_gpu import KVCacheModel
 from .register import Register
 from .rl_adapter import RLNetworkAdapter
@@ -50,8 +50,8 @@ class Baselines(Decoding):
     - Tridecoding
     """
 
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, args, metrics_dumper_factory: Optional[MetricsDumpFactoryLike] = None):
+        super().__init__(args, metrics_dumper_factory=metrics_dumper_factory)
         # self.load_acc_head() # Moved to load_model
         if getattr(args, "use_rl_adapter", False):
             # 限制 Main RL Agent (Draft -> Target) 的阈值搜索空间为 0.0..0.4

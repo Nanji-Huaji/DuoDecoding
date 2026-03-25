@@ -78,6 +78,7 @@ class ExpConfig(TypedDict):
     little_rl_path: str
     max_tokens: int
     use_early_stopping: bool
+    dump_network_stats: bool
 
 
 # Global Constants
@@ -210,6 +211,8 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             "little_rl_path",
             config["little_rl_path"],
         )
+    if config.get("dump_network_stats", False):
+        cmd = add_args(cmd, "dump_network_stats")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -489,6 +492,7 @@ def create_config(
     draft_target_acc_head_path: str | None = None,
     main_rl_path: str | None = None,
     little_rl_path: str | None = None,
+    dump_network_stats: bool = False,
 ) -> ExpConfig:
     # 使用微秒级时间戳确保唯一性
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -540,6 +544,7 @@ def create_config(
         draft_target_acc_head_path=draft_target_acc_head_path,
         main_rl_path=main_rl_path,
         little_rl_path=little_rl_path,
+        dump_network_stats=dump_network_stats,
     )
 
 
@@ -613,21 +618,18 @@ edge_cloud_bandwidth = [
 for little_model, draft_model, target_model in (
     llama_series,
     # vicuna_series,
-    qwen_series,
-    # llama_chat_series,
-    # qwen_series_fp8,
-    # gemma_3_it_series,
-    # qwen_series_large,
-    # llama_3_series,
-    qwen_1_5_series,
+    # qwen_series,
+    # # llama_chat_series,
+    # # qwen_series_fp8,
+    # # gemma_3_it_series,
+    # # qwen_series_large,
+    # # llama_3_series,
+    # qwen_1_5_series,
 ):
     for dataset in [
         EvalDataset.mt_bench_noeval,
     ]:
-        for mode in [
-            # EvalMode.cuhlm,
-            EvalMode.dssd,
-        ]:
+        for mode in EvalMode:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
                     eval_mode=mode,
