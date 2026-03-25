@@ -11,7 +11,7 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 import re
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple, TypedDict, Literal
+from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast
 
 from accelerate import Accelerator
 from transformers import (
@@ -37,13 +37,12 @@ from .utils import (
 )
 
 try:
-    import flash_attn
+    import flash_attn # type: ignore
 except ImportError:
     pass
 
 from functools import partial
 
-# from .register import Register
 
 flash_attn_available = "flash_attn" in globals()
 logger = logging.getLogger(__name__)
@@ -271,7 +270,7 @@ class Decoding(Register, ABC):
         self.num_acc_tokens = []
         self.prob_with_flag = []
 
-        self.vocab_size = -1
+        self.vocab_size: int = -1
         self.stop_tokens_matrix = None
 
     def _prepare_stop_tokens(self, stop_sequences: List[str]):
@@ -402,15 +401,15 @@ class Decoding(Register, ABC):
         draft_probs = (
             draft_probs_override
             if draft_probs_override is not None
-            else draft_model_cache._prob_history
+            else draft_model_cache.prob_history
         )
-        if draft_probs is None or target_model_cache._prob_history is None:
+        if draft_probs is None or target_model_cache.prob_history is None:
             raise ValueError("Probability history is not initialized for verification")
 
         max_idx = min(
             prefix_len + gamma - 1,
             draft_probs.shape[1],
-            target_model_cache._prob_history.shape[1],
+            target_model_cache.prob_history.shape[1],
         )
         actual_gamma = max_idx - (prefix_len - 1)
         if actual_gamma <= 0:
@@ -419,7 +418,7 @@ class Decoding(Register, ABC):
             empty_probs = draft_probs[:, 0:0, :]
             return VerificationInputs(
                 draft_probs_batch=empty_probs,
-                target_probs_batch=target_model_cache._prob_history[:, 0:0, :].to(
+                target_probs_batch=target_model_cache.prob_history[:, 0:0, :].to(
                     draft_device
                 ),
                 draft_tokens=empty_tokens,
@@ -431,7 +430,7 @@ class Decoding(Register, ABC):
             )
 
         draft_probs_batch = draft_probs[:, prefix_len - 1 : max_idx, :]
-        target_probs_batch = target_model_cache._prob_history[
+        target_probs_batch = target_model_cache.prob_history[
             :, prefix_len - 1 : max_idx, :
         ].to(draft_device)
         draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
@@ -601,7 +600,7 @@ class Decoding(Register, ABC):
                 - "serial": Transfer token and prob one by one during verification
                 - "batch_before": Batch transfer before verification (caller handles this)
             send_reject_message: Whether to send reject message on rejection
-            draft_probs_override: Override draft probs (if None, use draft_model_cache._prob_history)
+            draft_probs_override: Override draft probs (if None, use draft_model_cache.prob_history)
             decoding_metrics: Optional metrics dict to update
 
         Returns:
@@ -733,10 +732,10 @@ class Decoding(Register, ABC):
 
         if not rollback_plan.all_accepted:
             # Rejection: Sample from residual distribution max(0, target_prob - approx_prob)
-            target_prob_slice = target_model_cache._prob_history[
+            target_prob_slice = target_model_cache.prob_history[
                 :, n, : target_model_cache.vocab_size
             ]
-            approx_prob_slice = approx_model_cache._prob_history[
+            approx_prob_slice = approx_model_cache.prob_history[
                 :, n, : approx_model_cache.vocab_size
             ]
 
@@ -748,7 +747,7 @@ class Decoding(Register, ABC):
             target_model_cache.rollback(rollback_plan.target_end_pos_reject)
         else:
             # All accepted: sample the already-computed next-token distribution.
-            next_target_probs = target_model_cache._prob_history[
+            next_target_probs = target_model_cache.prob_history[
                 :, -1, : target_model_cache.vocab_size
             ]
             t = Decoding._sample_accept_token(
@@ -782,7 +781,8 @@ class Decoding(Register, ABC):
         # 大模型会在load_model中使用Q4量化
         return "auto"
 
-    def _get_available_gpu_count(self) -> int:
+    @staticmethod
+    def _get_available_gpu_count() -> int:
         """
         Get the number of available GPUs, considering CUDA_VISIBLE_DEVICES.
 
@@ -1071,17 +1071,22 @@ class Decoding(Register, ABC):
                     device_map=target_device,
                 ).eval()
 
-        # 从实际模型embedding层获取vocab_size
-        if hasattr(self, "target_model") and self.target_model is not None:
-            actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
-            self.vocab_size = actual_vocab_size
-            print(f"✅ Using vocab_size from target model embedding: {self.vocab_size}")
-        elif hasattr(self, "tokenizer") and self.tokenizer is not None:
-            self.vocab_size = self.tokenizer.vocab_size
-            print(f"⚠️  Using vocab_size from tokenizer: {self.vocab_size}")
-        else:
-            self.vocab_size = int(self.args.vocab_size)
-            print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
+        # # 从实际模型embedding层获取vocab_size
+        # if hasattr(self, "target_model") and self.target_model is not None:
+        #     emb = self.target_model.get_input_embeddings()
+        #     if hasattr(emb, "weight"):
+        #         actual_vocab_size = emb.weight.shape[0]
+        #         self.vocab_size = int(actual_vocab_size)
+        #     print(f"✅ Using vocab_size from target model embedding: {self.vocab_size}")
+        # elif hasattr(self, "tokenizer") and self.tokenizer is not None:
+        #     self.vocab_size = int(self.tokenizer.vocab_size)
+        #     print(f"⚠️  Using vocab_size from tokenizer: {self.vocab_size}")
+        # else:
+        #     self.vocab_size = int(self.args.vocab_size)
+        #     print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
+        
+        # Seems fetching vocab size from model is unnecessary.
+        self.vocab_size = int(self.args.vocab_size)
 
         # Print device allocation for loaded models
         self._print_model_device_info()
@@ -1238,11 +1243,11 @@ class Decoding(Register, ABC):
         approx_model_cache = KVCacheModel(
             self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
         )
-        approx_model_cache.vocab_size = self.vocab_size
+        approx_model_cache.vocab_size = int(self.vocab_size)
         target_model_cache = KVCacheModel(
             self.target_model, self.args.temp, self.args.top_k, self.args.top_p
         )
-        target_model_cache.vocab_size = self.vocab_size
+        target_model_cache.vocab_size = int(self.vocab_size)
 
         draft_forward_times = 0
         target_forward_times = 0
@@ -1283,7 +1288,7 @@ class Decoding(Register, ABC):
                     self.target_forward_times += 1
 
                 t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                    target_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(draft_device)
                 prefix = torch.cat((prefix, t), dim=1)
                 self.num_acc_tokens.append(1)
@@ -1455,7 +1460,7 @@ class Decoding(Register, ABC):
                     self.target_forward_times += 1
 
                 t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                    target_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(draft_device)
                 prefix = torch.cat((prefix, t), dim=1)
                 self.num_acc_tokens.append(1)
@@ -1500,17 +1505,17 @@ class Decoding(Register, ABC):
             if n < prefix_len + current_gamma - 1:
                 if transfer_top_k is not None and transfer_top_k > 0:
                     rebuild_probs = comm_simulator._apply_top_k_compression(
-                        approx_model_cache._prob_history[:, n, : self.vocab_size],
+                        approx_model_cache.prob_history[:, n, : self.vocab_size],
                         transfer_top_k,
                     )
                     rebuild_probs = comm_simulator.rebuild_full_probs(rebuild_probs)
-                    approx_model_cache._prob_history[:, n, : self.vocab_size] = (
+                    approx_model_cache.prob_history[:, n, : self.vocab_size] = (
                         rebuild_probs
                     )
 
                 comm_simulator.transfer(
                     None,
-                    approx_model_cache._prob_history[:, n, : self.vocab_size],
+                    approx_model_cache.prob_history[:, n, : self.vocab_size],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -1552,230 +1557,6 @@ class Decoding(Register, ABC):
         metrics["queuing_time"] = queuing_time
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
-
-        metrics["comm_energy"] = comm_simulator.total_comm_energy
-
-        return prefix, metrics
-
-    @torch.no_grad()
-    def uncertainty_decoding(
-        self,
-        prefix,
-        transfer_top_k: Optional[int] = 300,
-        use_precise_comm_sim=False,
-    ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        """
-        Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
-        """
-        if use_precise_comm_sim:
-            comm_simulator = PreciseCUHLM(
-                bandwidth_hz=1e6,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-            )
-        else:
-            comm_simulator = CUHLM(
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                uncertainty_threshold=0.8,
-                dimension="Mbps",
-            )
-
-        max_tokens = prefix.shape[1] + self.args.max_tokens
-
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
-
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
-        approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
-        target_model_cache.vocab_size = self.vocab_size
-
-        # Metrics Tracking
-        target_forward_times = 0
-        draft_forward_times = 0
-        total_accepted_tokens = 0
-        total_drafted_tokens = 0
-        queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
-
-        loop_idx = 0
-
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        start_event.record(stream=torch.cuda.current_stream())
-
-        input_len = prefix.shape[1]
-
-        is_accepted_last_step = False
-
-        while prefix.shape[1] < max_tokens:
-            loop_idx += 1
-            prefix_len = prefix.shape[1]
-
-            # 传输 prompt
-            if loop_idx == 1:
-                comm_simulator.transfer(prefix, None, link_type="edge_cloud")
-
-            # Sync
-            x = approx_model_cache.generate(prefix.to(draft_device), 1)
-            queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
-
-            # 无论接受与否，都要传输起草的 token
-            comm_simulator.transfer(x, None, link_type="edge_cloud")
-            current_logit = approx_model_cache.logits_history[:, -1, : self.vocab_size]
-            assert current_logit is not None, "Logits history should not be None"
-            uncertainty = comm_simulator.calculate_uncertainty(
-                current_logit, M=20, theta_max=2.0, draft_token=x[0, -1].item()
-            )
-            should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(
-                uncertainty, current_logit
-            )
-
-            draft_forward_times += 1
-            if not is_accepted_last_step:
-                target_forward_times += 1
-            else:
-                # 如果上一个token被接受了，等下一次没有被接受，这么做是为了实现简单
-                target_forward_times += 0
-
-            total_drafted_tokens += 1
-
-            n = prefix_len + 1 - 1
-
-            if not should_transfer:
-                is_accepted_last_step = True
-
-                # 接受draft token - 仿照接受所有token的情况
-                accepted_token = x[:, -1:]  # draft token
-                prefix = torch.cat((prefix, accepted_token), dim=1)
-
-                comm_simulator.send_accept_message(
-                    linktype="edge_cloud"
-                )  # 发送消息告知应该接受
-
-                # KVCache管理：仿照接受所有token的情况
-                # 由于我们接受了draft token，需要从target model采样一个新token
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-
-                # rollback target_model_cache，因为我们已经消费了它的输出
-                # 这里n相当于prefix_len（接受了1个token）
-                n = prefix_len  # 接受了位置为prefix_len的token
-                target_model_cache.rollback(n + 2)  # 等同于rollback(prefix_len + 2)
-
-                # 将新采样的token添加到序列中
-                if prefix.shape[1] < max_tokens:
-                    prefix = torch.cat((prefix, t), dim=1)
-
-                comm_simulator.transfer(
-                    t, None, link_type="edge_cloud"
-                )  # 传输接受的token和新采样的token
-
-                continue
-
-            is_accepted_last_step = False
-
-            # 拒绝采样
-
-            # 压缩
-            current_probs = comm_simulator._get_current_probs(
-                approx_model_cache._prob_history
-            )
-            compressed_prob = comm_simulator._apply_top_k_compression(
-                current_probs, vocab_size
-            )
-
-            rebuild_probs = comm_simulator.rebuild_full_probs(compressed_prob)
-            approx_model_cache._prob_history[:, -1, : self.vocab_size] = (
-                rebuild_probs  # 完成概率的重建
-            )
-
-            r = torch.rand(1, device=draft_device)
-            j = x[:, prefix_len]
-
-            self.color_print(
-                f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
-            )
-
-            if r > (
-                target_model_cache._prob_history.to(draft_device)[:, prefix_len - 1, j]
-            ) / (approx_model_cache._prob_history[:, prefix_len - 1, j]):
-                n = prefix_len - 1
-                comm_simulator.send_reject_message(
-                    linktype="edge_cloud"
-                )  # 发送消息告知应该拒绝、
-                comm_simulator.transfer(
-                    None,  # 一开始已经传输过
-                    approx_model_cache._prob_history[:, -1, : self.vocab_size],
-                    link_type="edge_cloud",
-                    is_compressed=True,
-                    compressed_k=vocab_size,
-                )
-
-            total_accepted_tokens += n - prefix_len + 1
-
-            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x[:, : n + 1]
-
-            approx_model_cache.rollback(n + 1)
-
-            if n < prefix_len:
-                # reject someone, sample from the pos n
-                t = sample(
-                    max_fn(
-                        target_model_cache._prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
-                        - approx_model_cache._prob_history[:, n, : self.vocab_size]
-                    )
-                )
-                target_model_cache.rollback(n + 1)
-            else:
-                # all approx model decoding accepted
-                t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                target_model_cache.rollback(n + 2)
-
-            comm_simulator.transfer(
-                t, None, link_type="edge_cloud"
-            )  # 传输新采样的token
-            prefix = torch.cat((prefix, t), dim=1)
-
-        end_event.record(stream=torch.cuda.current_stream())
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
-
-        metrics = get_empty_metrics()
-
-        metrics["draft_forward_times"] = draft_forward_times
-        metrics["target_forward_times"] = target_forward_times
-        metrics["generated_tokens"] = prefix.shape[1] - input_len
-        metrics["draft_generated_tokens"] = draft_forward_times
-        metrics["draft_accepted_tokens"] = total_accepted_tokens
-        metrics["queuing_time"] = queuing_time
-        metrics["wall_time"] = (
-            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
-        )
-        metrics["throughput"] = (
-            (prefix.shape[1] - input_len) / metrics["wall_time"]
-            if metrics["wall_time"] > 0
-            else 0
-        )
-        metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
-        metrics["computation_time"] = elapsed_time
-        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
-        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
-        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
-        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
 

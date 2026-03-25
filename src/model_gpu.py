@@ -3,14 +3,7 @@ import torch
 from .utils import log_prob_tensor_if_invalid, norm_logits, sample
 
 from collections.abc import Sequence
-from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard
-
-class TextConfigLike(Protocol):
-    vocab_size: int
-
-class ConfigLike(Protocol):
-    vocab_size: int
-    text_config: TextConfigLike
+from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard, cast
 
 
 KVPair: TypeAlias = tuple[torch.Tensor, torch.Tensor]
@@ -43,10 +36,12 @@ def _is_cache_like(value: PastKeyValues) -> TypeGuard[CacheLike]:
 def _is_legacy_past(value: PastKeyValues) -> TypeGuard[LegacyPastKeyValues]:
     return isinstance(value, tuple)
 
+
 class CausalModel(Protocol):
-    config: ConfigLike
+    config: Any
+
     def __call__(self, *args: Any, **kwargs: Any) -> ModelOutputLike: ...
-    def get_input_embeddings(self) -> EmbeddingLike: ...
+    def get_input_embeddings(self) -> torch.nn.Module: ...
     def parameters(self, recurse: bool = True) -> Iterator[torch.nn.Parameter]: ...
 
 
@@ -104,6 +99,12 @@ class KVCacheModel:
     def logits_history(self, value):
         pass
 
+    @property
+    def prob_history(self) -> torch.Tensor:
+        if self._prob_history is None:
+            raise ValueError("Probability history buffer is not initialized")
+        return self._prob_history
+
     def _ensure_buffer_size(
         self, batch_size: int, seq_len: int, device: torch.device, dtype: torch.dtype
     ):
@@ -143,85 +144,109 @@ class KVCacheModel:
                 new_logits[:, :old_len, :] = self._logits_buffer
             self._logits_buffer = new_logits
 
+    @torch.inference_mode()
+    def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        input: (batch_size, seq_len)
+        output: (batch_size, vocab_size) - probabilities for the next token after the entire input sequence
+        """
+        seq_length = input_ids.shape[1]
+        batch_size = input_ids.shape[0]
+        outputs = self._model(input_ids)
+        logits = outputs.logits
+        if logits is None:
+            raise RuntimeError("Model returned logits=None in prefill")
+
+        self._ensure_buffer_size(batch_size, seq_length, logits.device, logits.dtype)
+        sliced_logits = logits[..., : self.vocab_size]
+        assert self._logits_buffer is not None, (
+            "Logits buffer should not be None after ensuring buffer size"
+        )
+        self._logits_buffer[:, :seq_length, :] = sliced_logits
+
+        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
+        log_prob_tensor_if_invalid(
+            probs[:, -1, :],
+            "KVCacheModel._forward_with_kvcache.initial_probs",
+        )
+
+        assert self._prob_buffer is not None, (
+            "Probability buffer should not be None after ensuring buffer size"
+        )
+        self._prob_buffer[:, :seq_length, :] = probs
+        self._current_seq_len = seq_length
+        self._past_key_values = outputs.past_key_values
+        self.hidden_states = outputs.hidden_states
+
+        return probs[:, -1, :]
+
+    @torch.inference_mode()
+    @torch.compile()
+    def _decode_step(self, last_input_id: torch.Tensor) -> torch.Tensor:
+        """
+        Decode one cached step (or a short cached suffix) after prefill.
+        """
+        if last_input_id.dtype != torch.long:
+            last_input_id = last_input_id.to(torch.long)
+
+        past_key_values = self._past_key_values
+        if past_key_values is None:
+            raise RuntimeError("Decode step called before cache initialization")
+
+        batch_size = last_input_id.shape[0]
+        outputs = self._model(
+            last_input_id, past_key_values=past_key_values, use_cache=True
+        )
+        logits = outputs.logits
+
+        if logits is None:
+            raise RuntimeError("Model returned logits=None in decode step")
+
+        new_past_key_values = outputs.past_key_values
+        if new_past_key_values is None:
+            raise RuntimeError("Model returned past_key_values=None in decode step")
+
+        new_len = last_input_id.shape[1]
+        end_pos = self._current_seq_len + new_len
+
+        self._ensure_buffer_size(batch_size, end_pos, logits.device, logits.dtype)
+
+        sliced_logits = logits[..., : self.vocab_size]
+        if self._logits_buffer is not None:
+            self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
+
+        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
+        log_prob_tensor_if_invalid(
+            probs,
+            "KVCacheModel._forward_with_kvcache.cached_probs",
+        )
+        if self._prob_buffer is not None:
+            self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
+
+        self._current_seq_len = end_pos
+        self._past_key_values = new_past_key_values
+        self.hidden_states = outputs.hidden_states
+
+        return probs[:, -1, :]
+
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if input_ids.dtype != torch.long:
             input_ids = input_ids.to(torch.long)
 
-        actual_vocab_size = self._model.get_input_embeddings().weight.shape[0]
-        input_ids = torch.clamp(input_ids, 0, actual_vocab_size - 1)
-
-        batch_size = input_ids.shape[0]
-
         if self._past_key_values is None:
-            seq_length = input_ids.shape[1]
-            outputs = self._model(input_ids)
-            logits = outputs.logits
-            if logits is None:
-                raise RuntimeError("Model returned logits=None in initial forward")
+            return self._prefill(input_ids)
 
-            self._ensure_buffer_size(
-                batch_size, seq_length, logits.device, logits.dtype
-            )
+        cached_len = self.current_length
+        last_input_id = input_ids[:, cached_len:]
 
-            sliced_logits = logits[..., : self.vocab_size]
-            if self._logits_buffer is not None:
-                self._logits_buffer[:, :seq_length, :] = sliced_logits
+        if last_input_id.numel() == 0:
+            if self._current_seq_len <= 0:
+                raise RuntimeError(
+                    "No new input provided for decode step and no cache available"
+                )
+            return self.prob_history[:, self._current_seq_len - 1, :]
 
-            probs = norm_logits(
-                sliced_logits, self._temperature, self._top_k, self._top_p
-            )
-            log_prob_tensor_if_invalid(
-                probs[:, -1, :],
-                "KVCacheModel._forward_with_kvcache.initial_probs",
-            )
-            if self._prob_buffer is not None:
-                self._prob_buffer[:, :seq_length, :] = probs
-
-            self._current_seq_len = seq_length
-            self._past_key_values = outputs.past_key_values
-            self.hidden_states = outputs.hidden_states
-            last_q = probs[:, -1, :]
-        else:
-            cached_len = self.current_length
-            last_input_id = input_ids[:, cached_len:]
-
-            if last_input_id.dim() == 1:
-                last_input_id = last_input_id.unsqueeze(0)
-
-            outputs = self._model(
-                last_input_id, past_key_values=self._past_key_values, use_cache=True
-            )
-            logits = outputs.logits
-            if logits is None:
-                raise RuntimeError("Model returned logits=None in cached forward")
-
-            new_len = last_input_id.shape[1]
-            end_pos = self._current_seq_len + new_len
-
-            self._ensure_buffer_size(
-                batch_size, end_pos, logits.device, logits.dtype
-            )
-
-            sliced_logits = logits[..., : self.vocab_size]
-            if self._logits_buffer is not None:
-                self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
-
-            probs = norm_logits(
-                sliced_logits, self._temperature, self._top_k, self._top_p
-            )
-            log_prob_tensor_if_invalid(
-                probs,
-                "KVCacheModel._forward_with_kvcache.cached_probs",
-            )
-            if self._prob_buffer is not None:
-                self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
-
-            self._current_seq_len = end_pos
-            self._past_key_values = outputs.past_key_values
-            self.hidden_states = outputs.hidden_states
-            last_q = probs[:, -1, :]
-
-        return last_q
+        return self._decode_step(last_input_id)
 
     @property
     def last_hidden_state(self) -> torch.Tensor:
