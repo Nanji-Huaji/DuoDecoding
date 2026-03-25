@@ -7,7 +7,7 @@ import json
 import random
 import time
 from functools import partial
-from typing import List
+from typing import List, cast
 
 import shortuuid
 import torch
@@ -125,7 +125,7 @@ class EvalMTBench(Baselines):
         else:
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None) # type: ignore
             prompt = conv.get_prompt() + " "
         return prompt
 
@@ -215,7 +215,7 @@ class EvalMTBench(Baselines):
                     sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
                     conv.system_message = sys_p
                 conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None)
+                conv.append_message(conv.roles[1], None) # type: ignore
                 prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
@@ -225,6 +225,7 @@ class EvalMTBench(Baselines):
             output_ids = decoding(input_ids)
             if isinstance(output_ids, tuple) and len(output_ids) == 2:
                 output_ids, _ = output_ids
+            output_ids = cast(torch.Tensor, output_ids)
             torch.cuda.synchronize()
             elapsed = time.time() - start_time
             print(
@@ -296,7 +297,7 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        conv.append_message(conv.roles[1], None) # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -337,10 +338,13 @@ class EvalMTBench(Baselines):
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
 
+                    output_ids = cast(torch.Tensor, output_ids)
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
                     if _token_debug_checks_enabled():
+                        output_ids = cast(torch.Tensor, output_ids)
                         tokenizer_size = len(self.tokenizer)
                         if (output_ids < 0).any() or (
                             output_ids >= tokenizer_size
@@ -360,8 +364,9 @@ class EvalMTBench(Baselines):
                                 0  # Replace with unknown or padding (0 usually safe)
                             )
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -441,7 +446,6 @@ class EvalMTBench(Baselines):
             f"wall_time: {torch.sum(torch.tensor(total_wall_time))}, num_token: {torch.sum(torch.tensor(total_num_token))}",
             2,
         )
-
 
         # 过滤掉历史数据字段以避免打印过长
 

@@ -1,7 +1,7 @@
 import math
 import time
 import warnings
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, cast, Sequence
 
 import torch
 import transformers
@@ -50,8 +50,8 @@ class Baselines(Decoding):
     - Tridecoding
     """
 
-    def __init__(self, args, metrics_dumper_factory: Optional[MetricsDumpFactoryLike] = None):
-        super().__init__(args, metrics_dumper_factory=metrics_dumper_factory)
+    def __init__(self, args):
+        super().__init__(args)
         # self.load_acc_head() # Moved to load_model
         if getattr(args, "use_rl_adapter", False):
             # 限制 Main RL Agent (Draft -> Target) 的阈值搜索空间为 0.0..0.4
@@ -800,13 +800,13 @@ class Baselines(Decoding):
 
             # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
-            if approx_model_cache.prob_history is not None:
+            if approx_model_cache.logits_history is not None:
                 current_logit = approx_model_cache.logits_history[:, -1, : self.vocab_size]
             else:
                 raise ValueError("Approx model logits history is None")
 
             uncertainty = comm_simulator.calculate_uncertainty(
-                current_logit, M=20, theta_max=2.0, draft_token=x[0, -1].item()
+                current_logit, M=20, theta_max=2.0, draft_token=int(x[0, -1].item())
             )
             should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(
                 uncertainty, current_logit
@@ -2752,7 +2752,7 @@ class Baselines(Decoding):
                 q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
-                hidden_states = little_model_cache.hidden_states
+                hidden_states = cast(Sequence[torch.Tensor], little_model_cache.hidden_states)
 
                 arp_start = time.time()
                 stop = adapter.predict(hidden_states)
@@ -2892,7 +2892,7 @@ class Baselines(Decoding):
                 q = draft_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
-                hidden_states = draft_model_cache.hidden_states
+                hidden_states = cast(Sequence[torch.Tensor], draft_model_cache.hidden_states)
 
                 arp_start = time.time()
                 stop = adapter.predict(hidden_states)

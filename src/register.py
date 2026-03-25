@@ -17,7 +17,7 @@ class Register:
 
         return decorator
 
-    def get_decoding_method(self) -> callable:
+    def get_decoding_method(self):
         mode = self.args.eval_mode
 
         # 1. 尝试从注册表中获取

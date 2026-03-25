@@ -69,8 +69,8 @@ def extract_answer_from_output(completion):
 
 
 class EvalGSM8K(Baselines):
-    def __init__(self, args, metrics_dumper_factory = ExpPrint):
-        super().__init__(args, metrics_dumper_factory=metrics_dumper_factory)
+    def __init__(self, args):
+        super().__init__(args)
         self.load_tokenizer()
         self.load_model()
         self.load_data()
@@ -317,7 +317,7 @@ class EvalGSM8K(Baselines):
 
             # Save summaries
             eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-            
+
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_gsm8k_metrics.json"

@@ -47,9 +47,7 @@ class ExpPrint:
             metrics["communication_time"] = 0.0
 
         if metrics["wall_time"] != 0:
-            metrics["throughput"] = (
-                metrics["generated_tokens"] / metrics["wall_time"]
-            )
+            metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
 
         return metrics
 
@@ -57,8 +55,12 @@ class ExpPrint:
         metrics = self._prepare_metrics(metrics)
         key_to_dump = list(self.common_print_metrics)
         if self.args.dump_network_stats:
-            key_to_dump += ["edge_cloud_bandwidth_history", "edge_cloud_topk_history", "edge_cloud_draft_len_history"]
-        dump_dict = {key: getattr(metrics, key) for key in key_to_dump}
+            key_to_dump += [
+                "edge_cloud_bandwidth_history",
+                "edge_cloud_topk_history",
+                "edge_cloud_draft_len_history",
+            ]
+        dump_dict = {key: metrics.get(key) for key in key_to_dump}
         return dump_dict
 
     def get_printable_dict(self, metrics: DecodingMetrics) -> dict:
@@ -69,11 +71,10 @@ class ExpPrint:
 
     def get_printable_metrics(self, metrics: DecodingMetrics) -> str:
         res = json.dumps(self.get_printable_dict(metrics), indent=4)
-        return ( 
-        f""" -------Decoding Metrics-------
+        return f""" -------Decoding Metrics-------
          {res}
-        -------Decoding Metrics-------""")
-    
+        -------Decoding Metrics-------"""
+
     def get_save_dict(self, metrics: DecodingMetrics) -> dict:
         eval_result = self.get_filtered_dict(metrics)
         eval_result["little_model"] = self.args.little_model

@@ -1,6 +1,7 @@
 import os
 import warnings
 import logging
+import importlib.util
 from dataclasses import dataclass
 
 import torch
@@ -23,8 +24,8 @@ from transformers import (
 from .communication import (
     CUHLM,
     CommunicationSimulator,
-    PreciseCommunicationSimulator,
-    PreciseCUHLM,
+    PreciseCommunicationSimulator, 
+    PreciseCUHLM, 
 )
 from .model_gpu import KVCacheModel
 from .register import Register
@@ -36,10 +37,8 @@ from .utils import (
     seed_everything,
 )
 
-from ..eval.utils import ExpPrint
-
 try:
-    import flash_attn # type: ignore
+    import flash_attn  # type: ignore
 except ImportError:
     pass
 
@@ -262,16 +261,43 @@ class ArgsLike(Protocol):
 class MetricsDumpLike(Protocol):
     def get_filtered_dict(self, metrics: DecodingMetrics) -> dict: ...
     def dump_metrics(self, metrics: DecodingMetrics) -> str: ...
-    def get_printable_metrics(self, metrics: DecodingMetrics) -> str: ...  # Optional, for more flexible printing
-    def get_save_dict(self, metrics: DecodingMetrics) -> dict: ...  # Optional, for saving to file
+    def get_printable_metrics(
+        self, metrics: DecodingMetrics
+    ) -> str: ...  # Optional, for more flexible printing
+    def get_save_dict(
+        self, metrics: DecodingMetrics
+    ) -> dict: ...  # Optional, for saving to file
+
 
 class MetricsDumpFactoryLike(Protocol):
-    def __call__(self, args: ArgsLike) -> MetricsDumpLike: ...  
+    def __call__(self, args: ArgsLike) -> MetricsDumpLike: ...
+
+
+def _load_default_metrics_dumper_factory() -> MetricsDumpFactoryLike:
+    eval_utils_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "eval", "utils.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "duodecoding_eval_utils", eval_utils_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load metrics dumper from {eval_utils_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return cast(MetricsDumpFactoryLike, module.ExpPrint)
+
 
 class Decoding(Register, ABC):
-    def __init__(self, args, metrics_dumper_factory: MetricsDumpFactoryLike = ExpPrint):
+    def __init__(
+        self,
+        args,
+        metrics_dumper_factory: Optional[MetricsDumpFactoryLike] = None,
+    ):
         Register.__init__(self, args)
         self.args = args
+        if metrics_dumper_factory is None:
+            metrics_dumper_factory = _load_default_metrics_dumper_factory()
         self.metrics_dumper_factory = metrics_dumper_factory
         self.metrics_dumper = self.metrics_dumper_factory(args)
         if "RANK" in os.environ:
@@ -1112,7 +1138,7 @@ class Decoding(Register, ABC):
         # else:
         #     self.vocab_size = int(self.args.vocab_size)
         #     print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
-        
+
         # Seems fetching vocab size from model is unnecessary.
         self.vocab_size = int(self.args.vocab_size)
 

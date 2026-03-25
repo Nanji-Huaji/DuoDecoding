@@ -23,8 +23,8 @@ decoding_metrics = get_empty_metrics()
 
 
 class EvalCNNDM(Baselines):
-    def __init__(self, args, metrics_dumper_factory = ExpPrint):
-        super().__init__(args, metrics_dumper_factory=metrics_dumper_factory)
+    def __init__(self, args):
+        super().__init__(args)
         self.load_tokenizer()
         self.load_model()
         self.load_data()
@@ -112,7 +112,7 @@ class EvalCNNDM(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None) # type: ignore
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
@@ -195,7 +195,7 @@ class EvalCNNDM(Baselines):
             # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
 
             loop_index += 1
-            if loop_index > min(len(self.data), total) and total is not None:
+            if total is not None and loop_index > min(len(self.data), total):
                 break
 
             # set random seed

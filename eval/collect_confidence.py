@@ -138,17 +138,17 @@ class CollectConfidence(EvalMTBench):
                 # 传输 token id 和 prob 用于 reject sampling
                 comm_simulator.transfer(
                     j,
-                    little_model_cache._prob_history[:, prefix_len + i - 1, j],
+                    little_model_cache.prob_history[:, prefix_len + i - 1, j],
                     "edge_end",
                 )
                 
                 is_accepted = True
                 if r > (
-                    draft_model_cache._prob_history.to(little_device)[
+                    draft_model_cache.prob_history.to(little_device)[
                         :, prefix_len + i - 1, j
                     ]
                 ) / (
-                    little_model_cache._prob_history[:, prefix_len + i - 1, j]
+                    little_model_cache.prob_history[:, prefix_len + i - 1, j]
                 ):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
@@ -182,15 +182,15 @@ class CollectConfidence(EvalMTBench):
             if n1 < prefix_len + actual_gamma2 - 1:
                 # reject someone, sample from the pos n1
                 rebuild_probs = comm_simulator.rebuild_full_probs(
-                    little_model_cache._prob_history[:, n1, : self.vocab_size]
+                    little_model_cache.prob_history[:, n1, : self.vocab_size]
                 )
-                little_model_cache._prob_history[:, n1, : self.vocab_size] = (
+                little_model_cache.prob_history[:, n1, : self.vocab_size] = (
                     rebuild_probs
                 )
 
                 comm_simulator.transfer(
                     None,
-                    little_model_cache._prob_history[:, n1, : self.vocab_size],
+                    little_model_cache.prob_history[:, n1, : self.vocab_size],
                     "edge_end",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -198,10 +198,10 @@ class CollectConfidence(EvalMTBench):
 
                 t = sample(
                     max_fn(
-                        draft_model_cache._prob_history[
+                        draft_model_cache.prob_history[
                             :, n1, : self.vocab_size
                         ].to(little_device)
-                        - little_model_cache._prob_history[
+                        - little_model_cache.prob_history[
                             :, n1, : self.vocab_size
                         ]
                     )
@@ -211,7 +211,7 @@ class CollectConfidence(EvalMTBench):
 
             else:
                 t = sample(
-                    draft_model_cache._prob_history[:, -1, : self.vocab_size]
+                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(little_device)
 
                 draft_model_cache.rollback(n1 + 2)
@@ -272,15 +272,15 @@ class CollectConfidence(EvalMTBench):
                 # 传输 token id 和 prob 用于 reject sampling
                 comm_simulator.transfer(
                     j,
-                    draft_model_cache._prob_history[:, prefix_len + i - 1, j],
+                    draft_model_cache.prob_history[:, prefix_len + i - 1, j],
                     "edge_cloud",
                 )
 
                 if r > (
-                    target_model_cache._prob_history.to(draft_device)[
+                    target_model_cache.prob_history.to(draft_device)[
                         :, prefix_len + i - 1, j
                     ]
-                ) / (draft_model_cache._prob_history[:, prefix_len + i - 1, j]):
+                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     
@@ -319,25 +319,25 @@ class CollectConfidence(EvalMTBench):
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
 
                 rebuild_probs = comm_simulator.rebuild_full_probs(
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size]
+                    draft_model_cache.prob_history[:, n2, : self.vocab_size]
                 )
-                draft_model_cache._prob_history[:, n2, : self.vocab_size] = (
+                draft_model_cache.prob_history[:, n2, : self.vocab_size] = (
                     rebuild_probs
                 )
 
                 comm_simulator.transfer(
                     None,
-                    draft_model_cache._prob_history[:, n2, : self.vocab_size],
+                    draft_model_cache.prob_history[:, n2, : self.vocab_size],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
                 t = sample(
                     max_fn(
-                        target_model_cache._prob_history[
+                        target_model_cache.prob_history[
                             :, n2, : self.vocab_size
                         ].to(draft_device)
-                        - draft_model_cache._prob_history[
+                        - draft_model_cache.prob_history[
                             :, n2, : self.vocab_size
                         ]
                     )
@@ -348,7 +348,7 @@ class CollectConfidence(EvalMTBench):
 
             else:
                 t = sample(
-                    target_model_cache._prob_history[:, -1, : self.vocab_size]
+                    target_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(draft_device)
                 new_generated_token = prefix[:, prefix_len:]
 

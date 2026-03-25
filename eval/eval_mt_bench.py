@@ -9,7 +9,7 @@ import random
 import re
 import time
 from functools import partial
-from typing import List
+from typing import List, cast
 
 import shortuuid
 import torch
@@ -58,7 +58,7 @@ Please act as an impartial judge and evaluate the quality of the response provid
             max_tokens=2048,
         )
         content = response.choices[0].message.content
-        match = re.search(r"\[\[(\d+)\]\]", content)
+        match = re.search(r"\[\[(\d+)\]\]", content if content is not None else "")
         if match:
             return float(match.group(1))
         else:
@@ -253,7 +253,7 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        conv.append_message(conv.roles[1], None)  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -267,8 +267,9 @@ class EvalMTBench(Baselines):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -351,7 +352,8 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        # Package uses wrong type hint
+                        conv.append_message(conv.roles[1], cast(str, None))  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -393,11 +395,14 @@ class EvalMTBench(Baselines):
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
 
+                    output_ids = cast(torch.Tensor, output_ids)
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -468,6 +473,9 @@ class EvalMTBench(Baselines):
                             or decoding_metrics["accuracy"] == 0
                         ):
                             decoding_metrics["accuracy"] = []
+                        assert decoding_metrics["accuracy"] is not None, (
+                            "decoding_metrics['accuracy'] should not be None"
+                        )
                         decoding_metrics["accuracy"].append(choice["score"])
 
                 out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
@@ -510,7 +518,6 @@ class EvalMTBench(Baselines):
             2,
         )
 
-
         if (
             self.accelerator.is_main_process
             and "accuracy" in decoding_metrics
@@ -526,7 +533,6 @@ class EvalMTBench(Baselines):
         # 过滤掉历史数据字段以避免打印过长
 
         print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
-
 
         eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
         decoding_metrics_path = os.path.join(

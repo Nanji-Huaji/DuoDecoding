@@ -1,4 +1,5 @@
 import torch
+from collections.abc import Sequence
 
 from .utils import norm_logits, sample
 
@@ -21,7 +22,7 @@ class KVCacheModel:
         self._top_p = top_p
         self.max_length = max_length
 
-        self.hidden_states: torch.Tensor | None = None
+        self.hidden_states: Sequence[torch.Tensor] | None = None
 
         if hasattr(model.config, "vocab_size"):
             self.vocab_size = model.config.vocab_size

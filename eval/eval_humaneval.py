@@ -166,7 +166,7 @@ class EvalHumaneval(Baselines):
             text = full_input.strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None) # type: ignore
             conv.stop_str = "</s>"
             prompt = conv.get_prompt()
             return prompt

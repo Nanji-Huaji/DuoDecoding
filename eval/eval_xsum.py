@@ -102,7 +102,7 @@ class EvalXSum(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None) # type: ignore
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
@@ -183,7 +183,7 @@ class EvalXSum(Baselines):
             # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
 
             loop_index += 1
-            if loop_index > min(len(self.data), total) and total is not None:
+            if total is not None and loop_index > min(len(self.data), total):
                 break
 
             # set random seed
@@ -327,8 +327,6 @@ class EvalXSum(Baselines):
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
-    def preprocess(self, input_text):
-        pass
 
     def postprocess(self, input_text, output_text):
         pass
