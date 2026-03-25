@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from src.engine import Decoding
+from src.decoding_ops import finalize_verification
 
 
 class _FakeCache:
@@ -39,7 +39,7 @@ class FinalizeVerificationTests(unittest.TestCase):
         approx = _FakeCache(self.approx_probs)
         target = _FakeCache(self.target_probs)
 
-        output = Decoding._finalize_verification(
+        output = finalize_verification(
             approx_model_cache=approx,
             target_model_cache=target,
             x=self.x,
@@ -56,7 +56,7 @@ class FinalizeVerificationTests(unittest.TestCase):
         approx = _FakeCache(self.approx_probs)
         target = _FakeCache(self.target_probs)
 
-        output = Decoding._finalize_verification(
+        output = finalize_verification(
             approx_model_cache=approx,
             target_model_cache=target,
             x=self.x,

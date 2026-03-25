@@ -1,5 +1,5 @@
-from src.engine import DecodingMetrics, get_empty_metrics, INT_SIZE, ArgsLike
-from typing import Protocol
+from src.metrics import DecodingMetrics
+from src.metrics_dumper import ArgsLike
 import json
 
 

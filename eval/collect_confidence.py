@@ -7,7 +7,7 @@ from typing import Tuple, List, Dict
 
 sys.path.append(os.path.join(sys.path[0], "../"))
 from src.utils import seed_everything, parse_arguments, max_fn, sample
-from src.engine import DecodingMetrics, get_empty_metrics, INT_SIZE
+from src.metrics import DecodingMetrics, get_empty_metrics, INT_SIZE
 from src.model_gpu import KVCacheModel
 from src.communication import CommunicationSimulator, PreciseCommunicationSimulator
 from eval_mt_bench import EvalMTBench

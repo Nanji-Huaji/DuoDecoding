@@ -18,7 +18,16 @@ from .communication import (
     PreciseCommunicationSimulator,
     PreciseCUHLM,
 )
-from .engine import INT_SIZE, Decoding, DecodingMetrics, get_empty_metrics, MetricsDumpFactoryLike
+from .decoding_ops import (
+    apply_rollback,
+    build_rollback_plan,
+    compute_acceptance_result,
+    prepare_verification_inputs,
+    sample_accept_token,
+    sample_reject_token,
+)
+from .engine import Decoding
+from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
 from .register import Register
 from .rl_adapter import RLNetworkAdapter
@@ -146,9 +155,7 @@ class Baselines(Decoding):
         gamma: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         draft_tokens = x[:, prefix_len : prefix_len + gamma]
-        draft_prob_rows = prob_history[
-            :, prefix_len - 1 : prefix_len + gamma - 1, :
-        ]
+        draft_prob_rows = prob_history[:, prefix_len - 1 : prefix_len + gamma - 1, :]
         draft_token_probs = torch.gather(
             draft_prob_rows, 2, draft_tokens.unsqueeze(-1)
         ).squeeze(-1)
@@ -300,14 +307,14 @@ class Baselines(Decoding):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            verification_inputs = self._prepare_verification_inputs(
+            verification_inputs = prepare_verification_inputs(
                 draft_model_cache=approx_model_cache,
                 target_model_cache=target_model_cache,
                 x=x,
                 prefix_len=prefix_len,
                 gamma=current_gamma,
             )
-            acceptance_result = self._compute_acceptance_result(verification_inputs)
+            acceptance_result = compute_acceptance_result(verification_inputs)
             n = acceptance_result.n
 
             this_step_accepted_tokens = acceptance_result.accepted_count
@@ -317,7 +324,7 @@ class Baselines(Decoding):
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
-            rollback_plan = self._build_rollback_plan(
+            rollback_plan = build_rollback_plan(
                 prefix_len,
                 verification_inputs.actual_gamma,
                 n,
@@ -325,7 +332,7 @@ class Baselines(Decoding):
 
             # 检查是否还有空间添加一个token
             if prefix.shape[1] >= max_tokens:
-                self._apply_rollback(
+                apply_rollback(
                     approx_model_cache,
                     target_model_cache,
                     rollback_plan,
@@ -343,19 +350,19 @@ class Baselines(Decoding):
                 comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
                 comm_simulator.transfer(None, target_prob_row, "edge_cloud")
 
-                t = self._sample_reject_token(
+                t = sample_reject_token(
                     target_prob_row,
                     approx_model_cache.prob_history[:, n, : self.vocab_size],
                     output_device=prefix.device,
                 )
             else:
                 # All-accepted path: edge sends only the next token.
-                t = self._sample_accept_token(
+                t = sample_accept_token(
                     target_model_cache.prob_history[:, -1, : self.vocab_size],
                     output_device=prefix.device,
                 )
 
-            self._apply_rollback(
+            apply_rollback(
                 approx_model_cache,
                 target_model_cache,
                 rollback_plan,
@@ -576,9 +583,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[:, target_idx, j]
-                ) / (approx_model_cache.prob_history[:, draft_idx, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, target_idx, j
+                        ]
+                    )
+                    / (approx_model_cache.prob_history[:, draft_idx, j])
+                ):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -801,7 +814,9 @@ class Baselines(Decoding):
             # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
             if approx_model_cache.logits_history is not None:
-                current_logit = approx_model_cache.logits_history[:, -1, : self.vocab_size]
+                current_logit = approx_model_cache.logits_history[
+                    :, -1, : self.vocab_size
+                ]
             else:
                 raise ValueError("Approx model logits history is None")
 
@@ -886,9 +901,15 @@ class Baselines(Decoding):
                 f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
             )
 
-            if r > (
-                target_model_cache.prob_history.to(draft_device)[:, prefix_len - 1, j]
-            ) / (approx_model_cache.prob_history[:, prefix_len - 1, j]):
+            if (
+                r
+                > (
+                    target_model_cache.prob_history.to(draft_device)[
+                        :, prefix_len - 1, j
+                    ]
+                )
+                / (approx_model_cache.prob_history[:, prefix_len - 1, j])
+            ):
                 n = prefix_len - 1
                 comm_simulator.send_reject_message(
                     linktype="edge_cloud"
@@ -1108,11 +1129,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -1157,9 +1182,9 @@ class Baselines(Decoding):
                 draft_model_cache.rollback(n1 + 1)
 
             else:
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
 
                 draft_model_cache.rollback(n1 + 2)
 
@@ -1212,11 +1237,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (draft_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n2 = prefix_len + i - 1
                     # comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -1224,9 +1253,9 @@ class Baselines(Decoding):
                     draft_accepted_this_iter += 1
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
-            assert (
-                n2 >= prefix_len - 1
-            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            assert n2 >= prefix_len - 1, (
+                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            )
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -1479,11 +1508,15 @@ class Baselines(Decoding):
                     "edge_end",
                 )
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -1547,9 +1580,9 @@ class Baselines(Decoding):
                 draft_model_cache.rollback(n1 + 1)
 
             else:
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
 
                 draft_model_cache.rollback(n1 + 2)
 
@@ -1619,11 +1652,15 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (draft_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -1652,15 +1689,14 @@ class Baselines(Decoding):
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
-            assert (
-                n2 >= prefix_len - 1
-            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            assert n2 >= prefix_len - 1, (
+                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            )
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
-
                 comm_simulator.transfer(
                     None,
                     draft_model_cache.prob_history[:, n2, : self.vocab_size],
@@ -1942,9 +1978,15 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[:, target_idx, j]
-                ) / (approx_model_cache.prob_history[:, draft_idx, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, target_idx, j
+                        ]
+                    )
+                    / (approx_model_cache.prob_history[:, draft_idx, j])
+                ):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -2303,11 +2345,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     # comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
 
@@ -2381,9 +2427,9 @@ class Baselines(Decoding):
                 draft_model_cache.rollback(n1 + 1)
 
             else:
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
 
                 draft_model_cache.rollback(n1 + 2)
 
@@ -2481,11 +2527,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=draft_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (draft_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n2 = prefix_len + i - 1
                     # comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -2514,9 +2564,9 @@ class Baselines(Decoding):
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
-            assert (
-                n2 >= prefix_len - 1
-            ), f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            assert n2 >= prefix_len - 1, (
+                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
+            )
             prefix = x[:, : n2 + 1]
             draft_model_cache.rollback(n2 + 1)
             if n2 <= little_model_cache.current_length:
@@ -2752,7 +2802,9 @@ class Baselines(Decoding):
                 q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
-                hidden_states = cast(Sequence[torch.Tensor], little_model_cache.hidden_states)
+                hidden_states = cast(
+                    Sequence[torch.Tensor], little_model_cache.hidden_states
+                )
 
                 arp_start = time.time()
                 stop = adapter.predict(hidden_states)
@@ -2807,11 +2859,15 @@ class Baselines(Decoding):
                 r = torch.rand(1, device=little_device)
                 j = x[:, prefix_len + i]
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n1 = prefix_len + i - 1
                     break
                 else:
@@ -2862,9 +2918,9 @@ class Baselines(Decoding):
 
                 draft_model_cache.rollback(n1 + 1)
             else:
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
                 draft_model_cache.rollback(n1 + 2)
 
             total_bytes = (
@@ -2892,7 +2948,9 @@ class Baselines(Decoding):
                 q = draft_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
                 x = torch.cat((x, next_tok), dim=1)
-                hidden_states = cast(Sequence[torch.Tensor], draft_model_cache.hidden_states)
+                hidden_states = cast(
+                    Sequence[torch.Tensor], draft_model_cache.hidden_states
+                )
 
                 arp_start = time.time()
                 stop = adapter.predict(hidden_states)
@@ -2938,7 +2996,9 @@ class Baselines(Decoding):
             # CUHLM Uncertainty Check Loop
             for i in range(total_gamma):
                 logit_idx = prefix_len + i - 1
-                assert draft_model_cache.logits_history is not None, "Draft model logits history is None"
+                assert draft_model_cache.logits_history is not None, (
+                    "Draft model logits history is None"
+                )
                 current_logit = draft_model_cache.logits_history[
                     :, logit_idx, : self.vocab_size
                 ]
@@ -3229,11 +3289,15 @@ class Baselines(Decoding):
                     "edge_end",
                 )
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
                     break
@@ -3267,9 +3331,9 @@ class Baselines(Decoding):
                 draft_model_cache.rollback(n1 + 1)
             else:
                 # Accept all, sample from Draft
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
                 draft_model_cache.rollback(n1 + 2)
 
             # Transfer sampled token index back
@@ -3319,11 +3383,15 @@ class Baselines(Decoding):
                     "edge_cloud",
                 )
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (draft_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break
@@ -3555,11 +3623,15 @@ class Baselines(Decoding):
 
                 # No individual transfer here
 
-                if r > (
-                    draft_model_cache.prob_history.to(little_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (little_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        draft_model_cache.prob_history.to(little_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (little_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     comm_simulator.send_reject_message("edge_end")
                     n1 = prefix_len + i - 1
                     break
@@ -3585,9 +3657,9 @@ class Baselines(Decoding):
                 draft_model_cache.rollback(n1 + 1)
             else:
                 # Accept all
-                t = sample(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(little_device)
+                t = sample(draft_model_cache.prob_history[:, -1, : self.vocab_size]).to(
+                    little_device
+                )
                 draft_model_cache.rollback(n1 + 2)
 
             # Transfer sampled token index back
@@ -3646,11 +3718,15 @@ class Baselines(Decoding):
 
                 # No individual transfer
 
-                if r > (
-                    target_model_cache.prob_history.to(draft_device)[
-                        :, prefix_len + i - 1, j
-                    ]
-                ) / (draft_model_cache.prob_history[:, prefix_len + i - 1, j]):
+                if (
+                    r
+                    > (
+                        target_model_cache.prob_history.to(draft_device)[
+                            :, prefix_len + i - 1, j
+                        ]
+                    )
+                    / (draft_model_cache.prob_history[:, prefix_len + i - 1, j])
+                ):
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
                     break

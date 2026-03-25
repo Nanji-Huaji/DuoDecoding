@@ -1,8 +1,7 @@
 import os
+import sys
 import warnings
 import logging
-import importlib.util
-from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
@@ -10,7 +9,6 @@ import transformers
 
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
-import re
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast, Protocol
 
@@ -24,17 +22,39 @@ from transformers import (
 from .communication import (
     CUHLM,
     CommunicationSimulator,
-    PreciseCommunicationSimulator, 
-    PreciseCUHLM, 
+    PreciseCommunicationSimulator,
+    PreciseCUHLM,
 )
+from .decoding_ops import finalize_verification, verify_draft_sequence
+from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .model_gpu import KVCacheModel
+from .model_loading import (
+    build_quant_config,
+    get_model_size,
+    load_causal_lm,
+    log_dual_model_allocation,
+    log_quantization_decision,
+    log_tri_model_allocation,
+    select_dual_model_devices,
+    select_tri_model_devices,
+)
 from .register import Register
 from .utils import (
-    log_prob_tensor_if_invalid,
-    log_ratio_if_invalid,
-    max_fn,
-    sample,
     seed_everything,
+    sample,
+)
+from .metrics import DecodingMetrics, get_empty_metrics, INT_SIZE
+from .metrics_dumper import (
+    MetricsDumpFactoryLike,
+    ArgsLike,
+    MetricsDumpLike,
+    _load_default_metrics_dumper_factory,
+)
+from .debug_logs import (
+    _log_sd_alignment_snapshot,
+    _log_invalid_batch_details,
+    _sd_alignment_debug_enabled,
+    _format_cache_state,
 )
 
 try:
@@ -53,241 +73,6 @@ attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 INT_SIZE = 4
 
 
-@dataclass
-class VerificationInputs:
-    draft_probs_batch: torch.Tensor
-    target_probs_batch: torch.Tensor
-    draft_tokens: torch.Tensor
-    draft_token_indices: torch.Tensor
-    prefix_len: int
-    gamma: int
-    actual_gamma: int
-    max_idx: int
-
-
-@dataclass
-class AcceptanceResult:
-    accepted_count: int
-    n: int
-    selected_draft_p: torch.Tensor
-    selected_target_p: torch.Tensor
-    accept_mask: torch.Tensor
-
-
-@dataclass
-class RollbackPlan:
-    draft_end_pos: int
-    target_end_pos_reject: int
-    target_end_pos_accept: int
-    all_accepted: bool
-
-
-def _sd_alignment_debug_enabled() -> bool:
-    return os.environ.get("DUODEC_DEBUG_SD_ALIGNMENT", "0") == "1"
-
-
-def _format_cache_state(name: str, cache: KVCacheModel) -> str:
-    state = cache.debug_state()
-    return (
-        f"{name}(current={state['current_length']}, "
-        f"tracked={state['tracked_seq_len']}, "
-        f"prob={state['prob_history_len']}, "
-        f"logits={state['logits_history_len']}, "
-        f"max={state['max_length']})"
-    )
-
-
-def _log_sd_alignment_snapshot(
-    stage: str,
-    prefix_len: int,
-    approx_model_cache: KVCacheModel,
-    target_model_cache: KVCacheModel,
-    *,
-    x_len: Optional[int] = None,
-    gamma: Optional[int] = None,
-    note: str = "",
-) -> None:
-    if not _sd_alignment_debug_enabled():
-        return
-
-    message = (
-        f"[SD-ALIGN] stage={stage}, prefix_len={prefix_len}, "
-        f"x_len={x_len}, gamma={gamma}, "
-        f"{_format_cache_state('approx', approx_model_cache)}, "
-        f"{_format_cache_state('target', target_model_cache)}"
-    )
-    if note:
-        message += f", note={note}"
-    logger.warning(message)
-
-
-def _log_invalid_batch_details(
-    *,
-    prefix_len: int,
-    gamma: int,
-    max_idx: int,
-    actual_gamma: int,
-    x: torch.Tensor,
-    draft_model_cache: KVCacheModel,
-    target_model_cache: KVCacheModel,
-    draft_probs_batch: torch.Tensor,
-    target_probs_batch: torch.Tensor,
-    selected_draft_p: torch.Tensor,
-    selected_target_p: torch.Tensor,
-) -> None:
-    draft_row_sums = draft_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
-    target_row_sums = target_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
-    draft_tokens = x[:, prefix_len : prefix_len + actual_gamma].detach().cpu().tolist()
-
-    target_window_start = max(0, prefix_len - 2)
-    target_window_end = max_idx + 2
-    approx_window_start = max(0, prefix_len - 2)
-    approx_window_end = max_idx + 2
-
-    logger.warning(
-        "[SD-ALIGN][invalid-batch] prefix_len=%s gamma=%s max_idx=%s actual_gamma=%s "
-        "draft_tokens=%s selected_draft_p=%s selected_target_p=%s "
-        "draft_row_sums=%s target_row_sums=%s "
-        "target_window_row_sums=%s approx_window_row_sums=%s "
-        "%s %s",
-        prefix_len,
-        gamma,
-        max_idx,
-        actual_gamma,
-        draft_tokens,
-        selected_draft_p.detach().float().cpu().tolist(),
-        selected_target_p.detach().float().cpu().tolist(),
-        draft_row_sums,
-        target_row_sums,
-        target_model_cache.debug_row_sums(target_window_start, target_window_end),
-        draft_model_cache.debug_row_sums(approx_window_start, approx_window_end),
-        _format_cache_state("draft", draft_model_cache),
-        _format_cache_state("target", target_model_cache),
-    )
-
-
-class DecodingMetrics(TypedDict):
-    """
-    TypedDict class that defines metrics for tracking decoding performance and resource usage.
-
-    This class serves as a type annotation for dictionaries containing comprehensive
-    metrics about the decoding process, including forward pass counts, token statistics,
-    timing information, communication overhead, and energy consumption.
-    """
-
-    little_forward_times: int
-    draft_forward_times: int
-    target_forward_times: int
-    generated_tokens: int
-    little_generated_tokens: int
-    draft_generated_tokens: int
-    little_accepted_tokens: int
-    draft_accepted_tokens: int
-    wall_time: float
-    throughput: float
-    communication_time: float
-    computation_time: float
-    edge_end_comm_time: float
-    edge_cloud_data_bytes: int | float
-    edge_end_data_bytes: int | float
-    cloud_end_data_bytes: int | float
-    loop_times: int
-    each_loop_draft_tokens: float
-    comm_energy: float
-    connect_times: dict
-    accuracy: Optional[Any]
-    queuing_time: int | float
-    arp_overhead_time: float
-    dra_overhead_time: float
-    avg_top_k: float
-    avg_draft_len: float
-    edge_cloud_bandwidth_history: List[float]
-    edge_cloud_topk_history: List[int]
-    edge_cloud_draft_len_history: List[int]
-
-
-def get_empty_metrics() -> DecodingMetrics:
-    """
-    Create and return an empty DecodingMetrics object with all fields initialized to zero.
-    """
-    return DecodingMetrics(
-        little_forward_times=0,
-        draft_forward_times=0,
-        target_forward_times=0,
-        generated_tokens=0,
-        little_generated_tokens=0,
-        draft_generated_tokens=0,
-        little_accepted_tokens=0,
-        draft_accepted_tokens=0,
-        wall_time=0.0,
-        throughput=0.0,
-        communication_time=0.0,
-        computation_time=0.0,
-        edge_end_comm_time=0.0,
-        edge_cloud_data_bytes=0,
-        edge_end_data_bytes=0,
-        cloud_end_data_bytes=0,
-        loop_times=0,
-        each_loop_draft_tokens=0.0,
-        comm_energy=0.0,
-        connect_times={},
-        accuracy=None,
-        queuing_time=0.0,
-        arp_overhead_time=0.0,
-        dra_overhead_time=0.0,
-        avg_top_k=0.0,
-        avg_draft_len=0.0,
-        edge_cloud_bandwidth_history=[],
-        edge_cloud_topk_history=[],
-        edge_cloud_draft_len_history=[],
-    )
-
-
-class ArgsLike(Protocol):
-    exp_name: str
-    eval_dataset: str
-    little_model: str
-    draft_model: str
-    target_model: str
-    eval_mode: str
-    gamma: int | None
-    gamma1: int | None
-    gamma2: int | None
-    max_tokens: int
-    use_early_stopping: bool
-    dump_network_stats: bool
-
-
-class MetricsDumpLike(Protocol):
-    def get_filtered_dict(self, metrics: DecodingMetrics) -> dict: ...
-    def dump_metrics(self, metrics: DecodingMetrics) -> str: ...
-    def get_printable_metrics(
-        self, metrics: DecodingMetrics
-    ) -> str: ...  # Optional, for more flexible printing
-    def get_save_dict(
-        self, metrics: DecodingMetrics
-    ) -> dict: ...  # Optional, for saving to file
-
-
-class MetricsDumpFactoryLike(Protocol):
-    def __call__(self, args: ArgsLike) -> MetricsDumpLike: ...
-
-
-def _load_default_metrics_dumper_factory() -> MetricsDumpFactoryLike:
-    eval_utils_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "eval", "utils.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "duodecoding_eval_utils", eval_utils_path
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load metrics dumper from {eval_utils_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return cast(MetricsDumpFactoryLike, module.ExpPrint)
-
-
 class Decoding(Register, ABC):
     def __init__(
         self,
@@ -303,14 +88,10 @@ class Decoding(Register, ABC):
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
             size = int(os.environ["WORLD_SIZE"])
-            if "duodec" in args.eval_mode:
-                dist.init_process_group(
-                    "gloo", init_method="env://", rank=rank, world_size=size
-                )
-            else:
-                dist.init_process_group(
-                    "nccl", init_method="env://", rank=rank, world_size=size
-                )
+
+            dist.init_process_group(
+                "nccl", init_method="env://", rank=rank, world_size=size
+            )
         self.accelerator = Accelerator()
 
         seed_everything(self.args.seed)
@@ -443,399 +224,6 @@ class Decoding(Register, ABC):
         return False
 
     @staticmethod
-    def _prepare_verification_inputs(
-        draft_model_cache: KVCacheModel,
-        target_model_cache: KVCacheModel,
-        x: torch.Tensor,
-        prefix_len: int,
-        gamma: int,
-        draft_probs_override: Optional[torch.Tensor] = None,
-    ) -> VerificationInputs:
-        draft_device = draft_model_cache.device
-        draft_probs = (
-            draft_probs_override
-            if draft_probs_override is not None
-            else draft_model_cache.prob_history
-        )
-        if draft_probs is None or target_model_cache.prob_history is None:
-            raise ValueError("Probability history is not initialized for verification")
-
-        max_idx = min(
-            prefix_len + gamma - 1,
-            draft_probs.shape[1],
-            target_model_cache.prob_history.shape[1],
-        )
-        actual_gamma = max_idx - (prefix_len - 1)
-        if actual_gamma <= 0:
-            empty_tokens = x[:, 0:0]
-            empty_indices = empty_tokens.unsqueeze(-1)
-            empty_probs = draft_probs[:, 0:0, :]
-            return VerificationInputs(
-                draft_probs_batch=empty_probs,
-                target_probs_batch=target_model_cache.prob_history[:, 0:0, :].to(
-                    draft_device
-                ),
-                draft_tokens=empty_tokens,
-                draft_token_indices=empty_indices,
-                prefix_len=prefix_len,
-                gamma=gamma,
-                actual_gamma=0,
-                max_idx=max_idx,
-            )
-
-        draft_probs_batch = draft_probs[:, prefix_len - 1 : max_idx, :]
-        target_probs_batch = target_model_cache.prob_history[
-            :, prefix_len - 1 : max_idx, :
-        ].to(draft_device)
-        draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
-        draft_token_indices = draft_tokens.unsqueeze(-1)
-
-        return VerificationInputs(
-            draft_probs_batch=draft_probs_batch,
-            target_probs_batch=target_probs_batch,
-            draft_tokens=draft_tokens,
-            draft_token_indices=draft_token_indices,
-            prefix_len=prefix_len,
-            gamma=gamma,
-            actual_gamma=actual_gamma,
-            max_idx=max_idx,
-        )
-
-    @staticmethod
-    def _compute_acceptance_result(
-        verification_inputs: VerificationInputs,
-        *,
-        r: Optional[torch.Tensor] = None,
-    ) -> AcceptanceResult:
-        if verification_inputs.actual_gamma <= 0:
-            return AcceptanceResult(
-                accepted_count=0,
-                n=verification_inputs.prefix_len - 1,
-                selected_draft_p=verification_inputs.draft_probs_batch[:, 0:0, 0],
-                selected_target_p=verification_inputs.target_probs_batch[:, 0:0, 0],
-                accept_mask=torch.zeros(
-                    (verification_inputs.draft_probs_batch.shape[0], 0),
-                    dtype=torch.bool,
-                    device=verification_inputs.draft_probs_batch.device,
-                ),
-            )
-
-        selected_draft_p = torch.gather(
-            verification_inputs.draft_probs_batch,
-            2,
-            verification_inputs.draft_token_indices,
-        ).squeeze(-1)
-        selected_target_p = torch.gather(
-            verification_inputs.target_probs_batch,
-            2,
-            verification_inputs.draft_token_indices,
-        ).squeeze(-1)
-
-        if r is None:
-            r = torch.rand(
-                (selected_draft_p.shape[0], verification_inputs.actual_gamma),
-                device=selected_draft_p.device,
-            )
-
-        accept_mask = r <= (selected_target_p / selected_draft_p)
-        continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
-        accepted_count = int(continuous_accept[0].sum().item())
-        n = verification_inputs.prefix_len + accepted_count - 1
-
-        if accepted_count == verification_inputs.actual_gamma:
-            n = verification_inputs.prefix_len + verification_inputs.actual_gamma - 1
-
-        return AcceptanceResult(
-            accepted_count=accepted_count,
-            n=int(n),
-            selected_draft_p=selected_draft_p,
-            selected_target_p=selected_target_p,
-            accept_mask=accept_mask,
-        )
-
-    @staticmethod
-    def _compute_residual_distribution(
-        target_probs: torch.Tensor,
-        draft_probs: torch.Tensor,
-    ) -> torch.Tensor:
-        return max_fn(target_probs - draft_probs)
-
-    @staticmethod
-    def _build_rollback_plan(prefix_len: int, gamma: int, n: int) -> RollbackPlan:
-        all_accepted = n >= prefix_len + gamma - 1
-        return RollbackPlan(
-            draft_end_pos=n + 1,
-            target_end_pos_reject=n + 1,
-            target_end_pos_accept=n + 2,
-            all_accepted=all_accepted,
-        )
-
-    @staticmethod
-    def _apply_rollback(
-        draft_model_cache: KVCacheModel,
-        target_model_cache: KVCacheModel,
-        rollback_plan: RollbackPlan,
-    ) -> None:
-        draft_model_cache.rollback(rollback_plan.draft_end_pos)
-        if rollback_plan.all_accepted:
-            target_model_cache.rollback(rollback_plan.target_end_pos_accept)
-        else:
-            target_model_cache.rollback(rollback_plan.target_end_pos_reject)
-
-    @staticmethod
-    def _sample_reject_token(
-        target_probs: torch.Tensor,
-        draft_probs: torch.Tensor,
-        output_device: Optional[torch.device] = None,
-    ) -> torch.Tensor:
-        if target_probs.device != draft_probs.device:
-            target_probs = target_probs.to(draft_probs.device)
-
-        residual_probs = Decoding._compute_residual_distribution(
-            target_probs,
-            draft_probs,
-        )
-        log_prob_tensor_if_invalid(
-            residual_probs,
-            "Decoding._sample_reject_token.residual_probs",
-        )
-        token = sample(residual_probs)
-        if output_device is not None and token.device != output_device:
-            token = token.to(output_device)
-        return token
-
-    @staticmethod
-    def _sample_accept_token(
-        target_next_probs: torch.Tensor,
-        output_device: Optional[torch.device] = None,
-    ) -> torch.Tensor:
-        log_prob_tensor_if_invalid(
-            target_next_probs,
-            "Decoding._sample_accept_token.target_next_probs",
-        )
-        token = sample(target_next_probs)
-        if output_device is not None and token.device != output_device:
-            token = token.to(output_device)
-        return token
-
-    @staticmethod
-    def _verify_draft_sequence(
-        draft_model_cache: KVCacheModel,
-        target_model_cache: KVCacheModel,
-        x: torch.Tensor,
-        prefix_len: int,
-        gamma: int,
-        comm_simulator: Optional[CommunicationSimulator] = None,
-        comm_link: Literal["edge_cloud", "edge_end", "cloud_end"] = "edge_cloud",
-        transfer_mode: Literal["none", "serial", "batch_before"] = "serial",
-        send_reject_message: bool = True,
-        draft_probs_override: Optional[torch.Tensor] = None,
-        decoding_metrics: Optional[DecodingMetrics] = None,
-    ) -> Tuple[int, int]:
-        """
-        Verify draft sequence using rejection sampling with target model probabilities.
-
-        This function supports multiple verification scenarios used across different decoding methods:
-        - Standard speculative decoding (dist_spec)
-        - Tridecoding (two-layer verification)
-        - Adaptive decoding (with serial transfer)
-        - Uncertainty-based methods
-
-        Args:
-            draft_model_cache: KVCache of the draft/approximation model
-            target_model_cache: KVCache of the target/verification model
-            x: Generated token sequence [batch_size, seq_len]
-            prefix_len: Length of the prefix before draft tokens
-            gamma: Number of draft tokens to verify
-            comm_simulator: Communication simulator (optional)
-            comm_link: Communication link type ("edge_cloud", "edge_end", "cloud_end")
-            transfer_mode: How to handle token/prob transfer:
-                - "none": No transfer (already transferred externally)
-                - "serial": Transfer token and prob one by one during verification
-                - "batch_before": Batch transfer before verification (caller handles this)
-            send_reject_message: Whether to send reject message on rejection
-            draft_probs_override: Override draft probs (if None, use draft_model_cache.prob_history)
-            decoding_metrics: Optional metrics dict to update
-
-        Returns:
-            Tuple[int, int]: (accepted_count, final_position)
-                - accepted_count: Number of tokens accepted
-                - final_position: Final position index (n)
-        """
-        draft_device = draft_model_cache.device
-        _log_sd_alignment_snapshot(
-            "verify_enter",
-            prefix_len,
-            draft_model_cache,
-            target_model_cache,
-            x_len=x.shape[1],
-            gamma=gamma,
-        )
-
-        verification_inputs = Decoding._prepare_verification_inputs(
-            draft_model_cache=draft_model_cache,
-            target_model_cache=target_model_cache,
-            x=x,
-            prefix_len=prefix_len,
-            gamma=gamma,
-            draft_probs_override=draft_probs_override,
-        )
-        if verification_inputs.actual_gamma <= 0:
-            return 0, prefix_len - 1
-
-        draft_probs_batch = verification_inputs.draft_probs_batch
-        target_probs_batch = verification_inputs.target_probs_batch
-        invalid_draft_probs = log_prob_tensor_if_invalid(
-            draft_probs_batch,
-            "Decoding._verify_draft_sequence.draft_probs_batch",
-        )
-        invalid_target_probs = log_prob_tensor_if_invalid(
-            target_probs_batch,
-            "Decoding._verify_draft_sequence.target_probs_batch",
-        )
-
-        # Batch transfer mode: transfer all tokens and probs before verification
-        if transfer_mode == "batch_before" and comm_simulator is not None:
-            batch_probs = torch.gather(
-                draft_probs_batch,
-                2,
-                verification_inputs.draft_token_indices,
-            ).squeeze(-1)
-            comm_simulator.transfer(
-                verification_inputs.draft_tokens,
-                batch_probs,
-                comm_link,
-            )
-
-        # Rejection sampling masking
-        r = torch.rand(
-            (x.shape[0], verification_inputs.actual_gamma),
-            device=draft_device,
-        )
-        acceptance_result = Decoding._compute_acceptance_result(
-            verification_inputs,
-            r=r,
-        )
-        invalid_acceptance_ratio = log_ratio_if_invalid(
-            acceptance_result.selected_target_p,
-            acceptance_result.selected_draft_p,
-            "Decoding._verify_draft_sequence.acceptance_ratio",
-        )
-        if invalid_draft_probs or invalid_target_probs or invalid_acceptance_ratio:
-            _log_invalid_batch_details(
-                prefix_len=prefix_len,
-                gamma=gamma,
-                max_idx=verification_inputs.max_idx,
-                actual_gamma=verification_inputs.actual_gamma,
-                x=x,
-                draft_model_cache=draft_model_cache,
-                target_model_cache=target_model_cache,
-                draft_probs_batch=draft_probs_batch,
-                target_probs_batch=target_probs_batch,
-                selected_draft_p=acceptance_result.selected_draft_p,
-                selected_target_p=acceptance_result.selected_target_p,
-            )
-        accepted_counts = acceptance_result.accepted_count
-        n = acceptance_result.n
-        if accepted_counts < verification_inputs.actual_gamma:
-            if send_reject_message and comm_simulator:
-                comm_simulator.send_reject_message(comm_link)
-
-        # Simulate serial transfer correctly even when computing is vectorized
-        if transfer_mode == "serial" and comm_simulator is not None:
-            # Just transfer up to the rejected token
-            for i in range(
-                accepted_counts
-                + (1 if accepted_counts < verification_inputs.actual_gamma else 0)
-            ):
-                comm_simulator.transfer(
-                    verification_inputs.draft_token_indices[0, i, 0],
-                    draft_probs_batch[:, i, :].squeeze(0),
-                    comm_link,
-                )
-
-        # Update metrics if provided
-        if decoding_metrics is not None:
-            decoding_metrics["draft_generated_tokens"] += gamma
-            decoding_metrics["draft_accepted_tokens"] += int(n - prefix_len + 1)
-
-        return acceptance_result.accepted_count, int(n)
-
-    @staticmethod
-    def _finalize_verification(
-        approx_model_cache: KVCacheModel,
-        target_model_cache: KVCacheModel,
-        x: torch.Tensor,
-        prefix_len: int,
-        gamma: int,
-        n: int,
-    ) -> torch.Tensor:
-        """
-        Finalize the verification phase by rolling back KV caches and sampling the next token.
-        """
-        # Truncate x to the accepted prefix length
-        prefix = x[:, : n + 1]
-        rollback_plan = Decoding._build_rollback_plan(prefix_len, gamma, n)
-
-        # Finalize-time cache invariants:
-        # - during verification: target.current_length == draft.current_length + 1
-        # - after finalize: draft.current_length == target.current_length
-        # - after finalize: cache.current_length == len(prefix) - 1, because the
-        #   new sampled token is appended to `prefix` before it is forwarded
-        approx_model_cache.rollback(rollback_plan.draft_end_pos)
-
-        if not rollback_plan.all_accepted:
-            # Rejection: Sample from residual distribution max(0, target_prob - approx_prob)
-            target_prob_slice = target_model_cache.prob_history[
-                :, n, : target_model_cache.vocab_size
-            ]
-            approx_prob_slice = approx_model_cache.prob_history[
-                :, n, : approx_model_cache.vocab_size
-            ]
-
-            t = Decoding._sample_reject_token(
-                target_prob_slice,
-                approx_prob_slice,
-                output_device=prefix.device,
-            )
-            target_model_cache.rollback(rollback_plan.target_end_pos_reject)
-        else:
-            # All accepted: sample the already-computed next-token distribution.
-            next_target_probs = target_model_cache.prob_history[
-                :, -1, : target_model_cache.vocab_size
-            ]
-            t = Decoding._sample_accept_token(
-                next_target_probs,
-                output_device=prefix.device,
-            )
-            target_model_cache.rollback(rollback_plan.target_end_pos_accept)
-
-        # Append the new sampled token
-        return torch.cat((prefix, t), dim=1)
-
-    def _get_device_map_strategy(self, model_name: str, num_gpus_available: int) -> str:
-        """
-        Determine the appropriate device_map strategy based on model size and available GPUs.
-
-        新策略：避免单模型跨卡，大模型使用Q4量化放在单卡
-
-        Args:
-            model_name: Name of the model to load
-            num_gpus_available: Number of GPUs available for model loading
-
-        Returns:
-            device_map strategy string
-        """
-        # Extract model size
-        pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
-        match = re.search(pattern, model_name)
-        params = float(match.group(1)) if match else 0
-
-        # 对于所有模型，优先使用单卡加载，避免跨卡通信
-        # 大模型会在load_model中使用Q4量化
-        return "auto"
-
-    @staticmethod
     def _get_available_gpu_count() -> int:
         """
         Get the number of available GPUs, considering CUDA_VISIBLE_DEVICES.
@@ -863,33 +251,6 @@ class Decoding(Register, ABC):
         num_gpus = self._get_available_gpu_count()
         self.color_print(f"Available GPUs: {num_gpus}", 3)
 
-        # Helper function to extract model size
-        def get_model_size(model_name):
-            pattern = r"(\d+(?:\.\d+)?(?:[xX]\d+)?)[bB]"
-            match = re.search(pattern, model_name)
-            return float(match.group(1)) if match else 0
-
-        # Helper function to determine if model needs quantization
-        # A6000 有 48GB 显存，约可容纳 ~24B 全精度或 ~16B bf16模型
-        # 使用保守阈值：>20B 使用 Q4 量化
-        def should_quantize(model_name):
-            size = get_model_size(model_name)
-            is_awq = "awq" in model_name.lower()
-            return size > 20 and not is_awq
-
-        # Helper function to get quantization config
-        def get_quant_config(model_name):
-            if should_quantize(model_name):
-                print(
-                    f"📦 Model {model_name} ({get_model_size(model_name)}B) will use 4-bit quantization"
-                )
-                return BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16,
-                )
-            return None
-
         loader = partial(
             AutoModelForCausalLM.from_pretrained,
             local_files_only=False,
@@ -899,35 +260,29 @@ class Decoding(Register, ABC):
         )
         if self.args.eval_mode == "small":
             device_map = "cuda:0"
-            self.color_print(f"Loading draft model on {device_map}", 3)
-            draft_quant = get_quant_config(self.args.draft_model)
-            if draft_quant:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=device_map,
-                    quantization_config=draft_quant,
-                ).eval()
-            else:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=device_map,
-                ).eval()
+            self.color_print(f"Loading {self.args.draft_model} on {device_map}", 3)
+            draft_quant = build_quant_config(self.args.draft_model)
+            if draft_quant is not None:
+                log_quantization_decision(self.color_print, self.args.draft_model)
+            self.draft_model = load_causal_lm(
+                loader,
+                self.args.draft_model,
+                device_map,
+                quant_config=draft_quant,
+            )
 
         elif self.args.eval_mode == "large":
             device_map = "cuda:0"
-            self.color_print(f"Loading target model on {device_map}", 3)
-            target_quant = get_quant_config(self.args.target_model)
-            if target_quant:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=device_map,
-                    quantization_config=target_quant,
-                ).eval()
-            else:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=device_map,
-                ).eval()
+            self.color_print(f"Loading {self.args.target_model} on {device_map}", 3)
+            target_quant = build_quant_config(self.args.target_model)
+            if target_quant is not None:
+                log_quantization_decision(self.color_print, self.args.target_model)
+            self.target_model = load_causal_lm(
+                loader,
+                self.args.target_model,
+                device_map,
+                quant_config=target_quant,
+            )
 
         elif self.args.eval_mode in [
             "sd",
@@ -940,93 +295,75 @@ class Decoding(Register, ABC):
             "speculative_decoding_with_bandwidth",
             "speculative_decoding_with_bandwidth_full_prob",
         ]:
-            # 双模型场景：大模型在一张卡，小模型在另一张卡
-            draft_size = get_model_size(self.args.draft_model)
-            target_size = get_model_size(self.args.target_model)
+            draft_device, target_device = select_dual_model_devices(
+                self.args.draft_model,
+                self.args.target_model,
+                num_gpus,
+            )
+            log_dual_model_allocation(
+                self.color_print,
+                self.args.draft_model,
+                self.args.target_model,
+                draft_device,
+                target_device,
+            )
 
-            # 将大模型放在GPU 0，小模型放在GPU 1（如果有多个GPU）
-            if target_size > draft_size:
-                draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-                target_device = "cuda:0"
-                print(
-                    f"🎯 Target ({target_size}B) -> GPU 0, Draft ({draft_size}B) -> GPU {1 if num_gpus > 1 else 0}"
-                )
-            else:
-                draft_device = "cuda:0"
-                target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-                print(
-                    f"🎯 Draft ({draft_size}B) -> GPU 0, Target ({target_size}B) -> GPU {1 if num_gpus > 1 else 0}"
-                )
-
-            self.color_print(f"Loading draft model on {draft_device}", 3)
-            draft_quant = get_quant_config(self.args.draft_model)
-            if draft_quant:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                    quantization_config=draft_quant,
-                ).eval()
-            else:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                ).eval()
-
-            self.color_print(f"Loading target model on {target_device}", 3)
-            target_quant = get_quant_config(self.args.target_model)
-            if target_quant:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                    quantization_config=target_quant,
-                ).eval()
-            else:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                ).eval()
+            self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
+            draft_quant = build_quant_config(self.args.draft_model)
+            if draft_quant is not None:
+                log_quantization_decision(self.color_print, self.args.draft_model)
+            self.draft_model = load_causal_lm(
+                loader,
+                self.args.draft_model,
+                draft_device,
+                quant_config=draft_quant,
+            )
+            self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
+            target_quant = build_quant_config(self.args.target_model)
+            if target_quant is not None:
+                log_quantization_decision(self.color_print, self.args.target_model)
+            self.target_model = load_causal_lm(
+                loader,
+                self.args.target_model,
+                target_device,
+                quant_config=target_quant,
+            )
 
         elif self.args.eval_mode == "adaptive_decoding":
-            # adaptive_decoding: 将大模型放GPU 0，小模型放GPU 1
-            draft_size = get_model_size(self.args.draft_model)
-            target_size = get_model_size(self.args.target_model)
+            draft_device, target_device = select_dual_model_devices(
+                self.args.draft_model,
+                self.args.target_model,
+                num_gpus,
+            )
+            log_dual_model_allocation(
+                self.color_print,
+                self.args.draft_model,
+                self.args.target_model,
+                draft_device,
+                target_device,
+            )
 
-            if target_size > draft_size:
-                draft_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-                target_device = "cuda:0"
-            else:
-                draft_device = "cuda:0"
-                target_device = "cuda:1" if num_gpus > 1 else "cuda:0"
-
-            self.color_print(f"Loading draft model on {draft_device}", 3)
-            draft_quant = get_quant_config(self.args.draft_model)
-            if draft_quant:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                    output_hidden_states=True,
-                    quantization_config=draft_quant,
-                ).eval()
-            else:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                    output_hidden_states=True,
-                ).eval()
-
-            self.color_print(f"Loading target model on {target_device}", 3)
-            target_quant = get_quant_config(self.args.target_model)
-            if target_quant:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                    quantization_config=target_quant,
-                ).eval()
-            else:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                ).eval()
+            self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
+            draft_quant = build_quant_config(self.args.draft_model)
+            if draft_quant is not None:
+                log_quantization_decision(self.color_print, self.args.draft_model)
+            self.draft_model = load_causal_lm(
+                loader,
+                self.args.draft_model,
+                draft_device,
+                output_hidden_states=True,
+                quant_config=draft_quant,
+            )
+            self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
+            target_quant = build_quant_config(self.args.target_model)
+            if target_quant is not None:
+                log_quantization_decision(self.color_print, self.args.target_model)
+            self.target_model = load_causal_lm(
+                loader,
+                self.args.target_model,
+                target_device,
+                quant_config=target_quant,
+            )
 
         elif self.args.eval_mode in [
             "tridecoding",
@@ -1044,100 +381,57 @@ class Decoding(Register, ABC):
                 "cee_cuhlm",
             ]
 
-            # 分配策略：
-            # 1. 计算三个模型的大小
-            # 2. 将最大的模型放在一张卡上（使用Q4量化如果需要）
-            # 3. 将其余两个模型放在另一张卡上
-            # 4. 避免单模型跨卡
-
-            little_size = get_model_size(self.args.little_model)
-            draft_size = get_model_size(self.args.draft_model)
-            target_size = get_model_size(self.args.target_model)
-
-            model_sizes = [
-                (little_size, "little", self.args.little_model),
-                (draft_size, "draft", self.args.draft_model),
-                (target_size, "target", self.args.target_model),
-            ]
-            model_sizes.sort(reverse=True, key=lambda x: x[0])  # 按大小降序
-
-            largest_model = model_sizes[0]
-            print(
-                f"🎯 Largest model: {largest_model[1]} ({largest_model[0]}B) -> GPU 0"
+            little_device, draft_device, target_device, model_sizes = (
+                select_tri_model_devices(
+                    self.args.little_model,
+                    self.args.draft_model,
+                    self.args.target_model,
+                    num_gpus,
+                )
             )
-            print(
-                f"📍 Other models: {model_sizes[1][1]} ({model_sizes[1][0]}B), {model_sizes[2][1]} ({model_sizes[2][0]}B) -> GPU 1"
+            log_tri_model_allocation(
+                self.color_print,
+                model_sizes,
+                little_device,
+                draft_device,
+                target_device,
+                num_gpus,
             )
 
-            # 分配设备
-            little_device = "cuda:1" if largest_model[1] != "little" else "cuda:0"
-            draft_device = "cuda:1" if largest_model[1] != "draft" else "cuda:0"
-            target_device = "cuda:1" if largest_model[1] != "target" else "cuda:0"
-
-            # 如果只有1个GPU，全部放在cuda:0
-            if num_gpus == 1:
-                little_device = draft_device = target_device = "cuda:0"
-                print("⚠️  Only 1 GPU available, all models will be loaded on cuda:0")
-
-            self.color_print(f"Loading little model on {little_device}", 3)
-            little_quant = get_quant_config(self.args.little_model)
-            if little_quant:
-                self.little_model = loader(
-                    self.args.little_model,
-                    device_map=little_device,
-                    output_hidden_states=output_hidden_states,
-                    quantization_config=little_quant,
-                ).eval()
-            else:
-                self.little_model = loader(
-                    self.args.little_model,
-                    device_map=little_device,
-                    output_hidden_states=output_hidden_states,
-                ).eval()
-
-            self.color_print(f"Loading draft model on {draft_device}", 3)
-            draft_quant = get_quant_config(self.args.draft_model)
-            if draft_quant:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                    output_hidden_states=output_hidden_states,
-                    quantization_config=draft_quant,
-                ).eval()
-            else:
-                self.draft_model = loader(
-                    self.args.draft_model,
-                    device_map=draft_device,
-                    output_hidden_states=output_hidden_states,
-                ).eval()
-
-            self.color_print(f"Loading target model on {target_device}", 3)
-            target_quant = get_quant_config(self.args.target_model)
-            if target_quant:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                    quantization_config=target_quant,
-                ).eval()
-            else:
-                self.target_model = loader(
-                    self.args.target_model,
-                    device_map=target_device,
-                ).eval()
+            self.color_print(f"Loading {self.args.little_model} on {little_device}", 3)
+            little_quant = build_quant_config(self.args.little_model)
+            if little_quant is not None:
+                log_quantization_decision(self.color_print, self.args.little_model)
+            self.little_model = load_causal_lm(
+                loader,
+                self.args.little_model,
+                little_device,
+                output_hidden_states=output_hidden_states,
+                quant_config=little_quant,
+            )
+            self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
+            draft_quant = build_quant_config(self.args.draft_model)
+            if draft_quant is not None:
+                log_quantization_decision(self.color_print, self.args.draft_model)
+            self.draft_model = load_causal_lm(
+                loader,
+                self.args.draft_model,
+                draft_device,
+                output_hidden_states=output_hidden_states,
+                quant_config=draft_quant,
+            )
+            self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
+            target_quant = build_quant_config(self.args.target_model)
+            if target_quant is not None:
+                log_quantization_decision(self.color_print, self.args.target_model)
+            self.target_model = load_causal_lm(
+                loader,
+                self.args.target_model,
+                target_device,
+                quant_config=target_quant,
+            )
 
         # # 从实际模型embedding层获取vocab_size
-        # if hasattr(self, "target_model") and self.target_model is not None:
-        #     emb = self.target_model.get_input_embeddings()
-        #     if hasattr(emb, "weight"):
-        #         actual_vocab_size = emb.weight.shape[0]
-        #         self.vocab_size = int(actual_vocab_size)
-        #     print(f"✅ Using vocab_size from target model embedding: {self.vocab_size}")
-        # elif hasattr(self, "tokenizer") and self.tokenizer is not None:
-        #     self.vocab_size = int(self.tokenizer.vocab_size)
-        #     print(f"⚠️  Using vocab_size from tokenizer: {self.vocab_size}")
-        # else:
-        #     self.vocab_size = int(self.args.vocab_size)
-        #     print(f"⚠️  Using vocab_size from args: {self.vocab_size}")
 
         # Seems fetching vocab size from model is unnecessary.
         self.vocab_size = int(self.args.vocab_size)
@@ -1361,7 +655,7 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            this_step_accepted_tokens, n = self._verify_draft_sequence(
+            this_step_accepted_tokens, n = verify_draft_sequence(
                 draft_model_cache=approx_model_cache,
                 target_model_cache=target_model_cache,
                 x=x,
@@ -1391,7 +685,7 @@ class Decoding(Register, ABC):
                 prefix = x[:, :max_tokens]
                 break
 
-            prefix = self._finalize_verification(
+            prefix = finalize_verification(
                 approx_model_cache=approx_model_cache,
                 target_model_cache=target_model_cache,
                 x=x,
@@ -1532,7 +826,7 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            this_step_accepted_tokens, n = self._verify_draft_sequence(
+            this_step_accepted_tokens, n = verify_draft_sequence(
                 draft_model_cache=approx_model_cache,
                 target_model_cache=target_model_cache,
                 x=x,
@@ -1576,7 +870,7 @@ class Decoding(Register, ABC):
                 )
 
             # finalize_verification自动回流状态与重新采样（或简单采样下一个字符）
-            prefix = self._finalize_verification(
+            prefix = finalize_verification(
                 approx_model_cache=approx_model_cache,
                 target_model_cache=target_model_cache,
                 x=x,
@@ -1630,38 +924,27 @@ class Decoding(Register, ABC):
         new_token = len(output_ids[0][len(input_ids[0]) :])
         return output_ids
 
-    @torch.inference_mode()
-    def verify_first_token_for_k_seq(
-        self, draft_tokens_k_seq, draft_prob_k_seq, target_prob, **kwargs
-    ):
-        flag = False  # if any accepted
-        resampled_token_id = 0
-        chosen_draft_tokens_seq_idx = 0
-
-        first_token_k_seq = draft_tokens_k_seq[:, 0]
-
-        r = torch.rand(1, device=target_prob.device)
-
-        if r > target_prob[:, 0, first_token_k_seq[0]]:
-            t = torch.where(target_prob[0, 0, :] == 1)[0].unsqueeze(0)
-            resampled_token_id = t
-            idx = 0
-            for idx, first_token in enumerate(first_token_k_seq[1:], 1):
-                if t == first_token:
-                    flag = True
-                    chosen_draft_tokens_seq_idx = idx
-                    break
-        else:
-            flag = True
-            chosen_draft_tokens_seq_idx = 0
-
-        return flag, resampled_token_id, chosen_draft_tokens_seq_idx
-
     @abstractmethod
     def eval(self):
         pass
 
-    def color_print(self, content: str, color_number: int = 4):
-        """print content with color. Some color numbers are listed: Gray: 0, Red: 1, Green: 2, Yellow: 3, Blue: 4."""
-        if self.accelerator.is_main_process:
-            print(f"\033[9{color_number}m{content}\033[0m")
+    def color_print(self, content: str, color_number: int = 4) -> None:
+        """Print colorized output on the main process when supported."""
+        if not self.accelerator.is_main_process:
+            return
+
+        text = str(content)
+        color_map = {
+            0: "90",
+            1: "91",
+            2: "92",
+            3: "93",
+            4: "94",
+        }
+        color_code = color_map.get(color_number)
+
+        if color_code is None or not sys.stdout.isatty():
+            print(text)
+            return
+
+        print(f"\033[{color_code}m{text}\033[0m")

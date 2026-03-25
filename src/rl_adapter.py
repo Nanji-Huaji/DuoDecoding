@@ -353,7 +353,7 @@ class RLNetworkAdapter:
     def step(self, reward: float):
         self.last_reward = reward
 
-    def save(self, current_tps: float = None):
+    def save(self, current_tps: float | None = None):
         # 始终保存最新的模型
         self.agent.save(self.model_path)
 

@@ -15,7 +15,7 @@ from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines
-from src.engine import get_empty_metrics
+from src.metrics import get_empty_metrics
 from src.utils import parse_arguments, seed_everything
 
 decoding_metrics = get_empty_metrics()
@@ -166,7 +166,7 @@ class EvalHumaneval(Baselines):
             text = full_input.strip()
             conv = get_conversation_template("vicuna")
             conv.append_message(conv.roles[0], text)
-            conv.append_message(conv.roles[1], None) # type: ignore
+            conv.append_message(conv.roles[1], None)  # type: ignore
             conv.stop_str = "</s>"
             prompt = conv.get_prompt()
             return prompt
@@ -348,13 +348,10 @@ class EvalHumaneval(Baselines):
             if len(self.acc_num) > 0:
                 decoding_metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
 
-
-
             print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
             # Save summaries
             eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_humaneval_metrics.json"
