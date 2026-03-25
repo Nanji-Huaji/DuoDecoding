@@ -510,19 +510,6 @@ class EvalMTBench(Baselines):
             2,
         )
 
-        # 添加类型检查和默认值
-        computation_time = decoding_metrics.get("computation_time", 0.0)
-        if not isinstance(computation_time, (int, float)):
-            decoding_metrics["computation_time"] = 0.0
-
-        communication_time = decoding_metrics.get("communication_time", 0.0)
-        if not isinstance(communication_time, (int, float)):
-            decoding_metrics["communication_time"] = 0.0
-
-        if decoding_metrics["wall_time"] != 0:
-            decoding_metrics["throughput"] = (
-                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-            )
 
         if (
             self.accelerator.is_main_process
@@ -537,39 +524,15 @@ class EvalMTBench(Baselines):
             self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
 
         # 过滤掉历史数据字段以避免打印过长
-        metrics_for_print = {
-            k: v
-            for k, v in decoding_metrics.items()
-            if k
-            not in [
-                "edge_cloud_bandwidth_history",
-                "edge_cloud_topk_history",
-                "edge_cloud_draft_len_history",
-            ]
-        }
 
-        metrics_str = f"""
-        {json.dumps(metrics_for_print, indent=4)}
-        """
+        print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
-        metrics_str += """
-        ------------- End of Evaluation Summary -------------
-        """
 
-        eval_result = dict(decoding_metrics)
-        eval_result["little_model"] = self.args.little_model
-        eval_result["draft_model"] = self.args.draft_model
-        eval_result["target_model"] = self.args.target_model
-        eval_result["eval_mode"] = self.args.eval_mode
-        eval_result["gamma"] = self.args.gamma
-        eval_result["gamma1"] = self.args.gamma1
-        eval_result["gamma2"] = self.args.gamma2
-
+        eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
         decoding_metrics_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
         )
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-        self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
         self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)

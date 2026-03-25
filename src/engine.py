@@ -11,7 +11,7 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 import re
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast
+from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast, Protocol
 
 from accelerate import Accelerator
 from transformers import (
@@ -35,6 +35,8 @@ from .utils import (
     sample,
     seed_everything,
 )
+
+from ..eval.utils import ExpPrint
 
 try:
     import flash_attn # type: ignore
@@ -242,10 +244,36 @@ def get_empty_metrics() -> DecodingMetrics:
     )
 
 
+class ArgsLike(Protocol):
+    exp_name: str
+    eval_dataset: str
+    little_model: str
+    draft_model: str
+    target_model: str
+    eval_mode: str
+    gamma: int | None
+    gamma1: int | None
+    gamma2: int | None
+    max_tokens: int
+    use_early_stopping: bool
+    dump_network_stats: bool
+
+
+class MetricsDumpLike(Protocol):
+    def get_filtered_dict(self, metrics: DecodingMetrics) -> dict: ...
+    def dump_metrics(self, metrics: DecodingMetrics) -> str: ...
+    def get_printable_metrics(self, metrics: DecodingMetrics) -> str: ...  # Optional, for more flexible printing
+    def get_save_dict(self, metrics: DecodingMetrics) -> dict: ...  # Optional, for saving to file
+
+class MetricsDumpFactoryLike(Protocol):
+    def __call__(self, args: ArgsLike) -> MetricsDumpLike: ...  
+
 class Decoding(Register, ABC):
-    def __init__(self, args):
+    def __init__(self, args, metrics_dumper_factory: MetricsDumpFactoryLike = ExpPrint):
         Register.__init__(self, args)
         self.args = args
+        self.metrics_dumper_factory = metrics_dumper_factory
+        self.metrics_dumper = self.metrics_dumper_factory(args)
         if "RANK" in os.environ:
             rank = int(os.environ["RANK"])
             size = int(os.environ["WORLD_SIZE"])

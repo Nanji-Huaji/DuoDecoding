@@ -17,12 +17,14 @@ from rouge_score import rouge_scorer
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
 
+from utils import ExpPrint
+
 decoding_metrics = get_empty_metrics()
 
 
 class EvalCNNDM(Baselines):
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, args, metrics_dumper_factory = ExpPrint):
+        super().__init__(args, metrics_dumper_factory=metrics_dumper_factory)
         self.load_tokenizer()
         self.load_model()
         self.load_data()
@@ -315,41 +317,13 @@ class EvalCNNDM(Baselines):
                 "rougeL": avg_rl,
             }
 
-            if decoding_metrics["wall_time"] != 0:
-                decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-                )
-            else:
-                decoding_metrics["throughput"] = 0.0
 
-            # 过滤掉历史数据字段以避免打印过长
-            metrics_for_print = {
-                k: v
-                for k, v in decoding_metrics.items()
-                if k
-                not in [
-                    "edge_cloud_bandwidth_history",
-                    "edge_cloud_topk_history",
-                    "edge_cloud_draft_len_history",
-                ]
-            }
-
-            self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{metrics_for_print}")
-            self.color_print("-------Decoding Metrics-------")
+            print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
             # Save summaries
-            eval_result = dict(decoding_metrics)
-            eval_result["little_model"] = self.args.little_model
-            eval_result["draft_model"] = self.args.draft_model
-            eval_result["target_model"] = self.args.target_model
-            eval_result["eval_mode"] = self.args.eval_mode
-            eval_result["gamma"] = self.args.gamma
-            eval_result["gamma1"] = self.args.gamma1
-            eval_result["gamma2"] = self.args.gamma2
-
-            eval_result["throughput"] = decoding_metrics["throughput"]
-
+            assert self.metrics_dumper is not None, "Metrics dumper is not initialized"
+            eval_result = self.metrics_dumper.get_filtered_dict(decoding_metrics)
+            
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"
             )
