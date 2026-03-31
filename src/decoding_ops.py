@@ -12,6 +12,26 @@ from .model_gpu import KVCacheModel
 from .utils import log_prob_tensor_if_invalid, log_ratio_if_invalid, max_fn, sample
 
 
+def collect_verification_payload(
+    prob_history: torch.Tensor,
+    x: torch.Tensor,
+    prefix_len: int,
+    gamma: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    draft_tokens = x[:, prefix_len : prefix_len + gamma]
+    if gamma <= 0:
+        empty_probs = prob_history[:, 0:0, 0]
+        return draft_tokens, empty_probs
+
+    draft_prob_rows = prob_history[:, prefix_len - 1 : prefix_len + gamma - 1, :]
+    draft_token_probs = torch.gather(
+        draft_prob_rows,
+        2,
+        draft_tokens.unsqueeze(-1),
+    ).squeeze(-1)
+    return draft_tokens, draft_token_probs
+
+
 def prepare_verification_inputs(
     draft_model_cache: KVCacheModel,
     target_model_cache: KVCacheModel,
@@ -291,6 +311,28 @@ def verify_draft_sequence(
         decoding_metrics["draft_accepted_tokens"] += int(n - prefix_len + 1)
 
     return acceptance_result.accepted_count, int(n)
+
+
+def verify_draft_sequence_result(
+    draft_model_cache: KVCacheModel,
+    target_model_cache: KVCacheModel,
+    x: torch.Tensor,
+    prefix_len: int,
+    gamma: int,
+    *,
+    draft_probs_override: Optional[torch.Tensor] = None,
+    r: Optional[torch.Tensor] = None,
+) -> Tuple[VerificationInputs, AcceptanceResult]:
+    verification_inputs = prepare_verification_inputs(
+        draft_model_cache=draft_model_cache,
+        target_model_cache=target_model_cache,
+        x=x,
+        prefix_len=prefix_len,
+        gamma=gamma,
+        draft_probs_override=draft_probs_override,
+    )
+    acceptance_result = compute_acceptance_result(verification_inputs, r=r)
+    return verification_inputs, acceptance_result
 
 
 def finalize_verification(

@@ -11,6 +11,10 @@ class _FakeCache:
         self.vocab_size = probs.shape[-1]
         self.rollback_calls: list[int] = []
 
+    @property
+    def prob_history(self) -> torch.Tensor:
+        return self._prob_history
+
     def rollback(self, end_pos: int):
         self.rollback_calls.append(end_pos)
 
