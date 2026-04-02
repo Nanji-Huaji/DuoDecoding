@@ -112,7 +112,7 @@ class EvalCNNDM(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None) # type: ignore
+            conv.append_message(conv.roles[1], None)  # type: ignore
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
@@ -230,6 +230,7 @@ class EvalCNNDM(Baselines):
                                 not in [
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -317,13 +318,19 @@ class EvalCNNDM(Baselines):
                 "rougeL": avg_rl,
             }
 
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+                )
+            else:
+                decoding_metrics["throughput"] = 0.0
 
             print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
             # Save summaries
             assert self.metrics_dumper is not None, "Metrics dumper is not initialized"
             eval_result = self.metrics_dumper.get_filtered_dict(decoding_metrics)
-            
+
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"
             )

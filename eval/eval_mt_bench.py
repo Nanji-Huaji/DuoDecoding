@@ -372,6 +372,7 @@ class EvalMTBench(Baselines):
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
                                     "accuracy",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -529,6 +530,13 @@ class EvalMTBench(Baselines):
             )
             decoding_metrics["accuracy"] = avg_score
             self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
+
+        if decoding_metrics["wall_time"] != 0:
+            decoding_metrics["throughput"] = (
+                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+            )
+        else:
+            decoding_metrics["throughput"] = 0.0
 
         # 过滤掉历史数据字段以避免打印过长
 

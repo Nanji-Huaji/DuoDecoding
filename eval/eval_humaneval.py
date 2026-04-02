@@ -274,7 +274,7 @@ class EvalHumaneval(Baselines):
                 if isinstance(generate_ids, tuple):
                     generate_ids, metrics = generate_ids
                     for key in decoding_metrics.keys():
-                        if key not in [""] and hasattr(
+                        if key not in ["", "throughput"] and hasattr(
                             decoding_metrics[key], "__add__"
                         ):
                             decoding_metrics[key] += metrics[key]
@@ -347,6 +347,13 @@ class EvalHumaneval(Baselines):
 
             if len(self.acc_num) > 0:
                 decoding_metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
+
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+                )
+            else:
+                decoding_metrics["throughput"] = 0.0
 
             print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 

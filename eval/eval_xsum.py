@@ -102,7 +102,7 @@ class EvalXSum(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None) # type: ignore
+            conv.append_message(conv.roles[1], None)  # type: ignore
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
@@ -220,6 +220,7 @@ class EvalXSum(Baselines):
                                 not in [
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -307,17 +308,21 @@ class EvalXSum(Baselines):
                 "rougeL": avg_rl,
             }
 
+            if decoding_metrics["wall_time"] != 0:
+                decoding_metrics["throughput"] = (
+                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+                )
+            else:
+                decoding_metrics["throughput"] = 0.0
+
             # 过滤掉历史数据字段以避免打印过长
             metrics_for_print = self.metrics_dumper.get_filtered_dict(decoding_metrics)
-
 
             print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
             # Save summaries
             eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
             eval_result["accuracy"] = decoding_metrics["accuracy"]
-
-
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_xsum_metrics.json"
@@ -326,7 +331,6 @@ class EvalXSum(Baselines):
             with open(decoding_metrics_path, "w") as f:
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
-
 
     def postprocess(self, input_text, output_text):
         pass

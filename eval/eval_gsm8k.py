@@ -246,7 +246,11 @@ class EvalGSM8K(Baselines):
                 output_ids, metrics = output_ids
                 # Merge metrics
                 for key in decoding_metrics.keys():
-                    if key in metrics and hasattr(metrics[key], "__add__"):
+                    if (
+                        key in metrics
+                        and key != "throughput"
+                        and hasattr(metrics[key], "__add__")
+                    ):
                         decoding_metrics[key] += metrics[key]
 
             torch.cuda.synchronize()
@@ -317,7 +321,6 @@ class EvalGSM8K(Baselines):
 
             # Save summaries
             eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_gsm8k_metrics.json"

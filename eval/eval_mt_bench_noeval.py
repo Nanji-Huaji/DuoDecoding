@@ -125,7 +125,7 @@ class EvalMTBench(Baselines):
         else:
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None) # type: ignore
+            conv.append_message(conv.roles[1], None)  # type: ignore
             prompt = conv.get_prompt() + " "
         return prompt
 
@@ -215,7 +215,7 @@ class EvalMTBench(Baselines):
                     sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
                     conv.system_message = sys_p
                 conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None) # type: ignore
+                conv.append_message(conv.roles[1], None)  # type: ignore
                 prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
@@ -297,7 +297,7 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None) # type: ignore
+                        conv.append_message(conv.roles[1], None)  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -315,6 +315,7 @@ class EvalMTBench(Baselines):
                                 not in [
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -446,6 +447,13 @@ class EvalMTBench(Baselines):
             f"wall_time: {torch.sum(torch.tensor(total_wall_time))}, num_token: {torch.sum(torch.tensor(total_num_token))}",
             2,
         )
+
+        if decoding_metrics["wall_time"] != 0:
+            decoding_metrics["throughput"] = (
+                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+            )
+        else:
+            decoding_metrics["throughput"] = 0.0
 
         # 过滤掉历史数据字段以避免打印过长
 
