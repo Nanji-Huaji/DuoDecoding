@@ -335,6 +335,51 @@ def verify_draft_sequence_result(
     return verification_inputs, acceptance_result
 
 
+def resolve_stage_verification(
+    proposer_cache: KVCacheModel,
+    verifier_cache: KVCacheModel,
+    x: torch.Tensor,
+    prefix_len: int,
+    gamma: int,
+    *,
+    output_device: torch.device,
+) -> Tuple[int, int, torch.Tensor, bool]:
+    vocab_limit = min(proposer_cache.vocab_size, verifier_cache.vocab_size)
+    verification_inputs, acceptance_result = verify_draft_sequence_result(
+        draft_model_cache=proposer_cache,
+        target_model_cache=verifier_cache,
+        x=x,
+        prefix_len=prefix_len,
+        gamma=gamma,
+    )
+    n = acceptance_result.n
+    rollback_plan = build_rollback_plan(
+        prefix_len,
+        verification_inputs.actual_gamma,
+        n,
+    )
+
+    if rollback_plan.all_accepted:
+        t = sample_accept_token(
+            verifier_cache.prob_history[:, -1, : verifier_cache.vocab_size],
+            output_device=output_device,
+        )
+    else:
+        rejection_offset = n - (prefix_len - 1)
+        t = sample_reject_token(
+            verification_inputs.target_probs_batch[:, rejection_offset, :vocab_limit],
+            verification_inputs.draft_probs_batch[:, rejection_offset, :vocab_limit],
+            output_device=output_device,
+        )
+
+    apply_rollback(
+        proposer_cache,
+        verifier_cache,
+        rollback_plan,
+    )
+    return acceptance_result.accepted_count, n, t, rollback_plan.all_accepted
+
+
 def finalize_verification(
     approx_model_cache: KVCacheModel,
     target_model_cache: KVCacheModel,

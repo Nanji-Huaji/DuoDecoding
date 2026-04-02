@@ -189,6 +189,13 @@ class KVCacheModel:
         if last_input_id.dtype != torch.long:
             last_input_id = last_input_id.to(torch.long)
 
+        if last_input_id.shape[1] == 0:
+            if self._current_seq_len <= 0:
+                raise RuntimeError(
+                    "No new input provided for decode step and no cache available"
+                )
+            return self.prob_history[:, self._current_seq_len - 1, :]
+
         past_key_values = self._past_key_values
         if past_key_values is None:
             raise RuntimeError("Decode step called before cache initialization")

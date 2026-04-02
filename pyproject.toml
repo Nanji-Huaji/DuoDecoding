@@ -46,6 +46,7 @@ dependencies = [
     "typer>=0.21.1",
     "pytest>=9.0.2",
     "ipykernel>=7.2.0",
+    "setuptools>=80.10.1",
 ]
 
 [tool.ruff]
