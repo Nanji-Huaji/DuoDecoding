@@ -48,11 +48,24 @@ class _FakeCommSimulator:
         self.bandwidth_edge_end = 10
         self.ntt_edge_cloud = 0
         self.ntt_edge_end = 0
+        self.transfer_calls = []
+        self.simulate_transfer_calls = []
 
     def transfer(self, tokens, probs, link_type="edge_cloud", **kwargs):
+        self.transfer_calls.append(
+            {
+                "tokens": None if tokens is None else tokens.clone(),
+                "probs": None if probs is None else probs.clone(),
+                "link_type": link_type,
+                "kwargs": kwargs,
+            }
+        )
         return 0.0
 
     def simulate_transfer(self, size, link_type="edge_cloud", **kwargs):
+        self.simulate_transfer_calls.append(
+            {"size": size, "link_type": link_type, "kwargs": kwargs}
+        )
         return 0.0
 
 
@@ -209,6 +222,54 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         self.assertEqual(stage_calls[1]["verifier"], "target")
         self.assertEqual(stage_calls[1]["prefix_len"], 1)
         self.assertGreaterEqual(stage_calls[1]["gamma"], 1)
+
+    def test_adaptive_tridecoding_transfers_vectorized_payloads(self):
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        fake_comm = _FakeCommSimulator()
+
+        def fake_stage_verify(
+            proposer_cache,
+            verifier_cache,
+            x,
+            prefix_len,
+            gamma,
+            *,
+            output_device,
+        ):
+            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
+            return gamma, prefix_len + gamma - 1, token, True
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CommunicationSimulator", return_value=fake_comm),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=fake_stage_verify,
+            ),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            self.instance.adaptive_tridecoding(prefix)
+
+        payload_calls = [
+            call for call in fake_comm.transfer_calls if call["probs"] is not None
+        ]
+        self.assertEqual(len(payload_calls), 2)
+
+        edge_end_payload = payload_calls[0]
+        self.assertEqual(edge_end_payload["link_type"], "edge_end")
+        self.assertTrue(torch.equal(edge_end_payload["tokens"], torch.tensor([[1]])))
+        self.assertTrue(torch.equal(edge_end_payload["probs"], torch.tensor([[1.0]])))
+
+        edge_cloud_payload = payload_calls[1]
+        self.assertEqual(edge_cloud_payload["link_type"], "edge_cloud")
+        self.assertTrue(
+            torch.equal(edge_cloud_payload["tokens"], torch.tensor([[1, 1, 1]]))
+        )
+        self.assertTrue(
+            torch.equal(edge_cloud_payload["probs"], torch.tensor([[1.0, 1.0, 1.0]]))
+        )
 
 
 if __name__ == "__main__":

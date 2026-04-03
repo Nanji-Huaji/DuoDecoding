@@ -2072,11 +2072,7 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        # DEBUG: 确保输入 prefix 是 long 类型
         if prefix.dtype != torch.long:
-            print(
-                f"🔍 DEBUG [adaptive_tridecoding entry]: prefix dtype={prefix.dtype}, converting to long"
-            )
             prefix = prefix.long()
 
         batch_delay = self.args.batch_delay
@@ -2166,12 +2162,6 @@ class Baselines(Decoding):
             # )
 
             x = prefix.clone().to(little_device)
-            # DEBUG: 确保 x 是 long 类型
-            if x.dtype != torch.long:
-                print(
-                    f"🔍 DEBUG [adaptive_tridecoding]: prefix dtype={x.dtype}, converting to long"
-                )
-                x = x.long()
 
             self.small_draft_adapter.reset_step()
             q = None
@@ -2180,22 +2170,7 @@ class Baselines(Decoding):
                 assert adapter.device != torch.device("cpu")
                 q = little_model_cache._forward_with_kvcache(x)
                 next_tok = sample(q)
-
-                # DEBUG: 检查 next_tok 的 dtype
-                if next_tok.dtype != torch.long:
-                    print(
-                        f"🔍 DEBUG [adaptive_tridecoding]: next_tok dtype={next_tok.dtype}, value={next_tok.item()}, converting to long"
-                    )
-                    next_tok = next_tok.long()
-
                 x = torch.cat((x, next_tok), dim=1)
-
-                # DEBUG: 检查拼接后的 dtype
-                if x.dtype != torch.long:
-                    print(
-                        f"🔍 DEBUG [adaptive_tridecoding]: x dtype after cat={x.dtype}, converting to long"
-                    )
-                    x = x.long()
 
                 hidden_states = little_model_cache.hidden_states
                 assert hidden_states is not None
@@ -2231,13 +2206,6 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
-            # DEBUG: 确保传给 draft_model 的 x 是 long 类型
-            if x.dtype != torch.long:
-                print(
-                    f"🔍 DEBUG [before draft_model]: x dtype={x.dtype}, converting to long"
-                )
-                x = x.long()
-
             _ = draft_model_cache.generate(x.to(draft_device), 1)
 
             little_model_forward_times += actual_gamma2
@@ -2249,22 +2217,11 @@ class Baselines(Decoding):
             little_accepted_this_iter = 0
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if actual_gamma2 > 0:
-                draft_tokens = x[:, prefix_len : prefix_len + actual_gamma2]
-
-                # DEBUG: 检查 draft_tokens 的 dtype
-                if draft_tokens.dtype != torch.long:
-                    print(
-                        f"🔍 DEBUG [draft_tokens]: dtype={draft_tokens.dtype}, converting to long"
-                    )
-                    draft_tokens = draft_tokens.long()
-                draft_probs = torch.stack(
-                    [
-                        little_model_cache.prob_history[
-                            :, prefix_len + k - 1, x[:, prefix_len + k]
-                        ]
-                        for k in range(actual_gamma2)
-                    ],
-                    dim=1,
+                draft_tokens, draft_probs = collect_verification_payload(
+                    little_model_cache.prob_history,
+                    x,
+                    prefix_len,
+                    actual_gamma2,
                 )
                 comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
 
@@ -2420,15 +2377,11 @@ class Baselines(Decoding):
 
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if total_gamma > 0:
-                draft_tokens_second = x[:, prefix_len : prefix_len + total_gamma]
-                draft_probs_second = torch.stack(
-                    [
-                        draft_model_cache.prob_history[
-                            :, prefix_len + k - 1, x[:, prefix_len + k]
-                        ]
-                        for k in range(total_gamma)
-                    ],
-                    dim=1,
+                draft_tokens_second, draft_probs_second = collect_verification_payload(
+                    draft_model_cache.prob_history,
+                    x,
+                    prefix_len,
+                    total_gamma,
                 )
                 comm_simulator.transfer(
                     draft_tokens_second, draft_probs_second, "edge_cloud"

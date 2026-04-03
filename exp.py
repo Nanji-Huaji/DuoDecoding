@@ -626,9 +626,7 @@ for little_model, draft_model, target_model in (
     # # llama_3_series,
     # qwen_1_5_series,
 ):
-    for dataset in [
-        EvalDataset.mt_bench_noeval,
-    ]:
+    for dataset in (EvalDataset.mt_bench_noeval,):
         for mode in EvalMode:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
