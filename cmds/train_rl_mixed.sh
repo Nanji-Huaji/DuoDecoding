@@ -24,9 +24,9 @@ MAIN_RL_PATH=${MAIN_RL_PATH:-"checkpoints/rl_adapter_main.pth"}
 LITTLE_RL_PATH=${LITTLE_RL_PATH:-"checkpoints/rl_adapter_little.pth"}
 
 # Accuracy Head 路径 (优先使用环境变量)
-ACC_HEAD_PATH=${ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3"}
-SMALL_DRAFT_ACC_HEAD_PATH=${SMALL_DRAFT_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3"}
-DRAFT_TARGET_ACC_HEAD_PATH=${DRAFT_TARGET_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3"}
+ACC_HEAD_PATH=${ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"}
+SMALL_DRAFT_ACC_HEAD_PATH=${SMALL_DRAFT_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3"}
+DRAFT_TARGET_ACC_HEAD_PATH=${DRAFT_TARGET_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"}
 
 # 训练参数
 TOTAL_SAMPLES=2000 # 混合训练的总样本数

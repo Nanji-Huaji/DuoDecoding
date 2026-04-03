@@ -39,8 +39,8 @@ run_training() {
             "--little_model" "llama-68m" 
             "--gamma1" "6" 
             "--gamma2" "4"
-            "--small_draft_acc_head_path" "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3"
-            "--draft_target_acc_head_path" "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3"
+            "--small_draft_acc_head_path" "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3"
+            "--draft_target_acc_head_path" "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"
         )
     fi
 
@@ -60,7 +60,7 @@ run_training() {
         --edge_cloud_bandwidth $BW \
         --edge_end_bandwidth $END_BW \
         --ntt_ms_edge_cloud $LATENCY \
-        --acc_head_path src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3 \
+        --acc_head_path src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3 \
         "${EXTRA_ARGS[@]}" \
         --eval_data_num $SAMPLES || echo "Warning: Task $TASK failed or completed with errors."
 

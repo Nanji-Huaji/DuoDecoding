@@ -37,18 +37,107 @@ class EvalMode(str, Enum):
     cee_dsd = "cee_dsd"
 
 
-model_acc_head_map = {
-    "llama-2-7b-chat": "src/SpecDec_pp/checkpoints/llama-2-chat-7b/exp-weight6-layer3",
-    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
-    "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
-    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
-    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
-    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
-    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
-    "llama-2-chat-70b": "src/SpecDec_pp/checkpoints/llama-2-chat-70b/exp-weight6-layer3",
-    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-1.8b/exp-weight-layer3",
-    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-7b/exp-weight6-layer3",
+CANONICAL_MODEL_ALIASES = {
+    "llama-68m": "llama-68m",
+    "jackfram/llama-68m": "llama-68m",
+    "tiny-llama-1.1b": "tiny-llama-1.1b",
+    "tinyllama/tinyllama-1.1b-chat-v1.0": "tiny-llama-1.1b",
+    "llama-2-7b-chat": "llama-2-7b-chat",
+    "meta-llama/llama-2-7b-chat-hf": "llama-2-7b-chat",
+    "llama-2-13b": "llama-2-13b",
+    "meta-llama/llama-2-13b-hf": "llama-2-13b",
+    "llama-2-chat-70b": "llama-2-chat-70b",
+    "meta-llama/llama-2-70b-chat-hf": "llama-2-chat-70b",
+    "vicuna-68m": "vicuna-68m",
+    "double7/vicuna-68m": "vicuna-68m",
+    "tiny-vicuna-1b": "tiny-vicuna-1b",
+    "jiayi-pan/tiny-vicuna-1b": "tiny-vicuna-1b",
+    "vicuna-13b-v1.5": "vicuna-13b-v1.5",
+    "lmsys/vicuna-13b-v1.5": "vicuna-13b-v1.5",
+    "qwen/qwen3-0.6b": "qwen3-0.6b",
+    "qwen3-0.6b": "qwen3-0.6b",
+    "qwen/qwen3-1.7b": "qwen3-1.7b",
+    "qwen3-1.7b": "qwen3-1.7b",
+    "qwen/qwen3-14b": "qwen3-14b",
+    "qwen3-14b": "qwen3-14b",
+    "qwen/qwen3-32b": "qwen3-32b",
+    "qwen3-32b": "qwen3-32b",
+    "qwen/qwen1.5-0.5b-chat": "qwen1.5-0.5b-chat",
+    "qwen1.5-0.5b-chat": "qwen1.5-0.5b-chat",
+    "qwen/qwen1.5-1.8b-chat": "qwen1.5-1.8b-chat",
+    "qwen1.5-1.8b-chat": "qwen1.5-1.8b-chat",
+    "qwen/qwen1.5-7b-chat": "qwen1.5-7b-chat",
+    "qwen1.5-7b-chat": "qwen1.5-7b-chat",
 }
+
+
+LEGACY_MODEL_ACC_HEAD_MAP = {
+    "llama-2-7b-chat": "src/SpecDec_pp/checkpoints/llama-2-chat-7b/exp-weight6-layer3",
+    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3",
+    "llama-2-13b": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3",
+    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/acc_head/tiny-vicuna-1b--to--vicuna-13b-v1.5/exp-weight6-layer3",
+    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/acc_head/vicuna-68m--to--tiny-vicuna-1b/exp-weight6-layer3",
+    "qwen3-14b": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3",
+    "qwen3-1.7b": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3",
+    "llama-2-chat-70b": "src/SpecDec_pp/checkpoints/acc_head/llama-2-7b-chat--to--llama-2-chat-70b/exp-weight6-layer3",
+    "qwen1.5-1.8b-chat": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3",
+    "qwen1.5-7b-chat": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3",
+}
+
+
+ACC_HEAD_PAIR_MAP = {
+    ("llama-68m", "tiny-llama-1.1b"): LEGACY_MODEL_ACC_HEAD_MAP["tiny-llama-1.1b"],
+    ("tiny-llama-1.1b", "llama-2-13b"): LEGACY_MODEL_ACC_HEAD_MAP["llama-2-13b"],
+    ("llama-2-7b-chat", "llama-2-chat-70b"): LEGACY_MODEL_ACC_HEAD_MAP[
+        "llama-2-chat-70b"
+    ],
+    ("vicuna-68m", "tiny-vicuna-1b"): LEGACY_MODEL_ACC_HEAD_MAP["tiny-vicuna-1b"],
+    ("tiny-vicuna-1b", "vicuna-13b-v1.5"): LEGACY_MODEL_ACC_HEAD_MAP["vicuna-13b-v1.5"],
+    ("qwen1.5-0.5b-chat", "qwen1.5-1.8b-chat"): LEGACY_MODEL_ACC_HEAD_MAP[
+        "qwen1.5-1.8b-chat"
+    ],
+    ("qwen1.5-1.8b-chat", "qwen1.5-7b-chat"): LEGACY_MODEL_ACC_HEAD_MAP[
+        "qwen1.5-7b-chat"
+    ],
+    ("qwen3-0.6b", "qwen3-1.7b"): LEGACY_MODEL_ACC_HEAD_MAP["qwen3-1.7b"],
+    ("qwen3-1.7b", "qwen3-14b"): LEGACY_MODEL_ACC_HEAD_MAP["qwen3-14b"],
+}
+
+
+def canonicalize_model_name(model_name: str) -> str:
+    normalized = model_name.strip().rstrip("/")
+    basename = os.path.basename(normalized)
+    candidates = [
+        normalized,
+        basename,
+        normalized.lower(),
+        basename.lower(),
+    ]
+    for candidate in candidates:
+        alias = CANONICAL_MODEL_ALIASES.get(candidate.lower())
+        if alias is not None:
+            return alias
+    return basename.lower()
+
+
+def resolve_acc_head_path(
+    source_model: str,
+    target_model: str,
+    *,
+    legacy_fallback_model: str,
+) -> str:
+    pair_key = (
+        canonicalize_model_name(source_model),
+        canonicalize_model_name(target_model),
+    )
+    pair_path = ACC_HEAD_PAIR_MAP.get(pair_key)
+    if pair_path is not None:
+        return pair_path
+
+    # Compatibility fallback: existing checkpoints are still organized by the
+    # destination model for many model pairs.
+    fallback_key = canonicalize_model_name(legacy_fallback_model)
+    return LEGACY_MODEL_ACC_HEAD_MAP.get(fallback_key, "")
 
 
 class ExpConfig(TypedDict):
@@ -498,10 +587,19 @@ def create_config(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
     if eval_mode in [EvalMode.ceesd, EvalMode.cee_cuhlm]:
+        # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
-            small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
+            small_draft_acc_head_path = resolve_acc_head_path(
+                little_model,
+                draft_model,
+                legacy_fallback_model=draft_model,
+            )
         if draft_target_acc_head_path is None:
-            draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
+            draft_target_acc_head_path = resolve_acc_head_path(
+                draft_model,
+                target_model,
+                legacy_fallback_model=target_model,
+            )
 
         # 自动推导 RL Adapter 路径
         series = get_model_series(target_model)
