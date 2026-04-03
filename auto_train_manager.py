@@ -21,7 +21,11 @@ MODEL_SERIES = {
     "vicuna": ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
     "qwen": ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B"),
     "qwen-32b": ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B"),
-    "qwen15": ("Qwen/Qwen3-0.6B", "Qwen/Qwen1.5-1.8B-Chat", "Qwen/Qwen1.5-7B-Chat"),
+    "qwen15": (
+        "Qwen/Qwen1.5-0.5B-Chat",
+        "Qwen/Qwen1.5-1.8B-Chat",
+        "Qwen/Qwen1.5-7B-Chat",
+    ),
 }
 
 
@@ -509,7 +513,7 @@ class TrainingManager:
             elif self.model_series_name == "qwen-32b":
                 patterns = ["Qwen3-1.7B", "Qwen3-14B", "Qwen3-32B"]
             elif self.model_series_name == "qwen15":
-                patterns = ["Qwen3-0.6B", "Qwen1.5-1.8B", "Qwen1.5-7B"]
+                patterns = ["Qwen1.5-0.5B-Chat", "Qwen1.5-1.8B-Chat", "Qwen1.5-7B-Chat"]
 
             for p in patterns:
                 # 使用 pkill -f 匹配包含特定模型路径的进程
