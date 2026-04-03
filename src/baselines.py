@@ -33,6 +33,12 @@ from .engine import Decoding
 from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
 from .register import Register
+from .rl_agent_registry import (
+    ROLE_LITTLE,
+    ROLE_MAIN,
+    get_rl_agent_spec,
+    resolve_legacy_rl_agent_load_path,
+)
 from .rl_adapter import RLNetworkAdapter
 from .utils import max_fn, sample
 
@@ -66,30 +72,58 @@ class Baselines(Decoding):
         super().__init__(args)
         # self.load_acc_head() # Moved to load_model
         if getattr(args, "use_rl_adapter", False):
-            # 限制 Main RL Agent (Draft -> Target) 的阈值搜索空间为 0.0..0.4
-            # 这里的阈值较低意味着对 Main Model 的拒绝预测更敏感
-            main_thresholds = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4]
+            main_spec = get_rl_agent_spec(
+                ROLE_MAIN,
+                little_model=getattr(args, "little_model", None),
+                draft_model=args.draft_model,
+                target_model=args.target_model,
+            )
             self.rl_adapter = RLNetworkAdapter(
                 args,
-                model_name=getattr(
-                    args,
-                    "main_rl_path",
-                    "checkpoints/best/tps_20.330_0131_084912/rl_adapter_main.pth",
-                ),
-                threshold_candidates=main_thresholds,
+                model_path=getattr(args, "main_rl_path", main_spec.latest_path),
+                best_model_path=getattr(args, "main_rl_best_path", main_spec.best_path),
+                agent_name=main_spec.agent_name,
+                legacy_load_paths=[
+                    path
+                    for path in [
+                        resolve_legacy_rl_agent_load_path(
+                            ROLE_MAIN,
+                            getattr(args, "little_model", None),
+                            args.draft_model,
+                            args.target_model,
+                        )
+                    ]
+                    if path is not None
+                ],
+                threshold_candidates=main_spec.threshold_candidates,
             )
 
-            # 限制 Little RL Agent (Little -> Draft) 的阈值搜索空间为 0.4..0.9
-            # 这里的阈值较高意味着对 Little Model 的生成更宽容
-            little_thresholds = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+            little_spec = get_rl_agent_spec(
+                ROLE_LITTLE,
+                little_model=args.little_model,
+                draft_model=args.draft_model,
+                target_model=args.target_model,
+            )
             self.little_rl_adapter = RLNetworkAdapter(
                 args,
-                model_name=getattr(
-                    args,
-                    "little_rl_path",
-                    "checkpoints/best/tps_20.330_0131_084912/rl_adapter_little.pth",
+                model_path=getattr(args, "little_rl_path", little_spec.latest_path),
+                best_model_path=getattr(
+                    args, "little_rl_best_path", little_spec.best_path
                 ),
-                threshold_candidates=little_thresholds,
+                agent_name=little_spec.agent_name,
+                legacy_load_paths=[
+                    path
+                    for path in [
+                        resolve_legacy_rl_agent_load_path(
+                            ROLE_LITTLE,
+                            args.little_model,
+                            args.draft_model,
+                            args.target_model,
+                        )
+                    ]
+                    if path is not None
+                ],
+                threshold_candidates=little_spec.threshold_candidates,
             )
         else:
             self.rl_adapter = None

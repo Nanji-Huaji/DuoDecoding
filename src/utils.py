@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from src.acc_head_registry import resolve_acc_head_path
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 
 
 logger = logging.getLogger(__name__)
@@ -499,14 +500,26 @@ def parse_arguments():
     parser.add_argument(
         "--main_rl_path",
         type=str,
-        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_main.pth",
+        default=None,
         help="The path of the main RL adapter model.",
+    )
+    parser.add_argument(
+        "--main_rl_best_path",
+        type=str,
+        default=None,
+        help="The path of the best main RL adapter model.",
     )
     parser.add_argument(
         "--little_rl_path",
         type=str,
-        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_little.pth",
+        default=None,
         help="The path of the little RL adapter model.",
+    )
+    parser.add_argument(
+        "--little_rl_best_path",
+        type=str,
+        default=None,
+        help="The path of the best little RL adapter model.",
     )
     parser.add_argument(
         "--disable_rl_update",
@@ -531,6 +544,33 @@ def parse_arguments():
     )
 
     args = parser.parse_args()
+    if getattr(args, "main_rl_path", None) is None:
+        main_spec = get_rl_agent_spec(
+            ROLE_MAIN,
+            little_model=getattr(args, "little_model", None),
+            draft_model=args.draft_model,
+            target_model=args.target_model,
+        )
+        args.main_rl_path = main_spec.latest_path
+        if getattr(args, "main_rl_best_path", None) is None:
+            args.main_rl_best_path = main_spec.best_path
+    elif getattr(args, "main_rl_best_path", None) is None:
+        args.main_rl_best_path = args.main_rl_path
+
+    if getattr(args, "little_model", None) is not None:
+        if getattr(args, "little_rl_path", None) is None:
+            little_spec = get_rl_agent_spec(
+                ROLE_LITTLE,
+                little_model=args.little_model,
+                draft_model=args.draft_model,
+                target_model=args.target_model,
+            )
+            args.little_rl_path = little_spec.latest_path
+            if getattr(args, "little_rl_best_path", None) is None:
+                args.little_rl_best_path = little_spec.best_path
+        elif getattr(args, "little_rl_best_path", None) is None:
+            args.little_rl_best_path = args.little_rl_path
+
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
     os.makedirs(args.exp_name, exist_ok=True)
     model_zoo(args)

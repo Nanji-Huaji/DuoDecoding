@@ -145,11 +145,75 @@ The common arguments are defined in `src/utils.py::parse_arguments()`.
 | `--acc_head_path` | Acceptance head path for `adaptive_decoding`. |
 | `--small_draft_acc_head_path`, `--draft_target_acc_head_path` | Acceptance head paths for `adaptive_tridecoding` and `cee_cuhlm`. |
 | `--use_rl_adapter` | Enable RL-based threshold selection. |
-| `--main_rl_path`, `--little_rl_path` | RL adapter checkpoints. |
+| `--main_rl_path`, `--little_rl_path` | RL agent latest checkpoints. |
+| `--main_rl_best_path`, `--little_rl_best_path` | RL agent best checkpoints. |
 | `--disable_rl_update` | Freeze RL adapter updates during evaluation / inference. |
 
 >[!NOTE]
-> `adaptive_decoding` and `adaptive_tridecoding` depend on acceptance prediction heads. Some checkpoint paths are already wired in `exp.py` through `model_acc_head_map`, but if your local paths differ you still need to pass the correct head checkpoints explicitly.
+> `adaptive_decoding` and `adaptive_tridecoding` depend on acceptance prediction heads. The repository now resolves acceptance heads through `src.acc_head_registry` and RL checkpoints through `src.rl_agent_registry`, so most common model pairs no longer need hardcoded local paths.
+
+### RL Agent Checkpoints
+
+RL checkpoints now use a pair-based layout rather than fixed filenames such as
+`checkpoints/rl_adapter_main.pth`.
+
+Default layout:
+
+```text
+checkpoints/
+  rl_agents/
+    main/
+      <draft_alias>--to--<target_alias>/
+        latest.pth
+        best.pth
+    little/
+      <little_alias>--to--<draft_alias>/
+        latest.pth
+        best.pth
+```
+
+Examples:
+
+```text
+checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth
+checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/best.pth
+```
+
+Loading behavior:
+
+1. load `best.pth` if it exists
+2. otherwise load `latest.pth`
+3. otherwise try legacy hardcoded checkpoint locations
+4. otherwise start RL training from scratch
+
+During online RL training:
+
+- `latest.pth` is updated continuously
+- `best.pth` is updated when a higher TPS is observed
+
+You can resolve checkpoint paths from the command line:
+
+```bash
+python -m src.rl_agent_registry main "tiny-llama-1.1b" "Llama-2-13b" --kind latest --format path
+python -m src.rl_agent_registry little "llama-68m" "tiny-llama-1.1b" --kind best --format path
+```
+
+The training scripts already use this resolver automatically:
+
+```bash
+bash cmds/train_rl_mixed.sh
+```
+
+You can also override the models and keep automatic RL path resolution:
+
+```bash
+LITTLE_MODEL="llama-68m" \
+DRAFT_MODEL="tiny-llama-1.1b" \
+TARGET_MODEL="Llama-2-13b" \
+bash cmds/train_rl_mixed.sh
+```
+
+For more details, see `docs/rl_agent_checkpoints.md`.
 
 ### Batch Experiments via `exp.py`
 

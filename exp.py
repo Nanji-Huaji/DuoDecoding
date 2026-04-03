@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from src.acc_head_registry import resolve_acc_head_path
 from src.nvml import get_available_gpus as detect_available_gpus
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 
 
 class EvalDataset(str, Enum):
@@ -63,6 +64,8 @@ class ExpConfig(TypedDict):
     draft_target_acc_head_path: str
     main_rl_path: str
     little_rl_path: str
+    main_rl_best_path: str
+    little_rl_best_path: str
     max_tokens: int
     use_early_stopping: bool
     dump_network_stats: bool
@@ -197,6 +200,18 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             cmd,
             "little_rl_path",
             config["little_rl_path"],
+        )
+    if config.get("main_rl_best_path"):
+        cmd = add_args(
+            cmd,
+            "main_rl_best_path",
+            config["main_rl_best_path"],
+        )
+    if config.get("little_rl_best_path"):
+        cmd = add_args(
+            cmd,
+            "little_rl_best_path",
+            config["little_rl_best_path"],
         )
     if config.get("dump_network_stats", False):
         cmd = add_args(cmd, "dump_network_stats")
@@ -479,6 +494,8 @@ def create_config(
     draft_target_acc_head_path: str | None = None,
     main_rl_path: str | None = None,
     little_rl_path: str | None = None,
+    main_rl_best_path: str | None = None,
+    little_rl_best_path: str | None = None,
     dump_network_stats: bool = False,
 ) -> ExpConfig:
     # 使用微秒级时间戳确保唯一性
@@ -493,12 +510,30 @@ def create_config(
                 draft_model, target_model
             )
 
-        # 自动推导 RL Adapter 路径
-        series = get_model_series(target_model)
         if main_rl_path is None:
-            main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
+            main_spec = get_rl_agent_spec(
+                ROLE_MAIN,
+                little_model=little_model,
+                draft_model=draft_model,
+                target_model=target_model,
+            )
+            main_rl_path = main_spec.latest_path
+            if main_rl_best_path is None:
+                main_rl_best_path = main_spec.best_path
+        elif main_rl_best_path is None:
+            main_rl_best_path = main_rl_path
         if little_rl_path is None:
-            little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
+            little_spec = get_rl_agent_spec(
+                ROLE_LITTLE,
+                little_model=little_model,
+                draft_model=draft_model,
+                target_model=target_model,
+            )
+            little_rl_path = little_spec.latest_path
+            if little_rl_best_path is None:
+                little_rl_best_path = little_spec.best_path
+        elif little_rl_best_path is None:
+            little_rl_best_path = little_rl_path
 
     else:
         # 其他模式不需要
@@ -506,6 +541,8 @@ def create_config(
         draft_target_acc_head_path = ""
         main_rl_path = ""
         little_rl_path = ""
+        main_rl_best_path = ""
+        little_rl_best_path = ""
 
     return ExpConfig(
         eval_dataset=eval_dataset,
@@ -534,6 +571,8 @@ def create_config(
         draft_target_acc_head_path=draft_target_acc_head_path,
         main_rl_path=main_rl_path,
         little_rl_path=little_rl_path,
+        main_rl_best_path=main_rl_best_path,
+        little_rl_best_path=little_rl_best_path,
         dump_network_stats=dump_network_stats,
     )
 

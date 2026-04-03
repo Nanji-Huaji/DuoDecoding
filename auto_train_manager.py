@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from src.acc_head_registry import resolve_acc_head_path
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 
 # Model Series Definitions
 MODEL_SERIES = {
@@ -73,6 +74,18 @@ class TrainingManager:
         self.checkpoint_dir = Path(f"checkpoints/{model_series_name}")
         self.status_file = self.checkpoint_dir / "training_status.json"
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
+        self.main_rl_spec = get_rl_agent_spec(
+            ROLE_MAIN,
+            little_model=self.models[0],
+            draft_model=self.models[1],
+            target_model=self.models[2],
+        )
+        self.little_rl_spec = get_rl_agent_spec(
+            ROLE_LITTLE,
+            little_model=self.models[0],
+            draft_model=self.models[1],
+            target_model=self.models[2],
+        )
 
         self.top_checkpoints = []
 
@@ -280,22 +293,25 @@ class TrainingManager:
                 f"[{datetime.now()}] 发现新的更优性能 (TPS: {tps_val:.3f})，正在保存到 {save_path}..."
             )
 
-            checkpoint_dir = self.checkpoint_dir
             files_to_copy = [
-                "rl_adapter_main.pth",
-                "rl_adapter_main.pth.buffer",
-                "rl_adapter_little.pth",
-                "rl_adapter_little.pth.buffer",
+                Path(self.main_rl_spec.latest_path),
+                Path(self.main_rl_spec.latest_path + ".buffer"),
+                Path(self.little_rl_spec.latest_path),
+                Path(self.little_rl_spec.latest_path + ".buffer"),
                 "training_status.json",
             ]
 
             # 同步最新的训练状态
             self.save_training_status()
 
-            for f_name in files_to_copy:
-                src = checkpoint_dir / f_name
+            for file_ref in files_to_copy:
+                src = (
+                    self.checkpoint_dir / file_ref
+                    if isinstance(file_ref, str)
+                    else file_ref
+                )
                 if src.exists():
-                    shutil.copy(src, save_path / f_name)
+                    shutil.copy(src, save_path / src.name)
 
             self.top_checkpoints.append((tps_val, save_path))
             self.top_checkpoints.sort(key=lambda x: x[0], reverse=True)
@@ -336,12 +352,18 @@ class TrainingManager:
         old_buffer = checkpoint_dir / "rl_adapter.pth.buffer"
 
         targets = [
-            ("rl_adapter_main.pth", "rl_adapter_main.pth.buffer"),
-            ("rl_adapter_little.pth", "rl_adapter_little.pth.buffer"),
+            (
+                Path(self.main_rl_spec.latest_path),
+                Path(self.main_rl_spec.latest_path + ".buffer"),
+            ),
+            (
+                Path(self.little_rl_spec.latest_path),
+                Path(self.little_rl_spec.latest_path + ".buffer"),
+            ),
         ]
 
         # Check if new checkpoints already exist
-        existing_new = [t for t, _ in targets if (checkpoint_dir / t).exists()]
+        existing_new = [str(t) for t, _ in targets if t.exists()]
 
         if len(existing_new) == len(targets):
             print(
@@ -354,8 +376,10 @@ class TrainingManager:
                 f"[{datetime.now()}] 检测到旧的单 Agent 检查点 {old_pth}，正在迁移到双 Agent 结构..."
             )
             for model_file, buffer_file in targets:
-                target_pth = checkpoint_dir / model_file
-                target_buf = checkpoint_dir / buffer_file
+                target_pth = model_file
+                target_buf = buffer_file
+
+                target_pth.parent.mkdir(parents=True, exist_ok=True)
 
                 if not target_pth.exists():
                     shutil.copy(old_pth, target_pth)
@@ -401,8 +425,10 @@ class TrainingManager:
         env["DRAFT_MODEL"] = self.models[1]
         env["TARGET_MODEL"] = self.models[2]
 
-        env["MAIN_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_main.pth")
-        env["LITTLE_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_little.pth")
+        env["MAIN_RL_PATH"] = self.main_rl_spec.latest_path
+        env["MAIN_RL_BEST_PATH"] = self.main_rl_spec.best_path
+        env["LITTLE_RL_PATH"] = self.little_rl_spec.latest_path
+        env["LITTLE_RL_BEST_PATH"] = self.little_rl_spec.best_path
 
         env["ACC_HEAD_PATH"] = resolve_acc_head_path(self.models[1], self.models[2])
         env["SMALL_DRAFT_ACC_HEAD_PATH"] = resolve_acc_head_path(

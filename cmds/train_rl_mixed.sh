@@ -11,6 +11,10 @@ resolve_acc_head_path() {
     python -m src.acc_head_registry "$1" "$2" --format resolved-path
 }
 
+resolve_rl_agent_path() {
+    python -m src.rl_agent_registry "$1" "$2" "$3" --kind "${4:-latest}" --format path
+}
+
 # 环境变量设置
 GPU_ID=${CUDA_VISIBLE_DEVICES:-0}
 PORT=$((29500 + RANDOM % 1000))
@@ -24,8 +28,10 @@ TARGET_MODEL=${TARGET_MODEL:-"Llama-2-13b"}
 LITTLE_MODEL=${LITTLE_MODEL:-"llama-68m"}
 
 # RL Adapter 路径 (优先使用环境变量)
-MAIN_RL_PATH=${MAIN_RL_PATH:-"checkpoints/rl_adapter_main.pth"}
-LITTLE_RL_PATH=${LITTLE_RL_PATH:-"checkpoints/rl_adapter_little.pth"}
+MAIN_RL_PATH=${MAIN_RL_PATH:-"$(resolve_rl_agent_path main "$DRAFT_MODEL" "$TARGET_MODEL" latest)"}
+LITTLE_RL_PATH=${LITTLE_RL_PATH:-"$(resolve_rl_agent_path little "$LITTLE_MODEL" "$DRAFT_MODEL" latest)"}
+MAIN_RL_BEST_PATH=${MAIN_RL_BEST_PATH:-"$(resolve_rl_agent_path main "$DRAFT_MODEL" "$TARGET_MODEL" best)"}
+LITTLE_RL_BEST_PATH=${LITTLE_RL_BEST_PATH:-"$(resolve_rl_agent_path little "$LITTLE_MODEL" "$DRAFT_MODEL" best)"}
 
 # Accuracy Head 路径 (优先使用环境变量)
 ACC_HEAD_PATH=${ACC_HEAD_PATH:-"$(resolve_acc_head_path "$DRAFT_MODEL" "$TARGET_MODEL")"}
@@ -57,7 +63,9 @@ exec accelerate launch \
     --edge_end_bandwidth $END_BW \
     --ntt_ms_edge_cloud $LATENCY \
     --main_rl_path "$MAIN_RL_PATH" \
+    --main_rl_best_path "$MAIN_RL_BEST_PATH" \
     --little_rl_path "$LITTLE_RL_PATH" \
+    --little_rl_best_path "$LITTLE_RL_BEST_PATH" \
     --acc_head_path "$ACC_HEAD_PATH" \
     --small_draft_acc_head_path "$SMALL_DRAFT_ACC_HEAD_PATH" \
     --draft_target_acc_head_path "$DRAFT_TARGET_ACC_HEAD_PATH" \
