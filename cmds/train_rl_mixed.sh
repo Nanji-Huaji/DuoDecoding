@@ -7,6 +7,10 @@ echo "Starting Mixed Multi-Task RL Agent Training..."
 echo "Datasets: mt_bench, gsm8k, cnndm, xsum, humaneval (Mixed)"
 echo "Metrics: TPS (Tokens Per Second)"
 
+resolve_acc_head_path() {
+    python -m src.acc_head_registry "$1" "$2" --format resolved-path
+}
+
 # 环境变量设置
 GPU_ID=${CUDA_VISIBLE_DEVICES:-0}
 PORT=$((29500 + RANDOM % 1000))
@@ -24,9 +28,9 @@ MAIN_RL_PATH=${MAIN_RL_PATH:-"checkpoints/rl_adapter_main.pth"}
 LITTLE_RL_PATH=${LITTLE_RL_PATH:-"checkpoints/rl_adapter_little.pth"}
 
 # Accuracy Head 路径 (优先使用环境变量)
-ACC_HEAD_PATH=${ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"}
-SMALL_DRAFT_ACC_HEAD_PATH=${SMALL_DRAFT_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3"}
-DRAFT_TARGET_ACC_HEAD_PATH=${DRAFT_TARGET_ACC_HEAD_PATH:-"src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"}
+ACC_HEAD_PATH=${ACC_HEAD_PATH:-"$(resolve_acc_head_path "$DRAFT_MODEL" "$TARGET_MODEL")"}
+SMALL_DRAFT_ACC_HEAD_PATH=${SMALL_DRAFT_ACC_HEAD_PATH:-"$(resolve_acc_head_path "$LITTLE_MODEL" "$DRAFT_MODEL")"}
+DRAFT_TARGET_ACC_HEAD_PATH=${DRAFT_TARGET_ACC_HEAD_PATH:-"$(resolve_acc_head_path "$DRAFT_MODEL" "$TARGET_MODEL")"}
 
 # 训练参数
 TOTAL_SAMPLES=2000 # 混合训练的总样本数

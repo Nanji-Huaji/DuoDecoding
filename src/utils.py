@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from src.acc_head_registry import resolve_acc_head_path
+
 
 logger = logging.getLogger(__name__)
 _LIMITED_WARNING_COUNTS: dict[str, int] = {}
@@ -62,7 +64,13 @@ def log_prob_tensor_if_invalid(
     finite_sum_mask = torch.isfinite(row_sums)
     bad_sum_mask = finite_sum_mask & ((row_sums - expected_sum).abs() > atol)
 
-    if not (has_nan or has_posinf or has_neginf or negative_count > 0 or bad_sum_mask.any().item()):
+    if not (
+        has_nan
+        or has_posinf
+        or has_neginf
+        or negative_count > 0
+        or bad_sum_mask.any().item()
+    ):
         return False
 
     finite_values = probs_float[torch.isfinite(probs_float)]
@@ -451,19 +459,19 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
         help="The path of the accuracy head model.",
     )
     parser.add_argument(
         "--small_draft_acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+        default=resolve_acc_head_path("llama-68m", "tiny-llama-1.1b"),
         help="The path of the small draft accuracy head model.",
     )
     parser.add_argument(
         "--draft_target_acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
+        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
         help="The path of the draft-target accuracy head model.",
     )
     parser.add_argument(

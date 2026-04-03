@@ -12,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.acc_head_registry import resolve_acc_head_path
+
 # Model Series Definitions
 MODEL_SERIES = {
     "llama": ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
@@ -19,21 +21,6 @@ MODEL_SERIES = {
     "qwen": ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B"),
     "qwen-32b": ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B"),
     "qwen15": ("Qwen/Qwen3-0.6B", "Qwen/Qwen1.5-1.8B-Chat", "Qwen/Qwen1.5-7B-Chat"),
-}
-
-MODEL_ACC_HEAD_MAP = {
-    "llama-68m": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3",  # Fallback
-    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3",
-    "llama-2-13b": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3",
-    "vicuna-68m": "src/SpecDec_pp/checkpoints/acc_head/vicuna-68m--to--tiny-vicuna-1b/exp-weight6-layer3",  # Fallback
-    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/acc_head/vicuna-68m--to--tiny-vicuna-1b/exp-weight6-layer3",
-    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/acc_head/tiny-vicuna-1b--to--vicuna-13b-v1.5/exp-weight6-layer3",
-    "Qwen/Qwen3-0.6B": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3",  # Fallback
-    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3",
-    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3",
-    "Qwen/Qwen3-32B": "src/SpecDec_pp/checkpoints/acc_head/qwen3-14b--to--qwen3-32b/exp-weight6-layer3",
-    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3",
-    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3",
 }
 
 
@@ -417,9 +404,13 @@ class TrainingManager:
         env["MAIN_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_main.pth")
         env["LITTLE_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_little.pth")
 
-        env["ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
-        env["SMALL_DRAFT_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[1], "")
-        env["DRAFT_TARGET_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
+        env["ACC_HEAD_PATH"] = resolve_acc_head_path(self.models[1], self.models[2])
+        env["SMALL_DRAFT_ACC_HEAD_PATH"] = resolve_acc_head_path(
+            self.models[0], self.models[1]
+        )
+        env["DRAFT_TARGET_ACC_HEAD_PATH"] = resolve_acc_head_path(
+            self.models[1], self.models[2]
+        )
 
         print(
             f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: mmWave Trace / 10ms NTT)"
