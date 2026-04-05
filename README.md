@@ -255,7 +255,7 @@ Leave both variables unset for normal benchmarking.
 - Single-run outputs are written under `exp/<exp_name>/`.
 - Batch logs are written under `exp_logs/`.
 - Batch summaries are written as `experiment_summary_<timestamp>.json`.
-- `table_generator_ver2.ipynb` can be pointed to a summary JSON for result aggregation.
+- `notebooks/table_generator_ver2.ipynb` can be pointed to a summary JSON for result aggregation.
 
 ### Bash Scripts and vLLM Test Scripts
 

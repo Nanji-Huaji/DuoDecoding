@@ -26,7 +26,7 @@ dependencies = [
     "protobuf>=6.33.4",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.12.0",
-    "pynvml>=13.0.1",
+    "nvidia-ml-py>=13.590.48",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
     "rich>=14.2.0",
@@ -44,11 +44,20 @@ dependencies = [
     "tqdm>=4.67.1",
     "transformers>=4.57.6",
     "typer>=0.21.1",
+    "pytest>=9.0.2",
+    "ipykernel>=7.2.0",
+    "setuptools>=80.10.1",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.13.0",
 ]
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+exclude = ["src/SpecDec_pp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]  # Enable pycodestyle errors (E), Pyflakes (F), isort (I), and flake8-bugbear (B)
