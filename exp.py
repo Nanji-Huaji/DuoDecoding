@@ -11,17 +11,23 @@ from typing import List, TypedDict
 
 from tqdm import tqdm
 
+from src.acc_head_registry import resolve_acc_head_path
+from src.nvml import get_available_gpus as detect_available_gpus
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
+
 
 class EvalDataset(str, Enum):
-    mt_bench = "eval/eval_mt_bench_noeval.py"
+    mt_bench = "eval/eval_mt_bench.py"
     humaneval = "eval/eval_humaneval.py"
     # cnndm = "eval/eval_cnndm.py"
     # xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
+    mt_bench_noeval = "eval/eval_mt_bench_noeval.py"
 
 
 class EvalMode(str, Enum):
     autoregression = "large"
+    sd = "sd"
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
@@ -31,20 +37,6 @@ class EvalMode(str, Enum):
     cee_cuhlm = "cee_cuhlm"
     cee_dssd = "cee_dssd"
     cee_dsd = "cee_dsd"
-
-
-model_acc_head_map = {
-    "llama-2-7b-chat": "src/SpecDec_pp/checkpoints/llama-2-chat-7b/exp-weight6-layer3",
-    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
-    "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
-    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
-    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
-    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
-    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
-    "llama-2-chat-70b": "src/SpecDec_pp/checkpoints/llama-2-chat-70b/exp-weight6-layer3",
-    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-1.8b/exp-weight-layer3",
-    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-7b/exp-weight6-layer3",
-}
 
 
 class ExpConfig(TypedDict):
@@ -72,8 +64,11 @@ class ExpConfig(TypedDict):
     draft_target_acc_head_path: str
     main_rl_path: str
     little_rl_path: str
+    main_rl_best_path: str
+    little_rl_best_path: str
     max_tokens: int
     use_early_stopping: bool
+    dump_network_stats: bool
 
 
 # Global Constants
@@ -206,6 +201,20 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             "little_rl_path",
             config["little_rl_path"],
         )
+    if config.get("main_rl_best_path"):
+        cmd = add_args(
+            cmd,
+            "main_rl_best_path",
+            config["main_rl_best_path"],
+        )
+    if config.get("little_rl_best_path"):
+        cmd = add_args(
+            cmd,
+            "little_rl_best_path",
+            config["little_rl_best_path"],
+        )
+    if config.get("dump_network_stats", False):
+        cmd = add_args(cmd, "dump_network_stats")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -310,30 +319,7 @@ class GPUManager:
 
     def get_available_gpus(self) -> List[int]:
         """检测完全空闲的GPU"""
-        import pynvml
-
-        pynvml.nvmlInit()
-        available_gpus = []
-
-        device_count = pynvml.nvmlDeviceGetCount()
-        for i in range(device_count):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            # 检查显存使用情况
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            mem_used_mb = mem_info.used / 1024 / 1024
-
-            # 检查GPU利用率
-            util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            gpu_util = util_info.gpu
-
-            # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
-            if mem_used_mb < 1024 and gpu_util < 5:
-                available_gpus.append(i)
-                print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-            else:
-                print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-
-        return available_gpus
+        return detect_available_gpus()
 
     def acquire_gpu(self, count: int = 1) -> List[int] | None:
         """获取 count 个可用的GPU"""
@@ -478,30 +464,7 @@ def run_experiments_parallel(
 
 def get_available_gpus() -> List[int]:
     """检测完全空闲的GPU"""
-    import pynvml
-
-    pynvml.nvmlInit()
-    available_gpus = []
-
-    device_count = pynvml.nvmlDeviceGetCount()
-    for i in range(device_count):
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        # 检查显存使用情况
-        mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        mem_used_mb = mem_info.used / 1024 / 1024  # type: ignore
-
-        # 检查GPU利用率
-        util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
-        gpu_util = util_info.gpu
-
-        # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
-        if mem_used_mb < 1024 and gpu_util < 5:  # type: ignore
-            available_gpus.append(i)
-            print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-        else:
-            print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-
-    return available_gpus
+    return detect_available_gpus()
 
 
 def create_config(
@@ -531,22 +494,46 @@ def create_config(
     draft_target_acc_head_path: str | None = None,
     main_rl_path: str | None = None,
     little_rl_path: str | None = None,
+    main_rl_best_path: str | None = None,
+    little_rl_best_path: str | None = None,
+    dump_network_stats: bool = False,
 ) -> ExpConfig:
     # 使用微秒级时间戳确保唯一性
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
     if eval_mode in [EvalMode.ceesd, EvalMode.cee_cuhlm]:
+        # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
-            small_draft_acc_head_path = model_acc_head_map.get(draft_model, "")
+            small_draft_acc_head_path = resolve_acc_head_path(little_model, draft_model)
         if draft_target_acc_head_path is None:
-            draft_target_acc_head_path = model_acc_head_map.get(target_model, "")
+            draft_target_acc_head_path = resolve_acc_head_path(
+                draft_model, target_model
+            )
 
-        # 自动推导 RL Adapter 路径
-        series = get_model_series(target_model)
         if main_rl_path is None:
-            main_rl_path = f"checkpoints/{series}/rl_adapter_main.pth"
+            main_spec = get_rl_agent_spec(
+                ROLE_MAIN,
+                little_model=little_model,
+                draft_model=draft_model,
+                target_model=target_model,
+            )
+            main_rl_path = main_spec.latest_path
+            if main_rl_best_path is None:
+                main_rl_best_path = main_spec.best_path
+        elif main_rl_best_path is None:
+            main_rl_best_path = main_rl_path
         if little_rl_path is None:
-            little_rl_path = f"checkpoints/{series}/rl_adapter_little.pth"
+            little_spec = get_rl_agent_spec(
+                ROLE_LITTLE,
+                little_model=little_model,
+                draft_model=draft_model,
+                target_model=target_model,
+            )
+            little_rl_path = little_spec.latest_path
+            if little_rl_best_path is None:
+                little_rl_best_path = little_spec.best_path
+        elif little_rl_best_path is None:
+            little_rl_best_path = little_rl_path
 
     else:
         # 其他模式不需要
@@ -554,6 +541,8 @@ def create_config(
         draft_target_acc_head_path = ""
         main_rl_path = ""
         little_rl_path = ""
+        main_rl_best_path = ""
+        little_rl_best_path = ""
 
     return ExpConfig(
         eval_dataset=eval_dataset,
@@ -582,6 +571,9 @@ def create_config(
         draft_target_acc_head_path=draft_target_acc_head_path,
         main_rl_path=main_rl_path,
         little_rl_path=little_rl_path,
+        main_rl_best_path=main_rl_best_path,
+        little_rl_best_path=little_rl_best_path,
+        dump_network_stats=dump_network_stats,
     )
 
 
@@ -655,20 +647,16 @@ edge_cloud_bandwidth = [
 for little_model, draft_model, target_model in (
     llama_series,
     # vicuna_series,
-    qwen_series,
-    # llama_chat_series,
-    # qwen_series_fp8,
-    # gemma_3_it_series,
-    # qwen_series_large,
-    # llama_3_series,
-    qwen_1_5_series,
+    # qwen_series,
+    # # llama_chat_series,
+    # # qwen_series_fp8,
+    # # gemma_3_it_series,
+    # # qwen_series_large,
+    # # llama_3_series,
+    # qwen_1_5_series,
 ):
-    for dataset in [
-        EvalDataset.gsm8k,
-    ]:
-        for mode in [
-            EvalMode.cuhlm,
-        ]:
+    for dataset in (EvalDataset.mt_bench_noeval,):
+        for mode in EvalMode:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
                     eval_mode=mode,
@@ -682,7 +670,7 @@ for little_model, draft_model, target_model in (
                     small_draft_threshold=0.8,
                     draft_target_threshold=0.6,
                     transfer_top_k=1024,
-                    max_tokens=1024,
+                    max_tokens=128,
                     num_shots=5,
                     eval_dataset=dataset,
                     draft_model=draft_model

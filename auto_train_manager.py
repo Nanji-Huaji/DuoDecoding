@@ -12,28 +12,20 @@ from pathlib import Path
 
 import numpy as np
 
+from src.acc_head_registry import resolve_acc_head_path
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
+
 # Model Series Definitions
 MODEL_SERIES = {
     "llama": ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
     "vicuna": ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
     "qwen": ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B"),
     "qwen-32b": ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B"),
-    "qwen15": ("Qwen/Qwen3-0.6B", "Qwen/Qwen1.5-1.8B-Chat", "Qwen/Qwen1.5-7B-Chat"),
-}
-
-MODEL_ACC_HEAD_MAP = {
-    "llama-68m": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",  # Fallback
-    "tiny-llama-1.1b": "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
-    "llama-2-13b": "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
-    "vicuna-68m": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",  # Fallback
-    "tiny-vicuna-1b": "src/SpecDec_pp/checkpoints/tiny-vicuna-1b/exp-weight6-layer3",
-    "vicuna-13b-v1.5": "src/SpecDec_pp/checkpoints/vicuna-v1.5-13b/exp-weight6-layer3",
-    "Qwen/Qwen3-0.6B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",  # Fallback
-    "Qwen/Qwen3-1.7B": "src/SpecDec_pp/checkpoints/qwen-3-1.7b/exp-weight6-layer3",
-    "Qwen/Qwen3-14B": "src/SpecDec_pp/checkpoints/qwen-3-14b/exp-weight6-layer3",
-    "Qwen/Qwen3-32B": "src/SpecDec_pp/checkpoints/qwen-3-32b/exp-weight6-layer3",
-    "Qwen/Qwen1.5-1.8B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-1.8b/exp-weight-layer3",
-    "Qwen/Qwen1.5-7B-Chat": "src/SpecDec_pp/checkpoints/qwen1.5-7b/exp-weight6-layer3",
+    "qwen15": (
+        "Qwen/Qwen1.5-0.5B-Chat",
+        "Qwen/Qwen1.5-1.8B-Chat",
+        "Qwen/Qwen1.5-7B-Chat",
+    ),
 }
 
 
@@ -86,6 +78,18 @@ class TrainingManager:
         self.checkpoint_dir = Path(f"checkpoints/{model_series_name}")
         self.status_file = self.checkpoint_dir / "training_status.json"
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
+        self.main_rl_spec = get_rl_agent_spec(
+            ROLE_MAIN,
+            little_model=self.models[0],
+            draft_model=self.models[1],
+            target_model=self.models[2],
+        )
+        self.little_rl_spec = get_rl_agent_spec(
+            ROLE_LITTLE,
+            little_model=self.models[0],
+            draft_model=self.models[1],
+            target_model=self.models[2],
+        )
 
         self.top_checkpoints = []
 
@@ -293,22 +297,25 @@ class TrainingManager:
                 f"[{datetime.now()}] 发现新的更优性能 (TPS: {tps_val:.3f})，正在保存到 {save_path}..."
             )
 
-            checkpoint_dir = self.checkpoint_dir
             files_to_copy = [
-                "rl_adapter_main.pth",
-                "rl_adapter_main.pth.buffer",
-                "rl_adapter_little.pth",
-                "rl_adapter_little.pth.buffer",
+                Path(self.main_rl_spec.latest_path),
+                Path(self.main_rl_spec.latest_path + ".buffer"),
+                Path(self.little_rl_spec.latest_path),
+                Path(self.little_rl_spec.latest_path + ".buffer"),
                 "training_status.json",
             ]
 
             # 同步最新的训练状态
             self.save_training_status()
 
-            for f_name in files_to_copy:
-                src = checkpoint_dir / f_name
+            for file_ref in files_to_copy:
+                src = (
+                    self.checkpoint_dir / file_ref
+                    if isinstance(file_ref, str)
+                    else file_ref
+                )
                 if src.exists():
-                    shutil.copy(src, save_path / f_name)
+                    shutil.copy(src, save_path / src.name)
 
             self.top_checkpoints.append((tps_val, save_path))
             self.top_checkpoints.sort(key=lambda x: x[0], reverse=True)
@@ -349,12 +356,18 @@ class TrainingManager:
         old_buffer = checkpoint_dir / "rl_adapter.pth.buffer"
 
         targets = [
-            ("rl_adapter_main.pth", "rl_adapter_main.pth.buffer"),
-            ("rl_adapter_little.pth", "rl_adapter_little.pth.buffer"),
+            (
+                Path(self.main_rl_spec.latest_path),
+                Path(self.main_rl_spec.latest_path + ".buffer"),
+            ),
+            (
+                Path(self.little_rl_spec.latest_path),
+                Path(self.little_rl_spec.latest_path + ".buffer"),
+            ),
         ]
 
         # Check if new checkpoints already exist
-        existing_new = [t for t, _ in targets if (checkpoint_dir / t).exists()]
+        existing_new = [str(t) for t, _ in targets if t.exists()]
 
         if len(existing_new) == len(targets):
             print(
@@ -367,8 +380,10 @@ class TrainingManager:
                 f"[{datetime.now()}] 检测到旧的单 Agent 检查点 {old_pth}，正在迁移到双 Agent 结构..."
             )
             for model_file, buffer_file in targets:
-                target_pth = checkpoint_dir / model_file
-                target_buf = checkpoint_dir / buffer_file
+                target_pth = model_file
+                target_buf = buffer_file
+
+                target_pth.parent.mkdir(parents=True, exist_ok=True)
 
                 if not target_pth.exists():
                     shutil.copy(old_pth, target_pth)
@@ -414,12 +429,18 @@ class TrainingManager:
         env["DRAFT_MODEL"] = self.models[1]
         env["TARGET_MODEL"] = self.models[2]
 
-        env["MAIN_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_main.pth")
-        env["LITTLE_RL_PATH"] = str(self.checkpoint_dir / "rl_adapter_little.pth")
+        env["MAIN_RL_PATH"] = self.main_rl_spec.latest_path
+        env["MAIN_RL_BEST_PATH"] = self.main_rl_spec.best_path
+        env["LITTLE_RL_PATH"] = self.little_rl_spec.latest_path
+        env["LITTLE_RL_BEST_PATH"] = self.little_rl_spec.best_path
 
-        env["ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
-        env["SMALL_DRAFT_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[1], "")
-        env["DRAFT_TARGET_ACC_HEAD_PATH"] = MODEL_ACC_HEAD_MAP.get(self.models[2], "")
+        env["ACC_HEAD_PATH"] = resolve_acc_head_path(self.models[1], self.models[2])
+        env["SMALL_DRAFT_ACC_HEAD_PATH"] = resolve_acc_head_path(
+            self.models[0], self.models[1]
+        )
+        env["DRAFT_TARGET_ACC_HEAD_PATH"] = resolve_acc_head_path(
+            self.models[1], self.models[2]
+        )
 
         print(
             f"[{datetime.now()}] Starting training series {self.model_series_name}: {self.start_script} (Env: mmWave Trace / 10ms NTT)"
@@ -492,7 +513,7 @@ class TrainingManager:
             elif self.model_series_name == "qwen-32b":
                 patterns = ["Qwen3-1.7B", "Qwen3-14B", "Qwen3-32B"]
             elif self.model_series_name == "qwen15":
-                patterns = ["Qwen3-0.6B", "Qwen1.5-1.8B", "Qwen1.5-7B"]
+                patterns = ["Qwen1.5-0.5B-Chat", "Qwen1.5-1.8B-Chat", "Qwen1.5-7B-Chat"]
 
             for p in patterns:
                 # 使用 pkill -f 匹配包含特定模型路径的进程
