@@ -1,12 +1,156 @@
+import argparse
+import json
+import logging
 import os
 import random
-import argparse
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import re
 
-import json
+from src.acc_head_registry import resolve_acc_head_path
+from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
+
+
+logger = logging.getLogger(__name__)
+_LIMITED_WARNING_COUNTS: dict[str, int] = {}
+
+
+def _env_flag_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default) == "1"
+
+
+def numeric_debug_checks_enabled() -> bool:
+    return _env_flag_enabled("DUODEC_DEBUG_NUMERICS")
+
+
+def _log_limited_warning(label: str, message: str, max_warnings: int = 5) -> None:
+    count = _LIMITED_WARNING_COUNTS.get(label, 0)
+    _LIMITED_WARNING_COUNTS[label] = count + 1
+
+    if count < max_warnings:
+        logger.warning(message)
+    elif count == max_warnings:
+        logger.warning("[%s] additional warnings suppressed", label)
+
+
+def log_prob_tensor_if_invalid(
+    probs: torch.Tensor | None,
+    label: str,
+    *,
+    expected_sum: float = 1.0,
+    atol: float = 1e-3,
+    max_warnings: int = 5,
+) -> bool:
+    if not numeric_debug_checks_enabled():
+        return False
+
+    if probs is None or probs.numel() == 0:
+        return False
+
+    probs_float = probs.detach().float()
+    if probs_float.dim() == 0:
+        probs_float = probs_float.reshape(1, 1)
+    elif probs_float.dim() == 1:
+        probs_float = probs_float.unsqueeze(0)
+    else:
+        probs_float = probs_float.reshape(-1, probs_float.shape[-1])
+
+    has_nan = torch.isnan(probs_float).any().item()
+    has_posinf = torch.isposinf(probs_float).any().item()
+    has_neginf = torch.isneginf(probs_float).any().item()
+    negative_count = int((probs_float < -atol).sum().item())
+
+    row_sums = probs_float.sum(dim=-1)
+    finite_sum_mask = torch.isfinite(row_sums)
+    bad_sum_mask = finite_sum_mask & ((row_sums - expected_sum).abs() > atol)
+
+    if not (
+        has_nan
+        or has_posinf
+        or has_neginf
+        or negative_count > 0
+        or bad_sum_mask.any().item()
+    ):
+        return False
+
+    finite_values = probs_float[torch.isfinite(probs_float)]
+    if finite_values.numel() > 0:
+        min_prob = float(finite_values.min().item())
+        max_prob = float(finite_values.max().item())
+    else:
+        min_prob = float("nan")
+        max_prob = float("nan")
+
+    finite_row_sums = row_sums[finite_sum_mask]
+    if finite_row_sums.numel() > 0:
+        min_sum = float(finite_row_sums.min().item())
+        max_sum = float(finite_row_sums.max().item())
+    else:
+        min_sum = float("nan")
+        max_sum = float("nan")
+
+    _log_limited_warning(
+        label,
+        (
+            f"[{label}] invalid probability tensor detected: "
+            f"shape={tuple(probs.shape)}, "
+            f"nan={bool(has_nan)}, posinf={bool(has_posinf)}, neginf={bool(has_neginf)}, "
+            f"negative_count={negative_count}, "
+            f"bad_sum_rows={int(bad_sum_mask.sum().item())}/{row_sums.numel()}, "
+            f"sum_range=[{min_sum:.6g}, {max_sum:.6g}], "
+            f"value_range=[{min_prob:.6g}, {max_prob:.6g}]"
+        ),
+        max_warnings=max_warnings,
+    )
+    return True
+
+
+def log_ratio_if_invalid(
+    numerator: torch.Tensor,
+    denominator: torch.Tensor,
+    label: str,
+    *,
+    atol: float = 1e-12,
+    max_warnings: int = 5,
+) -> bool:
+    if not numeric_debug_checks_enabled():
+        return False
+
+    numerator = numerator.detach().float()
+    denominator = denominator.detach().float()
+    ratio = numerator / denominator
+
+    invalid_numerator = ~torch.isfinite(numerator) | (numerator < -atol)
+    invalid_denominator = ~torch.isfinite(denominator) | (denominator <= atol)
+    invalid_ratio = ~torch.isfinite(ratio) | (ratio < -atol)
+    issue_mask = invalid_numerator | invalid_denominator | invalid_ratio
+
+    if not issue_mask.any().item():
+        return False
+
+    finite_ratio = ratio[torch.isfinite(ratio)]
+    if finite_ratio.numel() > 0:
+        min_ratio = float(finite_ratio.min().item())
+        max_ratio = float(finite_ratio.max().item())
+    else:
+        min_ratio = float("nan")
+        max_ratio = float("nan")
+
+    _log_limited_warning(
+        label,
+        (
+            f"[{label}] invalid acceptance ratio detected: "
+            f"shape={tuple(ratio.shape)}, "
+            f"invalid_numerator={int(invalid_numerator.sum().item())}, "
+            f"invalid_denominator={int(invalid_denominator.sum().item())}, "
+            f"invalid_ratio={int(invalid_ratio.sum().item())}, "
+            f"finite_ratio_range=[{min_ratio:.6g}, {max_ratio:.6g}]"
+        ),
+        max_warnings=max_warnings,
+    )
+    return True
+
 
 def seed_everything(seed: int):
     "set all random seed for reproducible results."
@@ -89,7 +233,13 @@ def model_zoo(args):
     }
     args.draft_model = zoo.get(args.draft_model, args.draft_model)
     args.target_model = zoo.get(args.target_model, args.target_model)
-    args.little_model = zoo.get(args.little_model, args.little_model) if hasattr(args, "little_model") else args.draft_model
+    args.little_model = (
+        zoo.get(args.little_model, args.little_model)
+        if hasattr(args, "little_model")
+        else args.draft_model
+    )
+    if args.draft_model is None:
+        args.draft_model = ""
     args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
 
 
@@ -128,9 +278,15 @@ def parse_arguments():
         default=1234,
         help="set a random seed, which can makes the result reproducible",
     )
-    parser.add_argument("--max_tokens", type=int, default=1024, help="max token number generated.")
-    parser.add_argument("--temp", type=float, default=0.2, help="temperature for generating new tokens.")
-    parser.add_argument("--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy.")
+    parser.add_argument(
+        "--max_tokens", type=int, default=1024, help="max token number generated."
+    )
+    parser.add_argument(
+        "--temp", type=float, default=0.2, help="temperature for generating new tokens."
+    )
+    parser.add_argument(
+        "--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy."
+    )
     parser.add_argument(
         "--top_p",
         type=float,
@@ -304,19 +460,19 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
         help="The path of the accuracy head model.",
     )
     parser.add_argument(
         "--small_draft_acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3",
+        default=resolve_acc_head_path("llama-68m", "tiny-llama-1.1b"),
         help="The path of the small draft accuracy head model.",
     )
     parser.add_argument(
         "--draft_target_acc_head_path",
         type=str,
-        default="src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3",
+        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
         help="The path of the draft-target accuracy head model.",
     )
     parser.add_argument(
@@ -344,14 +500,26 @@ def parse_arguments():
     parser.add_argument(
         "--main_rl_path",
         type=str,
-        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_main.pth",
+        default=None,
         help="The path of the main RL adapter model.",
+    )
+    parser.add_argument(
+        "--main_rl_best_path",
+        type=str,
+        default=None,
+        help="The path of the best main RL adapter model.",
     )
     parser.add_argument(
         "--little_rl_path",
         type=str,
-        default="checkpoints/best/tps_20.330_0131_084912/rl_adapter_little.pth",
+        default=None,
         help="The path of the little RL adapter model.",
+    )
+    parser.add_argument(
+        "--little_rl_best_path",
+        type=str,
+        default=None,
+        help="The path of the best little RL adapter model.",
     )
     parser.add_argument(
         "--disable_rl_update",
@@ -361,7 +529,7 @@ def parse_arguments():
     parser.add_argument(
         "--batch_delay",
         type=float,
-        default=50e-3, # 50 ms
+        default=50e-3,  # 50 ms
         help="The delay time added to each batch in seconds.",
     )
     parser.add_argument(
@@ -369,8 +537,40 @@ def parse_arguments():
         action="store_true",
         help="Whether to use early stopping during decoding.",
     )
+    parser.add_argument(
+        "--dump_network_stats",
+        action="store_true",
+        help="Whether to dump network statistics during decoding.",
+    )
 
     args = parser.parse_args()
+    if getattr(args, "main_rl_path", None) is None:
+        main_spec = get_rl_agent_spec(
+            ROLE_MAIN,
+            little_model=getattr(args, "little_model", None),
+            draft_model=args.draft_model,
+            target_model=args.target_model,
+        )
+        args.main_rl_path = main_spec.latest_path
+        if getattr(args, "main_rl_best_path", None) is None:
+            args.main_rl_best_path = main_spec.best_path
+    elif getattr(args, "main_rl_best_path", None) is None:
+        args.main_rl_best_path = args.main_rl_path
+
+    if getattr(args, "little_model", None) is not None:
+        if getattr(args, "little_rl_path", None) is None:
+            little_spec = get_rl_agent_spec(
+                ROLE_LITTLE,
+                little_model=args.little_model,
+                draft_model=args.draft_model,
+                target_model=args.target_model,
+            )
+            args.little_rl_path = little_spec.latest_path
+            if getattr(args, "little_rl_best_path", None) is None:
+                args.little_rl_best_path = little_spec.best_path
+        elif getattr(args, "little_rl_best_path", None) is None:
+            args.little_rl_best_path = args.little_rl_path
+
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
     os.makedirs(args.exp_name, exist_ok=True)
     model_zoo(args)
@@ -381,7 +581,7 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
     """
 
     Args:
-        logits (torch.Tensorpe_): 2D tensor with shape (batch, vocab)
+        logits (torch.Tensor): Tensor with shape (batch, vocab) or (batch, seq_len, vocab)
         top_k (int, optional): top_k. Defaults to 0.
         top_p (float, optional): top_p. Defaults to 0.0.
 
@@ -389,44 +589,59 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
         torch.Tensor: a renormalized logits
     """
     if top_k > 0:
-        filter = torch.topk(logits, min(top_k, logits.size(-1)))[0]
-        logits[logits < filter[:, [-1]]] = float("-inf")
+        # Avoid out of bounds if top_k > vocab_size
+        k = min(top_k, logits.size(-1))
+        # Support multi-dimensional tensor (e.g. 3D: [batch, seq_len, vocab])
+        filter_value = torch.topk(logits, k, dim=-1)[0][..., -1, None]
+        logits = logits.masked_fill(logits < filter_value, float("-inf"))
+
     if top_p > 0.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
         cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-        filter = cumulative_probs > top_p
-        filter[..., 1:] = filter[..., :-1].clone()
-        filter[..., 0] = 0
-        indices_to_remove = filter.scatter(1, sorted_indices, filter)
-        logits[indices_to_remove] = float("-inf")
+
+        # Determine elements to remove
+        filter_mask = cumulative_probs > top_p
+
+        # Shift mask to the right to keep the first token that exceeds top_p
+        filter_mask[..., 1:] = filter_mask[..., :-1].clone()
+        filter_mask[..., 0] = 0
+
+        # Scatter the mask back to the original index positions
+        indices_to_remove = filter_mask.scatter(-1, sorted_indices, filter_mask)
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
+
     return logits
 
 
-def norm_logits(logits: torch.Tensor, temperature: float, top_k: float, top_p: float) -> torch.Tensor:
+def norm_logits(
+    logits: torch.Tensor, temperature: float, top_k: float, top_p: float
+) -> torch.Tensor:
     """
 
     Args:
-        logits (torch.Tensor): shape (1, vocab)
+        logits (torch.Tensor): shape (batch, vocab) or (batch, seq_len, vocab)
         temperature (float): temperature
         top_k (float): top_k
         top_p (float): top_p
 
     Returns:
-        torch.Tensor: next token with shape as (batch,  1)
+        torch.Tensor: probs with same shape as logits
     """
-    assert logits.dim() == 2
     if temperature == 0:
-        idx = logits.argmax(dim=1)
+        idx = logits.argmax(dim=-1, keepdim=True)
         new_logits = torch.zeros_like(logits, device=logits.device)
-        new_logits[:, idx] = 1
+        new_logits.scatter_(-1, idx, 1)
         return new_logits.float()
+
     logits = logits / temperature
-    logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
-    probs = F.softmax(logits, dim=1)
+    logits = top_k_top_p_filter(logits, top_k=int(top_k), top_p=top_p)
+    probs = F.softmax(logits, dim=-1)
     return probs
 
 
-def norm_numpy_logits(logits: np.ndarray, temperature: float, top_k: float, top_p: float) -> np.ndarray:
+def norm_numpy_logits(
+    logits: np.ndarray, temperature: float, top_k: float, top_p: float
+) -> np.ndarray:
     assert logits.ndim == 2
     if temperature == 0:
         idx = logits.argmax(axis=1)
@@ -440,6 +655,25 @@ def norm_numpy_logits(logits: np.ndarray, temperature: float, top_k: float, top_
 
 
 def sample(probs: torch.Tensor, num_samples: int = 1):
+    probs = probs.float()
+    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+    probs = probs.clamp_min(0.0)
+
+    probs_sum = probs.sum(dim=-1, keepdim=True)
+    invalid_rows = probs_sum.squeeze(-1) <= 0
+
+    if invalid_rows.any():
+        fallback = torch.zeros_like(probs[invalid_rows])
+        fallback.scatter_(
+            -1,
+            probs[invalid_rows].argmax(dim=-1, keepdim=True),
+            1.0,
+        )
+        probs = probs.clone()
+        probs[invalid_rows] = fallback
+        probs_sum = probs.sum(dim=-1, keepdim=True)
+
+    probs = probs / probs_sum
     idx_next = torch.multinomial(probs, num_samples=num_samples)
     return idx_next
 
@@ -448,28 +682,46 @@ def max_fn(x):
     """
     norm(max (x, 0))
     """
+    x = torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
     x_max = torch.where(x > 0, x, torch.zeros_like(x))
     x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
-    return x_max / x_max_sum
+
+    valid_rows = x_max_sum.squeeze(-1) > 0
+    result = torch.zeros_like(x_max)
+
+    if valid_rows.any():
+        result[valid_rows] = x_max[valid_rows] / x_max_sum[valid_rows]
+
+    if (~valid_rows).any():
+        fallback = torch.zeros_like(x_max[~valid_rows])
+        fallback.scatter_(
+            -1,
+            x[~valid_rows].argmax(dim=-1, keepdim=True),
+            1.0,
+        )
+        result[~valid_rows] = fallback
+
+    return result
+
 
 def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
     """Read trace file and return a list of floats."""
     with open(trace_file, "r") as f:
         content = f.read()
-    
+
     # Split by the separator
     blocks = content.split("###############################")
-    
+
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        
-        lines = block.split('\n')
+
+        lines = block.split("\n")
         # Find the line starting with Run
         run_id = -1
         data_line = ""
-        
+
         for line in lines:
             line = line.strip()
             if line.startswith("Run"):
@@ -480,7 +732,7 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
             elif line:
                 # Assume this is the data line
                 data_line = line
-        
+
         if run_id == read_idx and data_line:
             data = [float(x) for x in data_line.split(",")]
             # 1. First pop trailing values that are less than 5.0
@@ -488,8 +740,9 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
                 data.pop()
             # 2. Then apply clamping to the remaining values (middle and start)
             return [max(5.0, x) for x in data]
-            
+
     raise ValueError(f"Run ID {read_idx} not found in trace file.")
+
 
 def return_closest_mean_index(trace_file: str, mean_value: float | None = None) -> int:
     """
@@ -498,19 +751,19 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
     """
     with open(trace_file, "r") as f:
         content = f.read()
-    
+
     blocks = content.split("###############################")
     run_means = {}
-    
+
     for block in blocks:
         block = block.strip()
         if not block:
             continue
-        
-        lines = block.split('\n')
+
+        lines = block.split("\n")
         run_id = -1
         data_line = ""
-        
+
         for line in lines:
             line = line.strip()
             if line.startswith("Run"):
@@ -521,7 +774,7 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
             elif line:
                 # Assume this is the data line
                 data_line = line
-        
+
         if run_id != -1 and data_line:
             try:
                 # Use the same logic as read_trace_file: pop trailing < 5.0, then clamp remaining
@@ -529,7 +782,7 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
                 while data and data[-1] < 5.0:
                     data.pop()
                 processed_data = [max(5.0, x) for x in data]
-                
+
                 if processed_data:
                     run_means[run_id] = sum(processed_data) / len(processed_data)
             except ValueError:
@@ -540,16 +793,16 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
 
     if mean_value is None:
         mean_value = sum(run_means.values()) / len(run_means)
-    
+
     closest_run_id = -1
     min_diff = float("inf")
-    
+
     for run_id, r_mean in run_means.items():
         diff = abs(r_mean - mean_value)
         if diff < min_diff:
             min_diff = diff
             closest_run_id = run_id
-            
+
     return closest_run_id
 
 
@@ -560,7 +813,7 @@ def get_vocab_size(model_name: str) -> int:
             vocab_size = config.get("vocab_size", None)
             if vocab_size is not None:
                 return vocab_size
-            
+
             # Check text_config for multimodal models
             if "text_config" in config and isinstance(config["text_config"], dict):
                 vocab_size = config["text_config"].get("vocab_size", None)
@@ -569,10 +822,11 @@ def get_vocab_size(model_name: str) -> int:
 
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    
+
     # Fallback to AutoConfig if not found in JSON or file missing
     try:
         from transformers import AutoConfig
+
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         if hasattr(config, "vocab_size"):
             return config.vocab_size
