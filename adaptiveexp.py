@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Literal, TypedDict
 
+from src.nvml import get_available_gpus as detect_available_gpus
+
 
 class ExpConfig(TypedDict):
     CUDA_VISIBLE_DEVICES: Literal["0", "1"]
@@ -176,30 +178,7 @@ class GPUManager:
 
     def get_available_gpus(self) -> List[int]:
         """检测完全空闲的GPU"""
-        import pynvml
-
-        pynvml.nvmlInit()
-        available_gpus = []
-
-        device_count = pynvml.nvmlDeviceGetCount()
-        for i in range(device_count):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            # 检查显存使用情况
-            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            mem_used_mb = mem_info.used / 1024 / 1024
-
-            # 检查GPU利用率
-            util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            gpu_util = util_info.gpu
-
-            # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
-            if mem_used_mb < 1024 and gpu_util < 5:
-                available_gpus.append(i)
-                print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-            else:
-                print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-
-        return available_gpus
+        return detect_available_gpus()
 
     def acquire_gpu(self) -> int | None:
         """获取一个可用的GPU"""
@@ -302,30 +281,7 @@ def run_experiments_parallel(
 
 def get_available_gpus() -> List[int]:
     """检测完全空闲的GPU"""
-    import pynvml
-
-    pynvml.nvmlInit()
-    available_gpus = []
-
-    device_count = pynvml.nvmlDeviceGetCount()
-    for i in range(device_count):
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        # 检查显存使用情况
-        mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        mem_used_mb = mem_info.used / 1024 / 1024  # type: ignore
-
-        # 检查GPU利用率
-        util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
-        gpu_util = util_info.gpu
-
-        # 如果显存使用小于1024MB且GPU利用率小于5%，认为是空闲的
-        if mem_used_mb < 1024 and gpu_util < 5:  # type: ignore
-            available_gpus.append(i)
-            print(f"GPU {i}: 可用 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-        else:
-            print(f"GPU {i}: 忙碌 (显存: {mem_used_mb:.1f}MB, 利用率: {gpu_util}%)")
-
-    return available_gpus
+    return detect_available_gpus()
 
 
 def create_config(

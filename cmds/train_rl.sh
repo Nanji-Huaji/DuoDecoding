@@ -6,6 +6,14 @@ cd "$(dirname "$0")/.." || exit
 # 激活环境 (如果需要，取消注释)
 # source /home/tiantianyi/miniconda3/bin/activate duodec_revise
 
+resolve_acc_head_path() {
+    python -m src.acc_head_registry "$1" "$2" --format resolved-path
+}
+
+resolve_rl_agent_path() {
+    python -m src.rl_agent_registry "$1" "$2" "$3" --kind "${4:-latest}" --format path
+}
+
 echo "Starting Multi-Task RL Agent Training..."
 echo "Mode: adaptive_decoding"
 echo "Metrics: TPS (Tokens Per Second)"
@@ -32,6 +40,11 @@ run_training() {
     # 使用环境变量中的 GPU ID，如果没有设置则默认为 0
     GPU_ID=${CUDA_VISIBLE_DEVICES:-0}
 
+    MAIN_RL_PATH=${MAIN_RL_PATH:-"$(resolve_rl_agent_path main 'tiny-llama-1.1b' 'llama-2-13b' latest)"}
+    MAIN_RL_BEST_PATH=${MAIN_RL_BEST_PATH:-"$(resolve_rl_agent_path main 'tiny-llama-1.1b' 'llama-2-13b' best)"}
+    LITTLE_RL_PATH=${LITTLE_RL_PATH:-"$(resolve_rl_agent_path little 'llama-68m' 'tiny-llama-1.1b' latest)"}
+    LITTLE_RL_BEST_PATH=${LITTLE_RL_BEST_PATH:-"$(resolve_rl_agent_path little 'llama-68m' 'tiny-llama-1.1b' best)"}
+
     # 为 Tri-decoding 分配模型
     EXTRA_ARGS=()
     if [[ "$MODE" == "adaptive_tridecoding" ]]; then
@@ -39,8 +52,8 @@ run_training() {
             "--little_model" "llama-68m" 
             "--gamma1" "6" 
             "--gamma2" "4"
-            "--small_draft_acc_head_path" "src/SpecDec_pp/checkpoints/llama-1.1b/exp-weight6-layer3"
-            "--draft_target_acc_head_path" "src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3"
+            "--small_draft_acc_head_path" "$(resolve_acc_head_path 'llama-68m' 'tiny-llama-1.1b')"
+            "--draft_target_acc_head_path" "$(resolve_acc_head_path 'tiny-llama-1.1b' 'llama-2-13b')"
         )
     fi
 
@@ -60,7 +73,11 @@ run_training() {
         --edge_cloud_bandwidth $BW \
         --edge_end_bandwidth $END_BW \
         --ntt_ms_edge_cloud $LATENCY \
-        --acc_head_path src/SpecDec_pp/checkpoints/llama-13b/exp-weight6-layer3 \
+        --main_rl_path "$MAIN_RL_PATH" \
+        --main_rl_best_path "$MAIN_RL_BEST_PATH" \
+        --little_rl_path "$LITTLE_RL_PATH" \
+        --little_rl_best_path "$LITTLE_RL_BEST_PATH" \
+        --acc_head_path "$(resolve_acc_head_path 'tiny-llama-1.1b' 'llama-2-13b')" \
         "${EXTRA_ARGS[@]}" \
         --eval_data_num $SAMPLES || echo "Warning: Task $TASK failed or completed with errors."
 
