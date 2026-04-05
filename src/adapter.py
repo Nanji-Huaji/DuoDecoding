@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from collections.abc import Sequence
 
 from .model_gpu import KVCacheModel
 
@@ -21,11 +22,12 @@ class DecodingAdapter:
         self.step_acc_probs = []
 
     @torch.inference_mode()
-    def predict(self, hidden_states: torch.Tensor) -> bool:
+    def predict(self, hidden_states: Sequence[torch.Tensor]) -> bool:
         """
         Predict whether to stop generation based on the hidden states.
         Input:
-            hidden_states: Tensor of shape (1, seq_len, hidden_size). Whole hidden states of the current generation.
+            hidden_states: Sequence of layer hidden states, where
+                hidden_states[-1] has shape (1, seq_len, hidden_size).
         Output:
             stop_prediction: bool, whether to stop generation
         """
