@@ -28,19 +28,8 @@ class EvalMixed(Baselines):
         self.load_tokenizer()
         self.load_model()
 
-        # 获取真实的vocab_size：从实际模型的embedding层获取
-        # 这比tokenizer.vocab_size或config.vocab_size更准确
-        if hasattr(self, "target_model") and self.target_model is not None:
-            actual_vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
-            print(f"[Token Safety] Actual embedding size: {actual_vocab_size}")
-        elif hasattr(self, "draft_model") and self.draft_model is not None:
-            actual_vocab_size = self.draft_model.get_input_embeddings().weight.shape[0]
-            print(
-                f"[Token Safety] Actual embedding size from draft: {actual_vocab_size}"
-            )
-        else:
-            actual_vocab_size = self.tokenizer.vocab_size
-            print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
+        actual_vocab_size = self.tokenizer.vocab_size
+        print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
 
         self.vocab_size = actual_vocab_size
         self.pad_token_id = (
@@ -210,7 +199,7 @@ class EvalMixed(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], prompt_text)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None) # type: ignore
             return conv.get_prompt()
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
