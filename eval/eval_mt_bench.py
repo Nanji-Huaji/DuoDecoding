@@ -9,7 +9,7 @@ import random
 import re
 import time
 from functools import partial
-from typing import List
+from typing import List, cast
 
 import shortuuid
 import torch
@@ -58,7 +58,7 @@ Please act as an impartial judge and evaluate the quality of the response provid
             max_tokens=2048,
         )
         content = response.choices[0].message.content
-        match = re.search(r"\[\[(\d+)\]\]", content)
+        match = re.search(r"\[\[(\d+)\]\]", content if content is not None else "")
         if match:
             return float(match.group(1))
         else:
@@ -253,7 +253,7 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        conv.append_message(conv.roles[1], None)  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -267,8 +267,9 @@ class EvalMTBench(Baselines):
                     torch.cuda.synchronize()
                     end_time = time.time()
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -351,7 +352,8 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        # Package uses wrong type hint
+                        conv.append_message(conv.roles[1], cast(str, None))  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -370,6 +372,7 @@ class EvalMTBench(Baselines):
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
                                     "accuracy",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -393,11 +396,14 @@ class EvalMTBench(Baselines):
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
 
+                    output_ids = cast(torch.Tensor, output_ids)
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -468,6 +474,9 @@ class EvalMTBench(Baselines):
                             or decoding_metrics["accuracy"] == 0
                         ):
                             decoding_metrics["accuracy"] = []
+                        assert decoding_metrics["accuracy"] is not None, (
+                            "decoding_metrics['accuracy'] should not be None"
+                        )
                         decoding_metrics["accuracy"].append(choice["score"])
 
                 out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
@@ -510,20 +519,6 @@ class EvalMTBench(Baselines):
             2,
         )
 
-        # 添加类型检查和默认值
-        computation_time = decoding_metrics.get("computation_time", 0.0)
-        if not isinstance(computation_time, (int, float)):
-            decoding_metrics["computation_time"] = 0.0
-
-        communication_time = decoding_metrics.get("communication_time", 0.0)
-        if not isinstance(communication_time, (int, float)):
-            decoding_metrics["communication_time"] = 0.0
-
-        if decoding_metrics["wall_time"] != 0:
-            decoding_metrics["throughput"] = (
-                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-            )
-
         if (
             self.accelerator.is_main_process
             and "accuracy" in decoding_metrics
@@ -536,40 +531,22 @@ class EvalMTBench(Baselines):
             decoding_metrics["accuracy"] = avg_score
             self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
 
+        if decoding_metrics["wall_time"] != 0:
+            decoding_metrics["throughput"] = (
+                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
+            )
+        else:
+            decoding_metrics["throughput"] = 0.0
+
         # 过滤掉历史数据字段以避免打印过长
-        metrics_for_print = {
-            k: v
-            for k, v in decoding_metrics.items()
-            if k
-            not in [
-                "edge_cloud_bandwidth_history",
-                "edge_cloud_topk_history",
-                "edge_cloud_draft_len_history",
-            ]
-        }
 
-        metrics_str = f"""
-        {json.dumps(metrics_for_print, indent=4)}
-        """
+        print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
-        metrics_str += """
-        ------------- End of Evaluation Summary -------------
-        """
-
-        eval_result = dict(decoding_metrics)
-        eval_result["little_model"] = self.args.little_model
-        eval_result["draft_model"] = self.args.draft_model
-        eval_result["target_model"] = self.args.target_model
-        eval_result["eval_mode"] = self.args.eval_mode
-        eval_result["gamma"] = self.args.gamma
-        eval_result["gamma1"] = self.args.gamma1
-        eval_result["gamma2"] = self.args.gamma2
-
+        eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
         decoding_metrics_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
         )
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-        self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
         self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)

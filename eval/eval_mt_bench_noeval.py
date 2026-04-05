@@ -7,7 +7,7 @@ import json
 import random
 import time
 from functools import partial
-from typing import List
+from typing import List, cast
 
 import shortuuid
 import torch
@@ -19,6 +19,10 @@ from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
 
 decoding_metrics = get_empty_metrics()
+
+
+def _token_debug_checks_enabled() -> bool:
+    return os.environ.get("DUODEC_DEBUG_TOKEN_CHECKS", "0") == "1"
 
 
 def get_class_methods(cls) -> List[str]:
@@ -121,7 +125,7 @@ class EvalMTBench(Baselines):
         else:
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None)  # type: ignore
             prompt = conv.get_prompt() + " "
         return prompt
 
@@ -211,7 +215,7 @@ class EvalMTBench(Baselines):
                     sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
                     conv.system_message = sys_p
                 conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None)
+                conv.append_message(conv.roles[1], None)  # type: ignore
                 prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
@@ -221,6 +225,7 @@ class EvalMTBench(Baselines):
             output_ids = decoding(input_ids)
             if isinstance(output_ids, tuple) and len(output_ids) == 2:
                 output_ids, _ = output_ids
+            output_ids = cast(torch.Tensor, output_ids)
             torch.cuda.synchronize()
             elapsed = time.time() - start_time
             print(
@@ -292,7 +297,7 @@ class EvalMTBench(Baselines):
 
                     else:
                         conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)
+                        conv.append_message(conv.roles[1], None)  # type: ignore
                         prompt = conv.get_prompt() + " "
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
@@ -310,6 +315,7 @@ class EvalMTBench(Baselines):
                                 not in [
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -333,27 +339,35 @@ class EvalMTBench(Baselines):
                                     except Exception as e:
                                         print(f"Error updating metric {key}: {e}")
 
+                    output_ids = cast(torch.Tensor, output_ids)
+
                     torch.cuda.synchronize()
                     end_time = time.time()
 
-                    if (output_ids < 0).any() or (
-                        output_ids >= self.tokenizer.vocab_size
-                    ).any():
-                        print(
-                            f"DEBUG: Found invalid tokens! vocab_size: {self.tokenizer.vocab_size}"
-                        )
-                        invalid_mask = (output_ids < 0) | (
-                            output_ids >= self.tokenizer.vocab_size
-                        )
-                        print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
-                        # Filter invalid tokens
-                        output_ids = output_ids.clone()
-                        output_ids[invalid_mask] = (
-                            0  # Replace with unknown or padding (0 usually safe)
-                        )
+                    if _token_debug_checks_enabled():
+                        output_ids = cast(torch.Tensor, output_ids)
+                        tokenizer_size = len(self.tokenizer)
+                        if (output_ids < 0).any() or (
+                            output_ids >= tokenizer_size
+                        ).any():
+                            print(
+                                "DEBUG: Found invalid tokens! "
+                                f"tokenizer.vocab_size: {self.tokenizer.vocab_size}, "
+                                f"len(tokenizer): {tokenizer_size}"
+                            )
+                            invalid_mask = (output_ids < 0) | (
+                                output_ids >= tokenizer_size
+                            )
+                            print(f"DEBUG: Invalid tokens: {output_ids[invalid_mask]}")
+                            # Filter invalid tokens
+                            output_ids = output_ids.clone()
+                            output_ids[invalid_mask] = (
+                                0  # Replace with unknown or padding (0 usually safe)
+                            )
 
+                    generated_ids = output_ids[0][input_ids.shape[1] :]
                     output_text = self.tokenizer.decode(
-                        output_ids[0], spaces_between_special_tokens=False
+                        generated_ids, spaces_between_special_tokens=False
                     )
 
                     for special_token in self.tokenizer.special_tokens_map.values():
@@ -434,54 +448,23 @@ class EvalMTBench(Baselines):
             2,
         )
 
-        # 添加类型检查和默认值
-        computation_time = decoding_metrics.get("computation_time", 0.0)
-        if not isinstance(computation_time, (int, float)):
-            decoding_metrics["computation_time"] = 0.0
-
-        communication_time = decoding_metrics.get("communication_time", 0.0)
-        if not isinstance(communication_time, (int, float)):
-            decoding_metrics["communication_time"] = 0.0
-
         if decoding_metrics["wall_time"] != 0:
             decoding_metrics["throughput"] = (
                 decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
             )
+        else:
+            decoding_metrics["throughput"] = 0.0
 
         # 过滤掉历史数据字段以避免打印过长
-        metrics_for_print = {
-            k: v
-            for k, v in decoding_metrics.items()
-            if k
-            not in [
-                "edge_cloud_bandwidth_history",
-                "edge_cloud_topk_history",
-                "edge_cloud_draft_len_history",
-            ]
-        }
 
-        metrics_str = f"""
-        {json.dumps(metrics_for_print, indent=4)}
-        """
+        print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
-        metrics_str += """
-        ------------- End of Evaluation Summary -------------
-        """
-
-        eval_result = dict(decoding_metrics)
-        eval_result["little_model"] = self.args.little_model
-        eval_result["draft_model"] = self.args.draft_model
-        eval_result["target_model"] = self.args.target_model
-        eval_result["eval_mode"] = self.args.eval_mode
-        eval_result["gamma"] = self.args.gamma
-        eval_result["gamma1"] = self.args.gamma1
-        eval_result["gamma2"] = self.args.gamma2
+        eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
 
         decoding_metrics_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
         )
         os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-        self.color_print(f"{metrics_str}", 3)
         with open(decoding_metrics_path, "w") as f:
             json.dump(eval_result, f, indent=4)
         self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)

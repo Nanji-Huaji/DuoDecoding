@@ -17,6 +17,8 @@ from rouge_score import rouge_scorer
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
 
+from utils import ExpPrint
+
 decoding_metrics = get_empty_metrics()
 
 
@@ -110,7 +112,7 @@ class EvalCNNDM(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], qs)
-            conv.append_message(conv.roles[1], None)
+            conv.append_message(conv.roles[1], None)  # type: ignore
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
@@ -193,7 +195,7 @@ class EvalCNNDM(Baselines):
             # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
 
             loop_index += 1
-            if loop_index > min(len(self.data), total) and total is not None:
+            if total is not None and loop_index > min(len(self.data), total):
                 break
 
             # set random seed
@@ -228,6 +230,7 @@ class EvalCNNDM(Baselines):
                                 not in [
                                     "little_acceptance_rate",
                                     "draft_acceptance_rate",
+                                    "throughput",
                                 ]
                                 and hasattr(metrics[key], "__add__")
                             ):
@@ -322,33 +325,11 @@ class EvalCNNDM(Baselines):
             else:
                 decoding_metrics["throughput"] = 0.0
 
-            # 过滤掉历史数据字段以避免打印过长
-            metrics_for_print = {
-                k: v
-                for k, v in decoding_metrics.items()
-                if k
-                not in [
-                    "edge_cloud_bandwidth_history",
-                    "edge_cloud_topk_history",
-                    "edge_cloud_draft_len_history",
-                ]
-            }
-
-            self.color_print("-------Decoding Metrics-------")
-            self.color_print(f"{metrics_for_print}")
-            self.color_print("-------Decoding Metrics-------")
+            print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
 
             # Save summaries
-            eval_result = dict(decoding_metrics)
-            eval_result["little_model"] = self.args.little_model
-            eval_result["draft_model"] = self.args.draft_model
-            eval_result["target_model"] = self.args.target_model
-            eval_result["eval_mode"] = self.args.eval_mode
-            eval_result["gamma"] = self.args.gamma
-            eval_result["gamma1"] = self.args.gamma1
-            eval_result["gamma2"] = self.args.gamma2
-
-            eval_result["throughput"] = decoding_metrics["throughput"]
+            assert self.metrics_dumper is not None, "Metrics dumper is not initialized"
+            eval_result = self.metrics_dumper.get_filtered_dict(decoding_metrics)
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"
