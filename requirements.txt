@@ -234,7 +234,7 @@ nvidia-cusparse-cu12==12.5.8.93 ; platform_machine == 'x86_64' and sys_platform 
 nvidia-cusparselt-cu12==0.7.1 ; platform_machine == 'x86_64' and sys_platform == 'linux'
     # via torch
 nvidia-ml-py==13.590.48
-    # via pynvml
+    # via duodecoding
 nvidia-nccl-cu12==2.27.5 ; platform_machine == 'x86_64' and sys_platform == 'linux'
     # via torch
 nvidia-nvjitlink-cu12==12.8.93 ; platform_machine == 'x86_64' and sys_platform == 'linux'
@@ -300,8 +300,6 @@ pygments==2.19.2
     #   ipython
     #   ipython-pygments-lexers
     #   rich
-pynvml==13.0.1
-    # via duodecoding
 pyparsing==3.3.2
     # via matplotlib
 python-dateutil==2.9.0.post0
