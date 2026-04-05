@@ -218,7 +218,10 @@ class RLNetworkAdapter:
     def __init__(
         self,
         args,
-        model_name="rl_adapter",
+        model_path="checkpoints/rl_adapter.pth",
+        best_model_path=None,
+        agent_name=None,
+        legacy_load_paths=None,
         device="cuda",
         k_candidates=None,
         threshold_candidates=None,
@@ -248,16 +251,10 @@ class RLNetworkAdapter:
         )
         self.action_dim = len(self.topk_candidates) * len(self.threshold_candidates)
 
-        # Determine agent name and checkpoint paths
-        if model_name.endswith(".pth"):
-            self.model_path = model_name
-            self.best_model_path = model_name
-            # Provide a cleaner name for logging that matches auto_train_manager regex
-            agent_name = os.path.basename(model_name).replace(".pth", "")
-        else:
-            self.model_path = os.path.join("checkpoints", f"{model_name}.pth")
-            self.best_model_path = os.path.join("checkpoints", f"{model_name}_best.pth")
-            agent_name = model_name
+        self.model_path = model_path
+        self.best_model_path = best_model_path or model_path
+        self.legacy_load_paths = list(legacy_load_paths or [])
+        agent_name = agent_name or os.path.basename(self.model_path).replace(".pth", "")
 
         self.agent = DDQNAgent(
             feature_dim=self.feature_dim,
@@ -287,9 +284,19 @@ class RLNetworkAdapter:
         elif os.path.exists(self.model_path):
             self.agent.load(self.model_path)
         else:
-            print(
-                f"[{agent_name}] No checkpoint found at {self.model_path} or {self.best_model_path}"
+            legacy_path = next(
+                (path for path in self.legacy_load_paths if os.path.exists(path)), None
             )
+            if legacy_path is not None:
+                self.agent.load(legacy_path)
+                print(
+                    f"[{agent_name}] Migrating legacy RL checkpoint from {legacy_path} to {self.model_path}"
+                )
+                self.agent.save(self.model_path)
+            else:
+                print(
+                    f"[{agent_name}] No checkpoint found at {self.model_path} or {self.best_model_path}"
+                )
 
     def _get_current_feature_vector(
         self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name
@@ -353,7 +360,7 @@ class RLNetworkAdapter:
     def step(self, reward: float):
         self.last_reward = reward
 
-    def save(self, current_tps: float = None):
+    def save(self, current_tps: float | None = None):
         # 始终保存最新的模型
         self.agent.save(self.model_path)
 
