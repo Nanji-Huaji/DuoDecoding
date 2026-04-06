@@ -697,8 +697,14 @@ if __name__ == "__main__":
     log_dir = "exp_logs"
     Path(log_dir).mkdir(exist_ok=True)
 
+    results_dir = Path("experiment_results")
+    results_dir.mkdir(exist_ok=True)
+
     # 提前确定汇总结果文件名
-    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    summary_file = str(
+        results_dir
+        / f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
 
     # 并行运行实验
     all_results = run_experiments_parallel(

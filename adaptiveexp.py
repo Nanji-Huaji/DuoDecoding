@@ -362,13 +362,19 @@ if __name__ == "__main__":
     log_dir = "exp_logs"
     Path(log_dir).mkdir(exist_ok=True)
 
+    results_dir = Path("experiment_results")
+    results_dir.mkdir(exist_ok=True)
+
     # 并行运行实验
     all_results = run_experiments_parallel(
         config_to_run, max_workers=2, log_dir=log_dir
     )
 
     # 保存汇总结果
-    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    summary_file = str(
+        results_dir
+        / f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
     with open(summary_file, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 

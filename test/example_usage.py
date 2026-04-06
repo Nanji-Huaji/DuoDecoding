@@ -10,7 +10,7 @@ from eval_gsm8k_vllm import evaluate_gsm8k
 #     model_path="meta-llama/Llama-3.1-8B-Instruct",
 #     num_shots=8,
 #     max_tokens=512,
-#     output_file="results_example1.json"
+#     output_file="experiment_results/results_example1.json"
 # )
 
 
@@ -20,7 +20,7 @@ accuracy = evaluate_gsm8k(
     model_path="/home/tiantianyi/code/DuoDecoding/llama/Llama-2-13b-hf",
     num_shots=5,
     max_samples=80,
-    output_file="results_debug.json",
+    output_file="experiment_results/results_debug.json",
 )
 
 
@@ -30,7 +30,7 @@ accuracy = evaluate_gsm8k(
 #     model_path="meta-llama/Llama-3.1-70B-Instruct",
 #     tensor_parallel_size=4,  # 使用 4 张 GPU
 #     num_shots=8,
-#     output_file="results_70b.json"
+#     output_file="experiment_results/results_70b.json"
 # )
 
 
@@ -39,7 +39,7 @@ accuracy = evaluate_gsm8k(
 # accuracy = evaluate_gsm8k(
 #     model_path="/path/to/your/local/model",
 #     num_shots=8,
-#     output_file="results_local.json"
+#     output_file="experiment_results/results_local.json"
 # )
 
 
@@ -50,5 +50,5 @@ accuracy = evaluate_gsm8k(
 #     num_shots=8,
 #     temperature=0.0,  # greedy decoding
 #     max_tokens=1024,
-#     output_file="results_qwen.json"
+#     output_file="experiment_results/results_qwen.json"
 # )

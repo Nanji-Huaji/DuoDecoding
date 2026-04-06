@@ -24,6 +24,8 @@ python eval_gsm8k_vllm.py \
     --max_samples 50
 ```
 
+默认输出会保存到仓库根目录下的 `experiment_results/`。
+
 **方法 B: 使用 Bash 脚本**
 ```bash
 cd test
@@ -41,12 +43,12 @@ TENSOR_PARALLEL=4 MODEL_PATH="meta-llama/Llama-3.1-70B-Instruct" ./run_eval.sh
 ### 3. 分析结果
 ```bash
 # 查看详细分析
-python analyze_results.py --result_file gsm8k_vllm_results.json
+python analyze_results.py --result_file ../experiment_results/gsm8k_vllm_results.json
 
 # 比较两个模型
 python analyze_results.py \
-    --result_file results_model1.json \
-    --compare_with results_model2.json
+    --result_file ../experiment_results/results_model1.json \
+    --compare_with ../experiment_results/results_model2.json
 ```
 
 ## 📋 常用命令

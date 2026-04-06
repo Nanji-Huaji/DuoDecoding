@@ -141,6 +141,8 @@ def run_analysis(summary_file):
 
 if __name__ == "__main__":
     summary = (
-        sys.argv[1] if len(sys.argv) > 1 else "experiment_summary_20260130_120801.json"
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else "experiment_results/experiment_summary_20260130_120801.json"
     )
     run_analysis(summary)

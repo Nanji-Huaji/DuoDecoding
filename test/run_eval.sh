@@ -7,7 +7,9 @@ MODEL_PATH=${MODEL_PATH:-"meta-llama/Llama-3.1-8B-Instruct"}
 NUM_SHOTS=${NUM_SHOTS:-8}
 MAX_TOKENS=${MAX_TOKENS:-512}
 TENSOR_PARALLEL=${TENSOR_PARALLEL:-1}
-OUTPUT_FILE=${OUTPUT_FILE:-"gsm8k_vllm_results.json"}
+OUTPUT_DIR=${OUTPUT_DIR:-"../experiment_results"}
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_FILE=${OUTPUT_FILE:-"$OUTPUT_DIR/gsm8k_vllm_results.json"}
 
 echo "=================================================="
 echo "  GSM8K Evaluation with vLLM"

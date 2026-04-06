@@ -40,6 +40,8 @@ python test/eval_gsm8k_vllm.py \
     --num_shots 8
 ```
 
+默认输出会保存到仓库根目录下的 `experiment_results/`。
+
 ### 调试模式
 
 ```bash
@@ -47,7 +49,7 @@ python test/eval_gsm8k_vllm.py \
 python test/eval_gsm8k_vllm.py \
     --model_path meta-llama/Llama-3.1-8B-Instruct \
     --max_samples 50 \
-    --output_file debug_results.json
+    --output_file experiment_results/debug_results.json
 ```
 
 ### 参数说明
@@ -61,7 +63,7 @@ python test/eval_gsm8k_vllm.py \
 | `--max_tokens` | 512 | 最大生成 token 数 |
 | `--temperature` | 0.0 | 采样温度（0=贪婪解码） |
 | `--max_samples` | None | 最大样本数（调试用） |
-| `--output_file` | gsm8k_vllm_results.json | 结果保存文件 |
+| `--output_file` | gsm8k_vllm_results.json | 结果保存文件；未带目录时会自动写入 `experiment_results/` |
 
 ## 输出格式
 

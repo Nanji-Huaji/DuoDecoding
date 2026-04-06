@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import re
+from pathlib import Path
 from typing import List, Dict, Any
 from tqdm import tqdm
 from datasets import load_dataset
@@ -19,6 +20,16 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../"))
 from eval.few_shot_examples import GSM8K_FEW_SHOT_EXAMPLES
 
 INVALID_ANS = "[invalid]"
+DEFAULT_RESULTS_DIR = Path(__file__).resolve().parents[1] / "experiment_results"
+
+
+def resolve_output_path(output_file: str) -> Path:
+    """将结果文件统一放到仓库根目录下的 experiment_results 中。"""
+    output_path = Path(output_file)
+    if output_path.parent == Path("."):
+        output_path = DEFAULT_RESULTS_DIR / output_path.name
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return output_path
 
 
 def extract_answer_from_gold(completion: str) -> str:
@@ -42,31 +53,31 @@ def extract_answer_from_output(completion: str) -> str:
             answer = completion.split("####")[1].strip()
             answer = answer.split("\n")[0].strip()  # 取第一行
             answer = answer.replace(",", "").replace("$", "")
-            numbers = re.findall(r'-?\d+\.?\d*', answer)
+            numbers = re.findall(r"-?\d+\.?\d*", answer)
             if numbers:
                 return numbers[0]
         except:
             pass
-    
+
     # 方法 2: 寻找 "The answer is" 格式
     answer_patterns = [
         r"[Tt]he answer is:?\s*([\-\$]?[\d,\.]+)",
         r"[Aa]nswer:?\s*([\-\$]?[\d,\.]+)",
-        r"^####\s*([\-\$]?[\d,\.]+)"
+        r"^####\s*([\-\$]?[\d,\.]+)",
     ]
-    
+
     for pattern in answer_patterns:
         match = re.search(pattern, completion)
         if match:
             answer = match.group(1).replace(",", "").replace("$", "")
             return answer
-    
+
     # 方法 3: 提取最后一个数字（作为后备）
     text = completion.replace(",", "").replace("$", "")
-    numbers = re.findall(r'-?\d+\.?\d*', text)
+    numbers = re.findall(r"-?\d+\.?\d*", text)
     if numbers:
         return numbers[-1]
-    
+
     return INVALID_ANS
 
 
@@ -74,10 +85,10 @@ def is_correct(completion: str, answer: str) -> bool:
     """判断模型输出是否正确"""
     gold = extract_answer_from_gold(answer)
     pred = extract_answer_from_output(completion)
-    
+
     if gold == INVALID_ANS or pred == INVALID_ANS:
         return False
-    
+
     try:
         # 转换为浮点数进行比较，处理小数情况
         return abs(float(gold) - float(pred)) < 1e-6
@@ -95,17 +106,19 @@ def get_few_shot_prompt(num_shots: int = 8) -> str:
     return prompt
 
 
-def build_prompt(question: str, num_shots: int = 8, use_chat_format: bool = True) -> str:
+def build_prompt(
+    question: str, num_shots: int = 8, use_chat_format: bool = True
+) -> str:
     """
     构建完整的提示
-    
+
     Args:
         question: 问题文本
         num_shots: few-shot 示例数量
         use_chat_format: 是否使用聊天格式（适用于 chat 模型）
     """
     few_shot = get_few_shot_prompt(num_shots)
-    
+
     if use_chat_format:
         # 适用于 Llama-3, Qwen 等 chat 模型
         instruction = "You are a helpful assistant. Solve the math problem step by step and put your final answer after #### at the end."
@@ -123,11 +136,11 @@ def evaluate_gsm8k(
     temperature: float = 0.0,
     tensor_parallel_size: int = 1,
     max_samples: int = None,
-    output_file: str = "gsm8k_vllm_results.json"
+    output_file: str = "gsm8k_vllm_results.json",
 ):
     """
     使用 vLLM 评估 GSM8K 数据集
-    
+
     Args:
         model_path: 模型路径或 HuggingFace model ID
         num_shots: few-shot 示例数量
@@ -138,10 +151,12 @@ def evaluate_gsm8k(
         max_samples: 最大评估样本数（用于调试）
         output_file: 结果保存文件
     """
-    
+
     print(f"🚀 初始化 vLLM 模型: {model_path}")
-    print(f"📊 配置: shots={num_shots}, batch={batch_size}, max_tokens={max_tokens}, temp={temperature}")
-    
+    print(
+        f"📊 配置: shots={num_shots}, batch={batch_size}, max_tokens={max_tokens}, temp={temperature}"
+    )
+
     # 初始化 vLLM
     llm = LLM(
         model=model_path,
@@ -149,48 +164,48 @@ def evaluate_gsm8k(
         trust_remote_code=True,
         max_model_len=2048,  # 可根据模型调整
     )
-    
+
     # 设置采样参数
     sampling_params = SamplingParams(
         temperature=temperature,
         max_tokens=max_tokens,
         top_p=1.0 if temperature == 0.0 else 0.95,
     )
-    
+
     # 加载数据集
     print("📚 加载 GSM8K 数据集...")
     dataset = load_dataset("gsm8k", "main", split="test")
-    
+
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
-    
+
     print(f"✅ 加载 {len(dataset)} 个样本")
-    
+
     # 构建提示
     print("🔧 构建提示...")
     prompts = []
     for item in dataset:
-        prompt = build_prompt(item['question'], num_shots=num_shots)
+        prompt = build_prompt(item["question"], num_shots=num_shots)
         prompts.append(prompt)
-    
+
     # 批量推理
     print("🤖 开始推理...")
     outputs = llm.generate(prompts, sampling_params)
-    
+
     # 评估结果
     print("📏 评估结果...")
     results = []
     correct_count = 0
-    
+
     for i, output in enumerate(tqdm(outputs, desc="评估进度")):
-        question = dataset[i]['question']
-        gold_answer = dataset[i]['answer']
+        question = dataset[i]["question"]
+        gold_answer = dataset[i]["answer"]
         generated_text = output.outputs[0].text
-        
+
         is_correct_flag = is_correct(generated_text, gold_answer)
         if is_correct_flag:
             correct_count += 1
-        
+
         # 保存详细结果
         result = {
             "index": i,
@@ -199,22 +214,22 @@ def evaluate_gsm8k(
             "model_output": generated_text,
             "extracted_gold": extract_answer_from_gold(gold_answer),
             "extracted_pred": extract_answer_from_output(generated_text),
-            "is_correct": is_correct_flag
+            "is_correct": is_correct_flag,
         }
         results.append(result)
-    
+
     # 计算准确率
     accuracy = correct_count / len(dataset) * 100
-    
+
     # 打印统计信息
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"📊 评估结果统计")
-    print("="*60)
+    print("=" * 60)
     print(f"总样本数: {len(dataset)}")
     print(f"正确数量: {correct_count}")
     print(f"准确率: {accuracy:.2f}%")
-    print("="*60)
-    
+    print("=" * 60)
+
     # 保存结果
     output_data = {
         "model_path": model_path,
@@ -228,48 +243,53 @@ def evaluate_gsm8k(
         "metrics": {
             "total_samples": len(dataset),
             "correct_count": correct_count,
-            "accuracy": accuracy
+            "accuracy": accuracy,
         },
-        "results": results
+        "results": results,
     }
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
+
+    output_path = resolve_output_path(output_file)
+
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
-    
-    print(f"\n💾 结果已保存到: {output_file}")
-    
+
+    print(f"\n💾 结果已保存到: {output_path}")
+
     return accuracy
 
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="使用 vLLM 评估 GSM8K")
-    
+
     # 模型配置
-    parser.add_argument("--model_path", type=str, required=True,
-                        help="模型路径或 HuggingFace model ID")
-    parser.add_argument("--tensor_parallel_size", type=int, default=1,
-                        help="张量并行大小（GPU 数量）")
-    
+    parser.add_argument(
+        "--model_path", type=str, required=True, help="模型路径或 HuggingFace model ID"
+    )
+    parser.add_argument(
+        "--tensor_parallel_size", type=int, default=1, help="张量并行大小（GPU 数量）"
+    )
+
     # 评估配置
-    parser.add_argument("--num_shots", type=int, default=8,
-                        help="Few-shot 示例数量")
-    parser.add_argument("--batch_size", type=int, default=32,
-                        help="批处理大小")
-    parser.add_argument("--max_tokens", type=int, default=512,
-                        help="最大生成 token 数")
-    parser.add_argument("--temperature", type=float, default=0.0,
-                        help="采样温度")
-    
+    parser.add_argument("--num_shots", type=int, default=8, help="Few-shot 示例数量")
+    parser.add_argument("--batch_size", type=int, default=32, help="批处理大小")
+    parser.add_argument("--max_tokens", type=int, default=512, help="最大生成 token 数")
+    parser.add_argument("--temperature", type=float, default=0.0, help="采样温度")
+
     # 调试选项
-    parser.add_argument("--max_samples", type=int, default=None,
-                        help="最大评估样本数（用于调试）")
-    parser.add_argument("--output_file", type=str, default="gsm8k_vllm_results.json",
-                        help="结果保存文件")
-    
+    parser.add_argument(
+        "--max_samples", type=int, default=None, help="最大评估样本数（用于调试）"
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default="gsm8k_vllm_results.json",
+        help="结果保存文件",
+    )
+
     args = parser.parse_args()
-    
+
     # 运行评估
     accuracy = evaluate_gsm8k(
         model_path=args.model_path,
@@ -279,5 +299,5 @@ if __name__ == "__main__":
         temperature=args.temperature,
         tensor_parallel_size=args.tensor_parallel_size,
         max_samples=args.max_samples,
-        output_file=args.output_file
+        output_file=args.output_file,
     )

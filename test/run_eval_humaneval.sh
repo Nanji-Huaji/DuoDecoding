@@ -21,7 +21,9 @@ TOP_P=0.95            # Nucleus sampling参数
 TIMEOUT=3.0           # 代码执行超时时间（秒）
 
 # 输出文件
-OUTPUT_FILE="results_humaneval_vllm.jsonl"
+OUTPUT_DIR=${OUTPUT_DIR:-"../experiment_results"}
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_FILE=${OUTPUT_FILE:-"$OUTPUT_DIR/humaneval_vllm_results.jsonl"}
 
 # 调试选项
 # MAX_SAMPLES=10       # 取消注释以限制评估样本数

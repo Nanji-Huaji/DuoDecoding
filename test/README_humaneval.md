@@ -43,7 +43,7 @@ python eval_humaneval_vllm.py \
     --num_shots 0 \
     --max_tokens 512 \
     --temperature 0.0 \
-    --output_file results_humaneval.jsonl
+    --output_file ../experiment_results/results_humaneval.jsonl
 ```
 
 ## 参数说明
@@ -64,7 +64,7 @@ python eval_humaneval_vllm.py \
 
 ### 调试选项
 - `--max_samples`: 限制评估样本数（用于快速测试）
-- `--output_file`: 结果保存文件，默认`humaneval_vllm_results.jsonl`
+- `--output_file`: 结果保存文件，默认保存到仓库根目录的 `experiment_results/humaneval_vllm_results.jsonl`
 
 ## 使用示例
 
@@ -74,7 +74,7 @@ python eval_humaneval_vllm.py \
     --model_path "deepseek-ai/deepseek-coder-6.7b-base" \
     --num_shots 0 \
     --temperature 0.0 \
-    --output_file deepseek_base_results.jsonl
+    --output_file ../experiment_results/deepseek_base_results.jsonl
 ```
 
 ### 示例2：评估Chat模型（使用chat template）
@@ -84,7 +84,7 @@ python eval_humaneval_vllm.py \
     --use_chat_template \
     --num_shots 0 \
     --temperature 0.0 \
-    --output_file qwen_chat_results.jsonl
+    --output_file ../experiment_results/qwen_chat_results.jsonl
 ```
 
 ### 示例3：Few-shot评估
@@ -94,7 +94,7 @@ python eval_humaneval_vllm.py \
     --use_chat_template \
     --num_shots 3 \
     --temperature 0.0 \
-    --output_file llama_fewshot_results.jsonl
+    --output_file ../experiment_results/llama_fewshot_results.jsonl
 ```
 
 ### 示例4：多GPU并行评估
@@ -103,7 +103,7 @@ python eval_humaneval_vllm.py \
     --model_path "meta-llama/Llama-3.1-70B-Instruct" \
     --tensor_parallel_size 4 \
     --use_chat_template \
-    --output_file llama_70b_results.jsonl
+    --output_file ../experiment_results/llama_70b_results.jsonl
 ```
 
 ### 示例5：调试模式（仅评估前10个样本）
@@ -111,7 +111,7 @@ python eval_humaneval_vllm.py \
 python eval_humaneval_vllm.py \
     --model_path "deepseek-ai/deepseek-coder-6.7b-base" \
     --max_samples 10 \
-    --output_file debug_results.jsonl
+    --output_file ../experiment_results/debug_results.jsonl
 ```
 
 ## 输出文件
@@ -119,7 +119,7 @@ python eval_humaneval_vllm.py \
 评估会生成两个文件：
 
 ### 1. 详细结果文件（JSONL格式）
-例如：`humaneval_vllm_results.jsonl`
+例如：`experiment_results/humaneval_vllm_results.jsonl`
 
 每行包含一个样本的结果：
 ```json
@@ -132,7 +132,7 @@ python eval_humaneval_vllm.py \
 ```
 
 ### 2. 汇总统计文件（JSON格式）
-例如：`humaneval_vllm_results_summary.json`
+例如：`experiment_results/humaneval_vllm_results_summary.json`
 
 包含整体评估指标：
 ```json
@@ -241,7 +241,7 @@ for model in "${models[@]}"; do
     model_name=$(basename $model)
     python eval_humaneval_vllm.py \
         --model_path "$model" \
-        --output_file "results_${model_name}.jsonl"
+        --output_file "../experiment_results/results_${model_name}.jsonl"
 done
 ```
 
