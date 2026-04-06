@@ -77,3 +77,8 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 ignore_missing_imports = true
+
+[tool.uv.workspace]
+members = [
+    "src/SpecDec_pp",
+]

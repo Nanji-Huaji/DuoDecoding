@@ -18,6 +18,7 @@ from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 # Model Series Definitions
 MODEL_SERIES = {
     "llama": ("llama-68m", "tiny-llama-1.1b", "llama-2-13b"),
+    "llama-70b": ("llama-68m", "llama-2-7b-chat", "meta-llama/Llama-2-70b-chat-hf"),
     "vicuna": ("vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"),
     "qwen": ("Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B"),
     "qwen-32b": ("Qwen/Qwen3-1.7B", "Qwen/Qwen3-14B", "Qwen/Qwen3-32B"),
