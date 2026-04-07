@@ -304,6 +304,64 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             torch.equal(edge_cloud_payload["probs"], torch.tensor([[1.0, 1.0, 1.0]]))
         )
 
+    def test_adaptive_tridecoding_second_stage_payload_tolerates_short_history(self):
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        fake_comm = _FakeCommSimulator()
+
+        class _ShortSecondStageCache(_FakeCache):
+            def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
+                x, rebuilt = super().generate_with_rebuilt_topk(
+                    prefix, gamma, proposal_top_k
+                )
+                if (
+                    self.model.kind == "draft"
+                    and rebuilt is not None
+                    and rebuilt.shape[1] > 0
+                ):
+                    rebuilt = rebuilt[:, :1, :]
+                return x, rebuilt
+
+        def fake_stage_verify(
+            proposer_cache,
+            verifier_cache,
+            x,
+            prefix_len,
+            gamma,
+            *,
+            output_device,
+            draft_probs_override=None,
+        ):
+            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
+            accepted = min(gamma, max(x.shape[1] - prefix_len, 0))
+            return accepted, prefix_len + accepted - 1, token, True
+
+        with (
+            patch("src.baselines.KVCacheModel", _ShortSecondStageCache),
+            patch("src.baselines.CommunicationSimulator", return_value=fake_comm),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=fake_stage_verify,
+            ),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            self.instance.adaptive_tridecoding(prefix)
+
+        payload_calls = [
+            call
+            for call in fake_comm.transfer_calls
+            if call["link_type"] == "edge_cloud" and call["probs"] is not None
+        ]
+        self.assertEqual(len(payload_calls), 1)
+        self.assertEqual(payload_calls[0]["tokens"].shape[0], 1)
+        self.assertEqual(payload_calls[0]["probs"].shape[0], 1)
+        self.assertEqual(
+            payload_calls[0]["tokens"].shape[1],
+            payload_calls[0]["probs"].shape[1],
+        )
+        self.assertLessEqual(payload_calls[0]["tokens"].shape[1], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
