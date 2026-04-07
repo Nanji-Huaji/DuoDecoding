@@ -23,8 +23,8 @@ PORT=$((29500 + RANDOM % 1000))
 SCRIPT="eval/eval_mixed.py"
 
 # 模型设置 (优先使用环境变量)
-DRAFT_MODEL=${DRAFT_MODEL:-"tiny-llama-1.1b"}
-TARGET_MODEL=${TARGET_MODEL:-"Llama-2-13b"}
+DRAFT_MODEL=${DRAFT_MODEL:-"meta-llama/Llama-2-7b-chat-hf"}
+TARGET_MODEL=${TARGET_MODEL:-"meta-llama/Llama-2-70b-chat-hf"}
 LITTLE_MODEL=${LITTLE_MODEL:-"llama-68m"}
 
 # RL Adapter 路径 (优先使用环境变量)

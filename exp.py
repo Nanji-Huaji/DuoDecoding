@@ -645,10 +645,9 @@ edge_cloud_bandwidth = [
 ]
 
 for little_model, draft_model, target_model in (
-    llama_series,
+    llama_chat_series,
     # vicuna_series,
     # qwen_series,
-    # # llama_chat_series,
     # # qwen_series_fp8,
     # # gemma_3_it_series,
     # # qwen_series_large,

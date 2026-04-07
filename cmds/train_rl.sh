@@ -40,20 +40,24 @@ run_training() {
     # 使用环境变量中的 GPU ID，如果没有设置则默认为 0
     GPU_ID=${CUDA_VISIBLE_DEVICES:-0}
 
-    MAIN_RL_PATH=${MAIN_RL_PATH:-"$(resolve_rl_agent_path main 'tiny-llama-1.1b' 'llama-2-13b' latest)"}
-    MAIN_RL_BEST_PATH=${MAIN_RL_BEST_PATH:-"$(resolve_rl_agent_path main 'tiny-llama-1.1b' 'llama-2-13b' best)"}
-    LITTLE_RL_PATH=${LITTLE_RL_PATH:-"$(resolve_rl_agent_path little 'llama-68m' 'tiny-llama-1.1b' latest)"}
-    LITTLE_RL_BEST_PATH=${LITTLE_RL_BEST_PATH:-"$(resolve_rl_agent_path little 'llama-68m' 'tiny-llama-1.1b' best)"}
+    LITTLE_MODEL=${LITTLE_MODEL:-"llama-68m"}
+    DRAFT_MODEL=${DRAFT_MODEL:-"meta-llama/Llama-2-7b-chat-hf"}
+    TARGET_MODEL=${TARGET_MODEL:-"meta-llama/Llama-2-70b-chat-hf"}
+
+    MAIN_RL_PATH=${MAIN_RL_PATH:-"$(resolve_rl_agent_path main "$DRAFT_MODEL" "$TARGET_MODEL" latest)"}
+    MAIN_RL_BEST_PATH=${MAIN_RL_BEST_PATH:-"$(resolve_rl_agent_path main "$DRAFT_MODEL" "$TARGET_MODEL" best)"}
+    LITTLE_RL_PATH=${LITTLE_RL_PATH:-"$(resolve_rl_agent_path little "$LITTLE_MODEL" "$DRAFT_MODEL" latest)"}
+    LITTLE_RL_BEST_PATH=${LITTLE_RL_BEST_PATH:-"$(resolve_rl_agent_path little "$LITTLE_MODEL" "$DRAFT_MODEL" best)"}
 
     # 为 Tri-decoding 分配模型
     EXTRA_ARGS=()
     if [[ "$MODE" == "adaptive_tridecoding" ]]; then
         EXTRA_ARGS=(
-            "--little_model" "llama-68m" 
+            "--little_model" "$LITTLE_MODEL" 
             "--gamma1" "6" 
             "--gamma2" "4"
-            "--small_draft_acc_head_path" "$(resolve_acc_head_path 'llama-68m' 'tiny-llama-1.1b')"
-            "--draft_target_acc_head_path" "$(resolve_acc_head_path 'tiny-llama-1.1b' 'llama-2-13b')"
+            "--small_draft_acc_head_path" "$(resolve_acc_head_path "$LITTLE_MODEL" "$DRAFT_MODEL")"
+            "--draft_target_acc_head_path" "$(resolve_acc_head_path "$DRAFT_MODEL" "$TARGET_MODEL")"
         )
     fi
 
@@ -63,8 +67,8 @@ run_training() {
         $SCRIPT \
         --eval_mode $MODE \
         -e train_rl_${TASK} \
-        --draft_model tiny-llama-1.1b \
-        --target_model Llama-2-13b \
+        --draft_model "$DRAFT_MODEL" \
+        --target_model "$TARGET_MODEL" \
         --max_tokens 128 \
         --temp 0.0 \
         --use_rl_adapter \
@@ -77,7 +81,7 @@ run_training() {
         --main_rl_best_path "$MAIN_RL_BEST_PATH" \
         --little_rl_path "$LITTLE_RL_PATH" \
         --little_rl_best_path "$LITTLE_RL_BEST_PATH" \
-        --acc_head_path "$(resolve_acc_head_path 'tiny-llama-1.1b' 'llama-2-13b')" \
+        --acc_head_path "$(resolve_acc_head_path "$DRAFT_MODEL" "$TARGET_MODEL")" \
         "${EXTRA_ARGS[@]}" \
         --eval_data_num $SAMPLES || echo "Warning: Task $TASK failed or completed with errors."
 

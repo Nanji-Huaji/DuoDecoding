@@ -507,6 +507,12 @@ class TrainingManager:
             patterns = []
             if self.model_series_name == "llama":
                 patterns = ["llama-68m", "tiny-llama-1.1b", "Llama-2-13b"]
+            elif self.model_series_name == "llama-70b":
+                patterns = [
+                    "llama-68m",
+                    "Llama-2-7b-chat-hf",
+                    "Llama-2-70b-chat-hf",
+                ]
             elif self.model_series_name == "vicuna":
                 patterns = ["vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"]
             elif self.model_series_name == "qwen":
@@ -616,8 +622,8 @@ if __name__ == "__main__":
         "--model",
         type=str,
         default="llama",
-        choices=["llama", "vicuna", "qwen", "qwen-32b", "qwen15"],
-        help="Model series to train (llama, vicuna, qwen, qwen-32b, qwen15)",
+        choices=["llama", "llama-70b", "vicuna", "qwen", "qwen-32b", "qwen15"],
+        help="Model series to train (llama, llama-70b, vicuna, qwen, qwen-32b, qwen15)",
     )
     args = parser.parse_args()
 
