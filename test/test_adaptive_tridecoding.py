@@ -5,6 +5,7 @@ from unittest.mock import patch
 import torch
 
 from src.baselines import Baselines
+from src.utils import rebuild_topk_uniform_probs, sample
 
 
 class _TestBaselines(Baselines):
@@ -96,6 +97,11 @@ class _FakeCache:
         self.rollback_calls = []
         _FakeCache.instances.append(self)
 
+    def _set_uniform_history(self, x):
+        steps = max(x.shape[1], 1)
+        self.prob_history = torch.zeros((1, steps, self.vocab_size), dtype=torch.float)
+        self.prob_history[:, :, 1] = 1.0
+
     def _forward_with_kvcache(self, x):
         self.current_length = x.shape[1] + 1
         self.hidden_states = torch.zeros(1, 1, 1)
@@ -110,10 +116,35 @@ class _FakeCache:
 
     def generate(self, prefix, gamma):
         self.current_length = prefix.shape[1] + gamma
-        steps = max(prefix.shape[1], 1) + gamma
-        self.prob_history = torch.zeros((1, steps, self.vocab_size), dtype=torch.float)
-        self.prob_history[:, :, 1] = 1.0
+        if gamma > 0:
+            extra = torch.ones(
+                (prefix.shape[0], gamma), dtype=prefix.dtype, device=prefix.device
+            )
+            prefix = torch.cat((prefix, extra), dim=1)
+        self._set_uniform_history(prefix)
         return prefix
+
+    def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
+        if gamma <= 0:
+            return prefix.clone(), None
+        x = prefix.clone()
+        rebuilt_rows = []
+        for _ in range(gamma):
+            q = self._forward_with_kvcache(x)
+            rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+            rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+            next_tok = sample(rebuilt_q)
+            x = torch.cat((x, next_tok), dim=1)
+        prompt_steps = max(prefix.shape[1] - 1, 0)
+        if prompt_steps > 0:
+            prompt_history = torch.zeros(
+                (prefix.shape[0], prompt_steps, self.vocab_size), dtype=torch.float
+            )
+            prompt_history[:, :, 1] = 1.0
+            self.prob_history = torch.cat((prompt_history, self.prob_history), dim=1)
+        self._set_uniform_history(x)
+        rebuilt = None if not rebuilt_rows else torch.cat(rebuilt_rows, dim=1)
+        return x, rebuilt
 
     def rollback(self, end_pos):
         self.current_length = end_pos
@@ -179,6 +210,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             gamma,
             *,
             output_device,
+            draft_probs_override=None,
         ):
             stage_calls.append(
                 {
@@ -235,6 +267,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             gamma,
             *,
             output_device,
+            draft_probs_override=None,
         ):
             token = torch.tensor([[1]], dtype=torch.long, device=output_device)
             return gamma, prefix_len + gamma - 1, token, True

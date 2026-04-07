@@ -678,6 +678,42 @@ def sample(probs: torch.Tensor, num_samples: int = 1):
     return idx_next
 
 
+def rebuild_topk_probs(
+    probs: torch.Tensor,
+    top_k: int | None,
+    strategy: str = "uniform",
+) -> torch.Tensor:
+    if strategy != "uniform":
+        raise ValueError(f"Unsupported top-k rebuild strategy: {strategy}")
+
+    if top_k is None or top_k <= 0 or probs.numel() == 0 or top_k >= probs.shape[-1]:
+        return probs
+
+    top_k_values, top_k_indices = torch.topk(probs, top_k, dim=-1, sorted=True)
+    compressed_probs = torch.zeros_like(probs)
+    compressed_probs.scatter_(-1, top_k_indices, top_k_values)
+
+    top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
+    residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
+    zero_mask = compressed_probs == 0
+    zero_count = zero_mask.sum(dim=-1, keepdim=True)
+    uniform_prob = torch.where(
+        zero_count > 0,
+        residual_mass / zero_count,
+        torch.zeros_like(residual_mass),
+    )
+    rebuilt_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
+    rebuilt_sum = rebuilt_probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    return rebuilt_probs / rebuilt_sum
+
+
+def rebuild_topk_uniform_probs(
+    probs: torch.Tensor,
+    top_k: int | None,
+) -> torch.Tensor:
+    return rebuild_topk_probs(probs, top_k, strategy="uniform")
+
+
 def max_fn(x):
     """
     norm(max (x, 0))

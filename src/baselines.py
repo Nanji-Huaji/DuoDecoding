@@ -32,6 +32,11 @@ from .decoding_ops import (
 from .engine import Decoding
 from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
+from .proposal_utils import (
+    build_draft_probs_override,
+    proposal_top_k,
+    stage_prob_history,
+)
 from .register import Register
 from .rl_agent_registry import (
     ROLE_LITTLE,
@@ -40,7 +45,7 @@ from .rl_agent_registry import (
     resolve_legacy_rl_agent_load_path,
 )
 from .rl_adapter import RLNetworkAdapter
-from .utils import max_fn, sample
+from .utils import max_fn, rebuild_topk_uniform_probs, sample
 
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
@@ -193,6 +198,47 @@ class Baselines(Decoding):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         return collect_verification_payload(prob_history, x, prefix_len, gamma)
 
+    def _generate_with_optional_rebuilt_proposal(
+        self,
+        cache: KVCacheModel,
+        prefix: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+        adapter: Optional[DecodingAdapter] = None,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if adapter is None and proposal_top_k is not None:
+            x, rebuilt_draft_probs = cache.generate_with_rebuilt_topk(
+                prefix,
+                gamma,
+                proposal_top_k,
+            )
+            return x, rebuilt_draft_probs, None
+        if adapter is None and proposal_top_k is None:
+            return cache.generate(prefix, gamma), None, None
+
+        x = prefix.clone()
+        rebuilt_rows: list[torch.Tensor] = []
+        q: Optional[torch.Tensor] = None
+        for _ in range(gamma):
+            q = cache._forward_with_kvcache(x)
+            sample_probs = rebuild_topk_uniform_probs(q, proposal_top_k)
+            if proposal_top_k is not None:
+                rebuilt_rows.append(sample_probs.unsqueeze(1))
+            next_tok = sample(sample_probs)
+            x = torch.cat((x, next_tok), dim=1)
+
+            if adapter is None:
+                continue
+            hidden_states = cache.hidden_states
+            assert hidden_states is not None
+            if adapter.predict(hidden_states):
+                break
+
+        rebuilt_draft_probs = None
+        if rebuilt_rows:
+            rebuilt_draft_probs = torch.cat(rebuilt_rows, dim=1)
+        return x, rebuilt_draft_probs, q
+
     @Register.register_decoding("dist_split_spec")
     @Register.register_decoding("dssd")
     @torch.no_grad()
@@ -314,7 +360,16 @@ class Baselines(Decoding):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            rebuilt_draft_probs = None
+            if current_proposal_top_k is not None:
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    current_proposal_top_k,
+                )
+            else:
+                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -345,6 +400,11 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=current_gamma,
+                draft_probs_override=build_draft_probs_override(
+                    approx_model_cache,
+                    prefix_len,
+                    rebuilt_draft_probs,
+                ),
             )
             acceptance_result = compute_acceptance_result(verification_inputs)
             n = acceptance_result.n
@@ -384,7 +444,9 @@ class Baselines(Decoding):
 
                 t = sample_reject_token(
                     target_prob_row,
-                    approx_model_cache.prob_history[:, n, : self.vocab_size],
+                    verification_inputs.draft_probs_batch[
+                        :, rejection_offset, : self.vocab_size
+                    ],
                     output_device=prefix.device,
                 )
             else:
@@ -567,7 +629,16 @@ class Baselines(Decoding):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            rebuilt_draft_probs = None
+            if current_proposal_top_k is not None:
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    current_proposal_top_k,
+                )
+            else:
+                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -581,9 +652,11 @@ class Baselines(Decoding):
             )
 
             comm_simulator.transfer(x, None, "edge_cloud")
-            draft_prob_window = approx_model_cache.prob_history[
-                :, -(1 + current_gamma) : -1, :
-            ]
+            draft_prob_window = (
+                rebuilt_draft_probs
+                if rebuilt_draft_probs is not None
+                else approx_model_cache.prob_history[:, -(1 + current_gamma) : -1, :]
+            )
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
 
@@ -607,6 +680,11 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=current_gamma,
+                draft_probs_override=build_draft_probs_override(
+                    approx_model_cache,
+                    prefix_len,
+                    rebuilt_draft_probs,
+                ),
             )
             acceptance_result = compute_acceptance_result(verification_inputs)
             n = acceptance_result.n
@@ -649,7 +727,9 @@ class Baselines(Decoding):
 
                 t = sample_reject_token(
                     target_prob_row,
-                    approx_model_cache.prob_history[:, n, : self.vocab_size],
+                    verification_inputs.draft_probs_batch[
+                        :, rejection_offset, : self.vocab_size
+                    ],
                     output_device=prefix.device,
                 )
             else:
@@ -1112,7 +1192,18 @@ class Baselines(Decoding):
 
             # 第一层 speculative
 
-            x = little_model_cache.generate(prefix.to(little_device), self.args.gamma2)
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_rebuilt_probs = None
+            if current_proposal_top_k is not None:
+                x, little_rebuilt_probs = little_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(little_device),
+                    self.args.gamma2,
+                    current_proposal_top_k,
+                )
+            else:
+                x = little_model_cache.generate(
+                    prefix.to(little_device), self.args.gamma2
+                )
             _ = draft_model_cache.generate(x.to(draft_device), 1)
 
             little_model_forward_times += self.args.gamma2
@@ -1129,8 +1220,15 @@ class Baselines(Decoding):
             little_accepted_this_iter = 0
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if self.args.gamma2 > 0:
+                little_stage_probs = build_draft_probs_override(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
+                if little_stage_probs is None:
+                    little_stage_probs = little_model_cache.prob_history
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_model_cache.prob_history,
+                    little_stage_probs,
                     x,
                     prefix_len,
                     self.args.gamma2,
@@ -1143,6 +1241,11 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=self.args.gamma2,
+                draft_probs_override=build_draft_probs_override(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                ),
             )
             n1 = first_stage_acceptance.n
             little_accepted_this_iter = first_stage_acceptance.accepted_count
@@ -1170,7 +1273,9 @@ class Baselines(Decoding):
 
                 comm_simulator.transfer(
                     None,
-                    little_model_cache.prob_history[:, n1, : self.vocab_size],
+                    first_stage_inputs.draft_probs_batch[
+                        :, n1 - (prefix_len - 1), : self.vocab_size
+                    ],
                     "edge_end",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -1178,7 +1283,9 @@ class Baselines(Decoding):
 
                 t = sample_reject_token(
                     draft_model_cache.prob_history[:, n1, : self.vocab_size],
-                    little_model_cache.prob_history[:, n1, : self.vocab_size],
+                    first_stage_inputs.draft_probs_batch[
+                        :, n1 - (prefix_len - 1), : self.vocab_size
+                    ],
                     output_device=little_device,
                 )
 
@@ -1210,7 +1317,12 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x = draft_model_cache.generate(prefix.to(draft_device), self.args.gamma1)
+            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+            )
 
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
@@ -1226,8 +1338,15 @@ class Baselines(Decoding):
 
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if total_gamma > 0:
+                draft_stage_probs = build_draft_probs_override(
+                    draft_model_cache,
+                    prefix_len,
+                    draft_rebuilt_probs,
+                )
+                if draft_stage_probs is None:
+                    draft_stage_probs = draft_model_cache.prob_history
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_model_cache.prob_history,
+                    draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
@@ -1242,6 +1361,11 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=total_gamma,
+                draft_probs_override=build_draft_probs_override(
+                    draft_model_cache,
+                    prefix_len,
+                    draft_rebuilt_probs,
+                ),
             )
             n2 = second_stage_acceptance.n
             draft_accepted_this_iter = second_stage_acceptance.accepted_count
@@ -1269,14 +1393,18 @@ class Baselines(Decoding):
 
                 comm_simulator.transfer(
                     None,
-                    draft_model_cache.prob_history[:, n2, : self.vocab_size],
+                    second_stage_inputs.draft_probs_batch[
+                        :, n2 - (prefix_len - 1), : self.vocab_size
+                    ],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
                 t = sample_reject_token(
                     target_model_cache.prob_history[:, n2, : self.vocab_size],
-                    draft_model_cache.prob_history[:, n2, : self.vocab_size],
+                    second_stage_inputs.draft_probs_batch[
+                        :, n2 - (prefix_len - 1), : self.vocab_size
+                    ],
                     output_device=draft_device,
                 )
                 new_generated_token = prefix[:, prefix_len:]
@@ -1461,16 +1589,19 @@ class Baselines(Decoding):
             idx += 1
             step_start_time = time.time()
             prefix_len = prefix.shape[1]
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_stage_probs: Optional[torch.Tensor] = None
+            draft_stage_probs: Optional[torch.Tensor] = None
 
             # 第一层 speculative
             edge_end_comm_start = comm_simulator.edge_end_comm_time
 
-            x = prefix.clone().to(little_device)
-            q = None
-            for _ in range(self.args.gamma2):
-                q = little_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
+            x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+            )
 
             if self.little_rl_adapter is not None:
                 bandwidth = comm_simulator.bandwidth_edge_end
@@ -1499,8 +1630,13 @@ class Baselines(Decoding):
 
             little_accepted_this_iter = 0
             if actual_gamma2 > 0:
+                little_stage_probs = stage_prob_history(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_model_cache.prob_history,
+                    little_stage_probs,
                     x,
                     prefix_len,
                     actual_gamma2,
@@ -1518,6 +1654,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=actual_gamma2,
                     output_device=little_device,
+                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
                 )
                 if not little_all_accepted:
                     comm_simulator.send_reject_message("edge_end")
@@ -1554,9 +1691,14 @@ class Baselines(Decoding):
 
             if not little_all_accepted:
                 # reject someone, sample from the pos n1
+                little_stage_probs = stage_prob_history(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
                 comm_simulator.transfer(
                     None,
-                    little_model_cache.prob_history[:, n1, : self.vocab_size],
+                    little_stage_probs[:, n1, : self.vocab_size],
                     "edge_end",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -1578,12 +1720,12 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x = prefix.clone().to(draft_device)
-            q = None
-            for _ in range(self.args.gamma1):
-                q = draft_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
+            x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+            )
 
             if self.rl_adapter is not None:
                 bandwidth = comm_simulator.bandwidth_edge_cloud
@@ -1617,8 +1759,13 @@ class Baselines(Decoding):
             draft_accepted_this_iter = 0
             total_gamma_layer2 = new_generated_token.shape[1] + actual_gamma1
             if total_gamma_layer2 > 0:
+                draft_stage_probs = stage_prob_history(
+                    draft_model_cache,
+                    prefix_len + new_generated_token.shape[1],
+                    draft_rebuilt_probs,
+                )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_model_cache.prob_history,
+                    draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma_layer2,
@@ -1640,6 +1787,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=total_gamma_layer2,
                     output_device=draft_device,
+                    draft_probs_override=draft_stage_probs,
                 )
                 if not draft_all_accepted:
                     comm_simulator.send_reject_message("edge_cloud")
@@ -1679,9 +1827,14 @@ class Baselines(Decoding):
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
             if not draft_all_accepted:
+                draft_stage_probs = stage_prob_history(
+                    draft_model_cache,
+                    prefix_len + new_generated_token.shape[1],
+                    draft_rebuilt_probs,
+                )
                 comm_simulator.transfer(
                     None,
-                    draft_model_cache.prob_history[:, n2, : self.vocab_size],
+                    draft_stage_probs[:, n2, : self.vocab_size],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -1844,6 +1997,7 @@ class Baselines(Decoding):
 
             step_start_time = time.time()
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
 
             # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
@@ -1872,18 +2026,14 @@ class Baselines(Decoding):
             step_start_time = time.time()
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
 
-            x = prefix.clone().to(draft_device)
             self.adapter.reset_step()
-            q = None
-            for _ in range(current_gamma):
-                q = approx_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
-                hidden_states = approx_model_cache.hidden_states
-                assert hidden_states is not None
-                stop = self.adapter.predict(hidden_states)
-                if stop:
-                    break
+            x, rebuilt_draft_probs, q = self._generate_with_optional_rebuilt_proposal(
+                approx_model_cache,
+                prefix.to(draft_device),
+                current_gamma,
+                current_proposal_top_k,
+                adapter=self.adapter,
+            )
 
             if self.rl_adapter is not None:
                 bandwidth = comm_simulator.bandwidth_edge_cloud
@@ -1908,6 +2058,11 @@ class Baselines(Decoding):
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
             current_gamma = actual_gamma  # 更新current_gamma为实际生成的数量
+            stage_probs = stage_prob_history(
+                approx_model_cache,
+                prefix_len,
+                rebuilt_draft_probs,
+            )
 
             total_draft_steps += 1
             sum_draft_len += current_gamma
@@ -1944,7 +2099,7 @@ class Baselines(Decoding):
                 # 传输 token id 和 prob 用于 rejection sampling
                 comm_simulator.transfer(
                     j,
-                    approx_model_cache.prob_history[:, draft_idx, j],
+                    stage_probs[:, draft_idx, j],
                     "edge_cloud",
                 )
 
@@ -1955,7 +2110,7 @@ class Baselines(Decoding):
                             :, target_idx, j
                         ]
                     )
-                    / (approx_model_cache.prob_history[:, draft_idx, j])
+                    / (stage_probs[:, draft_idx, j])
                 ):
                     n = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
@@ -2004,7 +2159,7 @@ class Baselines(Decoding):
                 # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
                 comm_simulator.transfer(
                     None,
-                    approx_model_cache.prob_history[:, n, : self.vocab_size],
+                    stage_probs[:, n, : self.vocab_size],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -2015,7 +2170,7 @@ class Baselines(Decoding):
                         target_model_cache.prob_history[:, n, : self.vocab_size].to(
                             draft_device
                         )
-                        - approx_model_cache.prob_history[:, n, : self.vocab_size]
+                        - stage_probs[:, n, : self.vocab_size]
                     )
                 )
 
@@ -2187,6 +2342,10 @@ class Baselines(Decoding):
             idx += 1
             step_start_time = time.time()
             prefix_len = prefix.shape[1]
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_stage_probs: Optional[torch.Tensor] = None
+            draft_stage_probs: Optional[torch.Tensor] = None
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
 
             # 第一层 speculative
             edge_end_comm_start = comm_simulator.edge_end_comm_time
@@ -2195,26 +2354,16 @@ class Baselines(Decoding):
             #     prefix.to(little_device), self.args.gamma2
             # )
 
-            x = prefix.clone().to(little_device)
-
             self.small_draft_adapter.reset_step()
-            q = None
-            for _ in range(self.args.gamma2):
-                adapter = self.small_draft_adapter
-                assert adapter.device != torch.device("cpu")
-                q = little_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
-
-                hidden_states = little_model_cache.hidden_states
-                assert hidden_states is not None
-
-                arp_start = time.time()
-                stop = adapter.predict(hidden_states)
-                arp_overhead_time += time.time() - arp_start
-
-                if stop:
-                    break
+            adapter = self.small_draft_adapter
+            assert adapter.device != torch.device("cpu")
+            x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+                adapter=adapter,
+            )
 
             if self.little_rl_adapter is not None:
                 dra_start = time.time()
@@ -2251,8 +2400,13 @@ class Baselines(Decoding):
             little_accepted_this_iter = 0
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if actual_gamma2 > 0:
+                little_stage_probs = stage_prob_history(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_model_cache.prob_history,
+                    little_stage_probs,
                     x,
                     prefix_len,
                     actual_gamma2,
@@ -2272,6 +2426,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=actual_gamma2,
                     output_device=little_device,
+                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
                 )
             else:
                 t = sample_accept_token(
@@ -2325,6 +2480,10 @@ class Baselines(Decoding):
                 # )
 
                 prob_data = little_model_cache.prob_history[:, n1, : self.vocab_size]
+                if actual_gamma2 > 0:
+                    prob_data = cast(torch.Tensor, little_stage_probs)[
+                        :, n1, : self.vocab_size
+                    ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
@@ -2354,24 +2513,16 @@ class Baselines(Decoding):
             #     prefix.to(draft_device), self.args.gamma1
             # )
 
-            x = prefix.clone().to(draft_device)
             self.draft_target_adapter.reset_step()
-            q = None
-            for _ in range(self.args.gamma1):
-                adapter = self.draft_target_adapter
-                assert adapter.device != torch.device("cpu")
-                q = draft_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
-                hidden_states = draft_model_cache.hidden_states
-                assert hidden_states is not None
-
-                arp_start = time.time()
-                stop = adapter.predict(hidden_states)
-                arp_overhead_time += time.time() - arp_start
-
-                if stop:
-                    break
+            adapter = self.draft_target_adapter
+            assert adapter.device != torch.device("cpu")
+            x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+                adapter=adapter,
+            )
 
             if self.rl_adapter is not None:
                 dra_start = time.time()
@@ -2411,8 +2562,13 @@ class Baselines(Decoding):
 
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if total_gamma > 0:
+                draft_stage_probs = stage_prob_history(
+                    draft_model_cache,
+                    prefix_len + new_generated_token.shape[1],
+                    draft_rebuilt_probs,
+                )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_model_cache.prob_history,
+                    draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
@@ -2434,6 +2590,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=total_gamma,
                     output_device=draft_device,
+                    draft_probs_override=cast(torch.Tensor, draft_stage_probs),
                 )
             else:
                 draft_accepted_this_iter = 0
@@ -2490,7 +2647,9 @@ class Baselines(Decoding):
                 #     transfer_top_k,
                 # )
 
-                prob_data = draft_model_cache.prob_history[:, n2, : self.vocab_size]
+                prob_data = cast(torch.Tensor, draft_stage_probs)[
+                    :, n2, : self.vocab_size
+                ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
@@ -2582,6 +2741,7 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    # TODO: 全部改为基于熵的接受起草，不然target fwd增加太大
     @Register.register_decoding("cee_cuhlm")
     @torch.no_grad()
     def cee_cuhlm(
@@ -2674,29 +2834,23 @@ class Baselines(Decoding):
             idx += 1
             step_start_time = time.time()
             prefix_len = prefix.shape[1]
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_stage_probs: Optional[torch.Tensor] = None
+            draft_stage_probs: Optional[torch.Tensor] = None
 
             # 第一层 speculative (Little -> Draft)
             edge_end_comm_start = comm_simulator.edge_end_comm_time
 
-            x = prefix.clone().to(little_device)
             self.small_draft_adapter.reset_step()
-            q = None
-            for _ in range(self.args.gamma2):
-                adapter = self.small_draft_adapter
-                assert adapter.device != torch.device("cpu")
-                q = little_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
-                hidden_states = cast(
-                    Sequence[torch.Tensor], little_model_cache.hidden_states
-                )
-
-                arp_start = time.time()
-                stop = adapter.predict(hidden_states)
-                arp_overhead_time += time.time() - arp_start
-
-                if stop:
-                    break
+            adapter = self.small_draft_adapter
+            assert adapter.device != torch.device("cpu")
+            x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+                adapter=adapter,
+            )
 
             if self.little_rl_adapter is not None:
                 dra_start = time.time()
@@ -2732,8 +2886,13 @@ class Baselines(Decoding):
 
             little_accepted_this_iter = 0
             if actual_gamma2 > 0:
+                little_stage_probs = stage_prob_history(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_model_cache.prob_history,
+                    little_stage_probs,
                     x,
                     prefix_len,
                     actual_gamma2,
@@ -2751,6 +2910,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=actual_gamma2,
                     output_device=little_device,
+                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
                 )
             else:
                 t = sample_accept_token(
@@ -2785,7 +2945,9 @@ class Baselines(Decoding):
             reject_overhead = 0.0
 
             if not little_all_accepted:
-                prob_data = little_model_cache.prob_history[:, n1, : self.vocab_size]
+                prob_data = cast(torch.Tensor, little_stage_probs)[
+                    :, n1, : self.vocab_size
+                ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
@@ -2809,25 +2971,16 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x = prefix.clone().to(draft_device)
             self.draft_target_adapter.reset_step()
-            q = None
-            for _ in range(self.args.gamma1):
-                adapter = self.draft_target_adapter
-                assert adapter.device != torch.device("cpu")
-                q = draft_model_cache._forward_with_kvcache(x)
-                next_tok = sample(q)
-                x = torch.cat((x, next_tok), dim=1)
-                hidden_states = cast(
-                    Sequence[torch.Tensor], draft_model_cache.hidden_states
-                )
-
-                arp_start = time.time()
-                stop = adapter.predict(hidden_states)
-                arp_overhead_time += time.time() - arp_start
-
-                if stop:
-                    break
+            adapter = self.draft_target_adapter
+            assert adapter.device != torch.device("cpu")
+            x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+                adapter=adapter,
+            )
 
             if self.rl_adapter is not None:
                 dra_start = time.time()
@@ -2866,6 +3019,11 @@ class Baselines(Decoding):
             n2 = prefix_len + total_gamma - 1
 
             draft_accepted_this_iter = 0
+            draft_stage_probs = stage_prob_history(
+                draft_model_cache,
+                prefix_len + new_generated_token.shape[1],
+                draft_rebuilt_probs,
+            )
 
             # CUHLM Uncertainty Check Loop
             for i in range(total_gamma):
@@ -2890,7 +3048,7 @@ class Baselines(Decoding):
 
                 if should_transfer:
                     j = x[:, prefix_len + i]
-                    draft_prob = draft_model_cache.prob_history[:, logit_idx, j]
+                    draft_prob = draft_stage_probs[:, logit_idx, j]
 
                     # Simulation: Transfer Token + Compressed Probs
                     prob_size = vocab_size * 4  # float32
@@ -2949,7 +3107,7 @@ class Baselines(Decoding):
 
             if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
                 # Rejected
-                prob_data = draft_model_cache.prob_history[:, n2, : self.vocab_size]
+                prob_data = draft_stage_probs[:, n2, : self.vocab_size]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
@@ -2961,7 +3119,7 @@ class Baselines(Decoding):
                         target_model_cache.prob_history[:, n2, : self.vocab_size].to(
                             draft_device
                         )
-                        - draft_model_cache.prob_history[:, n2, : self.vocab_size]
+                        - draft_stage_probs[:, n2, : self.vocab_size]
                     )
                 )
                 new_generated_token = prefix[:, prefix_len:]
@@ -3139,9 +3297,17 @@ class Baselines(Decoding):
         while prefix.shape[1] < max_tokens:
             idx += 1
             prefix_len = prefix.shape[1]
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_stage_probs: Optional[torch.Tensor] = None
+            draft_stage_probs: Optional[torch.Tensor] = None
 
             # --- Layer 1: Little -> Draft (Serial) ---
-            x = little_model_cache.generate(prefix.to(little_device), self.args.gamma2)
+            x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+            )
             # Sync with Draft Model
             _ = draft_model_cache.generate(x.to(draft_device), 1)
 
@@ -3152,8 +3318,13 @@ class Baselines(Decoding):
             n1: int = prefix_len + self.args.gamma2 - 1
 
             if self.args.gamma2 > 0:
+                little_stage_probs = stage_prob_history(
+                    little_model_cache,
+                    prefix_len,
+                    little_rebuilt_probs,
+                )
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_model_cache.prob_history,
+                    little_stage_probs,
                     x,
                     prefix_len,
                     self.args.gamma2,
@@ -3171,6 +3342,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=self.args.gamma2,
                     output_device=little_device,
+                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
                 )
                 if not little_all_accepted:
                     comm_simulator.send_reject_message("edge_end")
@@ -3191,7 +3363,7 @@ class Baselines(Decoding):
                 # Reject, resample from Draft
                 comm_simulator.transfer(
                     None,
-                    little_model_cache.prob_history[:, n1, : self.vocab_size],
+                    cast(torch.Tensor, little_stage_probs)[:, n1, : self.vocab_size],
                     "edge_end",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -3213,7 +3385,12 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
 
-            x = draft_model_cache.generate(prefix.to(draft_device), self.args.gamma1)
+            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+            )
 
             queuing_time += batch_delay
             # Sync with Target Model
@@ -3234,8 +3411,13 @@ class Baselines(Decoding):
             total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
 
             if total_gamma_layer2 > 0:
+                draft_stage_probs = stage_prob_history(
+                    draft_model_cache,
+                    prefix_len + new_generated_token_layer1.shape[1],
+                    draft_rebuilt_probs,
+                )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_model_cache.prob_history,
+                    draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma_layer2,
@@ -3257,6 +3439,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=total_gamma_layer2,
                     output_device=draft_device,
+                    draft_probs_override=cast(torch.Tensor, draft_stage_probs),
                 )
                 if not draft_all_accepted:
                     comm_simulator.send_reject_message("edge_cloud")
@@ -3279,7 +3462,7 @@ class Baselines(Decoding):
                 # Reject, resample from Target
                 comm_simulator.transfer(
                     None,
-                    draft_model_cache.prob_history[:, n2, : self.vocab_size],
+                    cast(torch.Tensor, draft_stage_probs)[:, n2, : self.vocab_size],
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
@@ -3438,10 +3621,17 @@ class Baselines(Decoding):
         while prefix.shape[1] < max_tokens:
             idx += 1
             prefix_len = prefix.shape[1]
+            current_proposal_top_k = proposal_top_k(transfer_top_k)
+            little_stage_probs: Optional[torch.Tensor] = None
+            draft_stage_probs: Optional[torch.Tensor] = None
 
             # --- Layer 1: Little -> Draft (Parallel) ---
-            x = little_model_cache.generate(prefix.to(little_device), self.args.gamma2)
-
+            x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+            )
             # Transfer all tokens
             comm_simulator.transfer(x, None, "edge_end")
 
@@ -3461,7 +3651,12 @@ class Baselines(Decoding):
             end_idx = prefix_len + self.args.gamma2 - 1
             # Note: _prob_history includes prompt history.
 
-            prob_chunk = little_model_cache.prob_history[:, start_idx:end_idx, :]
+            little_stage_probs = stage_prob_history(
+                little_model_cache,
+                prefix_len,
+                little_rebuilt_probs,
+            )
+            prob_chunk = little_stage_probs[:, start_idx:end_idx, :]
             comm_simulator.transfer(
                 None,
                 prob_chunk,
@@ -3484,6 +3679,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=self.args.gamma2,
                     output_device=little_device,
+                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
                 )
                 if not little_all_accepted:
                     comm_simulator.send_reject_message("edge_end")
@@ -3514,7 +3710,12 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
 
-            x = draft_model_cache.generate(prefix.to(draft_device), self.args.gamma1)
+            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+            )
 
             # Transfer generated tokens by draft model
             speculated_tokens = x[:, -self.args.gamma1 :]
@@ -3537,7 +3738,12 @@ class Baselines(Decoding):
             # The range of tokens to verify is [prefix_len, prefix_len + total_gamma_layer2)
             start_idx = prefix_len - 1
             end_idx = prefix_len + total_gamma_layer2 - 1
-            prob_chunk = draft_model_cache.prob_history[:, start_idx:end_idx, :]
+            draft_stage_probs = stage_prob_history(
+                draft_model_cache,
+                prefix_len + new_generated_token_layer1.shape[1],
+                draft_rebuilt_probs,
+            )
+            prob_chunk = draft_stage_probs[:, start_idx:end_idx, :]
 
             comm_simulator.transfer(
                 None,
@@ -3562,6 +3768,7 @@ class Baselines(Decoding):
                     prefix_len=prefix_len,
                     gamma=total_gamma_layer2,
                     output_device=draft_device,
+                    draft_probs_override=cast(torch.Tensor, draft_stage_probs),
                 )
                 if not draft_all_accepted:
                     comm_simulator.send_reject_message("edge_cloud")

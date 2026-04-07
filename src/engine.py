@@ -40,6 +40,7 @@ from .model_loading import (
 )
 from .register import Register
 from .utils import (
+    rebuild_topk_uniform_probs,
     seed_everything,
     sample,
 )
@@ -642,7 +643,20 @@ class Decoding(Register, ABC):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            proposal_top_k = (
+                transfer_top_k
+                if transfer_top_k is not None and transfer_top_k > 0
+                else None
+            )
+            rebuilt_draft_probs = None
+            if proposal_top_k is not None:
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    proposal_top_k,
+                )
+            else:
+                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -663,6 +677,17 @@ class Decoding(Register, ABC):
                 gamma=current_gamma,
                 transfer_mode="none",
                 send_reject_message=False,
+                draft_probs_override=(
+                    None
+                    if rebuilt_draft_probs is None
+                    else torch.cat(
+                        (
+                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
+                            rebuilt_draft_probs,
+                        ),
+                        dim=1,
+                    )
+                ),
             )
             _log_sd_alignment_snapshot(
                 "verify_exit",
@@ -692,6 +717,17 @@ class Decoding(Register, ABC):
                 prefix_len=prefix_len,
                 gamma=current_gamma,
                 n=n,
+                draft_probs_override=(
+                    None
+                    if rebuilt_draft_probs is None
+                    else torch.cat(
+                        (
+                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
+                            rebuilt_draft_probs,
+                        ),
+                        dim=1,
+                    )
+                ),
             )
             _log_sd_alignment_snapshot(
                 "finalize_exit",
@@ -814,7 +850,20 @@ class Decoding(Register, ABC):
                 self.num_acc_tokens.append(1)
                 break
 
-            x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            proposal_top_k = (
+                transfer_top_k
+                if transfer_top_k is not None and transfer_top_k > 0
+                else None
+            )
+            rebuilt_draft_probs = None
+            if proposal_top_k is not None:
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    proposal_top_k,
+                )
+            else:
+                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -836,6 +885,17 @@ class Decoding(Register, ABC):
                 comm_link="edge_cloud",
                 transfer_mode="serial",
                 send_reject_message=True,
+                draft_probs_override=(
+                    None
+                    if rebuilt_draft_probs is None
+                    else torch.cat(
+                        (
+                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
+                            rebuilt_draft_probs,
+                        ),
+                        dim=1,
+                    )
+                ),
             )
 
             total_accepted_tokens += this_step_accepted_tokens
@@ -852,11 +912,10 @@ class Decoding(Register, ABC):
             # 针对使用了通信压缩的传输逻辑
             if n < prefix_len + current_gamma - 1:
                 if transfer_top_k is not None and transfer_top_k > 0:
-                    rebuild_probs = comm_simulator._apply_top_k_compression(
+                    rebuild_probs = rebuild_topk_uniform_probs(
                         approx_model_cache.prob_history[:, n, : self.vocab_size],
                         transfer_top_k,
                     )
-                    rebuild_probs = comm_simulator.rebuild_full_probs(rebuild_probs)
                     approx_model_cache.prob_history[:, n, : self.vocab_size] = (
                         rebuild_probs
                     )
@@ -877,6 +936,17 @@ class Decoding(Register, ABC):
                 prefix_len=prefix_len,
                 gamma=current_gamma,
                 n=n,
+                draft_probs_override=(
+                    None
+                    if rebuilt_draft_probs is None
+                    else torch.cat(
+                        (
+                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
+                            rebuilt_draft_probs,
+                        ),
+                        dim=1,
+                    )
+                ),
             )
 
             # 传输新生成的 token id

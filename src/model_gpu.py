@@ -1,9 +1,14 @@
 import torch
 
-from .utils import log_prob_tensor_if_invalid, norm_logits, sample
+from .utils import (
+    log_prob_tensor_if_invalid,
+    norm_logits,
+    rebuild_topk_uniform_probs,
+    sample,
+)
 
 from collections.abc import Sequence
-from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard, cast
+from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard, cast, Optional
 
 
 KVPair: TypeAlias = tuple[torch.Tensor, torch.Tensor]
@@ -274,6 +279,32 @@ class KVCacheModel:
             x = torch.cat((x, next_tok), dim=1)
 
         return x
+
+    def generate_with_rebuilt_topk(
+        self,
+        input: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        x = input
+        if x.dtype != torch.long:
+            x = x.to(torch.long)
+
+        rebuilt_rows: list[torch.Tensor] = []
+        for _ in range(gamma):
+            q = self._forward_with_kvcache(x)
+            rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+            rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+            next_tok = sample(rebuilt_q)
+            if next_tok.dtype != torch.long:
+                next_tok = next_tok.to(torch.long)
+            x = torch.cat((x, next_tok), dim=1)
+
+        rebuilt_history = None
+        if rebuilt_rows:
+            rebuilt_history = torch.cat(rebuilt_rows, dim=1)
+
+        return x, rebuilt_history
 
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:

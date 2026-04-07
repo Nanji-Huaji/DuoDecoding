@@ -32,6 +32,7 @@ class DecodingAdapter:
             stop_prediction: bool, whether to stop generation
         """
         cum_acc_prob = 1.0
+        stop_prediction = False
         # If we have history, we might want to use it, but for now we follow original logic
         # but store each token's prob in step_acc_probs.
 

@@ -9,7 +9,13 @@ from .debug_logs import _log_invalid_batch_details, _log_sd_alignment_snapshot
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .metrics import DecodingMetrics
 from .model_gpu import KVCacheModel
-from .utils import log_prob_tensor_if_invalid, log_ratio_if_invalid, max_fn, sample
+from .utils import (
+    log_prob_tensor_if_invalid,
+    log_ratio_if_invalid,
+    max_fn,
+    rebuild_topk_uniform_probs,
+    sample,
+)
 
 
 def collect_verification_payload(
@@ -343,6 +349,7 @@ def resolve_stage_verification(
     gamma: int,
     *,
     output_device: torch.device,
+    draft_probs_override: Optional[torch.Tensor] = None,
 ) -> Tuple[int, int, torch.Tensor, bool]:
     vocab_limit = min(proposer_cache.vocab_size, verifier_cache.vocab_size)
     verification_inputs, acceptance_result = verify_draft_sequence_result(
@@ -351,6 +358,7 @@ def resolve_stage_verification(
         x=x,
         prefix_len=prefix_len,
         gamma=gamma,
+        draft_probs_override=draft_probs_override,
     )
     n = acceptance_result.n
     rollback_plan = build_rollback_plan(
@@ -387,19 +395,24 @@ def finalize_verification(
     prefix_len: int,
     gamma: int,
     n: int,
+    draft_probs_override: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     prefix = x[:, : n + 1]
     rollback_plan = build_rollback_plan(prefix_len, gamma, n)
 
     approx_model_cache.rollback(rollback_plan.draft_end_pos)
 
+    draft_probs = (
+        draft_probs_override
+        if draft_probs_override is not None
+        else approx_model_cache.prob_history
+    )
+
     if not rollback_plan.all_accepted:
         target_prob_slice = target_model_cache.prob_history[
             :, n, : target_model_cache.vocab_size
         ]
-        approx_prob_slice = approx_model_cache.prob_history[
-            :, n, : approx_model_cache.vocab_size
-        ]
+        approx_prob_slice = draft_probs[:, n, : approx_model_cache.vocab_size]
 
         t = sample_reject_token(
             target_prob_slice,
