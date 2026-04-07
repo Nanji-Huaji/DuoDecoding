@@ -29,6 +29,7 @@ from .decoding_ops import finalize_verification, verify_draft_sequence
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .model_gpu import KVCacheModel
 from .model_loading import (
+    build_sharded_target_device_map,
     build_quant_config,
     get_model_size,
     load_causal_lm,
@@ -359,11 +360,17 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(self.args.target_model)
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
+            target_max_memory = None
+            if target_device == "auto":
+                sharded_target = build_sharded_target_device_map(num_gpus)
+                if sharded_target is not None:
+                    target_device, target_max_memory = sharded_target
             self.target_model = load_causal_lm(
                 loader,
                 self.args.target_model,
                 target_device,
                 quant_config=target_quant,
+                max_memory=target_max_memory,
             )
 
         elif self.args.eval_mode in [
@@ -425,11 +432,17 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(self.args.target_model)
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
+            target_max_memory = None
+            if target_device == "auto":
+                sharded_target = build_sharded_target_device_map(num_gpus)
+                if sharded_target is not None:
+                    target_device, target_max_memory = sharded_target
             self.target_model = load_causal_lm(
                 loader,
                 self.args.target_model,
                 target_device,
                 quant_config=target_quant,
+                max_memory=target_max_memory,
             )
 
         # # 从实际模型embedding层获取vocab_size
@@ -486,9 +499,29 @@ class Decoding(Register, ABC):
 
     def load_tokenizer(self):
         # * load tokenizers
-        self.color_print(f"Loading tokenizer of {self.args.target_model}...", 3)
+        tokenizer_model_name = self.args.target_model
+        draft_model_name = getattr(self.args, "draft_model", None)
+        target_name = str(self.args.target_model).lower()
+        draft_name = (
+            str(draft_model_name).lower() if draft_model_name is not None else ""
+        )
+
+        # Tri-decoding shares one token space across little/draft/target. For the
+        # Llama-2 7B -> 70B path, the 70B tokenizer exposes an extra added <pad>
+        # token (id 32000) that the smaller models cannot embed, so prefer the
+        # draft tokenizer as the shared tokenizer.
+        if (
+            draft_model_name is not None
+            and self.args.eval_mode not in {"large"}
+            and "llama-2" in draft_name
+            and "llama-2" in target_name
+            and "70b" in target_name
+        ):
+            tokenizer_model_name = draft_model_name
+
+        self.color_print(f"Loading tokenizer of {tokenizer_model_name}...", 3)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.args.target_model,
+            tokenizer_model_name,
             trust_remote_code=True,
             local_files_only=False,
         )

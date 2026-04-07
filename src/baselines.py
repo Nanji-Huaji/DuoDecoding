@@ -1,6 +1,8 @@
+import json
 import math
 import time
 import warnings
+from pathlib import Path
 from typing import Callable, List, Optional, Tuple, cast, Sequence
 
 import torch
@@ -46,6 +48,51 @@ from .rl_agent_registry import (
 )
 from .rl_adapter import RLNetworkAdapter
 from .utils import max_fn, rebuild_topk_uniform_probs, sample
+
+
+def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead:
+    path = Path(model_path)
+    try:
+        return AcceptancePredictionHead.from_pretrained(model_path)
+    except FileNotFoundError:
+        config_path = path / "config.json"
+        bin_path = path / "pytorch_model.bin"
+        safetensors_path = path / "model.safetensors"
+        if (
+            not config_path.is_file()
+            or not bin_path.is_file()
+            or safetensors_path.is_file()
+        ):
+            raise
+
+        with config_path.open() as f:
+            config = json.load(f)
+
+        head = AcceptancePredictionHead(config)
+        state_dict = torch.load(bin_path, map_location="cpu")
+        head.load_state_dict(state_dict, strict=True)
+        return head
+
+
+def _build_cache(
+    model,
+    *,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    vocab_size: int,
+) -> KVCacheModel:
+    cache = KVCacheModel(model, temperature, top_k, top_p)
+    cache.vocab_size = vocab_size
+    return cache
+
+
+def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if tokens.device == device:
+        return tokens
+    if tokens.dtype != torch.long:
+        tokens = tokens.to(torch.long)
+    return tokens.to("cpu", non_blocking=False).to(device, non_blocking=False)
 
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
@@ -140,6 +187,39 @@ class Baselines(Decoding):
         super().load_model()
         self.load_acc_head()
 
+    def build_adaptive_tridecoding_caches(
+        self,
+        transfer_top_k: Optional[int],
+    ) -> dict[str, KVCacheModel]:
+        draft_top_k = (
+            transfer_top_k
+            if (transfer_top_k is not None and transfer_top_k > 0)
+            else self.args.top_k
+        )
+        return {
+            "little": _build_cache(
+                self.little_model,
+                temperature=self.args.temp,
+                top_k=draft_top_k,
+                top_p=self.args.top_p,
+                vocab_size=self.vocab_size,
+            ),
+            "draft": _build_cache(
+                self.draft_model,
+                temperature=self.args.temp,
+                top_k=draft_top_k,
+                top_p=self.args.top_p,
+                vocab_size=self.vocab_size,
+            ),
+            "target": _build_cache(
+                self.target_model,
+                temperature=self.args.temp,
+                top_k=0,
+                top_p=0,
+                vocab_size=self.vocab_size,
+            ),
+        }
+
         # 确保vocab_size从实际模型获取，而不是从config
         # if hasattr(self, "target_model") and self.target_model is not None:
         #     self.vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
@@ -158,7 +238,7 @@ class Baselines(Decoding):
         if self.args.eval_mode == "adaptive_decoding":
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.acc_head_path = args.acc_head_path
-            self.acc_head = AcceptancePredictionHead.from_pretrained(
+            self.acc_head = load_acceptance_prediction_head(
                 self.acc_head_path,
             )
             self.acc_head.eval()
@@ -169,14 +249,14 @@ class Baselines(Decoding):
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
-            self.small_draft_acc_head = AcceptancePredictionHead.from_pretrained(
+            self.small_draft_acc_head = load_acceptance_prediction_head(
                 self.small_draft_acc_head_path,
             )
             self.small_draft_acc_head.eval()
             if hasattr(self, "little_model"):
                 self.small_draft_acc_head.to(self.little_model.device)
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
-            self.draft_target_acc_head = AcceptancePredictionHead.from_pretrained(
+            self.draft_target_acc_head = load_acceptance_prediction_head(
                 self.draft_target_acc_head_path,
             )
             self.draft_target_acc_head.eval()
@@ -1115,28 +1195,10 @@ class Baselines(Decoding):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
-        draft_top_k = (
-            transfer_top_k
-            if (transfer_top_k is not None and transfer_top_k > 0)
-            else self.args.top_k
-        )
-
-        little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
-        )
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
-        )
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
-        )
-        target_model_cache.vocab_size = self.vocab_size
+        caches = self.build_adaptive_tridecoding_caches(transfer_top_k)
+        little_model_cache = caches["little"]
+        draft_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
 
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
@@ -2359,7 +2421,7 @@ class Baselines(Decoding):
             assert adapter.device != torch.device("cpu")
             x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
-                prefix.to(little_device),
+                _move_token_tensor(prefix, little_device),
                 self.args.gamma2,
                 current_proposal_top_k,
                 adapter=adapter,
@@ -2389,7 +2451,7 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
-            _ = draft_model_cache.generate(x.to(draft_device), 1)
+            _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
 
             little_model_forward_times += actual_gamma2
             draft_model_forward_times += 1
@@ -2518,7 +2580,7 @@ class Baselines(Decoding):
             assert adapter.device != torch.device("cpu")
             x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
-                prefix.to(draft_device),
+                _move_token_tensor(prefix, draft_device),
                 self.args.gamma1,
                 current_proposal_top_k,
                 adapter=adapter,
@@ -2549,7 +2611,7 @@ class Baselines(Decoding):
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
             queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1
@@ -2561,7 +2623,7 @@ class Baselines(Decoding):
             n2: int = prefix_len + total_gamma - 1
 
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
-            if total_gamma > 0:
+            if actual_gamma1 > 0:
                 draft_stage_probs = stage_prob_history(
                     draft_model_cache,
                     prefix_len + new_generated_token.shape[1],
@@ -2577,7 +2639,7 @@ class Baselines(Decoding):
                     draft_tokens_second, draft_probs_second, "edge_cloud"
                 )
 
-            if total_gamma > 0:
+            if actual_gamma1 > 0:
                 (
                     draft_accepted_this_iter,
                     n2,

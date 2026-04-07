@@ -24,12 +24,21 @@ def collect_verification_payload(
     prefix_len: int,
     gamma: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    draft_tokens = x[:, prefix_len : prefix_len + gamma]
     if gamma <= 0:
+        draft_tokens = x[:, 0:0]
         empty_probs = prob_history[:, 0:0, 0]
         return draft_tokens, empty_probs
 
-    draft_prob_rows = prob_history[:, prefix_len - 1 : prefix_len + gamma - 1, :]
+    available_prob_steps = max(prob_history.shape[1] - (prefix_len - 1), 0)
+    available_token_steps = max(x.shape[1] - prefix_len, 0)
+    actual_gamma = min(gamma, available_prob_steps, available_token_steps)
+
+    draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
+    if actual_gamma <= 0:
+        empty_probs = prob_history[:, 0:0, 0]
+        return draft_tokens, empty_probs
+
+    draft_prob_rows = prob_history[:, prefix_len - 1 : prefix_len + actual_gamma - 1, :]
     draft_token_probs = torch.gather(
         draft_prob_rows,
         2,

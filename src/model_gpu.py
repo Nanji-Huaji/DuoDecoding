@@ -69,6 +69,8 @@ class KVCacheModel:
         self.max_length: int = max_length
 
         self.hidden_states: Sequence[torch.Tensor] | None = None
+        embeddings = cast(EmbeddingLike, model.get_input_embeddings())
+        self.embedding_vocab_size = int(embeddings.weight.shape[0])
 
         if hasattr(model.config, "vocab_size"):
             self.vocab_size = int(model.config.vocab_size)
@@ -155,6 +157,7 @@ class KVCacheModel:
         input: (batch_size, seq_len)
         output: (batch_size, vocab_size) - probabilities for the next token after the entire input sequence
         """
+        self._validate_input_ids(input_ids)
         seq_length = input_ids.shape[1]
         batch_size = input_ids.shape[0]
         outputs = self._model(input_ids)
@@ -186,13 +189,14 @@ class KVCacheModel:
         return probs[:, -1, :]
 
     @torch.inference_mode()
-    @torch.compile(dynamic=True)
     def _decode_step(self, last_input_id: torch.Tensor) -> torch.Tensor:
         """
         Decode one cached step (or a short cached suffix) after prefill.
         """
         if last_input_id.dtype != torch.long:
             last_input_id = last_input_id.to(torch.long)
+
+        self._validate_input_ids(last_input_id)
 
         if last_input_id.shape[1] == 0:
             if self._current_seq_len <= 0:
@@ -240,6 +244,23 @@ class KVCacheModel:
         self.hidden_states = outputs.hidden_states
 
         return probs[:, -1, :]
+
+    def _validate_input_ids(self, input_ids: torch.Tensor) -> None:
+        if input_ids.numel() == 0:
+            return
+
+        min_id = int(input_ids.min().item())
+        max_id = int(input_ids.max().item())
+        if min_id < 0 or max_id >= self.embedding_vocab_size:
+            model_name = getattr(
+                getattr(self._model, "config", None), "_name_or_path", "unknown"
+            )
+            raise ValueError(
+                "Input token id out of embedding range for model "
+                f"{model_name}: min={min_id}, max={max_id}, "
+                f"embedding_vocab_size={self.embedding_vocab_size}, "
+                f"configured_vocab_size={self.vocab_size}"
+            )
 
     def _forward_with_kvcache(self, input_ids: torch.Tensor) -> torch.Tensor:
         if input_ids.dtype != torch.long:

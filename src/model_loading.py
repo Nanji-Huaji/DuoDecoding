@@ -34,6 +34,31 @@ def secondary_device(num_gpus: int) -> str:
     return "cuda:1" if num_gpus > 1 else "cuda:0"
 
 
+def _single_gpu_max_memory() -> str:
+    if not torch.cuda.is_available():
+        return "0GiB"
+
+    total_bytes = torch.cuda.get_device_properties(0).total_memory
+    total_gib = total_bytes // (1024**3)
+    # Reserve some room for KV cache / activations / allocator fragmentation.
+    safe_gib = max(int(total_gib) - 4, 1)
+    return f"{safe_gib}GiB"
+
+
+def build_sharded_target_device_map(
+    num_gpus: int,
+) -> tuple[str, dict[int | str, str]] | None:
+    if num_gpus < 4:
+        return None
+
+    usable_target_gpus = num_gpus - 1
+    max_memory: dict[int | str, str] = {
+        gpu_idx: _single_gpu_max_memory() for gpu_idx in range(usable_target_gpus)
+    }
+    max_memory[usable_target_gpus] = "0GiB"
+    return "auto", max_memory
+
+
 def select_dual_model_devices(
     draft_model_name: str,
     target_model_name: str,
@@ -64,6 +89,11 @@ def select_tri_model_devices(
 
     if num_gpus == 1:
         return "cuda:0", "cuda:0", "cuda:0", ordered_sizes
+
+    target_size = get_model_size(target_model_name)
+    if target_size >= 60 and num_gpus >= 4:
+        shared_device = f"cuda:{num_gpus - 1}"
+        return shared_device, shared_device, "auto", ordered_sizes
 
     largest_model_role = ordered_sizes[0][1]
     little_device = "cuda:0" if largest_model_role == "little" else "cuda:1"
@@ -109,6 +139,13 @@ def log_tri_model_allocation(
         print_fn("Only 1 GPU available, all models will be loaded on cuda:0", 3)
         return
 
+    if target_device == "auto" and num_gpus >= 4:
+        print_fn(
+            f"Tri-model placement: target -> auto-sharded across cuda:0..cuda:{num_gpus - 2}, little/draft -> cuda:{num_gpus - 1}",
+            3,
+        )
+        return
+
     largest_model = model_sizes[0]
     print_fn(
         f"Largest model: {largest_model[1]} ({largest_model[0]}B) -> cuda:0",
@@ -127,6 +164,7 @@ def load_causal_lm(
     *,
     output_hidden_states: bool = False,
     quant_config: BitsAndBytesConfig | None = None,
+    max_memory: dict[int | str, str] | None = None,
 ):
     load_kwargs: dict[str, object] = {
         "device_map": device_map,
@@ -135,5 +173,7 @@ def load_causal_lm(
         load_kwargs["output_hidden_states"] = True
     if quant_config is not None:
         load_kwargs["quantization_config"] = quant_config
+    if max_memory is not None:
+        load_kwargs["max_memory"] = max_memory
 
     return loader(model_name, **load_kwargs).eval()
