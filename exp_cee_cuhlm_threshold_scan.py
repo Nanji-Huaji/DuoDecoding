@@ -14,7 +14,10 @@ CLOUD_END_BANDWIDTH = EDGE_CLOUD_BANDWIDTH
 TRANSFER_TOP_K = 1024
 MAX_TOKENS = 128
 NUM_SHOTS = 5
-CUDA_VISIBLE_DEVICES = "2"
+NUM_SAMPLES_PER_TASK = 1
+EVAL_DATA_NUM = 30
+CUDA_VISIBLE_DEVICES = "2,3"
+FAIL_FAST = False
 
 # Threshold sweep for the two uncertainty-gated stages in cee_cuhlm.
 SMALL_DRAFT_THRESHOLDS = [round(i / 10, 1) for i in range(1, 10)]
@@ -50,6 +53,8 @@ def build_configs() -> list[dict]:
                         transfer_top_k=TRANSFER_TOP_K,
                         max_tokens=MAX_TOKENS,
                         num_shots=NUM_SHOTS,
+                        num_samples_per_task=NUM_SAMPLES_PER_TASK,
+                        eval_data_num=EVAL_DATA_NUM,
                         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
                         eval_dataset=dataset,
                         draft_model=draft_model,
@@ -78,6 +83,15 @@ if __name__ == "__main__":
         / f"cee_cuhlm_threshold_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     )
 
+    print("=" * 80)
+    print("CEE-CUHLM Threshold Sweep")
+    print("=" * 80)
+    print(f"Total configs: {len(config_to_run)}")
+    print(f"CUDA_VISIBLE_DEVICES: {CUDA_VISIBLE_DEVICES}")
+    print(f"num_samples_per_task: {NUM_SAMPLES_PER_TASK}")
+    print(f"eval_data_num: {EVAL_DATA_NUM}")
+    print(f"fail_fast: {FAIL_FAST}")
+
     all_results = []
     for config in config_to_run:
         result = run_exp(config, log_dir=log_dir)
@@ -85,6 +99,22 @@ if __name__ == "__main__":
         all_results.append(result)
         with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(all_results, f, indent=2, ensure_ascii=False)
+
+        if FAIL_FAST and result["status"] != "success":
+            print("\n" + "=" * 80)
+            print("Experiment failed, aborting immediately")
+            print("=" * 80)
+            print(f"exp_name: {config['exp_name']}")
+            print(f"small_draft_threshold: {config['small_draft_threshold']}")
+            print(f"draft_target_threshold: {config['draft_target_threshold']}")
+            print(f"status: {result['status']}")
+            print(f"log_file: {result['log_file']}")
+            print(f"summary_file: {summary_file}")
+            raise RuntimeError(
+                f"Experiment failed for thresholds "
+                f"({config['small_draft_threshold']}, {config['draft_target_threshold']}). "
+                f"See log: {result['log_file']}"
+            )
 
     print("\n" + "=" * 80)
     print("CEE-CUHLM Threshold Sweep Summary")

@@ -26,12 +26,12 @@ class EvalDataset(str, Enum):
 
 
 class EvalMode(str, Enum):
-    autoregression = "large"
-    sd = "sd"
+    # autoregression = "large"
+    # sd = "sd"
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
-    tridecoding = "tridecoding"  # ablation of adaptive tridecoding
+    # tridecoding = "tridecoding"  # ablation of adaptive tridecoding
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
     cee_cuhlm = "cee_cuhlm"
@@ -47,6 +47,8 @@ class ExpConfig(TypedDict):
     cloud_end_bandwidth: int | float
     transfer_top_k: int
     num_shots: int
+    num_samples_per_task: int
+    eval_data_num: int | None
     exp_name: str
     use_precise: bool
     use_stochastic_comm: bool
@@ -95,6 +97,8 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.v
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
     --transfer_top_k {transfer_top_k} \
+    --num_samples_per_task {num_samples_per_task} \
+    --eval_data_num {eval_data_num} \
     --small_draft_threshold {small_draft_threshold} \
     --draft_target_threshold {draft_target_threshold} \
     --num_shots {num_shots} \
@@ -468,7 +472,7 @@ def get_available_gpus() -> List[int]:
 
 
 def create_config(
-    eval_mode: str,
+    eval_mode: str | EvalMode,
     ntt_ms_edge_cloud: int | float = 0,
     ntt_ms_edge_end: int | float = 0,
     use_precise: bool = True,
@@ -483,9 +487,11 @@ def create_config(
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
     num_shots: int = 3,
+    num_samples_per_task: int = 1,
+    eval_data_num: int | None = 80,
     max_tokens: int = 128,
     use_early_stopping: bool = False,
-    eval_dataset: EvalDataset = EvalDataset.mt_bench,
+    eval_dataset: str | EvalDataset = EvalDataset.mt_bench,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
@@ -498,10 +504,20 @@ def create_config(
     little_rl_best_path: str | None = None,
     dump_network_stats: bool = False,
 ) -> ExpConfig:
+    eval_mode_value = eval_mode.value if isinstance(eval_mode, EvalMode) else eval_mode
+    eval_dataset_value = (
+        eval_dataset.value if isinstance(eval_dataset, EvalDataset) else eval_dataset
+    )
+    eval_dataset_name = (
+        eval_dataset.name
+        if isinstance(eval_dataset, EvalDataset)
+        else Path(eval_dataset_value).stem.removeprefix("eval_")
+    )
+
     # 使用微秒级时间戳确保唯一性
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
-    if eval_mode in [EvalMode.ceesd, EvalMode.cee_cuhlm]:
+    if eval_mode_value in [EvalMode.ceesd.value, EvalMode.cee_cuhlm.value]:
         # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
             small_draft_acc_head_path = resolve_acc_head_path(little_model, draft_model)
@@ -545,18 +561,20 @@ def create_config(
         little_rl_best_path = ""
 
     return ExpConfig(
-        eval_dataset=eval_dataset,
+        eval_dataset=eval_dataset_value,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
-        eval_mode=eval_mode,
+        eval_mode=eval_mode_value,
         edge_end_bandwidth=edge_end_bandwidth,
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=transfer_top_k,
         num_shots=num_shots,
+        num_samples_per_task=num_samples_per_task,
+        eval_data_num=eval_data_num,
         max_tokens=max_tokens,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
-        exp_name=f"{eval_mode}/{eval_dataset.name}/{eval_mode}_{num_shots}shot_{timestamp}",
+        exp_name=f"{eval_mode_value}/{eval_dataset_name}/{eval_mode_value}_{num_shots}shot_{timestamp}",
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,
@@ -645,7 +663,8 @@ edge_cloud_bandwidth = [
 ]
 
 for little_model, draft_model, target_model in (
-    llama_chat_series,
+    llama_series,
+    # llama_chat_series,
     # vicuna_series,
     # qwen_series,
     # # qwen_series_fp8,
@@ -655,7 +674,7 @@ for little_model, draft_model, target_model in (
     # qwen_1_5_series,
 ):
     for dataset in (EvalDataset.mt_bench_noeval,):
-        for mode in EvalMode:
+        for mode in (EvalMode.ceesd,):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 config = create_config(
                     eval_mode=mode,
@@ -677,7 +696,6 @@ for little_model, draft_model, target_model in (
                     in [
                         EvalMode.ceesd,
                         EvalMode.cee_cuhlm,
-                        EvalMode.tridecoding,
                         EvalMode.cee_dsd,
                         EvalMode.dssd,
                     ]

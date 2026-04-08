@@ -3,6 +3,7 @@ import torch
 from .utils import (
     log_prob_tensor_if_invalid,
     norm_logits,
+    numeric_debug_checks_enabled,
     rebuild_topk_uniform_probs,
     sample,
 )
@@ -151,6 +152,23 @@ class KVCacheModel:
                 new_logits[:, :old_len, :] = self._logits_buffer
             self._logits_buffer = new_logits
 
+    def _raise_if_invalid_probs(self, probs: torch.Tensor, label: str) -> None:
+        if not numeric_debug_checks_enabled():
+            return
+        if not log_prob_tensor_if_invalid(probs, label):
+            return
+
+        model_name = getattr(
+            getattr(self._model, "config", None), "_name_or_path", "unknown"
+        )
+        probs_float = probs.detach().float()
+        row_sums = probs_float.sum(dim=-1)
+        raise ValueError(
+            f"Invalid probability tensor before sampling for {model_name} at {label}: "
+            f"shape={tuple(probs.shape)}, row_sum_min={float(row_sums.min().item())}, "
+            f"row_sum_max={float(row_sums.max().item())}"
+        )
+
     @torch.inference_mode()
     def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
         """
@@ -294,6 +312,7 @@ class KVCacheModel:
 
         for _ in range(gamma):
             q = self._forward_with_kvcache(x)
+            self._raise_if_invalid_probs(q, "KVCacheModel._generate_with_kvcache.q")
             next_tok = sample(q)
             if next_tok.dtype != torch.long:
                 next_tok = next_tok.to(torch.long)
@@ -314,7 +333,15 @@ class KVCacheModel:
         rebuilt_rows: list[torch.Tensor] = []
         for _ in range(gamma):
             q = self._forward_with_kvcache(x)
+            self._raise_if_invalid_probs(
+                q,
+                "KVCacheModel.generate_with_rebuilt_topk.q",
+            )
             rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+            self._raise_if_invalid_probs(
+                rebuilt_q,
+                "KVCacheModel.generate_with_rebuilt_topk.rebuilt_q",
+            )
             rebuilt_rows.append(rebuilt_q.unsqueeze(1))
             next_tok = sample(rebuilt_q)
             if next_tok.dtype != torch.long:

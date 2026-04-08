@@ -109,6 +109,8 @@ class EvalMTBench(Baselines):
             for line in f.readlines():
                 datum = json.loads(line)
                 data.append(datum)
+        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
+            data = data[: self.args.eval_data_num]
         self.data = data
 
     def preprocess(self, input_text):

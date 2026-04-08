@@ -47,7 +47,12 @@ from .rl_agent_registry import (
     resolve_legacy_rl_agent_load_path,
 )
 from .rl_adapter import RLNetworkAdapter
-from .utils import max_fn, rebuild_topk_uniform_probs, sample
+from .utils import (
+    max_fn,
+    norm_logits,
+    rebuild_topk_uniform_probs,
+    sample,
+)
 
 
 def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead:
@@ -93,6 +98,65 @@ def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tens
     if tokens.dtype != torch.long:
         tokens = tokens.to(torch.long)
     return tokens.to("cpu", non_blocking=False).to(device, non_blocking=False)
+
+
+def _validate_token_range(
+    tokens: torch.Tensor,
+    *,
+    vocab_size: int,
+    label: str,
+) -> None:
+    if tokens.numel() == 0:
+        return
+    if tokens.dtype != torch.long:
+        tokens = tokens.to(torch.long)
+    min_id = int(tokens.min().item())
+    max_id = int(tokens.max().item())
+    if min_id < 0 or max_id >= vocab_size:
+        raise ValueError(
+            f"Invalid token ids at {label}: min={min_id}, max={max_id}, vocab_size={vocab_size}"
+        )
+
+
+def _finalize_cuhlm_verification(
+    *,
+    proposer_cache: KVCacheModel,
+    verifier_cache: KVCacheModel,
+    verification_inputs,
+    x: torch.Tensor,
+    prefix_len: int,
+    accepted_count: int,
+    reject_offset: Optional[int],
+    output_device: torch.device,
+) -> tuple[int, torch.Tensor, bool]:
+    actual_gamma = verification_inputs.actual_gamma
+    all_accepted = reject_offset is None
+    if all_accepted:
+        n = prefix_len + actual_gamma - 1
+    else:
+        n = prefix_len + cast(int, reject_offset) - 1
+
+    rollback_plan = build_rollback_plan(prefix_len, actual_gamma, n)
+    if rollback_plan.all_accepted:
+        t = sample_accept_token(
+            verifier_cache.prob_history[:, -1, : verifier_cache.vocab_size],
+            output_device=output_device,
+        )
+    else:
+        assert reject_offset is not None
+        vocab_limit = min(proposer_cache.vocab_size, verifier_cache.vocab_size)
+        t = sample_reject_token(
+            verification_inputs.target_probs_batch[:, reject_offset, :vocab_limit],
+            verification_inputs.draft_probs_batch[:, reject_offset, :vocab_limit],
+            output_device=output_device,
+        )
+
+    apply_rollback(
+        proposer_cache,
+        verifier_cache,
+        rollback_plan,
+    )
+    return n, t, rollback_plan.all_accepted
 
 
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
@@ -1846,6 +1910,15 @@ class Baselines(Decoding):
 
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
+            assert target_model_cache.logits_history is not None, (
+                "Target model logits history is None"
+            )
+            target_stage_probs = norm_logits(
+                target_model_cache.logits_history[:, :, : self.vocab_size],
+                self.args.temp,
+                0,
+                0,
+            ).to(draft_device)
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1
@@ -2597,7 +2670,17 @@ class Baselines(Decoding):
             )
             comm_simulator.simulate_transfer(total_bytes, "edge_end")
 
+            _validate_token_range(
+                t,
+                vocab_size=self.vocab_size,
+                label="cee_cuhlm.edge_end.sampled_token",
+            )
             prefix = torch.cat((prefix, t), dim=1)
+            _validate_token_range(
+                prefix,
+                vocab_size=self.vocab_size,
+                label="cee_cuhlm.edge_end.prefix_after_concat",
+            )
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
@@ -2954,7 +3037,7 @@ class Baselines(Decoding):
             # 第一层 speculative (Little -> Draft)
             x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
-                prefix.to(little_device),
+                _move_token_tensor(prefix, little_device),
                 self.args.gamma2,
                 current_proposal_top_k,
                 adapter=None,
@@ -2962,7 +3045,7 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
-            _ = draft_model_cache.generate(x.to(draft_device), 1)
+            _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
 
             little_model_forward_times += actual_gamma2
             draft_model_forward_times += 1
@@ -3048,6 +3131,7 @@ class Baselines(Decoding):
 
             assert n1 >= prefix_len - 1
             prefix = x[:, : n1 + 1]
+            little_model_cache.rollback(n1 + 1)
 
             prob_bytes = 0.0
             reject_overhead = 0.0
@@ -3086,16 +3170,26 @@ class Baselines(Decoding):
 
             x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
-                prefix.to(draft_device),
+                _move_token_tensor(prefix, draft_device),
                 self.args.gamma1,
                 proposal_top_k(draft_transfer_top_k),
                 adapter=None,
+            )
+            _validate_token_range(
+                x,
+                vocab_size=self.vocab_size,
+                label="cee_cuhlm.draft_stage.proposal_x",
             )
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 
             queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
+            _validate_token_range(
+                x,
+                vocab_size=self.vocab_size,
+                label="cee_cuhlm.before_target_generate",
+            )
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1
@@ -3104,7 +3198,6 @@ class Baselines(Decoding):
             )
 
             total_gamma = new_generated_token.shape[1] + actual_gamma1
-            n2 = prefix_len + total_gamma - 1
 
             draft_accepted_this_iter = 0
             draft_stage_probs = stage_prob_history(
@@ -3112,12 +3205,22 @@ class Baselines(Decoding):
                 prefix_len + new_generated_token.shape[1],
                 draft_rebuilt_probs,
             )
-            draft_all_accepted = True
+            verification_inputs = prepare_verification_inputs(
+                draft_model_cache=draft_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=total_gamma,
+                draft_probs_override=draft_stage_probs,
+            )
+            effective_gamma = verification_inputs.actual_gamma
+            n2 = prefix_len + effective_gamma - 1
+            reject_offset: Optional[int] = None
 
             # CUHLM Uncertainty Check Loop
             original_threshold = comm_simulator.uncertainty_threshold
             comm_simulator.uncertainty_threshold = draft_uncertainty_threshold
-            for i in range(total_gamma):
+            for i in range(effective_gamma):
                 logit_idx = prefix_len + i - 1
                 assert draft_model_cache.logits_history is not None, (
                     "Draft model logits history is None"
@@ -3133,7 +3236,8 @@ class Baselines(Decoding):
 
                 should_transfer, vocab_size = (
                     comm_simulator.determine_transfer_strategy(
-                        uncertainty, current_logit
+                        uncertainty,
+                        verification_inputs.draft_probs_batch[:, i, : self.vocab_size],
                     )
                 )
 
@@ -3145,9 +3249,9 @@ class Baselines(Decoding):
                     comm_simulator.simulate_transfer(
                         total_bytes_transfer, "edge_cloud", topk=vocab_size, draft_len=1
                     )
+                    reject_offset = i
                     n2 = prefix_len + i - 1
                     comm_simulator.send_reject_message("edge_cloud")
-                    draft_all_accepted = False
                     break
                 else:
                     comm_simulator.simulate_transfer(8, "edge_cloud")
@@ -3159,40 +3263,45 @@ class Baselines(Decoding):
 
             assert n2 >= prefix_len - 1
             prefix = x[:, : n2 + 1]
-            draft_model_cache.rollback(n2 + 1)
-            if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(n2 + 1)
 
             prob_bytes = 0.0
             reject_overhead = 0.0
 
-            if n2 < prefix_len + new_generated_token.shape[1] + actual_gamma1 - 1:
+            if reject_offset is not None:
                 # Rejected
-                prob_data = draft_stage_probs[:, n2, : self.vocab_size]
+                prob_data = verification_inputs.draft_probs_batch[
+                    :, reject_offset, : self.vocab_size
+                ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if draft_transfer_top_k is not None and draft_transfer_top_k > 0:
                     prob_bytes = draft_transfer_top_k * prob_data.element_size()
 
                 reject_overhead = 6.0
-
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, n2, : self.vocab_size].to(
-                        draft_device
-                    ),
-                    output_device=draft_device,
-                )
                 new_generated_token = prefix[:, prefix_len:]
-                target_model_cache.rollback(n2 + 1)
             else:
-                # Accepted all
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=draft_device,
-                )
                 new_generated_token = prefix[:, prefix_len:]
-                target_model_cache.rollback(n2 + 2)
+
+            n2, t, _ = _finalize_cuhlm_verification(
+                proposer_cache=draft_model_cache,
+                verifier_cache=target_model_cache,
+                verification_inputs=verification_inputs,
+                x=x,
+                prefix_len=prefix_len,
+                accepted_count=draft_accepted_this_iter,
+                reject_offset=reject_offset,
+                output_device=draft_device,
+            )
+
+            prefix = x[:, : n2 + 1]
+            if n2 <= little_model_cache.current_length:
+                little_model_cache.rollback(n2 + 1)
 
             prefix = torch.cat((prefix, t), dim=1)
+            _validate_token_range(
+                prefix,
+                vocab_size=self.vocab_size,
+                label="cee_cuhlm.edge_cloud.prefix_after_concat",
+            )
 
             # Transfer the final sampled token t
             token_size = t.element_size() * t.numel()
@@ -3201,7 +3310,7 @@ class Baselines(Decoding):
                 total_bytes,
                 "edge_cloud",
                 topk=draft_transfer_top_k,
-                draft_len=total_gamma,
+                draft_len=effective_gamma,
             )
             comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
 

@@ -93,6 +93,36 @@ class KVCacheRollbackTests(unittest.TestCase):
         self.assertEqual(cache.current_length, 5)
         self.assertEqual(cache._current_seq_len, 5)
 
+    def test_generate_with_rebuilt_topk_after_prefill_keeps_history_writable(self):
+        config = LlamaConfig(
+            vocab_size=64,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            max_position_embeddings=128,
+        )
+        model = LlamaForCausalLM(config)
+        model.eval()
+
+        cache = KVCacheModel(model, temperature=1.0, top_k=0, top_p=0)
+        cache.vocab_size = config.vocab_size
+
+        prefix = torch.tensor([[1, 2, 3, 4]], dtype=torch.long)
+        cache._prefill(prefix)
+
+        x, rebuilt = cache.generate_with_rebuilt_topk(prefix, gamma=2, proposal_top_k=4)
+
+        self.assertEqual(tuple(x.shape), (1, 6))
+        self.assertIsNotNone(rebuilt)
+        assert rebuilt is not None
+        self.assertEqual(tuple(rebuilt.shape), (1, 2, config.vocab_size))
+        self.assertEqual(cache.current_length, 5)
+        self.assertEqual(cache._current_seq_len, 5)
+        self.assertEqual(cache.prob_history.shape[1], 5)
+        self.assertEqual(cache.logits_history.shape[1], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

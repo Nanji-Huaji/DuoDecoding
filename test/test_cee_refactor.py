@@ -1,10 +1,11 @@
 import unittest
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 
-from src.baselines import Baselines
+from src.baselines import Baselines, _finalize_cuhlm_verification
 from src.utils import rebuild_topk_uniform_probs, sample
 
 
@@ -79,6 +80,7 @@ class _FakeCache:
         self.prob_history = None
         self.logits_history = None
         self.hidden_states = torch.zeros(1, 1, 1)
+        self.rollback_calls = []
 
     def _set_uniform_history(self, x):
         steps = max(x.shape[1], 1)
@@ -144,6 +146,7 @@ class _FakeCache:
 
     def rollback(self, end_pos):
         self.current_length = end_pos
+        self.rollback_calls.append(end_pos)
 
 
 class _FakeAdapter:
@@ -383,6 +386,126 @@ class CeeRefactorTests(unittest.TestCase):
             output, _ = instance.cee_cuhlm(prefix)
 
         self.assertGreater(output.shape[1], prefix.shape[1])
+
+    def test_cuhlm_finalize_uses_reject_sampling_on_reject(self):
+        proposer_cache = _FakeCache(
+            self._make_instance("cee_cuhlm").draft_model, 1, 0, 0
+        )
+        verifier_cache = _FakeCache(
+            self._make_instance("cee_cuhlm").target_model, 1, 0, 0
+        )
+        proposer_cache.vocab_size = 4
+        verifier_cache.vocab_size = 4
+        verifier_cache.prob_history = torch.tensor(
+            [[[0.0, 1.0, 0.0, 0.0], [0.0, 0.5, 0.5, 0.0]]], dtype=torch.float
+        )
+        verification_inputs = SimpleNamespace(
+            actual_gamma=1,
+            target_probs_batch=torch.tensor(
+                [[[0.0, 0.7, 0.3, 0.0]]], dtype=torch.float
+            ),
+            draft_probs_batch=torch.tensor([[[0.0, 0.9, 0.1, 0.0]]], dtype=torch.float),
+        )
+        x = torch.tensor([[0, 1]], dtype=torch.long)
+
+        with (
+            patch(
+                "src.baselines.sample_reject_token",
+                return_value=torch.tensor([[2]], dtype=torch.long),
+            ) as reject_mock,
+            patch(
+                "src.baselines.sample_accept_token",
+                return_value=torch.tensor([[1]], dtype=torch.long),
+            ) as accept_mock,
+        ):
+            n, token, all_accepted = _finalize_cuhlm_verification(
+                proposer_cache=proposer_cache,
+                verifier_cache=verifier_cache,
+                verification_inputs=verification_inputs,
+                x=x,
+                prefix_len=1,
+                accepted_count=0,
+                reject_offset=0,
+                output_device=torch.device("cpu"),
+            )
+
+        self.assertEqual(n, 0)
+        self.assertFalse(all_accepted)
+        self.assertTrue(torch.equal(token, torch.tensor([[2]], dtype=torch.long)))
+        reject_mock.assert_called_once()
+        accept_mock.assert_not_called()
+
+    def test_cuhlm_finalize_uses_accept_sampling_when_all_accepted(self):
+        proposer_cache = _FakeCache(
+            self._make_instance("cee_cuhlm").draft_model, 1, 0, 0
+        )
+        verifier_cache = _FakeCache(
+            self._make_instance("cee_cuhlm").target_model, 1, 0, 0
+        )
+        proposer_cache.vocab_size = 4
+        verifier_cache.vocab_size = 4
+        verifier_cache.prob_history = torch.tensor(
+            [[[0.0, 1.0, 0.0, 0.0], [0.0, 0.6, 0.4, 0.0]]], dtype=torch.float
+        )
+        verification_inputs = SimpleNamespace(
+            actual_gamma=1,
+            target_probs_batch=torch.tensor(
+                [[[0.0, 0.7, 0.3, 0.0]]], dtype=torch.float
+            ),
+            draft_probs_batch=torch.tensor([[[0.0, 0.9, 0.1, 0.0]]], dtype=torch.float),
+        )
+        x = torch.tensor([[0, 1]], dtype=torch.long)
+
+        with (
+            patch(
+                "src.baselines.sample_reject_token",
+                return_value=torch.tensor([[2]], dtype=torch.long),
+            ) as reject_mock,
+            patch(
+                "src.baselines.sample_accept_token",
+                return_value=torch.tensor([[1]], dtype=torch.long),
+            ) as accept_mock,
+        ):
+            n, token, all_accepted = _finalize_cuhlm_verification(
+                proposer_cache=proposer_cache,
+                verifier_cache=verifier_cache,
+                verification_inputs=verification_inputs,
+                x=x,
+                prefix_len=1,
+                accepted_count=1,
+                reject_offset=None,
+                output_device=torch.device("cpu"),
+            )
+
+        self.assertEqual(n, 1)
+        self.assertTrue(all_accepted)
+        self.assertTrue(torch.equal(token, torch.tensor([[1]], dtype=torch.long)))
+        accept_mock.assert_called_once()
+        reject_mock.assert_not_called()
+
+    def test_cee_cuhlm_rolls_back_little_cache_after_first_stage(self):
+        instance = self._make_instance("cee_cuhlm")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        created_caches = []
+
+        def fake_cache_ctor(model, temperature, top_k, top_p):
+            cache = _FakeCache(model, temperature, top_k, top_p)
+            created_caches.append(cache)
+            return cache
+
+        with (
+            patch("src.baselines.KVCacheModel", side_effect=fake_cache_ctor),
+            patch("src.baselines.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            instance.cee_cuhlm(prefix)
+
+        little_cache = next(
+            cache for cache in created_caches if cache.model.kind == "little"
+        )
+        self.assertGreaterEqual(len(little_cache.rollback_calls), 1)
 
 
 if __name__ == "__main__":

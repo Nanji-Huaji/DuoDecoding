@@ -74,6 +74,7 @@ results_*.json*
 /active_learning_metrics.json
 /confidence_data.json
 /consistency_data.json
+experiment_results/*
 
 # Assets and resources
 /assets/
