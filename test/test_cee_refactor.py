@@ -49,6 +49,7 @@ class _FakeCommSimulator:
         self.bandwidth_edge_end = 10
         self.ntt_edge_cloud = 0
         self.ntt_edge_end = 0
+        self.uncertainty_threshold = 0.8
 
     def transfer(self, tokens, probs, link_type="edge_cloud", *args, **kwargs):
         return 0.0
@@ -159,6 +160,17 @@ class _FakeAdapter:
         return True
 
 
+class _UnexpectedRLAdapter:
+    def select_config(self, *args, **kwargs):
+        raise AssertionError("RL adapter should not be used in cee_cuhlm")
+
+    def step(self, reward):
+        raise AssertionError("RL adapter step should not be used in cee_cuhlm")
+
+    def save(self, throughput):
+        return None
+
+
 class CeeRefactorTests(unittest.TestCase):
     def _make_instance(self, eval_mode):
         args = Namespace(
@@ -183,6 +195,9 @@ class CeeRefactorTests(unittest.TestCase):
             use_early_stopping=False,
             dump_network_stats=False,
             disable_rl_update=True,
+            uncertainty_threshold=0.8,
+            small_draft_threshold=0.8,
+            draft_target_threshold=0.8,
         )
         instance = object.__new__(_TestBaselines)
         instance.args = args
@@ -328,6 +343,46 @@ class CeeRefactorTests(unittest.TestCase):
 
         self.assertEqual(stage_calls[0][:2], ("little", "draft"))
         self.assertEqual(stage_calls[1][:2], ("draft", "target"))
+
+    def test_cee_cuhlm_does_not_use_stage_helper(self):
+        instance = self._make_instance("cee_cuhlm")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=AssertionError(
+                    "resolve_stage_verification should not be used in cee_cuhlm"
+                ),
+            ),
+        ):
+            output, metrics = instance.cee_cuhlm(prefix)
+
+        self.assertGreater(output.shape[1], prefix.shape[1])
+        self.assertEqual(metrics["little_accepted_tokens"], 0)
+        self.assertEqual(metrics["draft_accepted_tokens"], 0)
+
+    def test_cee_cuhlm_ignores_rl_adapter_hooks(self):
+        instance = self._make_instance("cee_cuhlm")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        instance.rl_adapter = _UnexpectedRLAdapter()
+        instance.little_rl_adapter = _UnexpectedRLAdapter()
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            output, _ = instance.cee_cuhlm(prefix)
+
+        self.assertGreater(output.shape[1], prefix.shape[1])
 
 
 if __name__ == "__main__":
