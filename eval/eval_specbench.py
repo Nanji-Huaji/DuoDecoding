@@ -89,6 +89,8 @@ class EvalSpecbench(Decoding):
                 )
                 datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
                 data.append(datum)
+        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
+            data = data[: self.args.eval_data_num]
         self.data = data
 
     def preprocess(self, input_text):

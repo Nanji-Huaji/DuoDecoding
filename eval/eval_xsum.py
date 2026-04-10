@@ -4,6 +4,7 @@ import sys
 sys.path.append(os.path.join(sys.path[0], "../"))
 import json
 import random
+import re
 import time
 from functools import partial
 
@@ -21,6 +22,9 @@ decoding_metrics = get_empty_metrics()
 
 
 class EvalXSum(Baselines):
+    WARMUP_ARTICLE_TOKENS = 256
+    EVAL_ARTICLE_TOKENS = 1024
+
     def __init__(self, args):
         super().__init__(args)
         self.load_tokenizer()
@@ -82,7 +86,11 @@ class EvalXSum(Baselines):
         few_shot_prompt = get_few_shot_prompt("xsum", self.args.num_shots)
         full_input = few_shot_prompt + "Article: " + input_text
 
-        qs = f"Summarize the following article:\n\n{full_input}"
+        qs = (
+            "Summarize the following BBC news article in one sentence. "
+            "Write only the summary sentence.\n\n"
+            f"{full_input}\nSummary:"
+        )
         if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
@@ -106,8 +114,27 @@ class EvalXSum(Baselines):
             prompt = conv.get_prompt() + " "
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
-            prompt = qs + "\n\nSummary:"
+            prompt = qs
         return prompt
+
+    def postprocess(self, input_text, output_text):
+        del input_text
+        text = output_text.strip()
+        text = re.sub(r"^(Summary|TL;DR)\s*:\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r"^Here(?: is|'s) (?:a )?summary\s*:\s*", "", text, flags=re.IGNORECASE
+        )
+        text = text.split("\n")[0].strip()
+        sentence_match = re.match(r"(.+?[.!?](?:[\"')\]]+)?)($|\s)", text)
+        if sentence_match is not None:
+            text = sentence_match.group(1).strip()
+        return text
+
+    def truncate_article(self, text: str, max_tokens: int) -> str:
+        token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        if len(token_ids) <= max_tokens:
+            return text
+        return self.tokenizer.decode(token_ids[:max_tokens], skip_special_tokens=True)
 
     @torch.no_grad()
     def eval(self, total: int | None = 80):
@@ -147,9 +174,10 @@ class EvalXSum(Baselines):
             if n == 0:
                 break
 
-            article = str(item["document"])
-            # qs = f"Summarize the following article:\n\n{article[:1000]}"
-            prompt = self.preprocess(article[:1000])
+            article = self.truncate_article(
+                str(item["document"]), self.WARMUP_ARTICLE_TOKENS
+            )
+            prompt = self.preprocess(article)
             if prompt is None:
                 continue
 
@@ -178,9 +206,10 @@ class EvalXSum(Baselines):
             if total is not None and loop_index >= total:
                 break
 
-            article = str(item["document"])
+            article = self.truncate_article(
+                str(item["document"]), self.EVAL_ARTICLE_TOKENS
+            )
             reference = str(item["summary"])
-            # qs = f"Summarize the following article:\n\n{article[:4000]}" # Truncate
 
             loop_index += 1
             if total is not None and loop_index > min(len(self.data), total):
@@ -192,7 +221,7 @@ class EvalXSum(Baselines):
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
 
-                prompt = self.preprocess(article[:4000])
+                prompt = self.preprocess(article)
                 if prompt is None:
                     continue
 
@@ -249,6 +278,7 @@ class EvalXSum(Baselines):
                     )
                 else:
                     output_text = ""
+                output_text = self.postprocess(article, output_text)
 
                 # Calculate ROUGE
                 scores = scorer.score(reference, output_text)
@@ -332,11 +362,8 @@ class EvalXSum(Baselines):
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
 
-    def postprocess(self, input_text, output_text):
-        pass
-
 
 if __name__ == "__main__":
     args = parse_arguments()
     alg = EvalXSum(args)
-    alg.eval()
+    alg.eval(args.eval_data_num)

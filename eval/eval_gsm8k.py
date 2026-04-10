@@ -122,6 +122,11 @@ class EvalGSM8K(Baselines):
         try:
             dataset = load_dataset("gsm8k", "main", split="test")
             self.data = [dict(item) for item in dataset]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                self.data = self.data[: self.args.eval_data_num]
             self.color_print(f"Loaded {len(self.data)} samples from GSM8K.", 2)
         except Exception as e:
             self.color_print(f"Error loading GSM8K data: {e}", 1)
@@ -334,4 +339,4 @@ class EvalGSM8K(Baselines):
 if __name__ == "__main__":
     args = parse_arguments()
     alg = EvalGSM8K(args)
-    alg.eval()
+    alg.eval(args.eval_data_num)

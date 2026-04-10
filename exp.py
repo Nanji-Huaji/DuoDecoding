@@ -19,14 +19,14 @@ from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 class EvalDataset(str, Enum):
     mt_bench = "eval/eval_mt_bench.py"
     humaneval = "eval/eval_humaneval.py"
-    # cnndm = "eval/eval_cnndm.py"
-    # xsum = "eval/eval_xsum.py"
+    cnndm = "eval/eval_cnndm.py"
+    xsum = "eval/eval_xsum.py"
     gsm8k = "eval/eval_gsm8k.py"
     mt_bench_noeval = "eval/eval_mt_bench_noeval.py"
 
 
 class EvalMode(str, Enum):
-    # autoregression = "large"
+    autoregression = "large"
     # sd = "sd"
     dssd = "dist_split_spec"
     dsd = "dist_spec"
@@ -37,6 +37,7 @@ class EvalMode(str, Enum):
     cee_cuhlm = "cee_cuhlm"
     cee_dssd = "cee_dssd"
     cee_dsd = "cee_dsd"
+    adaptive_decoding = "adaptive_decoding"
 
 
 class ExpConfig(TypedDict):
@@ -62,6 +63,7 @@ class ExpConfig(TypedDict):
     draft_model: str
     target_model: str
     little_model: str
+    acc_head_path: str
     small_draft_acc_head_path: str
     draft_target_acc_head_path: str
     main_rl_path: str
@@ -69,8 +71,12 @@ class ExpConfig(TypedDict):
     main_rl_best_path: str
     little_rl_best_path: str
     max_tokens: int
+    gamma: int
+    gamma1: int
+    gamma2: int
     use_early_stopping: bool
     dump_network_stats: bool
+    batch_delay: int | float
 
 
 # Global Constants
@@ -91,8 +97,9 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.v
     --little_model {little_model} \
     --max_tokens {max_tokens} \
     --temp 0.0 \
-    --gamma1 5 \
-    --gamma2 5 \
+    --gamma1 {gamma1} \
+    --gamma2 {gamma2} \
+    --gamma {gamma} \
     --edge_end_bandwidth {edge_end_bandwidth} \
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
@@ -105,6 +112,7 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.v
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
     --ntt_ms_edge_end {ntt_ms_edge_end} \
+    --batch_delay {batch_delay} \
 """
 
 
@@ -181,6 +189,12 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "disable_rl_update")
     if config.get("use_early_stopping", False):
         cmd = add_args(cmd, "use_early_stopping")
+    if config.get("acc_head_path"):
+        cmd = add_args(
+            cmd,
+            "acc_head_path",
+            config["acc_head_path"],
+        )
     if config.get("small_draft_acc_head_path"):
         cmd = add_args(
             cmd,
@@ -475,6 +489,7 @@ def create_config(
     eval_mode: str | EvalMode,
     ntt_ms_edge_cloud: int | float = 0,
     ntt_ms_edge_end: int | float = 0,
+    batch_delay: int | float = 50e-3,
     use_precise: bool = True,
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: str | int = "0",
@@ -486,6 +501,9 @@ def create_config(
     small_draft_threshold: float = 0.8,
     draft_target_threshold: float = 0.6,
     transfer_top_k: int = 300,
+    gamma: int = 5,
+    gamma1: int = 5,
+    gamma2: int = 5,
     num_shots: int = 3,
     num_samples_per_task: int = 1,
     eval_data_num: int | None = 80,
@@ -496,6 +514,7 @@ def create_config(
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
     little_model: str = "vicuna-68m",
+    acc_head_path: str | None = None,
     small_draft_acc_head_path: str | None = None,
     draft_target_acc_head_path: str | None = None,
     main_rl_path: str | None = None,
@@ -516,8 +535,31 @@ def create_config(
 
     # 使用微秒级时间戳确保唯一性
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    batch_delay_ms = int(round(batch_delay * 1000))
+    if eval_mode_value == EvalMode.adaptive_decoding.value:
+        if acc_head_path is None:
+            acc_head_path = resolve_acc_head_path(draft_model, target_model)
+
+        if main_rl_path is None:
+            main_spec = get_rl_agent_spec(
+                ROLE_MAIN,
+                little_model=None,
+                draft_model=draft_model,
+                target_model=target_model,
+            )
+            main_rl_path = main_spec.latest_path
+            if main_rl_best_path is None:
+                main_rl_best_path = main_spec.best_path
+        elif main_rl_best_path is None:
+            main_rl_best_path = main_rl_path
+
+        small_draft_acc_head_path = ""
+        draft_target_acc_head_path = ""
+        little_rl_path = ""
+        little_rl_best_path = ""
+
     # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
-    if eval_mode_value in [EvalMode.ceesd.value, EvalMode.cee_cuhlm.value]:
+    elif eval_mode_value in [EvalMode.ceesd.value, EvalMode.cee_cuhlm.value]:
         # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
             small_draft_acc_head_path = resolve_acc_head_path(little_model, draft_model)
@@ -551,8 +593,11 @@ def create_config(
         elif little_rl_best_path is None:
             little_rl_best_path = little_rl_path
 
+        acc_head_path = ""
+
     else:
         # 其他模式不需要
+        acc_head_path = ""
         small_draft_acc_head_path = ""
         draft_target_acc_head_path = ""
         main_rl_path = ""
@@ -568,23 +613,31 @@ def create_config(
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
         transfer_top_k=transfer_top_k,
+        gamma=gamma,
+        gamma1=gamma1,
+        gamma2=gamma2,
         num_shots=num_shots,
         num_samples_per_task=num_samples_per_task,
         eval_data_num=eval_data_num,
         max_tokens=max_tokens,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
-        exp_name=f"{eval_mode_value}/{eval_dataset_name}/{eval_mode_value}_{num_shots}shot_{timestamp}",
+        exp_name=(
+            f"{eval_mode_value}/{eval_dataset_name}/"
+            f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms_{timestamp}"
+        ),
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
         ntt_ms_edge_cloud=ntt_ms_edge_cloud,
         ntt_ms_edge_end=ntt_ms_edge_end,
+        batch_delay=batch_delay,
         use_rl_adapter=use_rl_adapter,
         disable_rl_update=disable_rl_update,
         draft_model=draft_model,
         target_model=target_model,
         little_model=little_model,
         use_early_stopping=use_early_stopping,
+        acc_head_path=acc_head_path,
         small_draft_acc_head_path=small_draft_acc_head_path,
         draft_target_acc_head_path=draft_target_acc_head_path,
         main_rl_path=main_rl_path,
@@ -662,52 +715,69 @@ edge_cloud_bandwidth = [
     # 50.0,  # 标准 50M 宽带满速
 ]
 
+batch_delay_values = [50e-3]
+gamma1_values = [5]
+gamma2_values = [10]
+
 for little_model, draft_model, target_model in (
     llama_series,
     # llama_chat_series,
     # vicuna_series,
-    # qwen_series,
+    qwen_series,
     # # qwen_series_fp8,
     # # gemma_3_it_series,
     # # qwen_series_large,
     # # llama_3_series,
-    # qwen_1_5_series,
+    qwen_1_5_series,
 ):
-    for dataset in (EvalDataset.mt_bench_noeval,):
-        for mode in (EvalMode.ceesd,):
+    for dataset in (
+        EvalDataset.mt_bench_noeval,
+        EvalDataset.humaneval,
+        EvalDataset.gsm8k,
+    ):
+        for mode in (EvalMode.cee_dssd, EvalMode.cee_dsd, EvalMode.cee_cuhlm):
             for edge_cloud_bw in edge_cloud_bandwidth:
-                config = create_config(
-                    eval_mode=mode,
-                    ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                    ntt_ms_edge_end=NTT_MS_EDGE_END,
-                    use_precise=False,
-                    use_stochastic_comm=True,
-                    edge_end_bandwidth=563,
-                    edge_cloud_bandwidth=edge_cloud_bw,
-                    cloud_end_bandwidth=edge_cloud_bw,
-                    small_draft_threshold=0.8,
-                    draft_target_threshold=0.6,
-                    transfer_top_k=1024,
-                    max_tokens=128,
-                    num_shots=5,
-                    eval_dataset=dataset,
-                    draft_model=draft_model
-                    if mode
-                    in [
-                        EvalMode.ceesd,
-                        EvalMode.cee_cuhlm,
-                        EvalMode.cee_dsd,
-                        EvalMode.dssd,
-                    ]
-                    else little_model,
-                    target_model=target_model,
-                    little_model=little_model,
-                    use_rl_adapter=True,
-                    disable_rl_update=True,
-                    use_early_stopping=True,
-                )
-                config_to_run.append(config)
-
+                for batch_delay in batch_delay_values:
+                    for gamma1 in gamma1_values:
+                        for gamma2 in gamma2_values:
+                            config = create_config(
+                                eval_mode=mode,
+                                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                                ntt_ms_edge_end=NTT_MS_EDGE_END,
+                                batch_delay=batch_delay,
+                                use_precise=False,
+                                use_stochastic_comm=True,
+                                edge_end_bandwidth=563,
+                                edge_cloud_bandwidth=edge_cloud_bw,
+                                cloud_end_bandwidth=edge_cloud_bw,
+                                small_draft_threshold=0.8,
+                                draft_target_threshold=0.8,
+                                transfer_top_k=1024,
+                                gamma1=gamma1,
+                                gamma2=gamma2,
+                                max_tokens=128,
+                                num_shots=3,
+                                eval_dataset=dataset,
+                                draft_model=(
+                                    draft_model
+                                    if mode
+                                    in [
+                                        EvalMode.ceesd,
+                                        EvalMode.cee_cuhlm,
+                                        EvalMode.cee_dsd,
+                                        EvalMode.dssd,
+                                        EvalMode.adaptive_decoding,
+                                    ]
+                                    else little_model
+                                ),
+                                target_model=target_model,
+                                little_model=little_model,
+                                use_rl_adapter=True,
+                                disable_rl_update=True,
+                                use_early_stopping=False,
+                                eval_data_num=80,
+                            )
+                            config_to_run.append(config)
 
 if __name__ == "__main__":
     # 创建日志目录

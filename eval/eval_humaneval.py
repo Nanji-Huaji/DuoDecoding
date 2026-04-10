@@ -125,6 +125,9 @@ class EvalHumaneval(Baselines):
             datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
             data.append(datum)
 
+        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
+            data = data[: self.args.eval_data_num]
+
         self.data = data
         self.color_print(
             f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2
@@ -380,4 +383,4 @@ class EvalHumaneval(Baselines):
 if __name__ == "__main__":
     args = parse_arguments()
     alg = EvalHumaneval(args)
-    alg.eval()
+    alg.eval(args.eval_data_num)

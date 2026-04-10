@@ -100,6 +100,11 @@ class EvalMixed(Baselines):
                 with open(mt_path) as f:
                     for line in f:
                         mt_data.append(json.loads(line))
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                mt_data = mt_data[: self.args.eval_data_num]
             self.all_data["mt_bench"] = mt_data
             self.color_print(f"Loaded {len(mt_data)} MT-Bench samples.", 2)
         except Exception as e:
@@ -110,7 +115,13 @@ class EvalMixed(Baselines):
         print(">>> Loading GSM8K (this may take a while if downloading)...")
         try:
             ds = load_dataset("gsm8k", "main", split="test")
-            self.all_data["gsm8k"] = [dict(item) for item in ds]
+            gsm8k_data = [dict(item) for item in ds]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                gsm8k_data = gsm8k_data[: self.args.eval_data_num]
+            self.all_data["gsm8k"] = gsm8k_data
             self.color_print(f"Loaded {len(self.all_data['gsm8k'])} GSM8K samples.", 2)
         except Exception as e:
             self.color_print(f"Error loading GSM8K: {e}", 1)
@@ -119,7 +130,13 @@ class EvalMixed(Baselines):
         # 3. CNN/DM
         try:
             ds = load_dataset("cnn_dailymail", "3.0.0", split="test")
-            self.all_data["cnndm"] = [dict(item) for item in ds]
+            cnndm_data = [dict(item) for item in ds]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                cnndm_data = cnndm_data[: self.args.eval_data_num]
+            self.all_data["cnndm"] = cnndm_data
             self.color_print(f"Loaded {len(self.all_data['cnndm'])} CNN/DM samples.", 2)
         except Exception as e:
             self.color_print(f"Error loading CNN/DM: {e}", 1)
@@ -128,7 +145,13 @@ class EvalMixed(Baselines):
         # 4. XSum
         try:
             ds = load_dataset("xsum", split="test")
-            self.all_data["xsum"] = [dict(item) for item in ds]
+            xsum_data = [dict(item) for item in ds]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                xsum_data = xsum_data[: self.args.eval_data_num]
+            self.all_data["xsum"] = xsum_data
             self.color_print(f"Loaded {len(self.all_data['xsum'])} XSum samples.", 2)
         except Exception as e:
             self.color_print(f"Error loading XSum: {e}", 1)
@@ -137,7 +160,13 @@ class EvalMixed(Baselines):
         # 5. HumanEval
         try:
             ds = load_dataset("openai_humaneval", split="test")
-            self.all_data["humaneval"] = [dict(item) for item in ds]
+            humaneval_data = [dict(item) for item in ds]
+            if (
+                hasattr(self.args, "eval_data_num")
+                and self.args.eval_data_num is not None
+            ):
+                humaneval_data = humaneval_data[: self.args.eval_data_num]
+            self.all_data["humaneval"] = humaneval_data
             self.color_print(
                 f"Loaded {len(self.all_data['humaneval'])} HumanEval samples.", 2
             )
@@ -199,7 +228,7 @@ class EvalMixed(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], prompt_text)
-            conv.append_message(conv.roles[1], None) # type: ignore
+            conv.append_message(conv.roles[1], None)  # type: ignore
             return conv.get_prompt()
         else:
             # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
