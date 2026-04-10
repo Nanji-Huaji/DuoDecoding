@@ -206,6 +206,7 @@ class KVCacheModel:
 
         return probs[:, -1, :]
 
+    # @torch.compile()
     @torch.inference_mode()
     def _decode_step(self, last_input_id: torch.Tensor) -> torch.Tensor:
         """

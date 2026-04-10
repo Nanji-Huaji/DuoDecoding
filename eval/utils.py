@@ -4,6 +4,19 @@ import json
 
 
 class ExpPrint:
+    analysis_metrics = (
+        "little_entropy_history",
+        "draft_entropy_history",
+        "little_accept_rate_history",
+        "draft_accept_rate_history",
+        "little_accepted_vocab_rank_history",
+        "draft_accepted_vocab_rank_history",
+        "little_accepted_in_transfer_topk_history",
+        "draft_accepted_in_transfer_topk_history",
+        "little_accepted_transfer_topk_rank_history",
+        "draft_accepted_transfer_topk_rank_history",
+    )
+
     common_print_metrics = (
         "little_forward_times",
         "draft_forward_times",
@@ -53,7 +66,7 @@ class ExpPrint:
 
     def get_filtered_dict(self, metrics: DecodingMetrics) -> dict:
         metrics = self._prepare_metrics(metrics)
-        key_to_dump = list(self.common_print_metrics)
+        key_to_dump = list(self.common_print_metrics) + list(self.analysis_metrics)
         if self.args.dump_network_stats:
             key_to_dump += [
                 "edge_cloud_bandwidth_history",

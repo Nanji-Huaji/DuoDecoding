@@ -387,6 +387,26 @@ class CeeRefactorTests(unittest.TestCase):
 
         self.assertGreater(output.shape[1], prefix.shape[1])
 
+    def test_cee_cuhlm_skips_target_count_after_all_accept(self):
+        instance = self._make_instance("cee_cuhlm")
+        instance.args.max_tokens = 2
+        prefix = torch.tensor([[0]], dtype=torch.long)
+
+        class _AlwaysAcceptComm(_FakeCommSimulator):
+            def determine_transfer_strategy(self, uncertainty, current_probs):
+                return False, 2
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CUHLM", _AlwaysAcceptComm),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            _, metrics = instance.cee_cuhlm(prefix)
+
+        self.assertEqual(metrics["target_forward_times"], 1)
+
     def test_cuhlm_finalize_uses_reject_sampling_on_reject(self):
         proposer_cache = _FakeCache(
             self._make_instance("cee_cuhlm").draft_model, 1, 0, 0

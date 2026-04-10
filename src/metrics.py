@@ -2,6 +2,7 @@ from typing import Any, List, Optional, TypedDict
 
 INT_SIZE = 4
 
+
 class DecodingMetrics(TypedDict):
     """
     TypedDict class that defines metrics for tracking decoding performance and resource usage.
@@ -40,6 +41,16 @@ class DecodingMetrics(TypedDict):
     edge_cloud_bandwidth_history: List[float]
     edge_cloud_topk_history: List[int]
     edge_cloud_draft_len_history: List[int]
+    little_entropy_history: List[float]
+    draft_entropy_history: List[float]
+    little_accept_rate_history: List[float]
+    draft_accept_rate_history: List[float]
+    little_accepted_vocab_rank_history: List[int]
+    draft_accepted_vocab_rank_history: List[int]
+    little_accepted_in_transfer_topk_history: List[bool]
+    draft_accepted_in_transfer_topk_history: List[bool]
+    little_accepted_transfer_topk_rank_history: List[int]
+    draft_accepted_transfer_topk_rank_history: List[int]
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -76,4 +87,14 @@ def get_empty_metrics() -> DecodingMetrics:
         edge_cloud_bandwidth_history=[],
         edge_cloud_topk_history=[],
         edge_cloud_draft_len_history=[],
+        little_entropy_history=[],
+        draft_entropy_history=[],
+        little_accept_rate_history=[],
+        draft_accept_rate_history=[],
+        little_accepted_vocab_rank_history=[],
+        draft_accepted_vocab_rank_history=[],
+        little_accepted_in_transfer_topk_history=[],
+        draft_accepted_in_transfer_topk_history=[],
+        little_accepted_transfer_topk_rank_history=[],
+        draft_accepted_transfer_topk_rank_history=[],
     )

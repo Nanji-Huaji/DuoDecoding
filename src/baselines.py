@@ -118,6 +118,56 @@ def _validate_token_range(
         )
 
 
+def _compute_token_vocab_rank(probs: torch.Tensor, token_id: int) -> int:
+    token_prob = probs[..., token_id]
+    return int((probs > token_prob).sum().item()) + 1
+
+
+def _compute_transfer_topk_rank(
+    probs: torch.Tensor,
+    token_id: int,
+    transfer_top_k: Optional[int],
+    vocab_rank: int,
+) -> tuple[bool, int]:
+    vocab_size = probs.shape[-1]
+    if transfer_top_k is None or transfer_top_k <= 0 or transfer_top_k >= vocab_size:
+        return True, vocab_rank
+
+    topk_count = min(transfer_top_k, vocab_size)
+    topk_indices = torch.topk(probs, topk_count, sorted=True).indices
+    matches = (topk_indices == token_id).nonzero(as_tuple=False)
+    if matches.numel() == 0:
+        return False, 0
+    return True, int(matches[0].item()) + 1
+
+
+def _record_accepted_token_ranks(
+    *,
+    stage_probs: Optional[torch.Tensor],
+    x: torch.Tensor,
+    prefix_len: int,
+    accepted_count: int,
+    transfer_top_k: Optional[int],
+    vocab_rank_history: List[int],
+    in_transfer_topk_history: List[bool],
+    transfer_topk_rank_history: List[int],
+) -> None:
+    if stage_probs is None or accepted_count <= 0:
+        return
+
+    for i in range(accepted_count):
+        logit_idx = prefix_len + i - 1
+        token_id = int(x[:, prefix_len + i].item())
+        probs = stage_probs[0, logit_idx, :]
+        vocab_rank = _compute_token_vocab_rank(probs, token_id)
+        in_transfer_topk, transfer_topk_rank = _compute_transfer_topk_rank(
+            probs, token_id, transfer_top_k, vocab_rank
+        )
+        vocab_rank_history.append(vocab_rank)
+        in_transfer_topk_history.append(in_transfer_topk)
+        transfer_topk_rank_history.append(transfer_topk_rank)
+
+
 def _finalize_cuhlm_verification(
     *,
     proposer_cache: KVCacheModel,
@@ -187,60 +237,83 @@ class Baselines(Decoding):
     def __init__(self, args):
         super().__init__(args)
         # self.load_acc_head() # Moved to load_model
+        eval_mode = getattr(args, "eval_mode", "")
+        uses_main_rl = eval_mode in {
+            "adaptive_decoding",
+            "adaptive_tridecoding",
+            "cee_sd",
+            "cee_cuhlm",
+            "ceesd_without_arp",
+            "ceesd_w/o_arp",
+        }
+        uses_little_rl = eval_mode in {
+            "adaptive_tridecoding",
+            "cee_sd",
+            "ceesd_without_arp",
+            "ceesd_w/o_arp",
+        }
         if getattr(args, "use_rl_adapter", False):
-            main_spec = get_rl_agent_spec(
-                ROLE_MAIN,
-                little_model=getattr(args, "little_model", None),
-                draft_model=args.draft_model,
-                target_model=args.target_model,
-            )
-            self.rl_adapter = RLNetworkAdapter(
-                args,
-                model_path=getattr(args, "main_rl_path", main_spec.latest_path),
-                best_model_path=getattr(args, "main_rl_best_path", main_spec.best_path),
-                agent_name=main_spec.agent_name,
-                legacy_load_paths=[
-                    path
-                    for path in [
-                        resolve_legacy_rl_agent_load_path(
-                            ROLE_MAIN,
-                            getattr(args, "little_model", None),
-                            args.draft_model,
-                            args.target_model,
-                        )
-                    ]
-                    if path is not None
-                ],
-                threshold_candidates=main_spec.threshold_candidates,
-            )
+            if uses_main_rl:
+                main_spec = get_rl_agent_spec(
+                    ROLE_MAIN,
+                    little_model=getattr(args, "little_model", None),
+                    draft_model=args.draft_model,
+                    target_model=args.target_model,
+                )
+                self.rl_adapter = RLNetworkAdapter(
+                    args,
+                    model_path=getattr(args, "main_rl_path", main_spec.latest_path),
+                    best_model_path=getattr(
+                        args, "main_rl_best_path", main_spec.best_path
+                    ),
+                    agent_name=main_spec.agent_name,
+                    legacy_load_paths=[
+                        path
+                        for path in [
+                            resolve_legacy_rl_agent_load_path(
+                                ROLE_MAIN,
+                                getattr(args, "little_model", None),
+                                args.draft_model,
+                                args.target_model,
+                            )
+                        ]
+                        if path is not None
+                    ],
+                    threshold_candidates=main_spec.threshold_candidates,
+                )
+            else:
+                self.rl_adapter = None
 
-            little_spec = get_rl_agent_spec(
-                ROLE_LITTLE,
-                little_model=args.little_model,
-                draft_model=args.draft_model,
-                target_model=args.target_model,
-            )
-            self.little_rl_adapter = RLNetworkAdapter(
-                args,
-                model_path=getattr(args, "little_rl_path", little_spec.latest_path),
-                best_model_path=getattr(
-                    args, "little_rl_best_path", little_spec.best_path
-                ),
-                agent_name=little_spec.agent_name,
-                legacy_load_paths=[
-                    path
-                    for path in [
-                        resolve_legacy_rl_agent_load_path(
-                            ROLE_LITTLE,
-                            args.little_model,
-                            args.draft_model,
-                            args.target_model,
-                        )
-                    ]
-                    if path is not None
-                ],
-                threshold_candidates=little_spec.threshold_candidates,
-            )
+            if uses_little_rl:
+                little_spec = get_rl_agent_spec(
+                    ROLE_LITTLE,
+                    little_model=args.little_model,
+                    draft_model=args.draft_model,
+                    target_model=args.target_model,
+                )
+                self.little_rl_adapter = RLNetworkAdapter(
+                    args,
+                    model_path=getattr(args, "little_rl_path", little_spec.latest_path),
+                    best_model_path=getattr(
+                        args, "little_rl_best_path", little_spec.best_path
+                    ),
+                    agent_name=little_spec.agent_name,
+                    legacy_load_paths=[
+                        path
+                        for path in [
+                            resolve_legacy_rl_agent_load_path(
+                                ROLE_LITTLE,
+                                args.little_model,
+                                args.draft_model,
+                                args.target_model,
+                            )
+                        ]
+                        if path is not None
+                    ],
+                    threshold_candidates=little_spec.threshold_candidates,
+                )
+            else:
+                self.little_rl_adapter = None
         else:
             self.rl_adapter = None
             self.little_rl_adapter = None
@@ -1335,6 +1408,11 @@ class Baselines(Decoding):
         sum_top_k = 0
 
         idx = 0
+        # Keep the target forward metric aligned with CUHLM's original accounting:
+        # when the previous draft->target step fully accepts, the next target
+        # verification call is treated as part of the same logical verification chain
+        # and is not counted again, even though target_model_cache.generate() still runs.
+        is_draft_accepted_last_step = False
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -2499,8 +2577,19 @@ class Baselines(Decoding):
         wall_time = 0
         arp_overhead_time = 0.0
         dra_overhead_time = 0.0
+        little_entropy_history: List[float] = []
+        draft_entropy_history: List[float] = []
+        little_accept_rate_history: List[float] = []
+        draft_accept_rate_history: List[float] = []
+        little_accepted_vocab_rank_history: List[int] = []
+        draft_accepted_vocab_rank_history: List[int] = []
+        little_accepted_in_transfer_topk_history: List[bool] = []
+        draft_accepted_in_transfer_topk_history: List[bool] = []
+        little_accepted_transfer_topk_rank_history: List[int] = []
+        draft_accepted_transfer_topk_rank_history: List[int] = []
 
         idx = 0
+        is_draft_accepted_last_step = False
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -2538,6 +2627,16 @@ class Baselines(Decoding):
                 adapter=adapter,
             )
 
+            if q is None:
+                raise ValueError(
+                    "Logits q should not be None for CEESD entropy analysis"
+                )
+            probs = torch.softmax(q, dim=-1)
+            little_entropy = (
+                -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+            )
+            little_entropy_history.append(little_entropy)
+
             if self.little_rl_adapter is not None:
                 dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_end
@@ -2547,13 +2646,9 @@ class Baselines(Decoding):
                 if q is None:
                     raise ValueError("Logits q should not be None for RL adapter")
 
-                probs = torch.softmax(q, dim=-1)
-                entropy = (
-                    -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                )
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.little_rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, entropy, task_name
+                    bandwidth, latency, acc_probs, little_entropy, task_name
                 )
                 # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
                 # transfer_top_k = next_topk  # edge-end 通常不压缩
@@ -2609,6 +2704,19 @@ class Baselines(Decoding):
                 little_all_accepted = True
 
             total_little_model_accepted_tokens += little_accepted_this_iter
+            little_accept_rate_history.append(
+                little_accepted_this_iter / actual_gamma2 if actual_gamma2 > 0 else 0.0
+            )
+            _record_accepted_token_ranks(
+                stage_probs=little_stage_probs,
+                x=x,
+                prefix_len=prefix_len,
+                accepted_count=little_accepted_this_iter,
+                transfer_top_k=transfer_top_k,
+                vocab_rank_history=little_accepted_vocab_rank_history,
+                in_transfer_topk_history=little_accepted_in_transfer_topk_history,
+                transfer_topk_rank_history=little_accepted_transfer_topk_rank_history,
+            )
 
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
@@ -2707,6 +2815,16 @@ class Baselines(Decoding):
                 adapter=adapter,
             )
 
+            if q is None:
+                raise ValueError(
+                    "Logits q should not be None for CEESD entropy analysis"
+                )
+            probs = torch.softmax(q, dim=-1)
+            draft_entropy = (
+                -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
+            )
+            draft_entropy_history.append(draft_entropy)
+
             if self.rl_adapter is not None:
                 dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_cloud
@@ -2716,13 +2834,9 @@ class Baselines(Decoding):
                 if q is None:
                     raise ValueError("Logits q should not be None for RL adapter")
 
-                probs = torch.softmax(q, dim=-1)
-                entropy = (
-                    -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                )
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, entropy, task_name
+                    bandwidth, latency, acc_probs, draft_entropy, task_name
                 )
                 # 更新 top-k 压缩参数和 ARP 阈值
                 transfer_top_k = next_topk
@@ -2735,7 +2849,8 @@ class Baselines(Decoding):
             _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             draft_model_forward_times += actual_gamma1
-            target_model_forward_times += 1
+            if not is_draft_accepted_last_step:
+                target_model_forward_times += 1
             total_draft_model_generated_tokens += (
                 new_generated_token.shape[1] + actual_gamma1
             )
@@ -2783,6 +2898,19 @@ class Baselines(Decoding):
                 )
                 draft_all_accepted = True
             total_draft_model_accepted_tokens += draft_accepted_this_iter
+            draft_accept_rate_history.append(
+                draft_accepted_this_iter / total_gamma if total_gamma > 0 else 0.0
+            )
+            _record_accepted_token_ranks(
+                stage_probs=draft_stage_probs,
+                x=x,
+                prefix_len=prefix_len,
+                accepted_count=draft_accepted_this_iter,
+                transfer_top_k=transfer_top_k,
+                vocab_rank_history=draft_accepted_vocab_rank_history,
+                in_transfer_topk_history=draft_accepted_in_transfer_topk_history,
+                transfer_topk_rank_history=draft_accepted_transfer_topk_rank_history,
+            )
 
             if self.rl_adapter is not None:
                 step_end_time = time.time()
@@ -2842,6 +2970,8 @@ class Baselines(Decoding):
 
             else:
                 new_generated_token = prefix[:, prefix_len:]
+
+            is_draft_accepted_last_step = draft_all_accepted
 
             prefix = torch.cat((prefix, t), dim=1)
             # 传输索引和 token t (各链路一次 RTT)
@@ -2920,6 +3050,26 @@ class Baselines(Decoding):
         )
         metrics["edge_cloud_draft_len_history"] = (
             comm_simulator.edge_cloud_draft_len_history.copy()
+        )
+        metrics["little_entropy_history"] = little_entropy_history
+        metrics["draft_entropy_history"] = draft_entropy_history
+        metrics["little_accept_rate_history"] = little_accept_rate_history
+        metrics["draft_accept_rate_history"] = draft_accept_rate_history
+        metrics["little_accepted_vocab_rank_history"] = (
+            little_accepted_vocab_rank_history
+        )
+        metrics["draft_accepted_vocab_rank_history"] = draft_accepted_vocab_rank_history
+        metrics["little_accepted_in_transfer_topk_history"] = (
+            little_accepted_in_transfer_topk_history
+        )
+        metrics["draft_accepted_in_transfer_topk_history"] = (
+            draft_accepted_in_transfer_topk_history
+        )
+        metrics["little_accepted_transfer_topk_rank_history"] = (
+            little_accepted_transfer_topk_rank_history
+        )
+        metrics["draft_accepted_transfer_topk_rank_history"] = (
+            draft_accepted_transfer_topk_rank_history
         )
 
         return prefix, metrics
@@ -3009,6 +3159,7 @@ class Baselines(Decoding):
         dra_overhead_time = 0.0
 
         idx = 0
+        is_draft_accepted_last_step = False
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -3192,7 +3343,8 @@ class Baselines(Decoding):
             _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             draft_model_forward_times += actual_gamma1
-            target_model_forward_times += 1
+            if not is_draft_accepted_last_step:
+                target_model_forward_times += 1
             total_draft_model_generated_tokens += (
                 new_generated_token.shape[1] + actual_gamma1
             )
@@ -3278,8 +3430,14 @@ class Baselines(Decoding):
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
+                # A rejection breaks the logical verification chain, so the next
+                # target verification should contribute a new counted forward.
+                is_draft_accepted_last_step = False
             else:
                 new_generated_token = prefix[:, prefix_len:]
+                # Mirror CUHLM's metric convention: consecutive fully accepted
+                # target verifications are collapsed into a single counted forward.
+                is_draft_accepted_last_step = True
 
             n2, t, _ = _finalize_cuhlm_verification(
                 proposer_cache=draft_model_cache,
