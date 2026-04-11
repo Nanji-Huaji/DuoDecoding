@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import sys
 
 import numpy as np
 import torch
@@ -220,6 +221,7 @@ def model_zoo(args):
         "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
         "llama-3.2-1b": "llama/llama-3.2-1b",
         "llama-2-13b": "llama/Llama-2-13b-hf",
+        "llama-13b-hf": "llama/Llama-2-13b-hf",
         "tiny-vicuna-1b": "vicuna/tiny-vicuna-1b",
         "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
         "tiny-llama-1.1b": "llama/tiny-llama-1.1b",
@@ -542,10 +544,74 @@ def parse_arguments():
         action="store_true",
         help="Whether to dump network statistics during decoding.",
     )
+    parser.add_argument(
+        "--adaptive_debug_log",
+        type=str,
+        default=None,
+        help="Optional JSONL path for adaptive_decoding debug traces.",
+    )
+    parser.add_argument(
+        "--controlled_eval_task",
+        type=str,
+        default="gsm8k",
+        choices=["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"],
+        help="Task used by the standalone controlled CEE-SD top-k experiment.",
+    )
+    parser.add_argument(
+        "--controlled_topk_values",
+        type=str,
+        default="16,64,256,1024",
+        help="Comma-separated top-k values or presets such as 'powers2_to_vocab' / 'full' for the controlled CEE-SD experiment.",
+    )
+    parser.add_argument(
+        "--controlled_topk_step",
+        type=int,
+        default=0,
+        help="Optional linear step used when controlled_topk_values requests a dense scan to vocab size.",
+    )
+    parser.add_argument(
+        "--controlled_entropy_quantile",
+        type=float,
+        default=0.8,
+        help="Quantile used to define high-entropy states for the controlled CEE-SD experiment.",
+    )
+    parser.add_argument(
+        "--controlled_entropy_threshold",
+        type=float,
+        default=None,
+        help="Optional fixed high-entropy threshold. If omitted, it is derived from the observation pass quantile.",
+    )
+    parser.add_argument(
+        "--controlled_max_high_entropy_states",
+        type=int,
+        default=50,
+        help="Maximum number of high-entropy states to replay in the controlled CEE-SD experiment.",
+    )
 
+    cli_args = sys.argv[1:]
     args = parser.parse_args()
+
+    explicit_small_draft_acc_head = "--small_draft_acc_head_path" in cli_args
+    explicit_draft_target_acc_head = "--draft_target_acc_head_path" in cli_args
+    explicit_acc_head = "--acc_head_path" in cli_args
+
+    if (
+        not explicit_small_draft_acc_head
+        and getattr(args, "little_model", None) is not None
+    ):
+        args.small_draft_acc_head_path = resolve_acc_head_path(
+            args.little_model, args.draft_model
+        )
+    if not explicit_draft_target_acc_head:
+        args.draft_target_acc_head_path = resolve_acc_head_path(
+            args.draft_model, args.target_model
+        )
+    if not explicit_acc_head:
+        args.acc_head_path = args.draft_target_acc_head_path
+
     if getattr(args, "main_rl_path", None) is None:
         main_spec = get_rl_agent_spec(
+            args.eval_mode,
             ROLE_MAIN,
             little_model=getattr(args, "little_model", None),
             draft_model=args.draft_model,
@@ -557,9 +623,13 @@ def parse_arguments():
     elif getattr(args, "main_rl_best_path", None) is None:
         args.main_rl_best_path = args.main_rl_path
 
-    if getattr(args, "little_model", None) is not None:
+    if (
+        getattr(args, "little_model", None) is not None
+        and args.eval_mode != "adaptive_decoding"
+    ):
         if getattr(args, "little_rl_path", None) is None:
             little_spec = get_rl_agent_spec(
+                args.eval_mode,
                 ROLE_LITTLE,
                 little_model=args.little_model,
                 draft_model=args.draft_model,

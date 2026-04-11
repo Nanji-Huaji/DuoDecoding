@@ -80,12 +80,14 @@ class TrainingManager:
         self.status_file = self.checkpoint_dir / "training_status.json"
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
         self.main_rl_spec = get_rl_agent_spec(
+            "adaptive_tridecoding",
             ROLE_MAIN,
             little_model=self.models[0],
             draft_model=self.models[1],
             target_model=self.models[2],
         )
         self.little_rl_spec = get_rl_agent_spec(
+            "adaptive_tridecoding",
             ROLE_LITTLE,
             little_model=self.models[0],
             draft_model=self.models[1],
@@ -427,7 +429,7 @@ class TrainingManager:
         # Pass model series to training script
         env["MODEL_SERIES_NAME"] = self.model_series_name
         env["LITTLE_MODEL"] = self.models[0]
-        env["DRAFT_MODEL"] = self.models[1]
+        env["DRAFT_MODEL"] = self.models[1] if not self.args.adaptive_decoding else None
         env["TARGET_MODEL"] = self.models[2]
 
         env["MAIN_RL_PATH"] = self.main_rl_spec.latest_path
@@ -624,6 +626,12 @@ if __name__ == "__main__":
         default="llama",
         choices=["llama", "llama-70b", "vicuna", "qwen", "qwen-32b", "qwen15"],
         help="Model series to train (llama, llama-70b, vicuna, qwen, qwen-32b, qwen15)",
+    )
+    parser.add_argument(
+        "--adaptive_decoding",
+        type=bool,
+        default=False,
+        help="Whether to use adaptive decoding mode (default: False)",
     )
     args = parser.parse_args()
 

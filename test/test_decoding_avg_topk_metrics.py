@@ -251,6 +251,7 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         self.assertGreater(output.shape[1], prefix.shape[1])
         self.assertEqual(metrics["avg_top_k"], 7)
         self.assertEqual(metrics["avg_draft_len"], 1)
+        self.assertEqual(metrics["avg_effective_proposal_len"], 1)
 
     def test_tridecoding_reports_average_active_top_k(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
