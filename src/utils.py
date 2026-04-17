@@ -611,7 +611,6 @@ def parse_arguments():
 
     if getattr(args, "main_rl_path", None) is None:
         main_spec = get_rl_agent_spec(
-            args.eval_mode,
             ROLE_MAIN,
             little_model=getattr(args, "little_model", None),
             draft_model=args.draft_model,
@@ -629,7 +628,6 @@ def parse_arguments():
     ):
         if getattr(args, "little_rl_path", None) is None:
             little_spec = get_rl_agent_spec(
-                args.eval_mode,
                 ROLE_LITTLE,
                 little_model=args.little_model,
                 draft_model=args.draft_model,

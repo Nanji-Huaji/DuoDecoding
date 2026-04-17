@@ -251,6 +251,11 @@ class Decoding(Register, ABC):
 
         # Get available GPU count
         num_gpus = self._get_available_gpu_count()
+        visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if visible_devices is not None:
+            self.color_print(f"CUDA_VISIBLE_DEVICES={visible_devices}", 3)
+        else:
+            self.color_print("CUDA_VISIBLE_DEVICES is not set", 3)
         self.color_print(f"Available GPUs: {num_gpus}", 3)
 
         loader = partial(
