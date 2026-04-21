@@ -221,6 +221,8 @@ class EvalMTBench(Baselines):
                 prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
+            self.validate_input_ids(input_ids, f"mt_bench_noeval.warmup.{warmup_count}")
+
             print(f"[Warmup {warmup_count + 1}/{n}] Input tokens: {input_ids.shape[1]}")
             torch.cuda.synchronize()
             start_time = time.time()
@@ -304,6 +306,10 @@ class EvalMTBench(Baselines):
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
+
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench_noeval.eval.turn_{turn_idx}"
+                    )
 
                     torch.cuda.synchronize()
                     start_time = time.time()

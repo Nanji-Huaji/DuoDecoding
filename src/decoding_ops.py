@@ -54,14 +54,59 @@ def prepare_verification_inputs(
     prefix_len: int,
     gamma: int,
     draft_probs_override: Optional[torch.Tensor] = None,
+    draft_probs_batch_override: Optional[torch.Tensor] = None,
 ) -> VerificationInputs:
     draft_device = draft_model_cache.device
+    draft_probs = draft_model_cache.prob_history
+    if target_model_cache.prob_history is None:
+        raise ValueError("Probability history is not initialized for verification")
+
+    if draft_probs_batch_override is not None:
+        max_idx = min(
+            prefix_len - 1 + draft_probs_batch_override.shape[1],
+            prefix_len + gamma - 1,
+            target_model_cache.prob_history.shape[1],
+        )
+        actual_gamma = max_idx - (prefix_len - 1)
+        if actual_gamma <= 0:
+            empty_tokens = x[:, 0:0]
+            empty_indices = empty_tokens.unsqueeze(-1)
+            empty_probs = draft_probs_batch_override[:, 0:0, :]
+            return VerificationInputs(
+                draft_probs_batch=empty_probs,
+                target_probs_batch=target_model_cache.prob_history[:, 0:0, :].to(
+                    draft_device
+                ),
+                draft_tokens=empty_tokens,
+                draft_token_indices=empty_indices,
+                prefix_len=prefix_len,
+                gamma=gamma,
+                actual_gamma=0,
+                max_idx=max_idx,
+            )
+
+        draft_probs_batch = draft_probs_batch_override[:, :actual_gamma, :]
+        target_probs_batch = target_model_cache.prob_history[
+            :, prefix_len - 1 : max_idx, :
+        ].to(draft_device)
+        draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
+        draft_token_indices = draft_tokens.unsqueeze(-1)
+
+        return VerificationInputs(
+            draft_probs_batch=draft_probs_batch,
+            target_probs_batch=target_probs_batch,
+            draft_tokens=draft_tokens,
+            draft_token_indices=draft_token_indices,
+            prefix_len=prefix_len,
+            gamma=gamma,
+            actual_gamma=actual_gamma,
+            max_idx=max_idx,
+        )
+
     draft_probs = (
-        draft_probs_override
-        if draft_probs_override is not None
-        else draft_model_cache.prob_history
+        draft_probs_override if draft_probs_override is not None else draft_probs
     )
-    if draft_probs is None or target_model_cache.prob_history is None:
+    if draft_probs is None:
         raise ValueError("Probability history is not initialized for verification")
 
     max_idx = min(
@@ -336,6 +381,7 @@ def verify_draft_sequence_result(
     gamma: int,
     *,
     draft_probs_override: Optional[torch.Tensor] = None,
+    draft_probs_batch_override: Optional[torch.Tensor] = None,
     r: Optional[torch.Tensor] = None,
 ) -> Tuple[VerificationInputs, AcceptanceResult]:
     verification_inputs = prepare_verification_inputs(
@@ -345,6 +391,7 @@ def verify_draft_sequence_result(
         prefix_len=prefix_len,
         gamma=gamma,
         draft_probs_override=draft_probs_override,
+        draft_probs_batch_override=draft_probs_batch_override,
     )
     acceptance_result = compute_acceptance_result(verification_inputs, r=r)
     return verification_inputs, acceptance_result
@@ -359,6 +406,7 @@ def resolve_stage_verification(
     *,
     output_device: torch.device,
     draft_probs_override: Optional[torch.Tensor] = None,
+    draft_probs_batch_override: Optional[torch.Tensor] = None,
 ) -> Tuple[int, int, torch.Tensor, bool]:
     vocab_limit = min(proposer_cache.vocab_size, verifier_cache.vocab_size)
     verification_inputs, acceptance_result = verify_draft_sequence_result(
@@ -368,6 +416,7 @@ def resolve_stage_verification(
         prefix_len=prefix_len,
         gamma=gamma,
         draft_probs_override=draft_probs_override,
+        draft_probs_batch_override=draft_probs_batch_override,
     )
     n = acceptance_result.n
     rollback_plan = build_rollback_plan(

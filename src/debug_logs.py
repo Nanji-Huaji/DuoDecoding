@@ -7,8 +7,13 @@ from .model_gpu import KVCacheModel
 
 logger = logging.getLogger(__name__)
 
+
 def _sd_alignment_debug_enabled() -> bool:
     return os.environ.get("DUODEC_DEBUG_SD_ALIGNMENT", "0") == "1"
+
+
+def _cee_transfer_debug_enabled() -> bool:
+    return os.environ.get("DUODEC_DEBUG_CEE_TRANSFER", "0") == "1"
 
 
 def _format_cache_state(name: str, cache: KVCacheModel) -> str:
@@ -44,6 +49,79 @@ def _log_sd_alignment_snapshot(
     if note:
         message += f", note={note}"
     logger.warning(message)
+
+
+def _log_token_tensor_snapshot(
+    label: str,
+    tokens: torch.Tensor,
+    *,
+    vocab_size: int,
+    note: str = "",
+) -> None:
+    if not _cee_transfer_debug_enabled():
+        return
+
+    if tokens.numel() == 0:
+        logger.warning(
+            "[CEE-TRANSFER] label=%s shape=%s dtype=%s device=%s empty note=%s",
+            label,
+            tuple(tokens.shape),
+            tokens.dtype,
+            tokens.device,
+            note,
+        )
+        return
+
+    tokens_long = tokens.detach()
+    if tokens_long.dtype != torch.long:
+        tokens_long = tokens_long.to(torch.long)
+    preview_width = min(12, tokens_long.shape[1]) if tokens_long.dim() >= 2 else 1
+    preview = (
+        tokens_long[0, :preview_width].cpu().tolist()
+        if tokens_long.dim() >= 2
+        else [int(tokens_long.item())]
+    )
+    min_id = int(tokens_long.min().item())
+    max_id = int(tokens_long.max().item())
+    in_vocab = min_id >= 0 and max_id < vocab_size
+
+    logger.warning(
+        "[CEE-TRANSFER] label=%s shape=%s dtype=%s device=%s min=%s max=%s in_vocab=%s preview=%s note=%s",
+        label,
+        tuple(tokens.shape),
+        tokens.dtype,
+        tokens.device,
+        min_id,
+        max_id,
+        in_vocab,
+        preview,
+        note,
+    )
+
+
+def _log_token_transfer_pair(
+    stage: str,
+    before: torch.Tensor,
+    after: torch.Tensor,
+    *,
+    vocab_size: int,
+    note: str = "",
+) -> None:
+    if not _cee_transfer_debug_enabled():
+        return
+
+    _log_token_tensor_snapshot(
+        f"{stage}.before",
+        before,
+        vocab_size=vocab_size,
+        note=note,
+    )
+    _log_token_tensor_snapshot(
+        f"{stage}.after",
+        after,
+        vocab_size=vocab_size,
+        note=note,
+    )
 
 
 def _log_invalid_batch_details(

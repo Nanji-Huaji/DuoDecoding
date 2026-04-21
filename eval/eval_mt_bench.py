@@ -261,6 +261,10 @@ class EvalMTBench(Baselines):
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
 
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench.warmup.turn_{turn_idx}"
+                    )
+
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
@@ -360,6 +364,10 @@ class EvalMTBench(Baselines):
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
+
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench.eval.turn_{turn_idx}"
+                    )
 
                     torch.cuda.synchronize()
                     start_time = time.time()

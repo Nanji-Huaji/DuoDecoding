@@ -31,6 +31,7 @@ from .model_gpu import KVCacheModel
 from .model_loading import (
     build_sharded_target_device_map,
     build_quant_config,
+    estimate_model_reserve_gib,
     get_model_size,
     load_causal_lm,
     log_dual_model_allocation,
@@ -110,6 +111,121 @@ class Decoding(Register, ABC):
         self.vocab_size: int = -1
         self.stop_tokens_matrix = None
 
+    def get_model_input_device(self, model) -> torch.device:
+        if hasattr(model, "hf_device_map"):
+            cuda_devices = sorted(
+                {
+                    str(device)
+                    for device in model.hf_device_map.values()
+                    if str(device).startswith("cuda")
+                }
+            )
+            if cuda_devices:
+                return torch.device(cuda_devices[0])
+        try:
+            return next(model.parameters()).device
+        except StopIteration as exc:
+            raise RuntimeError("Unable to determine model device") from exc
+
+    def _get_model_embedding_vocab_size(self, model) -> int:
+        embeddings = model.get_input_embeddings()
+        return int(embeddings.weight.shape[0])
+
+    def _get_model_config_vocab_size(self, model) -> int | None:
+        config = getattr(model, "config", None)
+        if config is None:
+            return None
+        if hasattr(config, "vocab_size"):
+            return int(config.vocab_size)
+        text_config = getattr(config, "text_config", None)
+        if text_config is not None and hasattr(text_config, "vocab_size"):
+            return int(text_config.vocab_size)
+        return None
+
+    def _runtime_models(self) -> List[Tuple[str, Any]]:
+        models: List[Tuple[str, Any]] = []
+        for name in ("little_model", "draft_model", "target_model"):
+            model = getattr(self, name, None)
+            if model is not None:
+                models.append((name, model))
+        return models
+
+    def _validate_runtime_vocab_alignment(self) -> None:
+        if not hasattr(self, "tokenizer") or self.tokenizer is None:
+            return
+
+        tokenizer_len = len(self.tokenizer)
+        tokenizer_vocab_size = getattr(self.tokenizer, "vocab_size", tokenizer_len)
+        tokenizer_limit = max(int(tokenizer_len), int(tokenizer_vocab_size))
+
+        runtime_vocab_sizes: List[int] = []
+        details: List[str] = [
+            f"tokenizer_len={tokenizer_len}",
+            f"tokenizer_vocab_size={tokenizer_vocab_size}",
+        ]
+        for model_name, model in self._runtime_models():
+            embedding_vocab_size = self._get_model_embedding_vocab_size(model)
+            config_vocab_size = self._get_model_config_vocab_size(model)
+            runtime_vocab_sizes.append(embedding_vocab_size)
+            details.append(
+                f"{model_name}_embedding_vocab_size={embedding_vocab_size}"
+            )
+            if config_vocab_size is not None:
+                details.append(f"{model_name}_config_vocab_size={config_vocab_size}")
+
+        if not runtime_vocab_sizes:
+            self.vocab_size = tokenizer_limit
+            self.args.vocab_size = tokenizer_limit
+            return
+
+        shared_vocab_size = min(runtime_vocab_sizes)
+        self.vocab_size = int(shared_vocab_size)
+        self.args.vocab_size = int(shared_vocab_size)
+
+        if tokenizer_limit > shared_vocab_size:
+            raise ValueError(
+                "Tokenizer/model vocab mismatch for shared decoding: "
+                + ", ".join(details)
+                + f", shared_vocab_size={shared_vocab_size}. "
+                "The tokenizer can emit token ids that at least one loaded model cannot embed."
+            )
+
+        self.color_print(
+            "Shared vocab alignment validated: "
+            + ", ".join(details)
+            + f", shared_vocab_size={shared_vocab_size}",
+            3,
+        )
+
+    def validate_input_ids(self, input_ids: torch.Tensor, label: str = "input_ids"):
+        if input_ids.dtype != torch.long:
+            input_ids = input_ids.to(torch.long)
+        if input_ids.numel() == 0:
+            return
+
+        min_id = int(input_ids.min().item())
+        max_id = int(input_ids.max().item())
+        if min_id < 0:
+            raise ValueError(f"Negative token id at {label}: min={min_id}")
+
+        model_limits = []
+        for model_name, model in self._runtime_models():
+            embedding_vocab_size = self._get_model_embedding_vocab_size(model)
+            model_limits.append((model_name, embedding_vocab_size))
+            if max_id >= embedding_vocab_size:
+                raise ValueError(
+                    f"Input token id out of range at {label}: max={max_id}, "
+                    f"{model_name}_embedding_vocab_size={embedding_vocab_size}, "
+                    f"self.vocab_size={self.vocab_size}, tokenizer_len={len(self.tokenizer)}"
+                )
+
+        if self.vocab_size > 0 and max_id >= self.vocab_size:
+            limits = ", ".join(f"{name}={size}" for name, size in model_limits)
+            raise ValueError(
+                f"Input token id exceeds runtime shared vocab at {label}: max={max_id}, "
+                f"self.vocab_size={self.vocab_size}, {limits}"
+            )
+
     def _prepare_stop_tokens(self, stop_sequences: List[str]):
         """
         预处理停止词序列，将其转换为 GPU 上的张量矩阵，以便在生成过程中进行高效的广播检查。
@@ -133,7 +249,7 @@ class Decoding(Register, ABC):
         # 形状: [停止词个数, 最长长度]
         # 确保 device 正确，这里假设 self.target_model 已经加载
         device = (
-            self.target_model.device
+            self.get_model_input_device(self.target_model)
             if hasattr(self, "target_model") and self.target_model is not None
             else "cpu"
         )
@@ -268,7 +384,10 @@ class Decoding(Register, ABC):
         if self.args.eval_mode == "small":
             device_map = "cuda:0"
             self.color_print(f"Loading {self.args.draft_model} on {device_map}", 3)
-            draft_quant = build_quant_config(self.args.draft_model)
+            draft_quant = build_quant_config(
+                self.args.draft_model,
+                getattr(self.args, "draft_quantization", "auto"),
+            )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
             self.draft_model = load_causal_lm(
@@ -281,7 +400,10 @@ class Decoding(Register, ABC):
         elif self.args.eval_mode == "large":
             device_map = "cuda:0"
             self.color_print(f"Loading {self.args.target_model} on {device_map}", 3)
-            target_quant = build_quant_config(self.args.target_model)
+            target_quant = build_quant_config(
+                self.args.target_model,
+                getattr(self.args, "target_quantization", "auto"),
+            )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
             self.target_model = load_causal_lm(
@@ -316,7 +438,10 @@ class Decoding(Register, ABC):
             )
 
             self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
-            draft_quant = build_quant_config(self.args.draft_model)
+            draft_quant = build_quant_config(
+                self.args.draft_model,
+                getattr(self.args, "draft_quantization", "auto"),
+            )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
             self.draft_model = load_causal_lm(
@@ -326,14 +451,30 @@ class Decoding(Register, ABC):
                 quant_config=draft_quant,
             )
             self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
-            target_quant = build_quant_config(self.args.target_model)
+            target_quant = build_quant_config(
+                self.args.target_model,
+                getattr(self.args, "target_quantization", "auto"),
+            )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
+            target_max_memory = None
+            if target_quant is None and num_gpus >= 2:
+                reserve_gib = estimate_model_reserve_gib(
+                    self.args.draft_model,
+                    getattr(self.args, "draft_quantization", "auto"),
+                )
+                sharded_target = build_sharded_target_device_map(
+                    num_gpus,
+                    reserve_last_gpu_gib=reserve_gib,
+                )
+                if sharded_target is not None:
+                    target_device, target_max_memory = sharded_target
             self.target_model = load_causal_lm(
                 loader,
                 self.args.target_model,
                 target_device,
                 quant_config=target_quant,
+                max_memory=target_max_memory,
             )
 
         elif self.args.eval_mode == "adaptive_decoding":
@@ -351,7 +492,10 @@ class Decoding(Register, ABC):
             )
 
             self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
-            draft_quant = build_quant_config(self.args.draft_model)
+            draft_quant = build_quant_config(
+                self.args.draft_model,
+                getattr(self.args, "draft_quantization", "auto"),
+            )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
             self.draft_model = load_causal_lm(
@@ -362,12 +506,26 @@ class Decoding(Register, ABC):
                 quant_config=draft_quant,
             )
             self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
-            target_quant = build_quant_config(self.args.target_model)
+            target_quant = build_quant_config(
+                self.args.target_model,
+                getattr(self.args, "target_quantization", "auto"),
+            )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
             target_max_memory = None
             if target_device == "auto":
                 sharded_target = build_sharded_target_device_map(num_gpus)
+                if sharded_target is not None:
+                    target_device, target_max_memory = sharded_target
+            elif target_quant is None and num_gpus >= 2:
+                reserve_gib = estimate_model_reserve_gib(
+                    self.args.draft_model,
+                    getattr(self.args, "draft_quantization", "auto"),
+                )
+                sharded_target = build_sharded_target_device_map(
+                    num_gpus,
+                    reserve_last_gpu_gib=reserve_gib,
+                )
                 if sharded_target is not None:
                     target_device, target_max_memory = sharded_target
             self.target_model = load_causal_lm(
@@ -412,7 +570,10 @@ class Decoding(Register, ABC):
             )
 
             self.color_print(f"Loading {self.args.little_model} on {little_device}", 3)
-            little_quant = build_quant_config(self.args.little_model)
+            little_quant = build_quant_config(
+                self.args.little_model,
+                getattr(self.args, "little_quantization", "auto"),
+            )
             if little_quant is not None:
                 log_quantization_decision(self.color_print, self.args.little_model)
             self.little_model = load_causal_lm(
@@ -423,7 +584,10 @@ class Decoding(Register, ABC):
                 quant_config=little_quant,
             )
             self.color_print(f"Loading {self.args.draft_model} on {draft_device}", 3)
-            draft_quant = build_quant_config(self.args.draft_model)
+            draft_quant = build_quant_config(
+                self.args.draft_model,
+                getattr(self.args, "draft_quantization", "auto"),
+            )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
             self.draft_model = load_causal_lm(
@@ -434,7 +598,10 @@ class Decoding(Register, ABC):
                 quant_config=draft_quant,
             )
             self.color_print(f"Loading {self.args.target_model} on {target_device}", 3)
-            target_quant = build_quant_config(self.args.target_model)
+            target_quant = build_quant_config(
+                self.args.target_model,
+                getattr(self.args, "target_quantization", "auto"),
+            )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
             target_max_memory = None
@@ -450,10 +617,7 @@ class Decoding(Register, ABC):
                 max_memory=target_max_memory,
             )
 
-        # # 从实际模型embedding层获取vocab_size
-
-        # Seems fetching vocab size from model is unnecessary.
-        self.vocab_size = int(self.args.vocab_size)
+        self._validate_runtime_vocab_alignment()
 
         # Print device allocation for loaded models
         self._print_model_device_info()
@@ -569,9 +733,10 @@ class Decoding(Register, ABC):
             raise RuntimeError(
                 "Auto-Regressive Decoding can be used only in small / large eval mode!"
             )
+        self.validate_input_ids(prefix, "autoregressive_sampling.prefix")
         prefix = prefix.to(model.device)
         model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
-        model.vocab_size = self.args.vocab_size
+        model.vocab_size = self.vocab_size
 
         prefix_len = prefix.shape[1]
         max_tokens = prefix_len + self.args.max_tokens

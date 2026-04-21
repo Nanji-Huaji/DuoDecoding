@@ -545,6 +545,27 @@ def parse_arguments():
         help="Whether to dump network statistics during decoding.",
     )
     parser.add_argument(
+        "--draft_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the draft model.",
+    )
+    parser.add_argument(
+        "--target_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the target model.",
+    )
+    parser.add_argument(
+        "--little_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the little model.",
+    )
+    parser.add_argument(
         "--adaptive_debug_log",
         type=str,
         default=None,
