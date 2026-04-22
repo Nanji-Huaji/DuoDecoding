@@ -238,6 +238,7 @@ class CeeRefactorTests(unittest.TestCase):
             gamma,
             output_device,
             draft_probs_override=None,
+            draft_probs_batch_override=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -279,6 +280,7 @@ class CeeRefactorTests(unittest.TestCase):
             gamma,
             output_device,
             draft_probs_override=None,
+            draft_probs_batch_override=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -320,6 +322,7 @@ class CeeRefactorTests(unittest.TestCase):
             gamma,
             output_device,
             draft_probs_override=None,
+            draft_probs_batch_override=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
