@@ -83,3 +83,5 @@ experiment_results/*
 /*.ipynb
 !/notebooks/
 !/notebooks/*.ipynb
+
+microsoft/*
