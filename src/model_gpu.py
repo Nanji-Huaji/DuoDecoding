@@ -1,6 +1,10 @@
 import torch
 from transformers.cache_utils import DynamicCache
 
+from .proposal_utils import (
+    build_topk_proposal_history_step,
+    concat_topk_proposal_history,
+)
 from .utils import (
     log_prob_tensor_if_invalid,
     norm_logits,
@@ -449,6 +453,64 @@ class KVCacheModel:
 
         rebuilt_history = torch.cat(rebuilt_rows, dim=1)
         return torch.cat([x] + new_tokens, dim=1), rebuilt_history
+
+    def generate_with_rebuilt_topk_metadata(
+        self,
+        input: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+    ):
+        x = input
+        if x.dtype != torch.long:
+            x = x.to(torch.long)
+
+        if gamma == 0:
+            return x, None, None
+
+        rebuilt_rows: list[torch.Tensor] = []
+        proposal_steps = []
+        new_tokens: list[torch.Tensor] = []
+
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(
+            q, "KVCacheModel.generate_with_rebuilt_topk_metadata.q"
+        )
+        rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+        self._raise_if_invalid_probs(
+            rebuilt_q,
+            "KVCacheModel.generate_with_rebuilt_topk_metadata.rebuilt_q",
+        )
+        rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+        proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+        if proposal_meta is not None:
+            proposal_steps.append(proposal_meta)
+        next_tok = sample(rebuilt_q)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens.append(next_tok)
+
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
+            self._raise_if_invalid_probs(
+                q, "KVCacheModel.generate_with_rebuilt_topk_metadata.q"
+            )
+            rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+            self._raise_if_invalid_probs(
+                rebuilt_q,
+                "KVCacheModel.generate_with_rebuilt_topk_metadata.rebuilt_q",
+            )
+            rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+            proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+            if proposal_meta is not None:
+                proposal_steps.append(proposal_meta)
+            next_tok = sample(rebuilt_q)
+            if next_tok.dtype != torch.long:
+                next_tok = next_tok.to(torch.long)
+            new_tokens.append(next_tok)
+
+        rebuilt_history = torch.cat(rebuilt_rows, dim=1)
+        rebuilt_history_meta = concat_topk_proposal_history(proposal_steps)
+        return torch.cat([x] + new_tokens, dim=1), rebuilt_history, rebuilt_history_meta
 
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:

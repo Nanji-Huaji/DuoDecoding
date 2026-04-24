@@ -28,6 +28,7 @@ from .communication import (
 from .decoding_ops import finalize_verification, verify_draft_sequence
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .model_gpu import KVCacheModel
+from .proposal_utils import stage_topk_proposal_history
 from .model_loading import (
     build_sharded_target_device_map,
     build_quant_config,
@@ -122,9 +123,12 @@ class Decoding(Register, ABC):
             )
             if cuda_devices:
                 return torch.device(cuda_devices[0])
+        model_device = getattr(model, "device", None)
+        if model_device is not None:
+            return torch.device(model_device)
         try:
             return next(model.parameters()).device
-        except StopIteration as exc:
+        except (StopIteration, AttributeError, TypeError) as exc:
             raise RuntimeError("Unable to determine model device") from exc
 
     def _get_model_embedding_vocab_size(self, model) -> int:
@@ -852,12 +856,22 @@ class Decoding(Register, ABC):
                 else None
             )
             rebuilt_draft_probs = None
+            rebuilt_draft_meta = None
             if proposal_top_k is not None:
-                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(draft_device),
-                    current_gamma,
-                    proposal_top_k,
-                )
+                if hasattr(approx_model_cache, "generate_with_rebuilt_topk_metadata"):
+                    x, rebuilt_draft_probs, rebuilt_draft_meta = (
+                        approx_model_cache.generate_with_rebuilt_topk_metadata(
+                            prefix.to(draft_device),
+                            current_gamma,
+                            proposal_top_k,
+                        )
+                    )
+                else:
+                    x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                        prefix.to(draft_device),
+                        current_gamma,
+                        proposal_top_k,
+                    )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
@@ -930,6 +944,10 @@ class Decoding(Register, ABC):
                         ),
                         dim=1,
                     )
+                ),
+                draft_topk_history=stage_topk_proposal_history(
+                    rebuilt_draft_meta,
+                    current_gamma,
                 ),
             )
             _log_sd_alignment_snapshot(
@@ -1059,12 +1077,22 @@ class Decoding(Register, ABC):
                 else None
             )
             rebuilt_draft_probs = None
+            rebuilt_draft_meta = None
             if proposal_top_k is not None:
-                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(draft_device),
-                    current_gamma,
-                    proposal_top_k,
-                )
+                if hasattr(approx_model_cache, "generate_with_rebuilt_topk_metadata"):
+                    x, rebuilt_draft_probs, rebuilt_draft_meta = (
+                        approx_model_cache.generate_with_rebuilt_topk_metadata(
+                            prefix.to(draft_device),
+                            current_gamma,
+                            proposal_top_k,
+                        )
+                    )
+                else:
+                    x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                        prefix.to(draft_device),
+                        current_gamma,
+                        proposal_top_k,
+                    )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
@@ -1149,6 +1177,10 @@ class Decoding(Register, ABC):
                         ),
                         dim=1,
                     )
+                ),
+                draft_topk_history=stage_topk_proposal_history(
+                    rebuilt_draft_meta,
+                    current_gamma,
                 ),
             )
 

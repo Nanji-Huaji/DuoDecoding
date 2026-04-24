@@ -19,11 +19,18 @@ class VerificationInputs:
 
 @dataclass
 class AcceptanceResult:
-    accepted_count: int
-    n: int
+    accepted_count: torch.Tensor
     selected_draft_p: torch.Tensor
     selected_target_p: torch.Tensor
     accept_mask: torch.Tensor
+
+
+@dataclass
+class TopKProposalHistory:
+    topk_indices: torch.Tensor
+    topk_probs: torch.Tensor
+    tail_uniform_prob: torch.Tensor
+    vocab_size: int
 
 
 @dataclass

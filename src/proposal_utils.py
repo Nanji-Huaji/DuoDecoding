@@ -1,8 +1,11 @@
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import torch
 
-from .model_gpu import KVCacheModel
+from .decoding_types import TopKProposalHistory
+
+if TYPE_CHECKING:
+    from .model_gpu import KVCacheModel
 
 
 def proposal_top_k(transfer_top_k: Optional[int]) -> Optional[int]:
@@ -12,7 +15,7 @@ def proposal_top_k(transfer_top_k: Optional[int]) -> Optional[int]:
 
 
 def build_draft_probs_override(
-    cache: KVCacheModel,
+    cache: "KVCacheModel",
     stage_start_len: int,
     rebuilt_draft_probs: Optional[torch.Tensor],
 ) -> Optional[torch.Tensor]:
@@ -27,8 +30,60 @@ def build_draft_probs_override(
     )
 
 
+def build_topk_proposal_history_step(
+    probs: torch.Tensor,
+    top_k: Optional[int],
+) -> Optional[TopKProposalHistory]:
+    if top_k is None or top_k <= 0 or probs.numel() == 0 or top_k >= probs.shape[-1]:
+        return None
+
+    top_k_values, top_k_indices = torch.topk(probs, top_k, dim=-1, sorted=True)
+    tail_count = probs.shape[-1] - top_k
+    tail_uniform_prob = (1.0 - top_k_values.sum(dim=-1, keepdim=True)).clamp_min(0.0)
+    tail_uniform_prob = tail_uniform_prob / tail_count
+
+    return TopKProposalHistory(
+        topk_indices=top_k_indices.unsqueeze(1),
+        topk_probs=top_k_values.unsqueeze(1),
+        tail_uniform_prob=tail_uniform_prob.unsqueeze(1),
+        vocab_size=probs.shape[-1],
+    )
+
+
+def concat_topk_proposal_history(
+    steps: list[TopKProposalHistory],
+) -> Optional[TopKProposalHistory]:
+    if not steps:
+        return None
+
+    return TopKProposalHistory(
+        topk_indices=torch.cat([step.topk_indices for step in steps], dim=1),
+        topk_probs=torch.cat([step.topk_probs for step in steps], dim=1),
+        tail_uniform_prob=torch.cat(
+            [step.tail_uniform_prob for step in steps],
+            dim=1,
+        ),
+        vocab_size=steps[0].vocab_size,
+    )
+
+
+def stage_topk_proposal_history(
+    history: Optional[TopKProposalHistory],
+    gamma: int,
+) -> Optional[TopKProposalHistory]:
+    if history is None or gamma <= 0:
+        return history
+
+    return TopKProposalHistory(
+        topk_indices=history.topk_indices[:, :gamma, :],
+        topk_probs=history.topk_probs[:, :gamma, :],
+        tail_uniform_prob=history.tail_uniform_prob[:, :gamma, :],
+        vocab_size=history.vocab_size,
+    )
+
+
 def stage_prob_history(
-    cache: KVCacheModel,
+    cache: "KVCacheModel",
     stage_start_len: int,
     rebuilt_draft_probs: Optional[torch.Tensor],
 ) -> torch.Tensor:
@@ -41,7 +96,7 @@ def stage_prob_history(
 
 
 def stage_prob_batch(
-    cache: KVCacheModel,
+    cache: "KVCacheModel",
     stage_start_len: int,
     prefix_len: int,
     gamma: int,

@@ -6,7 +6,12 @@ import torch
 
 from .communication import CommunicationSimulator
 from .debug_logs import _log_invalid_batch_details, _log_sd_alignment_snapshot
-from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
+from .decoding_types import (
+    AcceptanceResult,
+    RollbackPlan,
+    TopKProposalHistory,
+    VerificationInputs,
+)
 from .metrics import DecodingMetrics
 from .model_gpu import KVCacheModel
 from .utils import (
@@ -158,8 +163,11 @@ def compute_acceptance_result(
 ) -> AcceptanceResult:
     if verification_inputs.actual_gamma <= 0:
         return AcceptanceResult(
-            accepted_count=0,
-            n=verification_inputs.prefix_len - 1,
+            accepted_count=torch.zeros(
+                (verification_inputs.draft_probs_batch.shape[0],),
+                dtype=torch.int64,
+                device=verification_inputs.draft_probs_batch.device,
+            ),
             selected_draft_p=verification_inputs.draft_probs_batch[:, 0:0, 0],
             selected_target_p=verification_inputs.target_probs_batch[:, 0:0, 0],
             accept_mask=torch.zeros(
@@ -188,15 +196,10 @@ def compute_acceptance_result(
 
     accept_mask = r <= (selected_target_p / selected_draft_p)
     continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
-    accepted_count = int(continuous_accept[0].sum().item())
-    n = verification_inputs.prefix_len + accepted_count - 1
-
-    if accepted_count == verification_inputs.actual_gamma:
-        n = verification_inputs.prefix_len + verification_inputs.actual_gamma - 1
+    accepted_count = continuous_accept.sum(dim=1, dtype=torch.int64)
 
     return AcceptanceResult(
         accepted_count=accepted_count,
-        n=int(n),
         selected_draft_p=selected_draft_p,
         selected_target_p=selected_target_p,
         accept_mask=accept_mask,
@@ -208,6 +211,18 @@ def compute_residual_distribution(
     draft_probs: torch.Tensor,
 ) -> torch.Tensor:
     return max_fn(target_probs - draft_probs)
+
+
+def materialize_acceptance(
+    verification_inputs: VerificationInputs,
+    acceptance_result: AcceptanceResult,
+) -> tuple[int, int, bool]:
+    accepted_count = int(acceptance_result.accepted_count[0].item())
+    all_accepted = accepted_count == verification_inputs.actual_gamma
+    n = verification_inputs.prefix_len + accepted_count - 1
+    if all_accepted:
+        n = verification_inputs.prefix_len + verification_inputs.actual_gamma - 1
+    return accepted_count, n, all_accepted
 
 
 def build_rollback_plan(prefix_len: int, gamma: int, n: int) -> RollbackPlan:
@@ -246,6 +261,64 @@ def sample_reject_token(
         "sample_reject_token.residual_probs",
     )
     token = sample(residual_probs)
+    if output_device is not None and token.device != output_device:
+        token = token.to(output_device)
+    return token
+
+
+def sample_reject_token_from_topk_proposal(
+    target_probs: torch.Tensor,
+    proposal_history: TopKProposalHistory,
+    step_idx: int,
+    output_device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    topk_indices = proposal_history.topk_indices[:, step_idx, :]
+    topk_probs = proposal_history.topk_probs[:, step_idx, :]
+    tail_uniform_prob = proposal_history.tail_uniform_prob[:, step_idx, :]
+
+    gathered_target = torch.gather(target_probs, 1, topk_indices)
+    topk_residual = (gathered_target - topk_probs).clamp_min(0.0)
+    topk_mass = topk_residual.sum(dim=-1, keepdim=True)
+
+    tail_residual = (target_probs - tail_uniform_prob).clamp_min(0.0)
+    tail_residual = tail_residual.scatter(
+        1,
+        topk_indices,
+        torch.zeros_like(topk_probs),
+    )
+    tail_mass = tail_residual.sum(dim=-1, keepdim=True)
+    total_mass = topk_mass + tail_mass
+
+    invalid_rows = total_mass.squeeze(-1) <= 0
+    if invalid_rows.any():
+        fallback = sample(target_probs)
+        if output_device is not None and fallback.device != output_device:
+            fallback = fallback.to(output_device)
+        return fallback
+
+    region_probs = torch.cat((topk_mass, tail_mass), dim=-1) / total_mass
+    region_choice = torch.multinomial(region_probs, num_samples=1)
+
+    token = sample(target_probs)
+    topk_rows = region_choice.squeeze(-1) == 0
+    if topk_rows.any():
+        topk_token = torch.gather(
+            topk_indices[topk_rows],
+            1,
+            torch.multinomial(
+                topk_residual[topk_rows] / topk_mass[topk_rows],
+                num_samples=1,
+            ),
+        )
+        token[topk_rows] = topk_token
+    tail_rows = ~topk_rows
+    if tail_rows.any():
+        tail_token = torch.multinomial(
+            tail_residual[tail_rows] / tail_mass[tail_rows],
+            num_samples=1,
+        )
+        token[tail_rows] = tail_token
+
     if output_device is not None and token.device != output_device:
         token = token.to(output_device)
     return token
@@ -346,8 +419,9 @@ def verify_draft_sequence(
             selected_draft_p=acceptance_result.selected_draft_p,
             selected_target_p=acceptance_result.selected_target_p,
         )
-    accepted_counts = acceptance_result.accepted_count
-    n = acceptance_result.n
+    accepted_counts, n, _ = materialize_acceptance(
+        verification_inputs, acceptance_result
+    )
     if (
         accepted_counts < verification_inputs.actual_gamma
         and send_reject_message
@@ -370,7 +444,7 @@ def verify_draft_sequence(
         decoding_metrics["draft_generated_tokens"] += gamma
         decoding_metrics["draft_accepted_tokens"] += int(n - prefix_len + 1)
 
-    return acceptance_result.accepted_count, int(n)
+    return accepted_counts, int(n)
 
 
 def verify_draft_sequence_result(
@@ -407,6 +481,7 @@ def resolve_stage_verification(
     output_device: torch.device,
     draft_probs_override: Optional[torch.Tensor] = None,
     draft_probs_batch_override: Optional[torch.Tensor] = None,
+    draft_topk_history: Optional[TopKProposalHistory] = None,
 ) -> Tuple[int, int, torch.Tensor, bool]:
     vocab_limit = min(proposer_cache.vocab_size, verifier_cache.vocab_size)
     verification_inputs, acceptance_result = verify_draft_sequence_result(
@@ -418,7 +493,9 @@ def resolve_stage_verification(
         draft_probs_override=draft_probs_override,
         draft_probs_batch_override=draft_probs_batch_override,
     )
-    n = acceptance_result.n
+    accepted_count, n, all_accepted = materialize_acceptance(
+        verification_inputs, acceptance_result
+    )
     rollback_plan = build_rollback_plan(
         prefix_len,
         verification_inputs.actual_gamma,
@@ -432,18 +509,28 @@ def resolve_stage_verification(
         )
     else:
         rejection_offset = n - (prefix_len - 1)
-        t = sample_reject_token(
-            verification_inputs.target_probs_batch[:, rejection_offset, :vocab_limit],
-            verification_inputs.draft_probs_batch[:, rejection_offset, :vocab_limit],
-            output_device=output_device,
-        )
+        if draft_topk_history is not None:
+            t = sample_reject_token_from_topk_proposal(
+                verification_inputs.target_probs_batch[
+                    :, rejection_offset, :vocab_limit
+                ],
+                draft_topk_history,
+                rejection_offset,
+                output_device=output_device,
+            )
+        else:
+            t = sample_reject_token(
+                verification_inputs.target_probs_batch[:, rejection_offset, :vocab_limit],
+                verification_inputs.draft_probs_batch[:, rejection_offset, :vocab_limit],
+                output_device=output_device,
+            )
 
     apply_rollback(
         proposer_cache,
         verifier_cache,
         rollback_plan,
     )
-    return acceptance_result.accepted_count, n, t, rollback_plan.all_accepted
+    return accepted_count, n, t, all_accepted
 
 
 def finalize_verification(
@@ -454,6 +541,7 @@ def finalize_verification(
     gamma: int,
     n: int,
     draft_probs_override: Optional[torch.Tensor] = None,
+    draft_topk_history: Optional[TopKProposalHistory] = None,
 ) -> torch.Tensor:
     prefix = x[:, : n + 1]
     rollback_plan = build_rollback_plan(prefix_len, gamma, n)
@@ -472,11 +560,20 @@ def finalize_verification(
         ]
         approx_prob_slice = draft_probs[:, n, : approx_model_cache.vocab_size]
 
-        t = sample_reject_token(
-            target_prob_slice,
-            approx_prob_slice,
-            output_device=prefix.device,
-        )
+        if draft_topk_history is not None:
+            step_idx = n - (prefix_len - 1)
+            t = sample_reject_token_from_topk_proposal(
+                target_prob_slice,
+                draft_topk_history,
+                step_idx,
+                output_device=prefix.device,
+            )
+        else:
+            t = sample_reject_token(
+                target_prob_slice,
+                approx_prob_slice,
+                output_device=prefix.device,
+            )
         target_model_cache.rollback(rollback_plan.target_end_pos_reject)
     else:
         next_target_probs = target_model_cache.prob_history[
