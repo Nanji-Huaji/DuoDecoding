@@ -1,7 +1,8 @@
-import os
-import torch
 import logging
+import os
 from typing import Optional
+
+import torch
 from .metrics import DecodingMetrics
 from .model_gpu import KVCacheModel
 
@@ -133,12 +134,19 @@ def _log_invalid_batch_details(
     x: torch.Tensor,
     draft_model_cache: KVCacheModel,
     target_model_cache: KVCacheModel,
-    draft_probs_batch: torch.Tensor,
+    draft_probs_batch: Optional[torch.Tensor],
     target_probs_batch: torch.Tensor,
     selected_draft_p: torch.Tensor,
     selected_target_p: torch.Tensor,
 ) -> None:
-    draft_row_sums = draft_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
+    if draft_probs_batch is not None and draft_probs_batch.numel() > 0:
+        draft_row_sums = (
+            draft_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
+        )
+        draft_probs_batch_present = True
+    else:
+        draft_row_sums = None
+        draft_probs_batch_present = False
     target_row_sums = target_probs_batch[0].detach().float().sum(dim=-1).cpu().tolist()
     draft_tokens = x[:, prefix_len : prefix_len + actual_gamma].detach().cpu().tolist()
 
@@ -150,7 +158,7 @@ def _log_invalid_batch_details(
     logger.warning(
         "[SD-ALIGN][invalid-batch] prefix_len=%s gamma=%s max_idx=%s actual_gamma=%s "
         "draft_tokens=%s selected_draft_p=%s selected_target_p=%s "
-        "draft_row_sums=%s target_row_sums=%s "
+        "draft_probs_batch_present=%s draft_row_sums=%s target_row_sums=%s "
         "target_window_row_sums=%s approx_window_row_sums=%s "
         "%s %s",
         prefix_len,
@@ -160,6 +168,7 @@ def _log_invalid_batch_details(
         draft_tokens,
         selected_draft_p.detach().float().cpu().tolist(),
         selected_target_p.detach().float().cpu().tolist(),
+        draft_probs_batch_present,
         draft_row_sums,
         target_row_sums,
         target_model_cache.debug_row_sums(target_window_start, target_window_end),

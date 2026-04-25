@@ -14,6 +14,7 @@ from .decoding_types import (
 )
 from .metrics import DecodingMetrics
 from .model_gpu import KVCacheModel
+from .proposal_utils import query_topk_proposal_token_probs
 from .utils import (
     log_prob_tensor_if_invalid,
     log_ratio_if_invalid,
@@ -60,6 +61,7 @@ def prepare_verification_inputs(
     gamma: int,
     draft_probs_override: Optional[torch.Tensor] = None,
     draft_probs_batch_override: Optional[torch.Tensor] = None,
+    draft_topk_history: Optional[TopKProposalHistory] = None,
 ) -> VerificationInputs:
     draft_device = draft_model_cache.device
     draft_probs = draft_model_cache.prob_history
@@ -84,6 +86,7 @@ def prepare_verification_inputs(
                 ),
                 draft_tokens=empty_tokens,
                 draft_token_indices=empty_indices,
+                selected_draft_p=empty_tokens.to(dtype=empty_probs.dtype),
                 prefix_len=prefix_len,
                 gamma=gamma,
                 actual_gamma=0,
@@ -96,12 +99,18 @@ def prepare_verification_inputs(
         ].to(draft_device)
         draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
         draft_token_indices = draft_tokens.unsqueeze(-1)
+        selected_draft_p = torch.gather(
+            draft_probs_batch,
+            2,
+            draft_token_indices,
+        ).squeeze(-1)
 
         return VerificationInputs(
             draft_probs_batch=draft_probs_batch,
             target_probs_batch=target_probs_batch,
             draft_tokens=draft_tokens,
             draft_token_indices=draft_token_indices,
+            selected_draft_p=selected_draft_p,
             prefix_len=prefix_len,
             gamma=gamma,
             actual_gamma=actual_gamma,
@@ -131,6 +140,7 @@ def prepare_verification_inputs(
             ),
             draft_tokens=empty_tokens,
             draft_token_indices=empty_indices,
+            selected_draft_p=empty_tokens.to(dtype=empty_probs.dtype),
             prefix_len=prefix_len,
             gamma=gamma,
             actual_gamma=0,
@@ -143,12 +153,24 @@ def prepare_verification_inputs(
     ].to(draft_device)
     draft_tokens = x[:, prefix_len : prefix_len + actual_gamma]
     draft_token_indices = draft_tokens.unsqueeze(-1)
+    if draft_topk_history is not None:
+        selected_draft_p = query_topk_proposal_token_probs(
+            draft_topk_history,
+            draft_tokens,
+        )
+    else:
+        selected_draft_p = torch.gather(
+            draft_probs_batch,
+            2,
+            draft_token_indices,
+        ).squeeze(-1)
 
     return VerificationInputs(
         draft_probs_batch=draft_probs_batch,
         target_probs_batch=target_probs_batch,
         draft_tokens=draft_tokens,
         draft_token_indices=draft_token_indices,
+        selected_draft_p=selected_draft_p,
         prefix_len=prefix_len,
         gamma=gamma,
         actual_gamma=actual_gamma,
@@ -164,24 +186,20 @@ def compute_acceptance_result(
     if verification_inputs.actual_gamma <= 0:
         return AcceptanceResult(
             accepted_count=torch.zeros(
-                (verification_inputs.draft_probs_batch.shape[0],),
+                (verification_inputs.target_probs_batch.shape[0],),
                 dtype=torch.int64,
-                device=verification_inputs.draft_probs_batch.device,
+                device=verification_inputs.target_probs_batch.device,
             ),
-            selected_draft_p=verification_inputs.draft_probs_batch[:, 0:0, 0],
+            selected_draft_p=verification_inputs.selected_draft_p,
             selected_target_p=verification_inputs.target_probs_batch[:, 0:0, 0],
             accept_mask=torch.zeros(
-                (verification_inputs.draft_probs_batch.shape[0], 0),
+                (verification_inputs.target_probs_batch.shape[0], 0),
                 dtype=torch.bool,
-                device=verification_inputs.draft_probs_batch.device,
+                device=verification_inputs.target_probs_batch.device,
             ),
         )
 
-    selected_draft_p = torch.gather(
-        verification_inputs.draft_probs_batch,
-        2,
-        verification_inputs.draft_token_indices,
-    ).squeeze(-1)
+    selected_draft_p = verification_inputs.selected_draft_p
     selected_target_p = torch.gather(
         verification_inputs.target_probs_batch,
         2,
@@ -349,6 +367,7 @@ def verify_draft_sequence(
     transfer_mode: Literal["none", "serial", "batch_before"] = "serial",
     send_reject_message: bool = True,
     draft_probs_override: Optional[torch.Tensor] = None,
+    draft_topk_history: Optional[TopKProposalHistory] = None,
     decoding_metrics: Optional[DecodingMetrics] = None,
 ) -> Tuple[int, int]:
     draft_device = draft_model_cache.device
@@ -368,12 +387,14 @@ def verify_draft_sequence(
         prefix_len=prefix_len,
         gamma=gamma,
         draft_probs_override=draft_probs_override,
+        draft_topk_history=draft_topk_history,
     )
     if verification_inputs.actual_gamma <= 0:
         return 0, prefix_len - 1
 
     draft_probs_batch = verification_inputs.draft_probs_batch
     target_probs_batch = verification_inputs.target_probs_batch
+    selected_draft_p = verification_inputs.selected_draft_p
     invalid_draft_probs = log_prob_tensor_if_invalid(
         draft_probs_batch,
         "verify_draft_sequence.draft_probs_batch",
@@ -384,14 +405,9 @@ def verify_draft_sequence(
     )
 
     if transfer_mode == "batch_before" and comm_simulator is not None:
-        batch_probs = torch.gather(
-            draft_probs_batch,
-            2,
-            verification_inputs.draft_token_indices,
-        ).squeeze(-1)
         comm_simulator.transfer(
             verification_inputs.draft_tokens,
-            batch_probs,
+            selected_draft_p,
             comm_link,
         )
 
@@ -434,9 +450,10 @@ def verify_draft_sequence(
             accepted_counts
             + (1 if accepted_counts < verification_inputs.actual_gamma else 0)
         ):
+            token_prob = selected_draft_p[:, i]
             comm_simulator.transfer(
                 verification_inputs.draft_token_indices[0, i, 0],
-                draft_probs_batch[:, i, :].squeeze(0),
+                token_prob,
                 comm_link,
             )
 
@@ -456,6 +473,7 @@ def verify_draft_sequence_result(
     *,
     draft_probs_override: Optional[torch.Tensor] = None,
     draft_probs_batch_override: Optional[torch.Tensor] = None,
+    draft_topk_history: Optional[TopKProposalHistory] = None,
     r: Optional[torch.Tensor] = None,
 ) -> Tuple[VerificationInputs, AcceptanceResult]:
     verification_inputs = prepare_verification_inputs(
@@ -466,6 +484,7 @@ def verify_draft_sequence_result(
         gamma=gamma,
         draft_probs_override=draft_probs_override,
         draft_probs_batch_override=draft_probs_batch_override,
+        draft_topk_history=draft_topk_history,
     )
     acceptance_result = compute_acceptance_result(verification_inputs, r=r)
     return verification_inputs, acceptance_result
@@ -492,6 +511,7 @@ def resolve_stage_verification(
         gamma=gamma,
         draft_probs_override=draft_probs_override,
         draft_probs_batch_override=draft_probs_batch_override,
+        draft_topk_history=draft_topk_history,
     )
     accepted_count, n, all_accepted = materialize_acceptance(
         verification_inputs, acceptance_result

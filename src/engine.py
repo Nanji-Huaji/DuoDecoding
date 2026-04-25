@@ -858,20 +858,11 @@ class Decoding(Register, ABC):
             rebuilt_draft_probs = None
             rebuilt_draft_meta = None
             if proposal_top_k is not None:
-                if hasattr(approx_model_cache, "generate_with_rebuilt_topk_metadata"):
-                    x, rebuilt_draft_probs, rebuilt_draft_meta = (
-                        approx_model_cache.generate_with_rebuilt_topk_metadata(
-                            prefix.to(draft_device),
-                            current_gamma,
-                            proposal_top_k,
-                        )
-                    )
-                else:
-                    x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                        prefix.to(draft_device),
-                        current_gamma,
-                        proposal_top_k,
-                    )
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    proposal_top_k,
+                )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
@@ -886,15 +877,15 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            this_step_accepted_tokens, n = verify_draft_sequence(
-                draft_model_cache=approx_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=current_gamma,
-                transfer_mode="none",
-                send_reject_message=False,
-                draft_probs_override=(
+            verify_kwargs = {
+                "draft_model_cache": approx_model_cache,
+                "target_model_cache": target_model_cache,
+                "x": x,
+                "prefix_len": prefix_len,
+                "gamma": current_gamma,
+                "transfer_mode": "none",
+                "send_reject_message": False,
+                "draft_probs_override": (
                     None
                     if rebuilt_draft_probs is None
                     else torch.cat(
@@ -905,7 +896,14 @@ class Decoding(Register, ABC):
                         dim=1,
                     )
                 ),
+            }
+            draft_topk_history = stage_topk_proposal_history(
+                rebuilt_draft_meta,
+                current_gamma,
             )
+            if draft_topk_history is not None:
+                verify_kwargs["draft_topk_history"] = draft_topk_history
+            this_step_accepted_tokens, n = verify_draft_sequence(**verify_kwargs)
             _log_sd_alignment_snapshot(
                 "verify_exit",
                 prefix_len,
@@ -1079,20 +1077,11 @@ class Decoding(Register, ABC):
             rebuilt_draft_probs = None
             rebuilt_draft_meta = None
             if proposal_top_k is not None:
-                if hasattr(approx_model_cache, "generate_with_rebuilt_topk_metadata"):
-                    x, rebuilt_draft_probs, rebuilt_draft_meta = (
-                        approx_model_cache.generate_with_rebuilt_topk_metadata(
-                            prefix.to(draft_device),
-                            current_gamma,
-                            proposal_top_k,
-                        )
-                    )
-                else:
-                    x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                        prefix.to(draft_device),
-                        current_gamma,
-                        proposal_top_k,
-                    )
+                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
+                    prefix.to(draft_device),
+                    current_gamma,
+                    proposal_top_k,
+                )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
             draft_forward_times += current_gamma
@@ -1106,17 +1095,17 @@ class Decoding(Register, ABC):
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            this_step_accepted_tokens, n = verify_draft_sequence(
-                draft_model_cache=approx_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=current_gamma,
-                comm_simulator=comm_simulator,
-                comm_link="edge_cloud",
-                transfer_mode="serial",
-                send_reject_message=True,
-                draft_probs_override=(
+            verify_kwargs = {
+                "draft_model_cache": approx_model_cache,
+                "target_model_cache": target_model_cache,
+                "x": x,
+                "prefix_len": prefix_len,
+                "gamma": current_gamma,
+                "comm_simulator": comm_simulator,
+                "comm_link": "edge_cloud",
+                "transfer_mode": "serial",
+                "send_reject_message": True,
+                "draft_probs_override": (
                     None
                     if rebuilt_draft_probs is None
                     else torch.cat(
@@ -1127,7 +1116,14 @@ class Decoding(Register, ABC):
                         dim=1,
                     )
                 ),
+            }
+            draft_topk_history = stage_topk_proposal_history(
+                rebuilt_draft_meta,
+                current_gamma,
             )
+            if draft_topk_history is not None:
+                verify_kwargs["draft_topk_history"] = draft_topk_history
+            this_step_accepted_tokens, n = verify_draft_sequence(**verify_kwargs)
 
             total_accepted_tokens += this_step_accepted_tokens
 

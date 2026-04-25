@@ -67,6 +67,66 @@ def concat_topk_proposal_history(
     )
 
 
+def build_topk_proposal_history_from_probs(
+    probs: torch.Tensor,
+    top_k: Optional[int],
+) -> Optional[TopKProposalHistory]:
+    if probs.numel() == 0:
+        return None
+
+    if probs.dim() == 2:
+        probs = probs.unsqueeze(1)
+
+    steps = []
+    for step_idx in range(probs.shape[1]):
+        step = build_topk_proposal_history_step(probs[:, step_idx, :], top_k)
+        if step is None:
+            return None
+        steps.append(step)
+    return concat_topk_proposal_history(steps)
+
+
+def build_stage_prefix_topk_history(
+    probs: torch.Tensor,
+    top_k: Optional[int],
+) -> Optional[TopKProposalHistory]:
+    return build_topk_proposal_history_from_probs(probs, top_k)
+
+
+def merge_stage_topk_histories(
+    prefix_history: Optional[TopKProposalHistory],
+    draft_history: Optional[TopKProposalHistory],
+) -> Optional[TopKProposalHistory]:
+    if prefix_history is None:
+        return draft_history
+    if draft_history is None:
+        return prefix_history
+    if prefix_history.vocab_size != draft_history.vocab_size:
+        raise ValueError(
+            "Cannot merge top-k histories with different vocab sizes: "
+            f"{prefix_history.vocab_size} != {draft_history.vocab_size}"
+        )
+    if prefix_history.topk_indices.shape[-1] != draft_history.topk_indices.shape[-1]:
+        raise ValueError(
+            "Cannot merge top-k histories with different top-k widths: "
+            f"{prefix_history.topk_indices.shape[-1]} != {draft_history.topk_indices.shape[-1]}"
+        )
+
+    return TopKProposalHistory(
+        topk_indices=torch.cat(
+            (prefix_history.topk_indices, draft_history.topk_indices), dim=1
+        ),
+        topk_probs=torch.cat(
+            (prefix_history.topk_probs, draft_history.topk_probs), dim=1
+        ),
+        tail_uniform_prob=torch.cat(
+            (prefix_history.tail_uniform_prob, draft_history.tail_uniform_prob),
+            dim=1,
+        ),
+        vocab_size=prefix_history.vocab_size,
+    )
+
+
 def stage_topk_proposal_history(
     history: Optional[TopKProposalHistory],
     gamma: int,
@@ -80,6 +140,24 @@ def stage_topk_proposal_history(
         tail_uniform_prob=history.tail_uniform_prob[:, :gamma, :],
         vocab_size=history.vocab_size,
     )
+
+
+def query_topk_proposal_token_probs(
+    history: TopKProposalHistory,
+    draft_tokens: torch.Tensor,
+) -> torch.Tensor:
+    if draft_tokens.numel() == 0:
+        return draft_tokens.to(dtype=history.topk_probs.dtype)
+
+    topk_indices = history.topk_indices[:, : draft_tokens.shape[1], :]
+    topk_probs = history.topk_probs[:, : draft_tokens.shape[1], :]
+    tail_uniform_prob = history.tail_uniform_prob[:, : draft_tokens.shape[1], :]
+
+    token_matches = topk_indices == draft_tokens.unsqueeze(-1)
+    match_mask = token_matches.any(dim=-1)
+    match_index = token_matches.to(torch.int64).argmax(dim=-1, keepdim=True)
+    gathered_topk_probs = torch.gather(topk_probs, 2, match_index).squeeze(-1)
+    return torch.where(match_mask, gathered_topk_probs, tail_uniform_prob.squeeze(-1))
 
 
 def stage_prob_history(

@@ -512,6 +512,97 @@ class KVCacheModel:
         rebuilt_history_meta = concat_topk_proposal_history(proposal_steps)
         return torch.cat([x] + new_tokens, dim=1), rebuilt_history, rebuilt_history_meta
 
+    def _sample_from_topk_proposal(
+        self,
+        probs: torch.Tensor,
+        proposal_top_k: Optional[int],
+    ) -> torch.Tensor:
+        proposal_meta = build_topk_proposal_history_step(probs, proposal_top_k)
+        if proposal_meta is None:
+            token = sample(probs)
+            return token.to(torch.long) if token.dtype != torch.long else token
+
+        topk_indices = proposal_meta.topk_indices[:, 0, :]
+        topk_probs = proposal_meta.topk_probs[:, 0, :]
+        tail_uniform_prob = proposal_meta.tail_uniform_prob[:, 0, :]
+        topk_mass = topk_probs.sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
+        tail_mass = (1.0 - topk_mass).clamp_min(0.0)
+        region_probs = torch.cat((topk_mass, tail_mass), dim=-1)
+        region_choice = torch.multinomial(region_probs, num_samples=1)
+
+        token = torch.empty(
+            (probs.shape[0], 1),
+            dtype=torch.long,
+            device=probs.device,
+        )
+
+        topk_rows = region_choice.squeeze(-1) == 0
+        if topk_rows.any():
+            normalized_topk = topk_probs[topk_rows] / topk_mass[topk_rows].clamp_min(1e-12)
+            topk_pick = torch.multinomial(normalized_topk, num_samples=1)
+            token[topk_rows] = torch.gather(topk_indices[topk_rows], 1, topk_pick)
+
+        tail_rows = ~topk_rows
+        if tail_rows.any():
+            tail_topk_indices = topk_indices[tail_rows]
+            batch_size, _, = tail_topk_indices.shape
+            vocab_size = probs.shape[-1]
+            candidate_mask = torch.ones(
+                (batch_size, vocab_size),
+                dtype=torch.bool,
+                device=probs.device,
+            )
+            candidate_mask.scatter_(1, tail_topk_indices, False)
+            candidate_weights = candidate_mask.to(probs.dtype)
+            tail_pick = torch.multinomial(candidate_weights, num_samples=1)
+            token[tail_rows] = tail_pick
+
+        return token
+
+    def generate_with_topk_metadata_only(
+        self,
+        input: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+    ):
+        x = input
+        if x.dtype != torch.long:
+            x = x.to(torch.long)
+
+        if gamma == 0:
+            return x, None
+
+        proposal_steps = []
+        new_tokens: list[torch.Tensor] = []
+
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(
+            q, "KVCacheModel.generate_with_topk_metadata_only.q"
+        )
+        proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+        if proposal_meta is not None:
+            proposal_steps.append(proposal_meta)
+        next_tok = self._sample_from_topk_proposal(q, proposal_top_k)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens.append(next_tok)
+
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
+            self._raise_if_invalid_probs(
+                q, "KVCacheModel.generate_with_topk_metadata_only.q"
+            )
+            proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+            if proposal_meta is not None:
+                proposal_steps.append(proposal_meta)
+            next_tok = self._sample_from_topk_proposal(q, proposal_top_k)
+            if next_tok.dtype != torch.long:
+                next_tok = next_tok.to(torch.long)
+            new_tokens.append(next_tok)
+
+        rebuilt_history_meta = concat_topk_proposal_history(proposal_steps)
+        return torch.cat([x] + new_tokens, dim=1), rebuilt_history_meta
+
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:
         return self._generate_with_kvcache(input, gamma)

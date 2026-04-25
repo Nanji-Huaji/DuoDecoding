@@ -11,6 +11,7 @@ class VerificationInputs:
     target_probs_batch: torch.Tensor
     draft_tokens: torch.Tensor
     draft_token_indices: torch.Tensor
+    selected_draft_p: torch.Tensor
     prefix_len: int
     gamma: int
     actual_gamma: int
