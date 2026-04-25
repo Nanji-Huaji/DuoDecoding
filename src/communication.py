@@ -423,13 +423,18 @@ class CommunicationSimulator:
             and prob.numel() > 0
             and compressed_k is not None
         ):
-            # 计算压缩后的概率分布大小，假设传输时只传输非零部分
             if prob.dim() == 3:
                 seq_length = prob.shape[1]
             else:
                 seq_length = 1
-            prob_size = compressed_k * prob.element_size() * seq_length
-            total_bytes = token_bytes + prob_size + self.protocol_overhead_bytes
+            compressed_payload_bytes = self._compressed_topk_payload_bytes(
+                compressed_k=compressed_k,
+                seq_length=seq_length,
+                prob_element_size=prob.element_size(),
+            )
+            total_bytes = (
+                token_bytes + compressed_payload_bytes + self.protocol_overhead_bytes
+            )
 
         # 计算 topk 和 draft_len
         topk_val = 0
@@ -447,6 +452,16 @@ class CommunicationSimulator:
         )
 
         return transfer_time
+
+    @staticmethod
+    def _compressed_topk_payload_bytes(
+        *,
+        compressed_k: int,
+        seq_length: int,
+        prob_element_size: int,
+        index_element_size: int = 4,
+    ) -> int:
+        return seq_length * compressed_k * (prob_element_size + index_element_size)
 
     def send_reject_message(
         self, linktype: Literal["edge_cloud", "edge_end", "cloud_end"]

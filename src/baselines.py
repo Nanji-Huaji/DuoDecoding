@@ -120,7 +120,15 @@ def _simulate_topk_prob_transfer(
 
     prob_bytes = torch.tensor([], dtype=prob_dtype).element_size()
     effective_topk = transfer_top_k if transfer_top_k is not None and transfer_top_k > 0 else 0
-    total_bytes = draft_len * effective_topk * prob_bytes
+    if hasattr(comm_simulator, "_compressed_topk_payload_bytes"):
+        total_bytes = comm_simulator._compressed_topk_payload_bytes(
+            compressed_k=effective_topk,
+            seq_length=draft_len,
+            prob_element_size=prob_bytes,
+        )
+    else:
+        index_bytes = 4
+        total_bytes = draft_len * effective_topk * (prob_bytes + index_bytes)
     comm_simulator.simulate_transfer(
         total_bytes,
         cast(str, link_type),
