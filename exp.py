@@ -717,7 +717,7 @@ edge_cloud_bandwidth = [
 
 batch_delay_values = [50e-3]
 gamma1_values = [5]
-gamma2_values = [10]
+gamma2_values = [5]
 
 for little_model, draft_model, target_model in (
     llama_series,
@@ -725,17 +725,17 @@ for little_model, draft_model, target_model in (
     # vicuna_series,
     qwen_series,
     # # qwen_series_fp8,
-    # # gemma_3_it_series,
+    # gemma_3_it_series,
     # # qwen_series_large,
     # # llama_3_series,
     qwen_1_5_series,
 ):
     for dataset in (
         EvalDataset.mt_bench_noeval,
-        EvalDataset.humaneval,
-        EvalDataset.gsm8k,
+        # EvalDataset.humaneval,
+        # EvalDataset.gsm8k,
     ):
-        for mode in (EvalMode.cee_dssd, EvalMode.cee_dsd, EvalMode.cee_cuhlm):
+        for mode in filter(lambda mode: mode not in [], EvalMode):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     for gamma1 in gamma1_values:
@@ -775,7 +775,7 @@ for little_model, draft_model, target_model in (
                                 use_rl_adapter=True,
                                 disable_rl_update=True,
                                 use_early_stopping=False,
-                                eval_data_num=80,
+                                eval_data_num=15,
                             )
                             config_to_run.append(config)
 
