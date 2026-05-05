@@ -59,6 +59,7 @@ from .utils import (
     norm_logits,
     rebuild_topk_uniform_probs,
     sample,
+    skip_token_validation,
 )
 
 
@@ -143,6 +144,8 @@ def _validate_token_range(
     vocab_size: int,
     label: str,
 ) -> None:
+    if skip_token_validation():
+        return
     if tokens.numel() == 0:
         return
     if tokens.dtype != torch.long:

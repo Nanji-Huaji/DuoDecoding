@@ -25,6 +25,10 @@ def numeric_debug_checks_enabled() -> bool:
     return _env_flag_enabled("DUODEC_DEBUG_NUMERICS")
 
 
+def skip_token_validation() -> bool:
+    return _env_flag_enabled("DUODEC_SKIP_VALIDATE")
+
+
 def _log_limited_warning(label: str, message: str, max_warnings: int = 5) -> None:
     count = _LIMITED_WARNING_COUNTS.get(label, 0)
     _LIMITED_WARNING_COUNTS[label] = count + 1

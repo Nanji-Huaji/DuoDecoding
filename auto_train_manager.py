@@ -420,6 +420,7 @@ class TrainingManager:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_ids
         env["PYTHONUNBUFFERED"] = "1"
+        env["DUODEC_SKIP_VALIDATE"] = "1"  # skip per-step token validation to avoid CPU-GPU sync
 
         print(
             f"[{datetime.now()}] 模型系列 {self.model_series_name} 需要 {required_gpu_count} 个GPU"
