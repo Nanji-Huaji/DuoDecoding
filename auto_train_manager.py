@@ -227,7 +227,7 @@ class TrainingManager:
             return 4
         elif total_size >= 35:  # 35B+需要3个GPU (例如 1.7B + 14B + 32B = 47.7B)
             return 3
-        elif total_size >= 15:  # 15B+需要2个GPU (例如 0.6B + 1.7B + 14B = 16.3B)
+        elif total_size >= 25:  # 25B+需要2个GPU (保守估计，A6000 49GB 可装下 ~25B)
             return 2
         else:
             return 1  # 默认单GPU
