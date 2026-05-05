@@ -2539,8 +2539,8 @@ class Baselines(Decoding):
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
+            step_end_time = time.time()
             if self.rl_adapter is not None:
-                step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = (
                     comm_simulator.edge_cloud_comm_time - step_comm_time_start
@@ -2779,10 +2779,6 @@ class Baselines(Decoding):
             # 第一层 speculative
             edge_end_comm_start = comm_simulator.edge_end_comm_time
 
-            # x = little_model_cache.generate(
-            #     prefix.to(little_device), self.args.gamma2
-            # )
-
             self.small_draft_adapter.reset_step()
             adapter = self.small_draft_adapter
             assert adapter.device != torch.device("cpu")
@@ -2810,9 +2806,6 @@ class Baselines(Decoding):
                 latency = comm_simulator.ntt_edge_end
                 acc_probs = getattr(self.small_draft_adapter, "step_acc_probs", [])
 
-                if q is None:
-                    raise ValueError("Logits q should not be None for RL adapter")
-
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.little_rl_adapter.select_config(
                     bandwidth, latency, acc_probs, little_entropy, task_name
@@ -2824,6 +2817,7 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
+            # Pre-launch draft verification on GPU (overlaps with CPU code below)
             _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
 
             little_model_forward_times += actual_gamma2
@@ -2962,15 +2956,7 @@ class Baselines(Decoding):
             edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             step_start_time = time.time()
 
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
-
-            # x = draft_model_cache.generate(
-            #     prefix.to(draft_device), self.args.gamma1
-            # )
-
+            # Pre-launch GPU draft generation (overlaps with CPU comm sim below)
             self.draft_target_adapter.reset_step()
             adapter = self.draft_target_adapter
             assert adapter.device != torch.device("cpu")
@@ -2981,6 +2967,18 @@ class Baselines(Decoding):
                 current_proposal_top_k,
                 adapter=adapter,
             )
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
+
+            actual_gamma1 = x.shape[1] - prefix.shape[1]
+
+            queuing_time += batch_delay
+            # Pre-launch target forward on GPU (overlaps with RL/entropy CPU code below)
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             if q is None:
                 raise ValueError(
@@ -3009,11 +3007,6 @@ class Baselines(Decoding):
                 transfer_top_k = next_topk
                 self.draft_target_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
-
-            actual_gamma1 = x.shape[1] - prefix.shape[1]
-
-            queuing_time += batch_delay
-            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
 
             draft_model_forward_times += actual_gamma1
             if not is_draft_accepted_last_step:
@@ -3886,11 +3879,7 @@ class Baselines(Decoding):
             new_generated_token_layer1 = prefix[:, prefix_len:]
 
             # --- Layer 2: Draft -> Target (Serial) ---
-
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
+            # Pre-launch GPU work (draft + target) to overlap with CPU comm simulation
 
             x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
@@ -3901,8 +3890,14 @@ class Baselines(Decoding):
             )
 
             queuing_time += batch_delay
-            # Sync with Target Model
+            # Sync with Target Model (runs on GPU, overlaps with CPU comm below)
             _ = target_model_cache.generate(x.to(target_device), 1)
+
+            # Communication simulation (pure CPU): overlaps with target GPU forward above
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
 
             draft_model_forward_times += self.args.gamma1
             target_model_forward_times += 1
@@ -3944,12 +3939,30 @@ class Baselines(Decoding):
                     "output_device": draft_device,
                     "draft_probs_override": cast(torch.Tensor, draft_stage_probs),
                 }
-                draft_topk_history = stage_topk_proposal_history(
-                    draft_rebuilt_meta,
+                prefix_topk_history_dssd = None
+                if new_generated_token_layer1.shape[1] > 0:
+                    prefix_prob_rows = draft_model_cache.prob_history[
+                        :,
+                        prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
+                        :,
+                    ]
+                    prefix_topk_history_dssd = build_stage_prefix_topk_history(
+                        prefix_prob_rows,
+                        current_proposal_top_k,
+                    )
+                draft_stage_topk_history = merge_stage_topk_histories(
+                    prefix_topk_history_dssd,
+                    stage_topk_proposal_history(
+                        draft_rebuilt_meta,
+                        self.args.gamma1,
+                    ),
+                )
+                draft_stage_topk_history = stage_topk_proposal_history(
+                    draft_stage_topk_history,
                     total_gamma_layer2,
                 )
-                if draft_topk_history is not None:
-                    draft_stage_kwargs["draft_topk_history"] = draft_topk_history
+                if draft_stage_topk_history is not None:
+                    draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
                 (
                     draft_accepted_this_iter,
                     n2,
@@ -4166,11 +4179,12 @@ class Baselines(Decoding):
                     need_topk_metadata=False,
                 )[:2]
                 little_topk_history = None
-            # Transfer all tokens
-            comm_simulator.transfer(x, None, "edge_end")
 
-            # Sync
+            # Launch draft verification on GPU immediately (overlaps with CPU comm below)
             _ = draft_model_cache.generate(x.to(draft_device), 1)
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+            comm_simulator.transfer(x, None, "edge_end")
 
             little_model_forward_times += self.args.gamma2
             draft_model_forward_times += 1
@@ -4242,11 +4256,7 @@ class Baselines(Decoding):
             new_generated_token_layer1 = prefix[:, prefix_len:]
 
             # --- Layer 2: Draft -> Target (Parallel) ---
-
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
+            # Pre-launch GPU work (draft) to overlap with CPU comm simulation
 
             if current_proposal_top_k is not None and hasattr(
                 draft_model_cache, "generate_with_topk_metadata_only"
@@ -4266,12 +4276,18 @@ class Baselines(Decoding):
                 )[:2]
                 draft_topk_history = None
 
-            # Transfer generated tokens by draft model
+            # Transfer generated tokens by draft model (CPU: overlaps with GPU above)
             speculated_tokens = x[:, -self.args.gamma1 :]
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
             comm_simulator.transfer(speculated_tokens, None, "edge_cloud")
 
             queuing_time += batch_delay
-            # Sync
+            # Sync with Target Model (runs on GPU while CPU does verification prep below)
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             draft_model_forward_times += self.args.gamma1
