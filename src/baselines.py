@@ -104,7 +104,7 @@ def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tens
         return tokens
     if tokens.dtype != torch.long:
         tokens = tokens.to(torch.long)
-    return tokens.to("cpu", non_blocking=False).to(device, non_blocking=False)
+    return tokens.to("cpu", non_blocking=False).to(device, non_blocking=True)
 
 
 def _simulate_topk_prob_transfer(
