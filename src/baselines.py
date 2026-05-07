@@ -306,12 +306,16 @@ class Baselines(Decoding):
             "adaptive_tridecoding",
             "cee_sd",
             "cee_cuhlm",
+            "cee_dsd",
+            "cee_dssd",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
         }
         uses_little_rl = eval_mode in {
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_dsd",
+            "cee_dssd",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
         }
@@ -445,7 +449,7 @@ class Baselines(Decoding):
             if hasattr(self, "draft_model"):
                 self.acc_head.to(self.draft_model.device)
             self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
-        elif self.args.eval_mode in ["adaptive_tridecoding", "cee_cuhlm"]:
+        elif self.args.eval_mode in ["adaptive_tridecoding", "cee_cuhlm", "cee_dsd", "cee_dssd"]:
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
@@ -657,6 +661,9 @@ class Baselines(Decoding):
 
         idx: int = 0
 
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
             prefix = _ensure_token_shape(prefix, label="dssd.prefix")
@@ -678,9 +685,11 @@ class Baselines(Decoding):
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
                 queuing_time += batch_delay
+                t0 = time.time()
                 _ = target_model_cache.generate(
                     _move_token_tensor(prefix, target_device), 1
                 )
+                target_comp_time += time.time() - t0
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
@@ -695,6 +704,7 @@ class Baselines(Decoding):
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             rebuilt_draft_probs = None
             rebuilt_draft_meta = None
+            t0 = time.time()
             if current_proposal_top_k is not None:
                 x, rebuilt_draft_probs, rebuilt_draft_meta = (
                     approx_model_cache.generate_with_rebuilt_topk_metadata(
@@ -707,6 +717,7 @@ class Baselines(Decoding):
                 x = approx_model_cache.generate(
                     _move_token_tensor(prefix, draft_device), current_gamma
                 )
+            draft_comp_time += time.time() - t0
             x = _ensure_token_shape(x, label="dssd.generated_x")
             _validate_token_range(
                 x, vocab_size=self.vocab_size, label="dssd.generated_x"
@@ -729,9 +740,9 @@ class Baselines(Decoding):
             comm_simulator.transfer(draft_tokens, draft_token_probs, "edge_cloud")
 
             queuing_time += batch_delay
+            t0 = time.time()
             _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
-
-            target_forward_times += 1
+            target_comp_time += time.time() - t0
 
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
@@ -859,6 +870,8 @@ class Baselines(Decoding):
         )
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -961,6 +974,9 @@ class Baselines(Decoding):
 
         idx: int = 0
 
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             idx += 1
 
@@ -981,7 +997,9 @@ class Baselines(Decoding):
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
                 queuing_time += batch_delay
+                t0 = time.time()
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
+                target_comp_time += time.time() - t0
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
@@ -996,6 +1014,7 @@ class Baselines(Decoding):
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             rebuilt_draft_probs = None
             rebuilt_draft_meta = None
+            t0 = time.time()
             if current_proposal_top_k is not None:
                 x, rebuilt_draft_probs, rebuilt_draft_meta = (
                     approx_model_cache.generate_with_rebuilt_topk_metadata(
@@ -1006,6 +1025,7 @@ class Baselines(Decoding):
                 )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            draft_comp_time += time.time() - t0
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -1025,10 +1045,11 @@ class Baselines(Decoding):
                 else approx_model_cache.prob_history[:, -(1 + current_gamma) : -1, :]
             )
             queuing_time += batch_delay
+            t0 = time.time()
             _ = target_model_cache.generate(x.to(target_device), 1)
+            target_comp_time += time.time() - t0
 
             target_forward_times += 1
-
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
@@ -1151,6 +1172,8 @@ class Baselines(Decoding):
         )
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -1262,6 +1285,9 @@ class Baselines(Decoding):
 
         is_accepted_last_step = False
 
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             loop_idx += 1
             prefix_len = prefix.shape[1]
@@ -1271,9 +1297,13 @@ class Baselines(Decoding):
                 comm_simulator.transfer(prefix, None, link_type="edge_cloud")
 
             # Sync
+            t0 = time.time()
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
+            draft_comp_time += time.time() - t0
             queuing_time += batch_delay
+            t0 = time.time()
             _ = target_model_cache.generate(x.to(target_device), 1)
+            target_comp_time += time.time() - t0
 
             # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
@@ -1436,6 +1466,8 @@ class Baselines(Decoding):
 
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = prefix.shape[1] - input_len
         metrics["draft_generated_tokens"] = draft_forward_times
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -2767,6 +2799,10 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
+        little_comp_time = 0.0
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             idx += 1
             step_start_time = time.time()
@@ -2782,6 +2818,7 @@ class Baselines(Decoding):
             self.small_draft_adapter.reset_step()
             adapter = self.small_draft_adapter
             assert adapter.device != torch.device("cpu")
+            t0 = time.time()
             x, little_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 _move_token_tensor(prefix, little_device),
@@ -2789,6 +2826,7 @@ class Baselines(Decoding):
                 current_proposal_top_k,
                 adapter=adapter,
             )
+            little_comp_time += time.time() - t0
 
             if q is None:
                 raise ValueError(
@@ -2818,7 +2856,9 @@ class Baselines(Decoding):
             actual_gamma2 = x.shape[1] - prefix_len
 
             # Pre-launch draft verification on GPU (overlaps with CPU code below)
+            t0 = time.time()
             _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
+            draft_comp_time += time.time() - t0
 
             little_model_forward_times += actual_gamma2
             draft_model_forward_times += 1
@@ -2960,6 +3000,7 @@ class Baselines(Decoding):
             self.draft_target_adapter.reset_step()
             adapter = self.draft_target_adapter
             assert adapter.device != torch.device("cpu")
+            t0 = time.time()
             x, draft_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 _move_token_tensor(prefix, draft_device),
@@ -2967,6 +3008,7 @@ class Baselines(Decoding):
                 current_proposal_top_k,
                 adapter=adapter,
             )
+            draft_comp_time += time.time() - t0
 
             # Communication simulation (pure CPU): overlaps with draft.generate GPU above
             if idx == 1:
@@ -2978,7 +3020,9 @@ class Baselines(Decoding):
 
             queuing_time += batch_delay
             # Pre-launch target forward on GPU (overlaps with RL/entropy CPU code below)
+            t0 = time.time()
             _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
+            target_comp_time += time.time() - t0
 
             if q is None:
                 raise ValueError(
@@ -3166,6 +3210,9 @@ class Baselines(Decoding):
         metrics["little_forward_times"] = little_model_forward_times
         metrics["draft_forward_times"] = draft_model_forward_times
         metrics["target_forward_times"] = target_model_forward_times
+        metrics["little_computation_time"] = little_comp_time
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["little_generated_tokens"] = total_little_model_generated_tokens
         metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
