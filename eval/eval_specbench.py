@@ -14,6 +14,7 @@ from few_shot_examples import get_few_shot_prompt
 
 from src.engine import Decoding
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 
 class EvalSpecbench(Decoding):
@@ -89,9 +90,7 @@ class EvalSpecbench(Decoding):
                 )
                 datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
                 data.append(datum)
-        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
-            data = data[: self.args.eval_data_num]
-        self.data = data
+        self.data = select_eval_data(data, self.args)
 
     def preprocess(self, input_text):
         task_map = {

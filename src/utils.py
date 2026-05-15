@@ -307,6 +307,22 @@ def parse_arguments():
         help="number of samples to evaluate.",
     )
     parser.add_argument(
+        "--run_full_dataset",
+        action="store_true",
+        help="Evaluate the full dataset instead of truncating to eval_data_num.",
+    )
+    parser.add_argument(
+        "--random_sample",
+        action="store_true",
+        help="Randomly sample eval_data_num examples instead of taking the first examples.",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=1234,
+        help="Random seed used when --random_sample is enabled.",
+    )
+    parser.add_argument(
         "--num_shots",
         type=int,
         default=0,
@@ -615,6 +631,8 @@ def parse_arguments():
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+    if args.run_full_dataset:
+        args.eval_data_num = None
 
     explicit_small_draft_acc_head = "--small_draft_acc_head_path" in cli_args
     explicit_draft_target_acc_head = "--draft_target_acc_head_path" in cli_args

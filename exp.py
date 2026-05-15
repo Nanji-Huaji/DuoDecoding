@@ -57,9 +57,13 @@ class ExpConfig(TypedDict):
     disable_rl_update: bool
     small_draft_threshold: float
     draft_target_threshold: float
+    uncertainty_threshold: float
     ntt_ms_edge_cloud: int | float
     ntt_ms_edge_end: int | float
     eval_dataset: EvalDataset
+    run_full_dataset: bool
+    random_sample: bool
+    sample_seed: int
     draft_model: str
     target_model: str
     little_model: str
@@ -106,8 +110,10 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.v
     --transfer_top_k {transfer_top_k} \
     --num_samples_per_task {num_samples_per_task} \
     --eval_data_num {eval_data_num} \
+    --sample_seed {sample_seed} \
     --small_draft_threshold {small_draft_threshold} \
     --draft_target_threshold {draft_target_threshold} \
+    --uncertainty_threshold {uncertainty_threshold} \
     --num_shots {num_shots} \
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
@@ -233,6 +239,10 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         )
     if config.get("dump_network_stats", False):
         cmd = add_args(cmd, "dump_network_stats")
+    if config.get("run_full_dataset", False):
+        cmd = add_args(cmd, "run_full_dataset")
+    if config.get("random_sample", False):
+        cmd = add_args(cmd, "random_sample")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -498,8 +508,9 @@ def create_config(
     edge_end_bandwidth: int | float = 100,
     edge_cloud_bandwidth: int | float = 100,
     cloud_end_bandwidth: int | float = 100,
-    small_draft_threshold: float = 0.8,
-    draft_target_threshold: float = 0.6,
+    small_draft_threshold: float = 0.3,
+    draft_target_threshold: float = 0.9,
+    uncertainty_threshold: float = 0.8,
     transfer_top_k: int = 300,
     gamma: int = 5,
     gamma1: int = 5,
@@ -510,6 +521,9 @@ def create_config(
     max_tokens: int = 128,
     use_early_stopping: bool = False,
     eval_dataset: str | EvalDataset = EvalDataset.mt_bench,
+    run_full_dataset: bool = False,
+    random_sample: bool = False,
+    sample_seed: int = 1234,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
@@ -558,8 +572,13 @@ def create_config(
         little_rl_path = ""
         little_rl_best_path = ""
 
-    # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
-    elif eval_mode_value in [EvalMode.ceesd.value, EvalMode.cee_cuhlm.value]:
+    # ceesd, cee_cuhlm, cee_dsd, cee_dssd 需要用到 ARP 和 RL Adapter
+    elif eval_mode_value in [
+        EvalMode.ceesd.value,
+        EvalMode.cee_cuhlm.value,
+        EvalMode.cee_dsd.value,
+        EvalMode.cee_dssd.value,
+    ]:
         # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
             small_draft_acc_head_path = resolve_acc_head_path(little_model, draft_model)
@@ -607,6 +626,9 @@ def create_config(
 
     return ExpConfig(
         eval_dataset=eval_dataset_value,
+        run_full_dataset=run_full_dataset,
+        random_sample=random_sample,
+        sample_seed=sample_seed,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
         eval_mode=eval_mode_value,
         edge_end_bandwidth=edge_end_bandwidth,
@@ -622,6 +644,7 @@ def create_config(
         max_tokens=max_tokens,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
+        uncertainty_threshold=uncertainty_threshold,
         exp_name=(
             f"{eval_mode_value}/{eval_dataset_name}/"
             f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms_{timestamp}"
@@ -716,8 +739,8 @@ edge_cloud_bandwidth = [
 ]
 
 batch_delay_values = [50e-3]
-gamma1_values = [5]
-gamma2_values = [5]
+gamma1_values = [3]  # 扫描最优值：draft→target 推测窗口
+gamma2_values = [3]  # 扫描最优值：little→draft 推测窗口
 
 for little_model, draft_model, target_model in (
     llama_series,
@@ -731,11 +754,21 @@ for little_model, draft_model, target_model in (
     qwen_1_5_series,
 ):
     for dataset in (
-        EvalDataset.mt_bench_noeval,
-        # EvalDataset.humaneval,
-        # EvalDataset.gsm8k,
+        EvalDataset.gsm8k,
+        # EvalDataset.cnndm,
     ):
-        for mode in filter(lambda mode: mode not in [], EvalMode):
+        for mode in filter(
+            lambda mode: mode
+            not in [
+                mode
+                for mode in EvalMode
+                if mode
+                not in [
+                    EvalMode.cee_cuhlm,
+                ]
+            ],
+            EvalMode,
+        ):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     for gamma1 in gamma1_values:
@@ -750,12 +783,12 @@ for little_model, draft_model, target_model in (
                                 edge_end_bandwidth=563,
                                 edge_cloud_bandwidth=edge_cloud_bw,
                                 cloud_end_bandwidth=edge_cloud_bw,
-                                small_draft_threshold=0.8,
-                                draft_target_threshold=0.8,
-                                transfer_top_k=1024,
-                                gamma1=gamma1,
-                                gamma2=gamma2,
-                                max_tokens=128,
+                                small_draft_threshold=0.6,
+                                draft_target_threshold=0.7,
+                                transfer_top_k=300,
+                                gamma1=gamma1 if mode != EvalMode.cee_cuhlm else 1,
+                                gamma2=gamma2 if mode != EvalMode.cee_cuhlm else 1,
+                                max_tokens=1024,
                                 num_shots=3,
                                 eval_dataset=dataset,
                                 draft_model=(
@@ -765,6 +798,7 @@ for little_model, draft_model, target_model in (
                                         EvalMode.ceesd,
                                         EvalMode.cee_cuhlm,
                                         EvalMode.cee_dsd,
+                                        EvalMode.cee_dssd,
                                         EvalMode.dssd,
                                         EvalMode.adaptive_decoding,
                                     ]
@@ -775,7 +809,10 @@ for little_model, draft_model, target_model in (
                                 use_rl_adapter=True,
                                 disable_rl_update=True,
                                 use_early_stopping=False,
-                                eval_data_num=15,
+                                eval_data_num=500,
+                                run_full_dataset=False,
+                                random_sample=True,
+                                sample_seed=1234,
                             )
                             config_to_run.append(config)
 

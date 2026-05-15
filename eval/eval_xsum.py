@@ -17,6 +17,7 @@ from rouge_score import rouge_scorer
 
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 decoding_metrics = get_empty_metrics()
 
@@ -70,12 +71,7 @@ class EvalXSum(Baselines):
             dataset = datasets.load_dataset("xsum", split="test")
             self.data = [dict(item) for item in dataset]
 
-            # Filter data if needed (e.g. for testing)
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                self.data = self.data[: self.args.eval_data_num]
+            self.data = select_eval_data(self.data, self.args)
 
             self.color_print(f"Loaded {len(self.data)} samples.", 3)
         except Exception as e:

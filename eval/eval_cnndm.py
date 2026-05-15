@@ -18,7 +18,7 @@ from rouge_score import rouge_scorer
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
 
-from utils import ExpPrint
+from utils import ExpPrint, select_eval_data
 
 decoding_metrics = get_empty_metrics()
 
@@ -26,6 +26,8 @@ decoding_metrics = get_empty_metrics()
 class EvalCNNDM(Baselines):
     WARMUP_ARTICLE_TOKENS = 256
     EVAL_ARTICLE_TOKENS = 1024
+    SUMMARY_MAX_TOKENS = 160
+    STOP_SEQUENCES = ["\nArticle:", "\nSummary:"]
 
     def __init__(self, args):
         super().__init__(args)
@@ -80,12 +82,7 @@ class EvalCNNDM(Baselines):
             dataset = datasets.load_dataset("cnn_dailymail", "3.0.0", split="test")
             self.data = [dict(item) for item in dataset]
 
-            # Filter data if needed (e.g. for testing)
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                self.data = self.data[: self.args.eval_data_num]
+            self.data = select_eval_data(self.data, self.args)
 
             self.color_print(f"Loaded {len(self.data)} samples.", 3)
         except Exception as e:
@@ -106,9 +103,15 @@ class EvalCNNDM(Baselines):
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs},
             ]
-            prompt = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            chat_template_kwargs = {
+                "tokenize": False,
+                "add_generation_prompt": True,
+            }
+            if "Qwen3" in str(self.args.target_model) or "Qwen3" in str(
+                self.args.draft_model
+            ):
+                chat_template_kwargs["enable_thinking"] = False
+            prompt = self.tokenizer.apply_chat_template(messages, **chat_template_kwargs)
         elif self.model_id == "gemma":
             messages = [
                 {"role": "user", "content": "You are a helpful assistant.\n" + qs}
@@ -134,6 +137,12 @@ class EvalCNNDM(Baselines):
         text = re.sub(
             r"^Here(?: is|'s) (?:a )?summary\s*:\s*", "", text, flags=re.IGNORECASE
         )
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"^<think>.*", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"^</think>\s*", "", text, flags=re.IGNORECASE)
+        for stop_sequence in self.STOP_SEQUENCES:
+            if stop_sequence in text:
+                text = text.split(stop_sequence, 1)[0]
         return text.strip()
 
     def truncate_article(self, text: str, max_tokens: int) -> str:
@@ -154,8 +163,12 @@ class EvalCNNDM(Baselines):
             use_stochastic_comm=self.args.use_stochastic_comm,
             ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
             ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-            use_early_stopping=self.args.use_early_stopping,
+            use_early_stopping=True,
+            stop_sequences=self.STOP_SEQUENCES,
         )
+
+        original_max_tokens = self.args.max_tokens
+        self.args.max_tokens = min(self.args.max_tokens, self.SUMMARY_MAX_TOKENS)
 
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_cnndm.jsonl"
@@ -352,7 +365,8 @@ class EvalCNNDM(Baselines):
 
             # Save summaries
             assert self.metrics_dumper is not None, "Metrics dumper is not initialized"
-            eval_result = self.metrics_dumper.get_filtered_dict(decoding_metrics)
+            eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
+            eval_result["accuracy"] = decoding_metrics["accuracy"]
 
             decoding_metrics_path = os.path.join(
                 self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"
@@ -361,6 +375,8 @@ class EvalCNNDM(Baselines):
             with open(decoding_metrics_path, "w") as f:
                 json.dump(eval_result, f, indent=4)
             self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
+
+        self.args.max_tokens = original_max_tokens
 
 
 if __name__ == "__main__":

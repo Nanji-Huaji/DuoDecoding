@@ -1,6 +1,23 @@
 from src.metrics import DecodingMetrics
 from src.metrics_dumper import ArgsLike
 import json
+import random
+
+
+def select_eval_data(data: list, args: ArgsLike) -> list:
+    if getattr(args, "run_full_dataset", False):
+        return data
+
+    eval_data_num = getattr(args, "eval_data_num", None)
+    if eval_data_num is None:
+        return data
+
+    sample_size = min(eval_data_num, len(data))
+    if getattr(args, "random_sample", False):
+        rng = random.Random(getattr(args, "sample_seed", 1234))
+        return rng.sample(data, sample_size)
+
+    return data[:sample_size]
 
 
 class ExpPrint:

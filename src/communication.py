@@ -1,7 +1,7 @@
 import logging
 import math
 import warnings
-from typing import List, Literal, Optional, Tuple, TypedDict, cast
+from typing import List, Literal, Optional, Tuple, TypedDict, cast, Protocol
 
 import torch
 
