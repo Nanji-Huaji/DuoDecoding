@@ -16,6 +16,7 @@ venv_docker/
 # Editors and local workspace files
 .idea/
 .vscode/
+.omo/
 .DS_Store
 
 # Temporary local files
@@ -75,6 +76,8 @@ results_*.json*
 /confidence_data.json
 /consistency_data.json
 experiment_results/*
+/notebooks/experiment_results_table.md
+/notebooks/*.pdf
 
 # Assets and resources
 /assets/
