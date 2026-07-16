@@ -71,9 +71,11 @@ class DDQNAgent:
         epsilon_min=0.01,
         buffer_size=5000,
         batch_size=32,
+        reward_scale=0.01,
         target_update_freq=20,
         device="cuda" if torch.cuda.is_available() else "cpu",
         name="RL-Agent",
+        init_seed: int | None = None,
     ):
         self.feature_dim = feature_dim
         self.action_dim = action_dim
@@ -83,18 +85,25 @@ class DDQNAgent:
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
         self.batch_size = batch_size
+        self.reward_scale = reward_scale
         self.target_update_freq = target_update_freq
         self.device = device
         self.update_count = 0
         self.name = name
+        self.init_seed = init_seed
+        self._random = random.Random(init_seed)
+        self.best_tps = -1.0
         self.reward_history = deque(maxlen=100)
 
-        self.policy_net = RecurrentQNetwork(feature_dim, action_dim, hidden_dim).to(
-            self.device
-        )
-        self.target_net = RecurrentQNetwork(feature_dim, action_dim, hidden_dim).to(
-            self.device
-        )
+        with torch.random.fork_rng(devices=[]):
+            if init_seed is not None:
+                torch.manual_seed(init_seed)
+            self.policy_net = RecurrentQNetwork(feature_dim, action_dim, hidden_dim).to(
+                self.device
+            )
+            self.target_net = RecurrentQNetwork(
+                feature_dim, action_dim, hidden_dim
+            ).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
@@ -104,8 +113,8 @@ class DDQNAgent:
         self.memory = deque(maxlen=buffer_size)
 
     def select_action(self, state_seq, training=True):
-        if training and random.random() < self.epsilon:
-            return random.randrange(self.action_dim)
+        if training and self._random.random() < self.epsilon:
+            return self._random.randrange(self.action_dim)
 
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state_seq).unsqueeze(0).to(self.device)
@@ -120,7 +129,7 @@ class DDQNAgent:
         if len(self.memory) < self.batch_size:
             return
 
-        batch = random.sample(self.memory, self.batch_size)
+        batch = self._random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
         # 核心修复: 确保在 enable_grad 环境下运行，因为调用者(推理循环)通常在 no_grad 下
@@ -131,7 +140,7 @@ class DDQNAgent:
             next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
             dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
 
-            rewards = rewards * 0.01
+            rewards = rewards * self.reward_scale
 
             with torch.no_grad():
                 next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
@@ -172,6 +181,8 @@ class DDQNAgent:
                 "epsilon": self.epsilon,
                 "update_count": self.update_count,
                 "model_series": model_series,
+                "init_seed": self.init_seed,
+                "best_tps": self.best_tps,
             },
             path,
         )
@@ -207,6 +218,14 @@ class DDQNAgent:
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
                 self.epsilon = checkpoint["epsilon"]
                 self.update_count = checkpoint.get("update_count", 0)
+                self.best_tps = checkpoint.get(
+                    "best_tps",
+                    float("inf") if os.path.basename(path) == "best.pth" else -1.0,
+                )
+                buffer_path = path + ".buffer"
+                if os.path.exists(buffer_path):
+                    with open(buffer_path, "rb") as f:
+                        self.memory.extend(pickle.load(f))
                 print(
                     f"Loaded LSTM-RL agent from {path}, series: {saved_series}, steps: {self.update_count}"
                 )
@@ -225,9 +244,17 @@ class RLNetworkAdapter:
         device="cuda",
         k_candidates=None,
         threshold_candidates=None,
+        init_seed: int | None = None,
+        init_strategy: str = "resume",
+        frozen=False,
+        epsilon_decay=0.9995,
+        reward_scale=0.01,
+        batch_size=32,
+        prefer_latest=False,
     ):
         self.args = args
         self.device = device
+        self.frozen = frozen
 
         # ==========================================
         # 核心修改 2: 状态定义变更 (时序特征)
@@ -262,6 +289,10 @@ class RLNetworkAdapter:
             seq_len=self.seq_len,
             device=device,
             name=agent_name,
+            init_seed=init_seed,
+            epsilon_decay=epsilon_decay,
+            reward_scale=reward_scale,
+            batch_size=batch_size,
         )
 
         self.max_bandwidth = 1000.0
@@ -273,13 +304,28 @@ class RLNetworkAdapter:
 
         self.best_tps = -1.0
 
-        # Ensure the directory for model_path exists
+        if init_strategy not in {"fresh", "resume"}:
+            raise ValueError(f"Unsupported RL initialization strategy: {init_strategy}")
+
         model_dir = os.path.dirname(self.model_path)
         if model_dir:
             os.makedirs(model_dir, exist_ok=True)
 
-        # 实验评估时默认加载最优模型
-        if os.path.exists(self.best_model_path):
+        existing_checkpoint = os.path.exists(self.best_model_path) or os.path.exists(
+            self.model_path
+        )
+        if init_strategy == "fresh" and existing_checkpoint:
+            raise FileExistsError(
+                f"Fresh RL initialization refuses to overwrite {self.model_path}"
+            )
+
+        if init_strategy == "fresh":
+            print(
+                f"[{agent_name}] Fresh deterministic initialization with seed {init_seed}"
+            )
+        elif prefer_latest and os.path.exists(self.model_path):
+            self.agent.load(self.model_path)
+        elif os.path.exists(self.best_model_path):
             self.agent.load(self.best_model_path)
         elif os.path.exists(self.model_path):
             self.agent.load(self.model_path)
@@ -297,6 +343,7 @@ class RLNetworkAdapter:
                 print(
                     f"[{agent_name}] No checkpoint found at {self.model_path} or {self.best_model_path}"
                 )
+        self.best_tps = self.agent.best_tps
 
     def _get_current_feature_vector(
         self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name
@@ -329,7 +376,7 @@ class RLNetworkAdapter:
         self.state_history.append(current_feat)
         state_seq = np.array(self.state_history)
 
-        if (
+        if not self.frozen and (
             self.last_state_seq is not None
             and self.last_action is not None
             and self.last_reward is not None
@@ -343,7 +390,9 @@ class RLNetworkAdapter:
             )
             self.agent.update()
 
-        action_idx = self.agent.select_action(state_seq, training=training)
+        action_idx = self.agent.select_action(
+            state_seq, training=training and not self.frozen
+        )
 
         topk_idx = action_idx // len(self.threshold_candidates)
         threshold_idx = action_idx % len(self.threshold_candidates)
@@ -351,22 +400,44 @@ class RLNetworkAdapter:
         selected_topk = self.topk_candidates[topk_idx]
         selected_threshold = self.threshold_candidates[threshold_idx]
 
-        self.last_state_seq = state_seq
-        self.last_action = action_idx
-        self.last_reward = None
+        if not self.frozen:
+            self.last_state_seq = state_seq
+            self.last_action = action_idx
+            self.last_reward = None
 
         return selected_topk, selected_threshold
 
     def step(self, reward: float):
+        if self.frozen:
+            return
         self.last_reward = reward
 
     def save(self, current_tps: float | None = None):
-        # 始终保存最新的模型
+        if self.frozen:
+            return
+        if (
+            self.last_state_seq is not None
+            and self.last_action is not None
+            and self.last_reward is not None
+        ):
+            self.agent.store_transition(
+                self.last_state_seq,
+                self.last_action,
+                self.last_reward,
+                self.last_state_seq,
+                done=True,
+            )
+            self.agent.update()
+            self.last_state_seq = None
+            self.last_action = None
+            self.last_reward = None
+        new_best = current_tps is not None and current_tps > self.best_tps
+        if new_best:
+            self.best_tps = current_tps
+        self.agent.best_tps = self.best_tps
         self.agent.save(self.model_path)
 
-        # 如果提供了 TPS 且是目前最好的，则保存为 _best.pth
-        if current_tps is not None and current_tps > self.best_tps:
-            self.best_tps = current_tps
+        if new_best:
             self.agent.save(self.best_model_path)
             print(
                 f"[{self.agent.name}] New Best TPS: {current_tps:.2f}! Saved to {self.best_model_path}"

@@ -328,6 +328,21 @@ def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
         )
 
 
+def compute_stage_reward(
+    tps_part: float,
+    generated_tokens: int,
+    accepted_tokens: int,
+    opportunistic: bool,
+) -> float:
+    if opportunistic:
+        return tps_part
+
+    reward = math.exp(min(tps_part, 100) / 20.0)
+    if generated_tokens > 1:
+        reward *= (accepted_tokens / generated_tokens) ** 2
+    return reward
+
+
 class Baselines(Decoding):
     """
     用于实验的方法。
@@ -346,6 +361,7 @@ class Baselines(Decoding):
             "adaptive_decoding",
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_sd_opportunistic",
             "cee_cuhlm",
             "cee_dsd",
             "cee_dssd",
@@ -355,25 +371,46 @@ class Baselines(Decoding):
         uses_little_rl = eval_mode in {
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_sd_opportunistic",
             "cee_dsd",
             "cee_dssd",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
         }
         if getattr(args, "use_rl_adapter", False):
+            checkpoint_root = getattr(
+                args, "rl_checkpoint_root", "checkpoints/rl_agents"
+            )
+            init_seed = getattr(args, "rl_init_seed", None)
+            init_strategy = getattr(args, "rl_init_strategy", "resume")
+            legacy_load_paths = eval_mode != "cee_sd_opportunistic"
+            opportunistic = eval_mode == "cee_sd_opportunistic"
+            little_prefers_latest = opportunistic and not getattr(
+                args, "disable_rl_update", False
+            )
+            epsilon_decay = getattr(args, "rl_epsilon_decay", None)
+            reward_scale = getattr(args, "rl_reward_scale", None)
+            batch_size = getattr(args, "rl_batch_size", None)
+            if epsilon_decay is None:
+                epsilon_decay = 0.95 if opportunistic else 0.9995
+            if reward_scale is None:
+                reward_scale = 1.0 if opportunistic else 0.01
+            if batch_size is None:
+                batch_size = 16 if opportunistic else 32
             if uses_main_rl:
                 main_spec = get_rl_agent_spec(
                     ROLE_MAIN,
                     little_model=getattr(args, "little_model", None),
                     draft_model=args.draft_model,
                     target_model=args.target_model,
+                    checkpoint_root=checkpoint_root,
                 )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "main_rl_path", main_spec.latest_path),
-                    best_model_path=getattr(
-                        args, "main_rl_best_path", main_spec.best_path
-                    ),
+                    model_path=getattr(args, "main_rl_path", None)
+                    or main_spec.latest_path,
+                    best_model_path=getattr(args, "main_rl_best_path", None)
+                    or main_spec.best_path,
                     agent_name=main_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -386,8 +423,17 @@ class Baselines(Decoding):
                             )
                         ]
                         if path is not None
-                    ],
+                    ]
+                    if legacy_load_paths
+                    else [],
                     threshold_candidates=main_spec.threshold_candidates,
+                    init_seed=init_seed,
+                    init_strategy=init_strategy,
+                    frozen=opportunistic,
+                    prefer_latest=False,
+                    epsilon_decay=epsilon_decay,
+                    reward_scale=reward_scale,
+                    batch_size=batch_size,
                 )
             else:
                 self.rl_adapter = None
@@ -398,13 +444,14 @@ class Baselines(Decoding):
                     little_model=args.little_model,
                     draft_model=args.draft_model,
                     target_model=args.target_model,
+                    checkpoint_root=checkpoint_root,
                 )
                 self.little_rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "little_rl_path", little_spec.latest_path),
-                    best_model_path=getattr(
-                        args, "little_rl_best_path", little_spec.best_path
-                    ),
+                    model_path=getattr(args, "little_rl_path", None)
+                    or little_spec.latest_path,
+                    best_model_path=getattr(args, "little_rl_best_path", None)
+                    or little_spec.best_path,
                     agent_name=little_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -417,8 +464,20 @@ class Baselines(Decoding):
                             )
                         ]
                         if path is not None
-                    ],
+                    ]
+                    if legacy_load_paths
+                    else [],
                     threshold_candidates=little_spec.threshold_candidates,
+                    k_candidates=[1]
+                    if eval_mode == "cee_sd_opportunistic"
+                    else little_spec.topk_candidates,
+                    init_seed=None if init_seed is None else init_seed + 1,
+                    init_strategy=init_strategy,
+                    frozen=False,
+                    prefer_latest=little_prefers_latest,
+                    epsilon_decay=epsilon_decay,
+                    reward_scale=reward_scale,
+                    batch_size=batch_size,
                 )
             else:
                 self.little_rl_adapter = None
@@ -431,6 +490,14 @@ class Baselines(Decoding):
     def load_model(self):
         super().load_model()
         self.load_acc_head()
+
+    def _save_adaptive_rl_checkpoints(self, throughput: float) -> None:
+        if getattr(self.args, "disable_rl_update", False):
+            return
+        if self.rl_adapter is not None:
+            self.rl_adapter.save(throughput)
+        if self.little_rl_adapter is not None:
+            self.little_rl_adapter.save(throughput)
 
     def build_adaptive_tridecoding_caches(
         self,
@@ -490,7 +557,13 @@ class Baselines(Decoding):
             if hasattr(self, "draft_model"):
                 self.acc_head.to(self.draft_model.device)
             self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
-        elif self.args.eval_mode in ["adaptive_tridecoding", "cee_cuhlm", "cee_dsd", "cee_dssd"]:
+        elif self.args.eval_mode in [
+            "adaptive_tridecoding",
+            "cee_cuhlm",
+            "cee_dsd",
+            "cee_dssd",
+            "cee_sd_opportunistic",
+        ]:
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
@@ -2756,6 +2829,7 @@ class Baselines(Decoding):
         ntt_ms_edge_end=1,
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
+        _opportunistic_first_stage: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if prefix.dtype != torch.long:
@@ -2845,6 +2919,27 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
+        cuhlm_uncertainty_sim: Optional[CUHLM] = None
+        if _opportunistic_first_stage:
+            _, little_uncertainty_threshold = self._select_cuhlm_stage_config(
+                stage="little_to_draft",
+                transfer_top_k=transfer_top_k,
+                uncertainty_threshold=getattr(
+                    self.args, "uncertainty_threshold", 0.8
+                ),
+            )
+            cuhlm_uncertainty_sim = CUHLM(
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.args.edge_end_bandwidth,
+                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                uncertainty_threshold=little_uncertainty_threshold,
+                vocab_size=self.vocab_size,
+                dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
+            )
+
         little_comp_time = 0.0
         draft_comp_time = 0.0
         target_comp_time = 0.0
@@ -2864,11 +2959,12 @@ class Baselines(Decoding):
             self.small_draft_adapter.reset_step()
             adapter = self.small_draft_adapter
             assert adapter.device != torch.device("cpu")
+            little_gamma = 1 if _opportunistic_first_stage else self.args.gamma2
             t0 = time.time()
             x, little_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 _move_token_tensor(prefix, little_device),
-                self.args.gamma2,
+                little_gamma,
                 current_proposal_top_k,
                 adapter=adapter,
             )
@@ -2892,7 +2988,12 @@ class Baselines(Decoding):
 
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.little_rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, little_entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    little_entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
                 # transfer_top_k = next_topk  # edge-end 通常不压缩
@@ -2901,54 +3002,101 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
-            # Pre-launch draft verification on GPU (overlaps with CPU code below)
-            t0 = time.time()
-            _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
-            draft_comp_time += time.time() - t0
-
             little_model_forward_times += actual_gamma2
-            draft_model_forward_times += 1
             total_little_model_generated_tokens += actual_gamma2
 
             n1: int = prefix_len + actual_gamma2 - 1
-
             little_accepted_this_iter = 0
-            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
-            if actual_gamma2 > 0:
+            little_all_accepted = True
+
+            skip_first_stage_draft = False
+            if _opportunistic_first_stage and actual_gamma2 > 0:
                 little_stage_probs = stage_prob_history(
                     little_model_cache,
                     prefix_len,
                     little_rebuilt_probs,
                 )
-                draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs,
-                    x,
-                    prefix_len,
-                    actual_gamma2,
+                assert cuhlm_uncertainty_sim is not None
+                if self.little_rl_adapter is not None:
+                    cuhlm_uncertainty_sim.uncertainty_threshold = float(
+                        self.small_draft_adapter.threshold
+                    )
+                little_token_id = int(x[:, prefix_len].item())
+                if little_model_cache.logits_history is None:
+                    raise ValueError(
+                        "Little model logits history is required for "
+                        "opportunistic CEE-SD"
+                    )
+                current_little_logits = little_model_cache.logits_history[
+                    :, prefix_len - 1, : self.vocab_size
+                ]
+                uncertainty = cuhlm_uncertainty_sim.calculate_uncertainty(
+                    current_little_logits,
+                    M=20,
+                    theta_max=2.0,
+                    draft_token=little_token_id,
                 )
-                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                should_transfer, _ = cuhlm_uncertainty_sim.determine_transfer_strategy(
+                    uncertainty,
+                    little_stage_probs[:, prefix_len - 1, : self.vocab_size],
+                )
+                skip_first_stage_draft = not should_transfer
 
-            if actual_gamma2 > 0:
-                (
-                    little_accepted_this_iter,
-                    n1,
-                    t,
-                    little_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=little_model_cache,
-                    verifier_cache=draft_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=actual_gamma2,
-                    output_device=little_device,
-                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
-                )
-            else:
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
+            if skip_first_stage_draft:
+                little_accepted_this_iter = actual_gamma2
+                n1 = prefix_len + actual_gamma2 - 1
                 little_all_accepted = True
+                t = torch.empty(
+                    (prefix.shape[0], 0), dtype=torch.long, device=little_device
+                )
+                comm_simulator.simulate_transfer(8, "edge_end")
+                comm_simulator.send_accept_message("edge_end")
+            else:
+                # Pre-launch draft verification on GPU (overlaps with CPU code below)
+                t0 = time.time()
+                _ = draft_model_cache.generate(
+                    _move_token_tensor(x, draft_device), 1
+                )
+                draft_comp_time += time.time() - t0
+                draft_model_forward_times += 1
+
+                # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+                if actual_gamma2 > 0:
+                    if little_stage_probs is None:
+                        little_stage_probs = stage_prob_history(
+                            little_model_cache,
+                            prefix_len,
+                            little_rebuilt_probs,
+                        )
+                    draft_tokens, draft_probs = collect_verification_payload(
+                        little_stage_probs,
+                        x,
+                        prefix_len,
+                        actual_gamma2,
+                    )
+                    comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+
+                if actual_gamma2 > 0:
+                    (
+                        little_accepted_this_iter,
+                        n1,
+                        t,
+                        little_all_accepted,
+                    ) = resolve_stage_verification(
+                        proposer_cache=little_model_cache,
+                        verifier_cache=draft_model_cache,
+                        x=x,
+                        prefix_len=prefix_len,
+                        gamma=actual_gamma2,
+                        output_device=little_device,
+                        draft_probs_override=cast(torch.Tensor, little_stage_probs),
+                    )
+                else:
+                    t = sample_accept_token(
+                        draft_model_cache.prob_history[:, -1, : self.vocab_size],
+                        output_device=little_device,
+                    )
+                    little_all_accepted = True
 
             total_little_model_accepted_tokens += little_accepted_this_iter
             little_accept_rate_history.append(
@@ -2974,12 +3122,12 @@ class Baselines(Decoding):
                 tps_part = little_accepted_this_iter / (
                     step_time + step_comm_time + 1e-9
                 )
-                reward = math.exp(min(tps_part, 100) / 20.0)
-
-                # 平滑的幂次惩罚
-                if actual_gamma2 > 1:
-                    acc_rate = little_accepted_this_iter / actual_gamma2
-                    reward *= acc_rate**2
+                reward = compute_stage_reward(
+                    tps_part=tps_part,
+                    generated_tokens=actual_gamma2,
+                    accepted_tokens=little_accepted_this_iter,
+                    opportunistic=_opportunistic_first_stage,
+                )
 
                 if not getattr(self.args, "disable_rl_update", False):
                     self.little_rl_adapter.step(reward)
@@ -3020,10 +3168,14 @@ class Baselines(Decoding):
 
             # 传输索引和 token t (一次 RTT)
             # 包含了 rejection overhead (如果发生) 和 probs (如果发生)
-            total_bytes = (
-                INT_SIZE + t.element_size() * t.numel() + prob_bytes + reject_overhead
-            )
-            comm_simulator.simulate_transfer(total_bytes, "edge_end")
+            if not skip_first_stage_draft:
+                total_bytes = (
+                    INT_SIZE
+                    + t.element_size() * t.numel()
+                    + prob_bytes
+                    + reject_overhead
+                )
+                comm_simulator.simulate_transfer(total_bytes, "edge_end")
 
             _validate_token_range(
                 t,
@@ -3091,12 +3243,17 @@ class Baselines(Decoding):
 
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, draft_entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    draft_entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 # 更新 top-k 压缩参数和 ARP 阈值
                 transfer_top_k = next_topk
                 self.draft_target_adapter.threshold = next_threshold
-            dra_overhead_time += time.time() - dra_start
+                dra_overhead_time += time.time() - dra_start
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1
@@ -3291,14 +3448,9 @@ class Baselines(Decoding):
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
 
-        if self.rl_adapter is not None:
-            dra_start = time.time()
-            self.rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
-        if self.little_rl_adapter is not None:
-            dra_start = time.time()
-            self.little_rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
+        dra_start = time.time()
+        self._save_adaptive_rl_checkpoints(metrics["throughput"])
+        metrics["dra_overhead_time"] += time.time() - dra_start
 
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
@@ -3312,6 +3464,33 @@ class Baselines(Decoding):
         )
 
         return prefix, metrics
+
+    @Register.register_decoding("cee_sd_opportunistic")
+    @torch.no_grad()
+    def cee_sd_opportunistic(
+        self,
+        prefix: torch.Tensor,
+        transfer_top_k: int | None = 300,
+        use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
+        ntt_ms_edge_cloud: float = 10,
+        ntt_ms_edge_end: float = 1,
+        use_early_stopping: bool = False,
+        stop_sequences: list[str] | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, DecodingMetrics]:
+        return self.adaptive_tridecoding(
+            prefix,
+            transfer_top_k=transfer_top_k,
+            use_precise_comm_sim=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            use_early_stopping=use_early_stopping,
+            stop_sequences=stop_sequences,
+            _opportunistic_first_stage=True,
+            **kwargs,
+        )
 
     # Two-stage CUHLM variant using uncertainty-gated acceptance on both layers.
     @Register.register_decoding("cee_cuhlm")

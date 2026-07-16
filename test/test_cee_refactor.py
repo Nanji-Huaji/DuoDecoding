@@ -530,6 +530,134 @@ class CeeRefactorTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(little_cache.rollback_calls), 1)
 
+    def test_cee_sd_opportunistic_skips_first_stage_draft_verify_when_no_transfer(self):
+        instance = self._make_instance("cee_sd_opportunistic")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        stage_calls = []
+
+        def fake_stage_verify(
+            *,
+            proposer_cache,
+            verifier_cache,
+            x,
+            prefix_len,
+            gamma,
+            output_device,
+            draft_probs_override=None,
+            draft_probs_batch_override=None,
+        ):
+            stage_calls.append(
+                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
+            )
+            return (
+                gamma,
+                prefix_len + gamma - 1,
+                torch.tensor([[1]], dtype=torch.long),
+                True,
+            )
+
+        class _NoTransferComm(_FakeCommSimulator):
+            def determine_transfer_strategy(self, uncertainty, current_probs):
+                return False, 0
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CommunicationSimulator", _NoTransferComm),
+            patch("src.baselines.PreciseCommunicationSimulator", _NoTransferComm),
+            patch("src.baselines.CUHLM", _NoTransferComm),
+            patch("src.baselines.PreciseCUHLM", _NoTransferComm),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=fake_stage_verify,
+            ),
+        ):
+            instance.cee_sd_opportunistic(prefix)
+
+        little_to_draft_calls = [
+            c for c in stage_calls if c[:2] == ("little", "draft")
+        ]
+        draft_to_target_calls = [
+            c for c in stage_calls if c[:2] == ("draft", "target")
+        ]
+        self.assertEqual(
+            little_to_draft_calls,
+            [],
+            "Draft must not be invoked for first-layer verification when "
+            "CUHLM uncertainty says no transfer",
+        )
+        self.assertGreater(
+            len(draft_to_target_calls),
+            0,
+            "Second Draft->Target stage must still run",
+        )
+
+    def test_cee_sd_opportunistic_calls_first_stage_draft_verify_when_transfer(self):
+        instance = self._make_instance("cee_sd_opportunistic")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        stage_calls = []
+
+        def fake_stage_verify(
+            *,
+            proposer_cache,
+            verifier_cache,
+            x,
+            prefix_len,
+            gamma,
+            output_device,
+            draft_probs_override=None,
+            draft_probs_batch_override=None,
+        ):
+            stage_calls.append(
+                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
+            )
+            return (
+                gamma,
+                prefix_len + gamma - 1,
+                torch.tensor([[1]], dtype=torch.long),
+                True,
+            )
+
+        class _TransferComm(_FakeCommSimulator):
+            def determine_transfer_strategy(self, uncertainty, current_probs):
+                return True, 2
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CommunicationSimulator", _TransferComm),
+            patch("src.baselines.PreciseCommunicationSimulator", _TransferComm),
+            patch("src.baselines.CUHLM", _TransferComm),
+            patch("src.baselines.PreciseCUHLM", _TransferComm),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=fake_stage_verify,
+            ),
+        ):
+            instance.cee_sd_opportunistic(prefix)
+
+        little_to_draft_calls = [
+            c for c in stage_calls if c[:2] == ("little", "draft")
+        ]
+        draft_to_target_calls = [
+            c for c in stage_calls if c[:2] == ("draft", "target")
+        ]
+        self.assertGreater(
+            len(little_to_draft_calls),
+            0,
+            "Draft must be invoked to verify the Little token when CUHLM "
+            "uncertainty says transfer",
+        )
+        self.assertGreater(
+            len(draft_to_target_calls),
+            0,
+            "Second Draft->Target stage must still run",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

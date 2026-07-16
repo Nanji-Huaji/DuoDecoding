@@ -544,6 +544,42 @@ def parse_arguments():
         help="The path of the best little RL adapter model.",
     )
     parser.add_argument(
+        "--rl_checkpoint_root",
+        type=str,
+        default="checkpoints/rl_agents",
+        help="Root directory used to resolve pair-specific RL checkpoints.",
+    )
+    parser.add_argument(
+        "--rl_init_seed",
+        type=int,
+        default=None,
+        help="Seed used for deterministic RL network initialization and exploration.",
+    )
+    parser.add_argument(
+        "--rl_init_strategy",
+        choices=["fresh", "resume"],
+        default="resume",
+        help="Initialize new RL agents or resume existing dedicated checkpoints.",
+    )
+    parser.add_argument(
+        "--rl_epsilon_decay",
+        type=float,
+        default=None,
+        help="Override the mode-specific RL epsilon decay default.",
+    )
+    parser.add_argument(
+        "--rl_reward_scale",
+        type=float,
+        default=None,
+        help="Override the mode-specific RL reward scale default.",
+    )
+    parser.add_argument(
+        "--rl_batch_size",
+        type=int,
+        default=None,
+        help="Override the mode-specific RL batch size default.",
+    )
+    parser.add_argument(
         "--disable_rl_update",
         action="store_true",
         help="Whether to disable RL adapter update (training).",
@@ -658,6 +694,7 @@ def parse_arguments():
             little_model=getattr(args, "little_model", None),
             draft_model=args.draft_model,
             target_model=args.target_model,
+            checkpoint_root=args.rl_checkpoint_root,
         )
         args.main_rl_path = main_spec.latest_path
         if getattr(args, "main_rl_best_path", None) is None:
@@ -675,6 +712,7 @@ def parse_arguments():
                 little_model=args.little_model,
                 draft_model=args.draft_model,
                 target_model=args.target_model,
+                checkpoint_root=args.rl_checkpoint_root,
             )
             args.little_rl_path = little_spec.latest_path
             if getattr(args, "little_rl_best_path", None) is None:

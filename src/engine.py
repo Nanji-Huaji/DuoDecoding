@@ -544,6 +544,7 @@ class Decoding(Register, ABC):
             "tridecoding",
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_sd_opportunistic",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
             "cee_cuhlm",
@@ -553,6 +554,7 @@ class Decoding(Register, ABC):
             output_hidden_states = self.args.eval_mode in [
                 "adaptive_tridecoding",
                 "cee_sd",
+                "cee_sd_opportunistic",
                 "cee_cuhlm",
             ]
 
