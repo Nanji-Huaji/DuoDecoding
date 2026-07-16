@@ -85,8 +85,10 @@ class ExpConfig(TypedDict):
 
 # Global Constants
 
-NTT_MS_EDGE_CLOUD = 10
-NTT_MS_EDGE_END = 0
+# NTT_MS_EDGE_CLOUD = 10
+# NTT_MS_EDGE_END = 0
+NTT_MS_EDGE_CLOUD = 76.3
+NTT_MS_EDGE_END = 0.317
 
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
@@ -727,13 +729,14 @@ edge_cloud_bandwidth = [
     # 15.5,  # ADSL2+ 的理论极限附近
     # 18.2,  # 20M 宽带的各种损耗后速度
     # 20.0,  # 标准 20M 宽带
-    23.6,  # 信号良好的 4G 平均值
+    # 23.6,  # 信号良好的 4G 平均值
     # 25.0,  # FCC 定义的宽带及格线
     # 28.9,  # 30M 宽带的一般表现
     # 32.4,  # Wi-Fi 穿墙后的衰减值
     # 38.7,  # 4G+ (载波聚合) 波动值
     # 42.1,  # 50M 宽带在高峰期的表现
-    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗值
+    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗
+    46.0,
     # 48.8,  # 50M 宽带非常接近满速的值
     # 50.0,  # 标准 50M 宽带满速
 ]
@@ -746,29 +749,20 @@ for little_model, draft_model, target_model in (
     llama_series,
     # llama_chat_series,
     # vicuna_series,
-    qwen_series,
+    # qwen_series,
     # # qwen_series_fp8,
     # gemma_3_it_series,
     # # qwen_series_large,
     # # llama_3_series,
-    qwen_1_5_series,
+    # qwen_1_5_series,
 ):
     for dataset in (
+        EvalDataset.mt_bench_noeval,
         EvalDataset.gsm8k,
+        EvalDataset.humaneval
         # EvalDataset.cnndm,
     ):
-        for mode in filter(
-            lambda mode: mode
-            not in [
-                mode
-                for mode in EvalMode
-                if mode
-                not in [
-                    EvalMode.cee_cuhlm,
-                ]
-            ],
-            EvalMode,
-        ):
+        for mode in (EvalMode.cuhlm, EvalMode.cee_cuhlm):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     for gamma1 in gamma1_values:
@@ -780,7 +774,8 @@ for little_model, draft_model, target_model in (
                                 batch_delay=batch_delay,
                                 use_precise=False,
                                 use_stochastic_comm=True,
-                                edge_end_bandwidth=563,
+                                # edge_end_bandwidth=563,
+                                edge_end_bandwidth=941,
                                 edge_cloud_bandwidth=edge_cloud_bw,
                                 cloud_end_bandwidth=edge_cloud_bw,
                                 small_draft_threshold=0.6,
@@ -788,7 +783,7 @@ for little_model, draft_model, target_model in (
                                 transfer_top_k=300,
                                 gamma1=gamma1 if mode != EvalMode.cee_cuhlm else 1,
                                 gamma2=gamma2 if mode != EvalMode.cee_cuhlm else 1,
-                                max_tokens=1024,
+                                max_tokens=128,
                                 num_shots=3,
                                 eval_dataset=dataset,
                                 draft_model=(
@@ -809,7 +804,7 @@ for little_model, draft_model, target_model in (
                                 use_rl_adapter=True,
                                 disable_rl_update=True,
                                 use_early_stopping=False,
-                                eval_data_num=500,
+                                eval_data_num=80,
                                 run_full_dataset=False,
                                 random_sample=True,
                                 sample_seed=1234,
