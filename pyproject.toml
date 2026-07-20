@@ -15,6 +15,7 @@ dependencies = [
     "google>=3.0.0",
     "huggingface-hub>=0.36.0",
     "ipdb>=0.13.13",
+    "ipykernel>=7.2.0",
     "joblib>=1.5.3",
     "logger>=1.4",
     "matplotlib>=3.10.8",

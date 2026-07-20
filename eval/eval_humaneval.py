@@ -17,6 +17,7 @@ from few_shot_examples import get_few_shot_prompt
 from src.baselines import Baselines
 from src.metrics import get_empty_metrics
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 decoding_metrics = get_empty_metrics()
 
@@ -125,10 +126,7 @@ class EvalHumaneval(Baselines):
             datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
             data.append(datum)
 
-        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
-            data = data[: self.args.eval_data_num]
-
-        self.data = data
+        self.data = select_eval_data(data, self.args)
         self.color_print(
             f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2
         )

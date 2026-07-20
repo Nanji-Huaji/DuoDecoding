@@ -1,6 +1,47 @@
 from typing import Any, List, Optional, TypedDict
+from dataclasses import dataclass
 
 INT_SIZE = 4
+
+@dataclass
+class ModelTime:
+    comp_time: float
+    comm_time: float
+    queuing_time: float
+
+    def __add__(self, other: 'ModelTime') -> 'ModelTime':
+        return ModelTime(
+            comp_time=self.comp_time + other.comp_time,
+            comm_time=self.comm_time + other.comm_time,
+            queuing_time=self.queuing_time + other.queuing_time
+        )
+
+    def __radd__(self, other: 'ModelTime') -> 'ModelTime':
+        if other == 0:
+            return self
+        else:
+            return self.__add__(other)
+
+
+@dataclass
+class ModelTimeComposition:
+    target_model_time: ModelTime
+    draft_model_time: ModelTime
+    little_model_time: ModelTime
+
+    def __add__(self, other: 'ModelTimeComposition') -> 'ModelTimeComposition':
+        return ModelTimeComposition(
+            target_model_time=self.target_model_time + other.target_model_time,
+            draft_model_time=self.draft_model_time + other.draft_model_time,
+            little_model_time=self.little_model_time + other.little_model_time
+        
+        )
+    
+    def __radd__(self, other: 'ModelTimeComposition') -> 'ModelTimeComposition':
+        if other == 0:
+            return self
+        else:
+            return self.__add__(other)
 
 
 class DecodingMetrics(TypedDict):
@@ -15,6 +56,9 @@ class DecodingMetrics(TypedDict):
     little_forward_times: int
     draft_forward_times: int
     target_forward_times: int
+    little_computation_time: float
+    draft_computation_time: float
+    target_computation_time: float
     generated_tokens: int
     little_generated_tokens: int
     draft_generated_tokens: int
@@ -61,6 +105,9 @@ def get_empty_metrics() -> DecodingMetrics:
         little_forward_times=0,
         draft_forward_times=0,
         target_forward_times=0,
+        little_computation_time=0.0,
+        draft_computation_time=0.0,
+        target_computation_time=0.0,
         generated_tokens=0,
         little_generated_tokens=0,
         draft_generated_tokens=0,

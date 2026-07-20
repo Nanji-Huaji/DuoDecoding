@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 
 async def grade_mt_bench_async(
@@ -155,9 +156,7 @@ class EvalMTBench(Baselines):
             for line in f.readlines():
                 datum = json.loads(line)
                 data.append(datum)
-        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
-            data = data[: self.args.eval_data_num]
-        self.data = data
+        self.data = select_eval_data(data, self.args)
 
     def preprocess(self, input_text):
         pass
@@ -261,6 +260,10 @@ class EvalMTBench(Baselines):
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
 
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench.warmup.turn_{turn_idx}"
+                    )
+
                     torch.cuda.synchronize()
                     start_time = time.time()
                     output_ids = decoding(input_ids)
@@ -360,6 +363,10 @@ class EvalMTBench(Baselines):
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
+
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench.eval.turn_{turn_idx}"
+                    )
 
                     torch.cuda.synchronize()
                     start_time = time.time()

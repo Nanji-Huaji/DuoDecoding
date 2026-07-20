@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Callable
 
@@ -19,8 +20,15 @@ def should_quantize(model_name: str) -> bool:
     return size > 20 and not is_awq
 
 
-def build_quant_config(model_name: str) -> BitsAndBytesConfig | None:
-    if not should_quantize(model_name):
+def build_quant_config(
+    model_name: str,
+    quantization: str = "auto",
+) -> BitsAndBytesConfig | None:
+    if quantization == "none":
+        return None
+    if quantization not in {"auto", "4bit"}:
+        raise ValueError(f"Unsupported quantization mode: {quantization}")
+    if quantization == "auto" and not should_quantize(model_name):
         return None
 
     return BitsAndBytesConfig(
@@ -45,17 +53,33 @@ def _single_gpu_max_memory() -> str:
     return f"{safe_gib}GiB"
 
 
+def estimate_model_reserve_gib(model_name: str, quantization: str = "auto") -> int:
+    size_b = get_model_size(model_name)
+    if quantization == "4bit":
+        return max(int(math.ceil(size_b * 0.6)), 4)
+    if quantization == "none":
+        return max(int(math.ceil(size_b * 2.2)), 8)
+    if should_quantize(model_name):
+        return max(int(math.ceil(size_b * 0.6)), 4)
+    return max(int(math.ceil(size_b * 2.2)), 8)
+
+
 def build_sharded_target_device_map(
     num_gpus: int,
+    *,
+    reserve_last_gpu_gib: int = 0,
 ) -> tuple[str, dict[int | str, str]] | None:
-    if num_gpus < 4:
+    if num_gpus < 2:
         return None
 
-    usable_target_gpus = num_gpus - 1
+    safe_gib = int(_single_gpu_max_memory().removesuffix("GiB"))
     max_memory: dict[int | str, str] = {
-        gpu_idx: _single_gpu_max_memory() for gpu_idx in range(usable_target_gpus)
+        gpu_idx: f"{safe_gib}GiB" for gpu_idx in range(num_gpus)
     }
-    max_memory[usable_target_gpus] = "0GiB"
+    if reserve_last_gpu_gib > 0:
+        last_gpu = num_gpus - 1
+        reserved_gib = max(safe_gib - reserve_last_gpu_gib, 1)
+        max_memory[last_gpu] = f"{reserved_gib}GiB"
     return "auto", max_memory
 
 

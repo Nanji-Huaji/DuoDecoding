@@ -1,5 +1,10 @@
 import torch
+from transformers.cache_utils import DynamicCache
 
+from .proposal_utils import (
+    build_topk_proposal_history_step,
+    concat_topk_proposal_history,
+)
 from .utils import (
     log_prob_tensor_if_invalid,
     norm_logits,
@@ -86,6 +91,65 @@ class KVCacheModel:
         self._prob_buffer: torch.Tensor | None = None
         self._logits_buffer: torch.Tensor | None = None
         self._current_seq_len: int = 0
+
+    def _new_dynamic_cache(self) -> DynamicCache:
+        return DynamicCache(config=self._model.config)
+
+    def _build_model_inputs(self, input_ids: torch.Tensor, *, use_cache: bool) -> dict:
+        model_inputs: dict[str, object] = {
+            "input_ids": input_ids,
+            "use_cache": use_cache,
+        }
+
+        seq_len = input_ids.shape[1]
+        device = input_ids.device
+        past_seen_tokens = self.current_length if self._past_key_values is not None else 0
+        attention_len = past_seen_tokens + seq_len if use_cache else seq_len
+        attention_mask = torch.ones(
+            (input_ids.shape[0], attention_len), dtype=torch.long, device=device
+        )
+        model_inputs["attention_mask"] = attention_mask
+
+        return model_inputs
+
+    def _prepare_generation_inputs(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        past_key_values: PastKeyValues,
+    ) -> dict[str, object]:
+        batch_size, seq_len = input_ids.shape
+        cache_start = 0
+        if past_key_values is not None and _is_cache_like(past_key_values):
+            cache_start = past_key_values.get_seq_length()
+
+        attention_mask = torch.ones(
+            (batch_size, cache_start + seq_len),
+            dtype=torch.long,
+            device=input_ids.device,
+        )
+        cache_position = torch.arange(
+            cache_start,
+            cache_start + seq_len,
+            dtype=torch.long,
+            device=input_ids.device,
+        )
+
+        if hasattr(self._model, "prepare_inputs_for_generation"):
+            prepared_inputs = self._model.prepare_inputs_for_generation(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                cache_position=cache_position,
+                use_cache=True,
+            )
+            prepared_inputs["use_cache"] = True
+            return cast(dict[str, object], prepared_inputs)
+
+        model_inputs = self._build_model_inputs(input_ids, use_cache=True)
+        model_inputs["past_key_values"] = past_key_values
+        model_inputs["cache_position"] = cache_position
+        return model_inputs
 
     @property
     def _prob_history(self) -> torch.Tensor | None:
@@ -178,7 +242,13 @@ class KVCacheModel:
         self._validate_input_ids(input_ids)
         seq_length = input_ids.shape[1]
         batch_size = input_ids.shape[0]
-        outputs = self._model(input_ids)
+        self._past_key_values = self._new_dynamic_cache()
+        outputs = self._model(
+            **self._prepare_generation_inputs(
+                input_ids,
+                past_key_values=self._past_key_values,
+            )
+        )
         logits = outputs.logits
         if logits is None:
             raise RuntimeError("Model returned logits=None in prefill")
@@ -215,8 +285,6 @@ class KVCacheModel:
         if last_input_id.dtype != torch.long:
             last_input_id = last_input_id.to(torch.long)
 
-        self._validate_input_ids(last_input_id)
-
         if last_input_id.shape[1] == 0:
             if self._current_seq_len <= 0:
                 raise RuntimeError(
@@ -229,8 +297,12 @@ class KVCacheModel:
             raise RuntimeError("Decode step called before cache initialization")
 
         batch_size = last_input_id.shape[0]
+        new_len = last_input_id.shape[1]
         outputs = self._model(
-            last_input_id, past_key_values=past_key_values, use_cache=True
+            **self._prepare_generation_inputs(
+                last_input_id,
+                past_key_values=past_key_values,
+            )
         )
         logits = outputs.logits
 
@@ -241,7 +313,6 @@ class KVCacheModel:
         if new_past_key_values is None:
             raise RuntimeError("Model returned past_key_values=None in decode step")
 
-        new_len = last_input_id.shape[1]
         end_pos = self._current_seq_len + new_len
 
         self._ensure_buffer_size(batch_size, end_pos, logits.device, logits.dtype)
@@ -311,15 +382,28 @@ class KVCacheModel:
         if x.dtype != torch.long:
             x = x.to(torch.long)
 
-        for _ in range(gamma):
-            q = self._forward_with_kvcache(x)
+        if gamma == 0:
+            return x
+
+        # First step: use _forward_with_kvcache to handle prefill or cache extension
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(q, "KVCacheModel._generate_with_kvcache.q")
+        next_tok = sample(q)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens: list[torch.Tensor] = [next_tok]
+
+        # Subsequent steps: use _decode_step with only the new token to avoid
+        # growing x with torch.cat on each iteration
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
             self._raise_if_invalid_probs(q, "KVCacheModel._generate_with_kvcache.q")
             next_tok = sample(q)
             if next_tok.dtype != torch.long:
                 next_tok = next_tok.to(torch.long)
-            x = torch.cat((x, next_tok), dim=1)
+            new_tokens.append(next_tok)
 
-        return x
+        return torch.cat([x] + new_tokens, dim=1)
 
     def generate_with_rebuilt_topk(
         self,
@@ -331,29 +415,193 @@ class KVCacheModel:
         if x.dtype != torch.long:
             x = x.to(torch.long)
 
+        if gamma == 0:
+            return x, None
+
         rebuilt_rows: list[torch.Tensor] = []
-        for _ in range(gamma):
-            q = self._forward_with_kvcache(x)
+        new_tokens: list[torch.Tensor] = []
+
+        # First step: use _forward_with_kvcache to handle prefill or cache extension
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(q, "KVCacheModel.generate_with_rebuilt_topk.q")
+        rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+        self._raise_if_invalid_probs(
+            rebuilt_q, "KVCacheModel.generate_with_rebuilt_topk.rebuilt_q"
+        )
+        rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+        next_tok = sample(rebuilt_q)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens.append(next_tok)
+
+        # Subsequent steps: use _decode_step with only the new token to avoid
+        # growing x with torch.cat on each iteration
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
             self._raise_if_invalid_probs(
-                q,
-                "KVCacheModel.generate_with_rebuilt_topk.q",
+                q, "KVCacheModel.generate_with_rebuilt_topk.q"
             )
             rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
             self._raise_if_invalid_probs(
-                rebuilt_q,
-                "KVCacheModel.generate_with_rebuilt_topk.rebuilt_q",
+                rebuilt_q, "KVCacheModel.generate_with_rebuilt_topk.rebuilt_q"
             )
             rebuilt_rows.append(rebuilt_q.unsqueeze(1))
             next_tok = sample(rebuilt_q)
             if next_tok.dtype != torch.long:
                 next_tok = next_tok.to(torch.long)
-            x = torch.cat((x, next_tok), dim=1)
+            new_tokens.append(next_tok)
 
-        rebuilt_history = None
-        if rebuilt_rows:
-            rebuilt_history = torch.cat(rebuilt_rows, dim=1)
+        rebuilt_history = torch.cat(rebuilt_rows, dim=1)
+        return torch.cat([x] + new_tokens, dim=1), rebuilt_history
 
-        return x, rebuilt_history
+    def generate_with_rebuilt_topk_metadata(
+        self,
+        input: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+    ):
+        x = input
+        if x.dtype != torch.long:
+            x = x.to(torch.long)
+
+        if gamma == 0:
+            return x, None, None
+
+        rebuilt_rows: list[torch.Tensor] = []
+        proposal_steps = []
+        new_tokens: list[torch.Tensor] = []
+
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(
+            q, "KVCacheModel.generate_with_rebuilt_topk_metadata.q"
+        )
+        rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+        self._raise_if_invalid_probs(
+            rebuilt_q,
+            "KVCacheModel.generate_with_rebuilt_topk_metadata.rebuilt_q",
+        )
+        rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+        proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+        if proposal_meta is not None:
+            proposal_steps.append(proposal_meta)
+        next_tok = sample(rebuilt_q)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens.append(next_tok)
+
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
+            self._raise_if_invalid_probs(
+                q, "KVCacheModel.generate_with_rebuilt_topk_metadata.q"
+            )
+            rebuilt_q = rebuild_topk_uniform_probs(q, proposal_top_k)
+            self._raise_if_invalid_probs(
+                rebuilt_q,
+                "KVCacheModel.generate_with_rebuilt_topk_metadata.rebuilt_q",
+            )
+            rebuilt_rows.append(rebuilt_q.unsqueeze(1))
+            proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+            if proposal_meta is not None:
+                proposal_steps.append(proposal_meta)
+            next_tok = sample(rebuilt_q)
+            if next_tok.dtype != torch.long:
+                next_tok = next_tok.to(torch.long)
+            new_tokens.append(next_tok)
+
+        rebuilt_history = torch.cat(rebuilt_rows, dim=1)
+        rebuilt_history_meta = concat_topk_proposal_history(proposal_steps)
+        return torch.cat([x] + new_tokens, dim=1), rebuilt_history, rebuilt_history_meta
+
+    def _sample_from_topk_proposal(
+        self,
+        probs: torch.Tensor,
+        proposal_top_k: Optional[int],
+    ) -> torch.Tensor:
+        proposal_meta = build_topk_proposal_history_step(probs, proposal_top_k)
+        if proposal_meta is None:
+            token = sample(probs)
+            return token.to(torch.long) if token.dtype != torch.long else token
+
+        topk_indices = proposal_meta.topk_indices[:, 0, :]
+        topk_probs = proposal_meta.topk_probs[:, 0, :]
+        tail_uniform_prob = proposal_meta.tail_uniform_prob[:, 0, :]
+        topk_mass = topk_probs.sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
+        tail_mass = (1.0 - topk_mass).clamp_min(0.0)
+        region_probs = torch.cat((topk_mass, tail_mass), dim=-1)
+        region_choice = torch.multinomial(region_probs, num_samples=1)
+
+        token = torch.empty(
+            (probs.shape[0], 1),
+            dtype=torch.long,
+            device=probs.device,
+        )
+
+        topk_rows = region_choice.squeeze(-1) == 0
+        if topk_rows.any():
+            normalized_topk = topk_probs[topk_rows] / topk_mass[topk_rows].clamp_min(1e-12)
+            topk_pick = torch.multinomial(normalized_topk, num_samples=1)
+            token[topk_rows] = torch.gather(topk_indices[topk_rows], 1, topk_pick)
+
+        tail_rows = ~topk_rows
+        if tail_rows.any():
+            tail_topk_indices = topk_indices[tail_rows]
+            batch_size, _, = tail_topk_indices.shape
+            vocab_size = probs.shape[-1]
+            candidate_mask = torch.ones(
+                (batch_size, vocab_size),
+                dtype=torch.bool,
+                device=probs.device,
+            )
+            candidate_mask.scatter_(1, tail_topk_indices, False)
+            candidate_weights = candidate_mask.to(probs.dtype)
+            tail_pick = torch.multinomial(candidate_weights, num_samples=1)
+            token[tail_rows] = tail_pick
+
+        return token
+
+    def generate_with_topk_metadata_only(
+        self,
+        input: torch.Tensor,
+        gamma: int,
+        proposal_top_k: Optional[int],
+    ):
+        x = input
+        if x.dtype != torch.long:
+            x = x.to(torch.long)
+
+        if gamma == 0:
+            return x, None
+
+        proposal_steps = []
+        new_tokens: list[torch.Tensor] = []
+
+        q = self._forward_with_kvcache(x)
+        self._raise_if_invalid_probs(
+            q, "KVCacheModel.generate_with_topk_metadata_only.q"
+        )
+        proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+        if proposal_meta is not None:
+            proposal_steps.append(proposal_meta)
+        next_tok = self._sample_from_topk_proposal(q, proposal_top_k)
+        if next_tok.dtype != torch.long:
+            next_tok = next_tok.to(torch.long)
+        new_tokens.append(next_tok)
+
+        for _ in range(gamma - 1):
+            q = self._decode_step(new_tokens[-1])
+            self._raise_if_invalid_probs(
+                q, "KVCacheModel.generate_with_topk_metadata_only.q"
+            )
+            proposal_meta = build_topk_proposal_history_step(q, proposal_top_k)
+            if proposal_meta is not None:
+                proposal_steps.append(proposal_meta)
+            next_tok = self._sample_from_topk_proposal(q, proposal_top_k)
+            if next_tok.dtype != torch.long:
+                next_tok = next_tok.to(torch.long)
+            new_tokens.append(next_tok)
+
+        rebuilt_history_meta = concat_topk_proposal_history(proposal_steps)
+        return torch.cat([x] + new_tokens, dim=1), rebuilt_history_meta
 
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:

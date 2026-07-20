@@ -25,6 +25,10 @@ def numeric_debug_checks_enabled() -> bool:
     return _env_flag_enabled("DUODEC_DEBUG_NUMERICS")
 
 
+def skip_token_validation() -> bool:
+    return _env_flag_enabled("DUODEC_SKIP_VALIDATE")
+
+
 def _log_limited_warning(label: str, message: str, max_warnings: int = 5) -> None:
     count = _LIMITED_WARNING_COUNTS.get(label, 0)
     _LIMITED_WARNING_COUNTS[label] = count + 1
@@ -303,6 +307,22 @@ def parse_arguments():
         help="number of samples to evaluate.",
     )
     parser.add_argument(
+        "--run_full_dataset",
+        action="store_true",
+        help="Evaluate the full dataset instead of truncating to eval_data_num.",
+    )
+    parser.add_argument(
+        "--random_sample",
+        action="store_true",
+        help="Randomly sample eval_data_num examples instead of taking the first examples.",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=1234,
+        help="Random seed used when --random_sample is enabled.",
+    )
+    parser.add_argument(
         "--num_shots",
         type=int,
         default=0,
@@ -524,6 +544,42 @@ def parse_arguments():
         help="The path of the best little RL adapter model.",
     )
     parser.add_argument(
+        "--rl_checkpoint_root",
+        type=str,
+        default="checkpoints/rl_agents",
+        help="Root directory used to resolve pair-specific RL checkpoints.",
+    )
+    parser.add_argument(
+        "--rl_init_seed",
+        type=int,
+        default=None,
+        help="Seed used for deterministic RL network initialization and exploration.",
+    )
+    parser.add_argument(
+        "--rl_init_strategy",
+        choices=["fresh", "resume"],
+        default="resume",
+        help="Initialize new RL agents or resume existing dedicated checkpoints.",
+    )
+    parser.add_argument(
+        "--rl_epsilon_decay",
+        type=float,
+        default=None,
+        help="Override the mode-specific RL epsilon decay default.",
+    )
+    parser.add_argument(
+        "--rl_reward_scale",
+        type=float,
+        default=None,
+        help="Override the mode-specific RL reward scale default.",
+    )
+    parser.add_argument(
+        "--rl_batch_size",
+        type=int,
+        default=None,
+        help="Override the mode-specific RL batch size default.",
+    )
+    parser.add_argument(
         "--disable_rl_update",
         action="store_true",
         help="Whether to disable RL adapter update (training).",
@@ -543,6 +599,27 @@ def parse_arguments():
         "--dump_network_stats",
         action="store_true",
         help="Whether to dump network statistics during decoding.",
+    )
+    parser.add_argument(
+        "--draft_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the draft model.",
+    )
+    parser.add_argument(
+        "--target_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the target model.",
+    )
+    parser.add_argument(
+        "--little_quantization",
+        type=str,
+        choices=["auto", "4bit", "none"],
+        default="auto",
+        help="Quantization mode for the little model.",
     )
     parser.add_argument(
         "--adaptive_debug_log",
@@ -590,6 +667,8 @@ def parse_arguments():
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+    if args.run_full_dataset:
+        args.eval_data_num = None
 
     explicit_small_draft_acc_head = "--small_draft_acc_head_path" in cli_args
     explicit_draft_target_acc_head = "--draft_target_acc_head_path" in cli_args
@@ -615,6 +694,7 @@ def parse_arguments():
             little_model=getattr(args, "little_model", None),
             draft_model=args.draft_model,
             target_model=args.target_model,
+            checkpoint_root=args.rl_checkpoint_root,
         )
         args.main_rl_path = main_spec.latest_path
         if getattr(args, "main_rl_best_path", None) is None:
@@ -632,6 +712,7 @@ def parse_arguments():
                 little_model=args.little_model,
                 draft_model=args.draft_model,
                 target_model=args.target_model,
+                checkpoint_root=args.rl_checkpoint_root,
             )
             args.little_rl_path = little_spec.latest_path
             if getattr(args, "little_rl_best_path", None) is None:

@@ -20,9 +20,8 @@ class AdaptiveTrainingManagerTests(unittest.TestCase):
     def test_main_rl_checkpoint_uses_adaptive_decoding_root(self):
         manager = TrainingManager(model_series_name="llama")
 
-        self.assertEqual(manager.main_rl_spec.method, "adaptive_decoding")
         self.assertIn(
-            "checkpoints/rl_agents/adaptive_decoding/main/",
+            "checkpoints/rl_agents/main/",
             manager.main_rl_spec.latest_path,
         )
         self.assertEqual(

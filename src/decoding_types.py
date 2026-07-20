@@ -11,6 +11,7 @@ class VerificationInputs:
     target_probs_batch: torch.Tensor
     draft_tokens: torch.Tensor
     draft_token_indices: torch.Tensor
+    selected_draft_p: torch.Tensor
     prefix_len: int
     gamma: int
     actual_gamma: int
@@ -19,11 +20,18 @@ class VerificationInputs:
 
 @dataclass
 class AcceptanceResult:
-    accepted_count: int
-    n: int
+    accepted_count: torch.Tensor
     selected_draft_p: torch.Tensor
     selected_target_p: torch.Tensor
     accept_mask: torch.Tensor
+
+
+@dataclass
+class TopKProposalHistory:
+    topk_indices: torch.Tensor
+    topk_probs: torch.Tensor
+    tail_uniform_prob: torch.Tensor
+    vocab_size: int
 
 
 @dataclass

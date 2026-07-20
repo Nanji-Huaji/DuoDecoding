@@ -16,6 +16,7 @@ from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 # 同步 rl_adapter.py 中的定义
 KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
@@ -100,11 +101,7 @@ class EvalMixed(Baselines):
                 with open(mt_path) as f:
                     for line in f:
                         mt_data.append(json.loads(line))
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                mt_data = mt_data[: self.args.eval_data_num]
+            mt_data = select_eval_data(mt_data, self.args)
             self.all_data["mt_bench"] = mt_data
             self.color_print(f"Loaded {len(mt_data)} MT-Bench samples.", 2)
         except Exception as e:
@@ -116,11 +113,7 @@ class EvalMixed(Baselines):
         try:
             ds = load_dataset("gsm8k", "main", split="test")
             gsm8k_data = [dict(item) for item in ds]
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                gsm8k_data = gsm8k_data[: self.args.eval_data_num]
+            gsm8k_data = select_eval_data(gsm8k_data, self.args)
             self.all_data["gsm8k"] = gsm8k_data
             self.color_print(f"Loaded {len(self.all_data['gsm8k'])} GSM8K samples.", 2)
         except Exception as e:
@@ -131,11 +124,7 @@ class EvalMixed(Baselines):
         try:
             ds = load_dataset("cnn_dailymail", "3.0.0", split="test")
             cnndm_data = [dict(item) for item in ds]
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                cnndm_data = cnndm_data[: self.args.eval_data_num]
+            cnndm_data = select_eval_data(cnndm_data, self.args)
             self.all_data["cnndm"] = cnndm_data
             self.color_print(f"Loaded {len(self.all_data['cnndm'])} CNN/DM samples.", 2)
         except Exception as e:
@@ -146,11 +135,7 @@ class EvalMixed(Baselines):
         try:
             ds = load_dataset("xsum", split="test")
             xsum_data = [dict(item) for item in ds]
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                xsum_data = xsum_data[: self.args.eval_data_num]
+            xsum_data = select_eval_data(xsum_data, self.args)
             self.all_data["xsum"] = xsum_data
             self.color_print(f"Loaded {len(self.all_data['xsum'])} XSum samples.", 2)
         except Exception as e:
@@ -161,11 +146,7 @@ class EvalMixed(Baselines):
         try:
             ds = load_dataset("openai_humaneval", split="test")
             humaneval_data = [dict(item) for item in ds]
-            if (
-                hasattr(self.args, "eval_data_num")
-                and self.args.eval_data_num is not None
-            ):
-                humaneval_data = humaneval_data[: self.args.eval_data_num]
+            humaneval_data = select_eval_data(humaneval_data, self.args)
             self.all_data["humaneval"] = humaneval_data
             self.color_print(
                 f"Loaded {len(self.all_data['humaneval'])} HumanEval samples.", 2

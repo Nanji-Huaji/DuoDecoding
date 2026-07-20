@@ -17,6 +17,7 @@ from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines, get_empty_metrics
 from src.utils import parse_arguments, seed_everything
+from utils import select_eval_data
 
 decoding_metrics = get_empty_metrics()
 
@@ -109,9 +110,7 @@ class EvalMTBench(Baselines):
             for line in f.readlines():
                 datum = json.loads(line)
                 data.append(datum)
-        if hasattr(self.args, "eval_data_num") and self.args.eval_data_num is not None:
-            data = data[: self.args.eval_data_num]
-        self.data = data
+        self.data = select_eval_data(data, self.args)
 
     def preprocess(self, input_text):
         few_shot_prompt = get_few_shot_prompt("mt_bench", self.args.num_shots)
@@ -221,6 +220,8 @@ class EvalMTBench(Baselines):
                 prompt = conv.get_prompt() + " "
                 input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
 
+            self.validate_input_ids(input_ids, f"mt_bench_noeval.warmup.{warmup_count}")
+
             print(f"[Warmup {warmup_count + 1}/{n}] Input tokens: {input_ids.shape[1]}")
             torch.cuda.synchronize()
             start_time = time.time()
@@ -304,6 +305,10 @@ class EvalMTBench(Baselines):
                         input_ids = torch.tensor(
                             self.tokenizer.encode(prompt)
                         ).unsqueeze(0)
+
+                    self.validate_input_ids(
+                        input_ids, f"mt_bench_noeval.eval.turn_{turn_idx}"
+                    )
 
                     torch.cuda.synchronize()
                     start_time = time.time()

@@ -57,9 +57,13 @@ class ExpConfig(TypedDict):
     disable_rl_update: bool
     small_draft_threshold: float
     draft_target_threshold: float
+    uncertainty_threshold: float
     ntt_ms_edge_cloud: int | float
     ntt_ms_edge_end: int | float
     eval_dataset: EvalDataset
+    run_full_dataset: bool
+    random_sample: bool
+    sample_seed: int
     draft_model: str
     target_model: str
     little_model: str
@@ -81,8 +85,10 @@ class ExpConfig(TypedDict):
 
 # Global Constants
 
-NTT_MS_EDGE_CLOUD = 10
-NTT_MS_EDGE_END = 0
+# NTT_MS_EDGE_CLOUD = 10
+# NTT_MS_EDGE_END = 0
+NTT_MS_EDGE_CLOUD = 76.3
+NTT_MS_EDGE_END = 0.317
 
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
@@ -106,8 +112,10 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.v
     --transfer_top_k {transfer_top_k} \
     --num_samples_per_task {num_samples_per_task} \
     --eval_data_num {eval_data_num} \
+    --sample_seed {sample_seed} \
     --small_draft_threshold {small_draft_threshold} \
     --draft_target_threshold {draft_target_threshold} \
+    --uncertainty_threshold {uncertainty_threshold} \
     --num_shots {num_shots} \
     --exp_name {exp_name} \
     --ntt_ms_edge_cloud {ntt_ms_edge_cloud} \
@@ -233,6 +241,10 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         )
     if config.get("dump_network_stats", False):
         cmd = add_args(cmd, "dump_network_stats")
+    if config.get("run_full_dataset", False):
+        cmd = add_args(cmd, "run_full_dataset")
+    if config.get("random_sample", False):
+        cmd = add_args(cmd, "random_sample")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -498,8 +510,9 @@ def create_config(
     edge_end_bandwidth: int | float = 100,
     edge_cloud_bandwidth: int | float = 100,
     cloud_end_bandwidth: int | float = 100,
-    small_draft_threshold: float = 0.8,
-    draft_target_threshold: float = 0.6,
+    small_draft_threshold: float = 0.3,
+    draft_target_threshold: float = 0.9,
+    uncertainty_threshold: float = 0.8,
     transfer_top_k: int = 300,
     gamma: int = 5,
     gamma1: int = 5,
@@ -510,6 +523,9 @@ def create_config(
     max_tokens: int = 128,
     use_early_stopping: bool = False,
     eval_dataset: str | EvalDataset = EvalDataset.mt_bench,
+    run_full_dataset: bool = False,
+    random_sample: bool = False,
+    sample_seed: int = 1234,
     # 新添加的参数
     draft_model: str = "tiny-vicuna-1b",
     target_model: str = "vicuna-13b-v1.5",
@@ -558,8 +574,13 @@ def create_config(
         little_rl_path = ""
         little_rl_best_path = ""
 
-    # ceesd, cee_cuhlm 需要用到 ARP 和 RL Adapter
-    elif eval_mode_value in [EvalMode.ceesd.value, EvalMode.cee_cuhlm.value]:
+    # ceesd, cee_cuhlm, cee_dsd, cee_dssd 需要用到 ARP 和 RL Adapter
+    elif eval_mode_value in [
+        EvalMode.ceesd.value,
+        EvalMode.cee_cuhlm.value,
+        EvalMode.cee_dsd.value,
+        EvalMode.cee_dssd.value,
+    ]:
         # Tri-decoding uses two prediction heads: little->draft and draft->target.
         if small_draft_acc_head_path is None:
             small_draft_acc_head_path = resolve_acc_head_path(little_model, draft_model)
@@ -607,6 +628,9 @@ def create_config(
 
     return ExpConfig(
         eval_dataset=eval_dataset_value,
+        run_full_dataset=run_full_dataset,
+        random_sample=random_sample,
+        sample_seed=sample_seed,
         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
         eval_mode=eval_mode_value,
         edge_end_bandwidth=edge_end_bandwidth,
@@ -622,6 +646,7 @@ def create_config(
         max_tokens=max_tokens,
         small_draft_threshold=small_draft_threshold,
         draft_target_threshold=draft_target_threshold,
+        uncertainty_threshold=uncertainty_threshold,
         exp_name=(
             f"{eval_mode_value}/{eval_dataset_name}/"
             f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms_{timestamp}"
@@ -704,38 +729,40 @@ edge_cloud_bandwidth = [
     # 15.5,  # ADSL2+ 的理论极限附近
     # 18.2,  # 20M 宽带的各种损耗后速度
     # 20.0,  # 标准 20M 宽带
-    23.6,  # 信号良好的 4G 平均值
+    # 23.6,  # 信号良好的 4G 平均值
     # 25.0,  # FCC 定义的宽带及格线
     # 28.9,  # 30M 宽带的一般表现
     # 32.4,  # Wi-Fi 穿墙后的衰减值
     # 38.7,  # 4G+ (载波聚合) 波动值
     # 42.1,  # 50M 宽带在高峰期的表现
-    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗值
+    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗
+    46.0,
     # 48.8,  # 50M 宽带非常接近满速的值
     # 50.0,  # 标准 50M 宽带满速
 ]
 
 batch_delay_values = [50e-3]
-gamma1_values = [5]
-gamma2_values = [10]
+gamma1_values = [3]  # 扫描最优值：draft→target 推测窗口
+gamma2_values = [3]  # 扫描最优值：little→draft 推测窗口
 
 for little_model, draft_model, target_model in (
     llama_series,
     # llama_chat_series,
     # vicuna_series,
-    qwen_series,
+    # qwen_series,
     # # qwen_series_fp8,
-    # # gemma_3_it_series,
+    # gemma_3_it_series,
     # # qwen_series_large,
     # # llama_3_series,
-    qwen_1_5_series,
+    # qwen_1_5_series,
 ):
     for dataset in (
         EvalDataset.mt_bench_noeval,
-        EvalDataset.humaneval,
         EvalDataset.gsm8k,
+        EvalDataset.humaneval
+        # EvalDataset.cnndm,
     ):
-        for mode in (EvalMode.cee_dssd, EvalMode.cee_dsd, EvalMode.cee_cuhlm):
+        for mode in (EvalMode.cuhlm, EvalMode.cee_cuhlm):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     for gamma1 in gamma1_values:
@@ -747,14 +774,15 @@ for little_model, draft_model, target_model in (
                                 batch_delay=batch_delay,
                                 use_precise=False,
                                 use_stochastic_comm=True,
-                                edge_end_bandwidth=563,
+                                # edge_end_bandwidth=563,
+                                edge_end_bandwidth=941,
                                 edge_cloud_bandwidth=edge_cloud_bw,
                                 cloud_end_bandwidth=edge_cloud_bw,
-                                small_draft_threshold=0.8,
-                                draft_target_threshold=0.8,
-                                transfer_top_k=1024,
-                                gamma1=gamma1,
-                                gamma2=gamma2,
+                                small_draft_threshold=0.6,
+                                draft_target_threshold=0.7,
+                                transfer_top_k=300,
+                                gamma1=gamma1 if mode != EvalMode.cee_cuhlm else 1,
+                                gamma2=gamma2 if mode != EvalMode.cee_cuhlm else 1,
                                 max_tokens=128,
                                 num_shots=3,
                                 eval_dataset=dataset,
@@ -765,6 +793,7 @@ for little_model, draft_model, target_model in (
                                         EvalMode.ceesd,
                                         EvalMode.cee_cuhlm,
                                         EvalMode.cee_dsd,
+                                        EvalMode.cee_dssd,
                                         EvalMode.dssd,
                                         EvalMode.adaptive_decoding,
                                     ]
@@ -776,6 +805,9 @@ for little_model, draft_model, target_model in (
                                 disable_rl_update=True,
                                 use_early_stopping=False,
                                 eval_data_num=80,
+                                run_full_dataset=False,
+                                random_sample=True,
+                                sample_seed=1234,
                             )
                             config_to_run.append(config)
 

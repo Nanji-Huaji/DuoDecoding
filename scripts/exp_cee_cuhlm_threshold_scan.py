@@ -13,9 +13,12 @@ EDGE_CLOUD_BANDWIDTH = 23.6
 CLOUD_END_BANDWIDTH = EDGE_CLOUD_BANDWIDTH
 TRANSFER_TOP_K = 1024
 MAX_TOKENS = 128
+GAMMA1 = 1
+GAMMA2 = 1
 NUM_SHOTS = 5
 NUM_SAMPLES_PER_TASK = 1
 EVAL_DATA_NUM = 30
+RUN_FULL_DATASET = False
 CUDA_VISIBLE_DEVICES = "2,3"
 FAIL_FAST = False
 
@@ -51,10 +54,13 @@ def build_configs() -> list[dict]:
                         small_draft_threshold=small_draft_threshold,
                         draft_target_threshold=draft_target_threshold,
                         transfer_top_k=TRANSFER_TOP_K,
+                        gamma1=GAMMA1,
+                        gamma2=GAMMA2,
                         max_tokens=MAX_TOKENS,
                         num_shots=NUM_SHOTS,
                         num_samples_per_task=NUM_SAMPLES_PER_TASK,
                         eval_data_num=EVAL_DATA_NUM,
+                        run_full_dataset=RUN_FULL_DATASET,
                         CUDA_VISIBLE_DEVICES=CUDA_VISIBLE_DEVICES,
                         eval_dataset=dataset,
                         draft_model=draft_model,
@@ -90,6 +96,9 @@ if __name__ == "__main__":
     print(f"CUDA_VISIBLE_DEVICES: {CUDA_VISIBLE_DEVICES}")
     print(f"num_samples_per_task: {NUM_SAMPLES_PER_TASK}")
     print(f"eval_data_num: {EVAL_DATA_NUM}")
+    print(f"run_full_dataset: {RUN_FULL_DATASET}")
+    print(f"gamma1: {GAMMA1}")
+    print(f"gamma2: {GAMMA2}")
     print(f"fail_fast: {FAIL_FAST}")
 
     all_results = []

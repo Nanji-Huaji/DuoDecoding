@@ -3,7 +3,7 @@ import math
 import time
 import warnings
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple, cast, Sequence
+from typing import Callable, List, Optional, Tuple, cast
 
 import torch
 import transformers
@@ -25,18 +25,24 @@ from .decoding_ops import (
     build_rollback_plan,
     collect_verification_payload,
     compute_acceptance_result,
+    compute_residual_distribution,
+    materialize_acceptance,
     prepare_verification_inputs,
     resolve_stage_verification,
     sample_accept_token,
     sample_reject_token,
+    sample_reject_token_from_topk_proposal,
     verify_draft_sequence_result,
 )
 from .engine import Decoding
 from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
 from .proposal_utils import (
+    build_stage_prefix_topk_history,
     build_draft_probs_override,
+    merge_stage_topk_histories,
     proposal_top_k,
+    stage_topk_proposal_history,
     stage_prob_history,
 )
 from .register import Register
@@ -52,6 +58,7 @@ from .utils import (
     norm_logits,
     rebuild_topk_uniform_probs,
     sample,
+    skip_token_validation,
 )
 
 
@@ -97,7 +104,37 @@ def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tens
         return tokens
     if tokens.dtype != torch.long:
         tokens = tokens.to(torch.long)
-    return tokens.to("cpu", non_blocking=False).to(device, non_blocking=False)
+    return tokens.to("cpu", non_blocking=False).to(device, non_blocking=True)
+
+
+def _simulate_topk_prob_transfer(
+    comm_simulator: CommunicationSimulator,
+    *,
+    link_type: str,
+    draft_len: int,
+    transfer_top_k: Optional[int],
+    prob_dtype: torch.dtype,
+) -> None:
+    if draft_len <= 0:
+        return
+
+    prob_bytes = torch.tensor([], dtype=prob_dtype).element_size()
+    effective_topk = transfer_top_k if transfer_top_k is not None and transfer_top_k > 0 else 0
+    if hasattr(comm_simulator, "_compressed_topk_payload_bytes"):
+        total_bytes = comm_simulator._compressed_topk_payload_bytes(
+            compressed_k=effective_topk,
+            seq_length=draft_len,
+            prob_element_size=prob_bytes,
+        )
+    else:
+        index_bytes = 4
+        total_bytes = draft_len * effective_topk * (prob_bytes + index_bytes)
+    comm_simulator.simulate_transfer(
+        total_bytes,
+        cast(str, link_type),
+        topk=effective_topk,
+        draft_len=draft_len,
+    )
 
 
 def _validate_token_range(
@@ -106,6 +143,8 @@ def _validate_token_range(
     vocab_size: int,
     label: str,
 ) -> None:
+    if skip_token_validation():
+        return
     if tokens.numel() == 0:
         return
     if tokens.dtype != torch.long:
@@ -116,6 +155,29 @@ def _validate_token_range(
         raise ValueError(
             f"Invalid token ids at {label}: min={min_id}, max={max_id}, vocab_size={vocab_size}"
         )
+
+
+def _ensure_token_shape(tokens: torch.Tensor, *, label: str) -> torch.Tensor:
+    if tokens.dtype != torch.long:
+        tokens = tokens.to(torch.long)
+    if tokens.dim() == 1:
+        tokens = tokens.unsqueeze(-1)
+    if tokens.dim() != 2:
+        raise ValueError(f"Unexpected token tensor shape at {label}: {tuple(tokens.shape)}")
+    return tokens
+
+
+def _sample_token_from_probs(
+    probs: torch.Tensor,
+    *,
+    output_device: torch.device,
+    vocab_size: int,
+    label: str,
+) -> torch.Tensor:
+    token = sample(probs).to(torch.long)
+    token = _ensure_token_shape(token, label=label)
+    _validate_token_range(token, vocab_size=vocab_size, label=label)
+    return _move_token_tensor(token, output_device)
 
 
 def _compute_token_vocab_rank(probs: torch.Tensor, token_id: int) -> int:
@@ -209,6 +271,48 @@ def _finalize_cuhlm_verification(
     return n, t, rollback_plan.all_accepted
 
 
+def _add_per_model_wall_time(
+    metrics: DecodingMetrics,
+    *,
+    elapsed_time: float,
+    comm_time: float,
+    queuing_time: float,
+    little_comp_time: float = 0.0,
+    draft_comp_time: float = 0.0,
+    target_comp_time: float = 0.0,
+) -> None:
+    """Split wall_time into per-model contributions.
+
+    wall_time = little_wall + draft_wall + target_wall + comm + queuing
+
+    When per-model CPU timing is available, it is used to proportionally split
+    the GPU computation time.  Communication and queuing remain separate.
+    """
+    total_comp = little_comp_time + draft_comp_time + target_comp_time
+    if total_comp > 0:
+        metrics["little_wall_time"] = (little_comp_time / total_comp) * elapsed_time
+        metrics["draft_wall_time"] = (draft_comp_time / total_comp) * elapsed_time
+        metrics["target_wall_time"] = (target_comp_time / total_comp) * elapsed_time
+    else:
+        # Fallback: split by forward times if available
+        lf = metrics.get("little_forward_times", 0)
+        df = metrics.get("draft_forward_times", 0)
+        tf = metrics.get("target_forward_times", 0)
+        total_fwd = lf + df + tf
+        if total_fwd > 0:
+            metrics["little_wall_time"] = (lf / total_fwd) * elapsed_time
+            metrics["draft_wall_time"] = (df / total_fwd) * elapsed_time
+            metrics["target_wall_time"] = (tf / total_fwd) * elapsed_time
+        else:
+            metrics["little_wall_time"] = 0.0
+            metrics["draft_wall_time"] = 0.0
+            metrics["target_wall_time"] = 0.0
+
+    metrics["little_computation_time"] = little_comp_time
+    metrics["draft_computation_time"] = draft_comp_time
+    metrics["target_computation_time"] = target_comp_time
+
+
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
     if hasattr(instance, name):
         method = getattr(instance, name)
@@ -222,6 +326,21 @@ def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
         raise ValueError(
             f"Decoding method '{name}' not found in class {instance.__class__.__name__}"
         )
+
+
+def compute_stage_reward(
+    tps_part: float,
+    generated_tokens: int,
+    accepted_tokens: int,
+    opportunistic: bool,
+) -> float:
+    if opportunistic:
+        return tps_part
+
+    reward = math.exp(min(tps_part, 100) / 20.0)
+    if generated_tokens > 1:
+        reward *= (accepted_tokens / generated_tokens) ** 2
+    return reward
 
 
 class Baselines(Decoding):
@@ -242,30 +361,56 @@ class Baselines(Decoding):
             "adaptive_decoding",
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_sd_opportunistic",
             "cee_cuhlm",
+            "cee_dsd",
+            "cee_dssd",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
         }
         uses_little_rl = eval_mode in {
             "adaptive_tridecoding",
             "cee_sd",
+            "cee_sd_opportunistic",
+            "cee_dsd",
+            "cee_dssd",
             "ceesd_without_arp",
             "ceesd_w/o_arp",
         }
         if getattr(args, "use_rl_adapter", False):
+            checkpoint_root = getattr(
+                args, "rl_checkpoint_root", "checkpoints/rl_agents"
+            )
+            init_seed = getattr(args, "rl_init_seed", None)
+            init_strategy = getattr(args, "rl_init_strategy", "resume")
+            legacy_load_paths = eval_mode != "cee_sd_opportunistic"
+            opportunistic = eval_mode == "cee_sd_opportunistic"
+            little_prefers_latest = opportunistic and not getattr(
+                args, "disable_rl_update", False
+            )
+            epsilon_decay = getattr(args, "rl_epsilon_decay", None)
+            reward_scale = getattr(args, "rl_reward_scale", None)
+            batch_size = getattr(args, "rl_batch_size", None)
+            if epsilon_decay is None:
+                epsilon_decay = 0.95 if opportunistic else 0.9995
+            if reward_scale is None:
+                reward_scale = 1.0 if opportunistic else 0.01
+            if batch_size is None:
+                batch_size = 16 if opportunistic else 32
             if uses_main_rl:
                 main_spec = get_rl_agent_spec(
                     ROLE_MAIN,
                     little_model=getattr(args, "little_model", None),
                     draft_model=args.draft_model,
                     target_model=args.target_model,
+                    checkpoint_root=checkpoint_root,
                 )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "main_rl_path", main_spec.latest_path),
-                    best_model_path=getattr(
-                        args, "main_rl_best_path", main_spec.best_path
-                    ),
+                    model_path=getattr(args, "main_rl_path", None)
+                    or main_spec.latest_path,
+                    best_model_path=getattr(args, "main_rl_best_path", None)
+                    or main_spec.best_path,
                     agent_name=main_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -278,8 +423,17 @@ class Baselines(Decoding):
                             )
                         ]
                         if path is not None
-                    ],
+                    ]
+                    if legacy_load_paths
+                    else [],
                     threshold_candidates=main_spec.threshold_candidates,
+                    init_seed=init_seed,
+                    init_strategy=init_strategy,
+                    frozen=opportunistic,
+                    prefer_latest=False,
+                    epsilon_decay=epsilon_decay,
+                    reward_scale=reward_scale,
+                    batch_size=batch_size,
                 )
             else:
                 self.rl_adapter = None
@@ -290,13 +444,14 @@ class Baselines(Decoding):
                     little_model=args.little_model,
                     draft_model=args.draft_model,
                     target_model=args.target_model,
+                    checkpoint_root=checkpoint_root,
                 )
                 self.little_rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "little_rl_path", little_spec.latest_path),
-                    best_model_path=getattr(
-                        args, "little_rl_best_path", little_spec.best_path
-                    ),
+                    model_path=getattr(args, "little_rl_path", None)
+                    or little_spec.latest_path,
+                    best_model_path=getattr(args, "little_rl_best_path", None)
+                    or little_spec.best_path,
                     agent_name=little_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -309,8 +464,20 @@ class Baselines(Decoding):
                             )
                         ]
                         if path is not None
-                    ],
+                    ]
+                    if legacy_load_paths
+                    else [],
                     threshold_candidates=little_spec.threshold_candidates,
+                    k_candidates=[1]
+                    if eval_mode == "cee_sd_opportunistic"
+                    else little_spec.topk_candidates,
+                    init_seed=None if init_seed is None else init_seed + 1,
+                    init_strategy=init_strategy,
+                    frozen=False,
+                    prefer_latest=little_prefers_latest,
+                    epsilon_decay=epsilon_decay,
+                    reward_scale=reward_scale,
+                    batch_size=batch_size,
                 )
             else:
                 self.little_rl_adapter = None
@@ -323,6 +490,14 @@ class Baselines(Decoding):
     def load_model(self):
         super().load_model()
         self.load_acc_head()
+
+    def _save_adaptive_rl_checkpoints(self, throughput: float) -> None:
+        if getattr(self.args, "disable_rl_update", False):
+            return
+        if self.rl_adapter is not None:
+            self.rl_adapter.save(throughput)
+        if self.little_rl_adapter is not None:
+            self.little_rl_adapter.save(throughput)
 
     def build_adaptive_tridecoding_caches(
         self,
@@ -382,7 +557,13 @@ class Baselines(Decoding):
             if hasattr(self, "draft_model"):
                 self.acc_head.to(self.draft_model.device)
             self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
-        elif self.args.eval_mode in ["adaptive_tridecoding", "cee_cuhlm"]:
+        elif self.args.eval_mode in [
+            "adaptive_tridecoding",
+            "cee_cuhlm",
+            "cee_dsd",
+            "cee_dssd",
+            "cee_sd_opportunistic",
+        ]:
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
@@ -422,16 +603,30 @@ class Baselines(Decoding):
         gamma: int,
         proposal_top_k: Optional[int],
         adapter: Optional[DecodingAdapter] = None,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        *,
+        need_topk_metadata: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[object], Optional[torch.Tensor]]:
         if adapter is None and proposal_top_k is not None:
-            x, rebuilt_draft_probs = cache.generate_with_rebuilt_topk(
-                prefix,
-                gamma,
-                proposal_top_k,
-            )
-            return x, rebuilt_draft_probs, None
+            if need_topk_metadata and hasattr(
+                cache, "generate_with_rebuilt_topk_metadata"
+            ):
+                x, rebuilt_draft_probs, rebuilt_draft_meta = (
+                    cache.generate_with_rebuilt_topk_metadata(
+                        prefix,
+                        gamma,
+                        proposal_top_k,
+                    )
+                )
+            else:
+                x, rebuilt_draft_probs = cache.generate_with_rebuilt_topk(
+                    prefix,
+                    gamma,
+                    proposal_top_k,
+                )
+                rebuilt_draft_meta = None
+            return x, rebuilt_draft_probs, rebuilt_draft_meta, None
         if adapter is None and proposal_top_k is None:
-            return cache.generate(prefix, gamma), None, None
+            return cache.generate(prefix, gamma), None, None, None
 
         x = prefix.clone()
         rebuilt_rows: list[torch.Tensor] = []
@@ -454,7 +649,7 @@ class Baselines(Decoding):
         rebuilt_draft_probs = None
         if rebuilt_rows:
             rebuilt_draft_probs = torch.cat(rebuilt_rows, dim=1)
-        return x, rebuilt_draft_probs, q
+        return x, rebuilt_draft_probs, None, q
 
     def _select_cuhlm_stage_config(
         self,
@@ -515,7 +710,7 @@ class Baselines(Decoding):
         - All-accepted path: downlink sends only the next sampled token.
         """
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -537,8 +732,8 @@ class Baselines(Decoding):
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -580,8 +775,15 @@ class Baselines(Decoding):
 
         idx: int = 0
 
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
+            prefix = _ensure_token_shape(prefix, label="dssd.prefix")
+            _validate_token_range(
+                prefix, vocab_size=self.vocab_size, label="dssd.prefix"
+            )
 
             idx += 1
 
@@ -597,7 +799,11 @@ class Baselines(Decoding):
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
                 queuing_time += batch_delay
-                _ = target_model_cache.generate(prefix.to(target_device), 1)
+                t0 = time.time()
+                _ = target_model_cache.generate(
+                    _move_token_tensor(prefix, target_device), 1
+                )
+                target_comp_time += time.time() - t0
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
@@ -611,14 +817,25 @@ class Baselines(Decoding):
 
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             rebuilt_draft_probs = None
+            rebuilt_draft_meta = None
+            t0 = time.time()
             if current_proposal_top_k is not None:
-                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(draft_device),
-                    current_gamma,
-                    current_proposal_top_k,
+                x, rebuilt_draft_probs, rebuilt_draft_meta = (
+                    approx_model_cache.generate_with_rebuilt_topk_metadata(
+                        _move_token_tensor(prefix, draft_device),
+                        current_gamma,
+                        current_proposal_top_k,
+                    )
                 )
             else:
-                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+                x = approx_model_cache.generate(
+                    _move_token_tensor(prefix, draft_device), current_gamma
+                )
+            draft_comp_time += time.time() - t0
+            x = _ensure_token_shape(x, label="dssd.generated_x")
+            _validate_token_range(
+                x, vocab_size=self.vocab_size, label="dssd.generated_x"
+            )
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -637,10 +854,11 @@ class Baselines(Decoding):
             comm_simulator.transfer(draft_tokens, draft_token_probs, "edge_cloud")
 
             queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
+            t0 = time.time()
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
+            target_comp_time += time.time() - t0
 
             target_forward_times += 1
-
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
@@ -656,11 +874,17 @@ class Baselines(Decoding):
                     prefix_len,
                     rebuilt_draft_probs,
                 ),
+                draft_topk_history=stage_topk_proposal_history(
+                    rebuilt_draft_meta,
+                    current_gamma,
+                ),
             )
             acceptance_result = compute_acceptance_result(verification_inputs)
-            n = acceptance_result.n
-
-            this_step_accepted_tokens = acceptance_result.accepted_count
+            (
+                this_step_accepted_tokens,
+                n,
+                _,
+            ) = materialize_acceptance(verification_inputs, acceptance_result)
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
@@ -693,19 +917,28 @@ class Baselines(Decoding):
                 comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
                 comm_simulator.transfer(None, target_prob_row, "edge_cloud")
 
-                t = sample_reject_token(
+                residual_probs = compute_residual_distribution(
                     target_prob_row,
                     verification_inputs.draft_probs_batch[
                         :, rejection_offset, : self.vocab_size
                     ],
+                )
+                t = _sample_token_from_probs(
+                    residual_probs,
                     output_device=prefix.device,
+                    vocab_size=self.vocab_size,
+                    label="dssd.reject_sampled_t",
                 )
             else:
                 # All-accepted path: edge sends only the next token.
-                t = sample_accept_token(
+                t = _sample_token_from_probs(
                     target_model_cache.prob_history[:, -1, : self.vocab_size],
                     output_device=prefix.device,
+                    vocab_size=self.vocab_size,
+                    label="dssd.accept_sampled_t",
                 )
+            t = _ensure_token_shape(t, label="dssd.sampled_t")
+            _validate_token_range(t, vocab_size=self.vocab_size, label="dssd.sampled_t")
 
             apply_rollback(
                 approx_model_cache,
@@ -716,6 +949,12 @@ class Baselines(Decoding):
             # 最后检查添加token后是否会超出限制
             if prefix.shape[1] < max_tokens:
                 prefix = torch.cat((prefix, t), dim=1)
+                prefix = _ensure_token_shape(prefix, label="dssd.prefix_after_concat")
+                _validate_token_range(
+                    prefix,
+                    vocab_size=self.vocab_size,
+                    label="dssd.prefix_after_concat",
+                )
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -746,6 +985,8 @@ class Baselines(Decoding):
         )
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -763,6 +1004,13 @@ class Baselines(Decoding):
         )
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
+
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time,
+            queuing_time=queuing_time,
+        )
 
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
@@ -793,7 +1041,7 @@ class Baselines(Decoding):
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -815,8 +1063,8 @@ class Baselines(Decoding):
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         approx_model_cache = KVCacheModel(
             self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
@@ -848,6 +1096,9 @@ class Baselines(Decoding):
 
         idx: int = 0
 
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
         while prefix.shape[1] < max_tokens:
             idx += 1
 
@@ -868,7 +1119,9 @@ class Baselines(Decoding):
             if current_gamma <= 0:
                 # 如果只剩1个token，直接用target model生成
                 queuing_time += batch_delay
+                t0 = time.time()
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
+                target_comp_time += time.time() - t0
                 target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
@@ -882,14 +1135,19 @@ class Baselines(Decoding):
 
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             rebuilt_draft_probs = None
+            rebuilt_draft_meta = None
+            t0 = time.time()
             if current_proposal_top_k is not None:
-                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(draft_device),
-                    current_gamma,
-                    current_proposal_top_k,
+                x, rebuilt_draft_probs, rebuilt_draft_meta = (
+                    approx_model_cache.generate_with_rebuilt_topk_metadata(
+                        prefix.to(draft_device),
+                        current_gamma,
+                        current_proposal_top_k,
+                    )
                 )
             else:
                 x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
+            draft_comp_time += time.time() - t0
             draft_forward_times += current_gamma
             total_drafted_tokens += current_gamma
 
@@ -909,10 +1167,11 @@ class Baselines(Decoding):
                 else approx_model_cache.prob_history[:, -(1 + current_gamma) : -1, :]
             )
             queuing_time += batch_delay
+            t0 = time.time()
             _ = target_model_cache.generate(x.to(target_device), 1)
+            target_comp_time += time.time() - t0
 
             target_forward_times += 1
-
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
@@ -936,18 +1195,24 @@ class Baselines(Decoding):
                     prefix_len,
                     rebuilt_draft_probs,
                 ),
+                draft_topk_history=stage_topk_proposal_history(
+                    rebuilt_draft_meta,
+                    current_gamma,
+                ),
             )
             acceptance_result = compute_acceptance_result(verification_inputs)
-            n = acceptance_result.n
+            accepted_count, n, _ = materialize_acceptance(
+                verification_inputs, acceptance_result
+            )
             should_send_reject_signal = (
                 verification_inputs.actual_gamma < current_gamma
-                or acceptance_result.accepted_count < verification_inputs.actual_gamma
+                or accepted_count < verification_inputs.actual_gamma
             )
 
             if should_send_reject_signal:
                 comm_simulator.send_reject_message("edge_cloud")
 
-            this_step_accepted_tokens = acceptance_result.accepted_count
+            this_step_accepted_tokens = accepted_count
             total_accepted_tokens += this_step_accepted_tokens
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
@@ -1029,6 +1294,8 @@ class Baselines(Decoding):
         )
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["draft_generated_tokens"] = total_drafted_tokens
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -1046,6 +1313,15 @@ class Baselines(Decoding):
         metrics["wall_time"] += queuing_time
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
+
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time,
+            queuing_time=queuing_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
+        )
 
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
@@ -1079,7 +1355,7 @@ class Baselines(Decoding):
         Implement of the method raised in "Communication-Efficient Hybrid Language Model via Uncertainty-Aware Opportunistic and Compressed Transmission"
         """
         if use_precise_comm_sim:
-            comm_simulator = PreciseCUHLM(
+            comm_simulator: CUHLM = PreciseCUHLM(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1088,9 +1364,10 @@ class Baselines(Decoding):
                 ntt_ms_edge_end=ntt_ms_edge_end,
             )
         else:
+            threshold = getattr(self.args, "uncertainty_threshold", 0.8)
             comm_simulator = CUHLM(
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                uncertainty_threshold=0.8,
+                uncertainty_threshold=threshold,
                 dimension="Mbps",
                 use_stochastic=use_stochastic_comm,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
@@ -1099,8 +1376,8 @@ class Baselines(Decoding):
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -1138,22 +1415,22 @@ class Baselines(Decoding):
 
         input_len = prefix.shape[1]
 
-        is_accepted_last_step = False
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
 
         while prefix.shape[1] < max_tokens:
             loop_idx += 1
             prefix_len = prefix.shape[1]
 
-            # 传输 prompt
             if loop_idx == 1:
                 comm_simulator.transfer(prefix, None, link_type="edge_cloud")
 
-            # Sync
+            # Draft generates 1 token
+            t0 = time.time()
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
+            draft_comp_time += time.time() - t0
             queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
 
-            # 无论接受与否，都要传输起草的 token
             comm_simulator.transfer(x, None, link_type="edge_cloud")
             if approx_model_cache.logits_history is not None:
                 current_logit = approx_model_cache.logits_history[
@@ -1162,6 +1439,7 @@ class Baselines(Decoding):
             else:
                 raise ValueError("Approx model logits history is None")
 
+            # Calculate uncertainty BEFORE target call (as in the paper)
             uncertainty = comm_simulator.calculate_uncertainty(
                 current_logit, M=20, theta_max=2.0, draft_token=int(x[0, -1].item())
             )
@@ -1170,47 +1448,22 @@ class Baselines(Decoding):
             )
 
             draft_forward_times += 1
-            if not is_accepted_last_step:
-                target_forward_times += 1
-            else:
-                # 如果上一个token被接受了，等下一次没有被接受，这么做是为了实现简单
-                target_forward_times += 0
-
             total_drafted_tokens += 1
 
-            n = prefix_len + 1 - 1
-
             if not should_transfer:
-                is_accepted_last_step = True
+                # Low uncertainty: truly skip target model (as in the paper)
+                # target_forward_times NOT incremented (target genuinely not called)
+                # target_comp_time NOT incremented
 
-                # 接受draft token - 仿照接受所有token的情况
-                accepted_token = x[:, -1:]  # draft token
+                accepted_token = x[:, -1:]
                 prefix = torch.cat(
                     (prefix.to(accepted_token.device), accepted_token), dim=1
                 )
 
-                comm_simulator.send_accept_message(
-                    linktype="edge_cloud"
-                )  # 发送消息告知应该接受
+                comm_simulator.send_accept_message(linktype="edge_cloud")
 
-                # KVCache管理：仿照接受所有token的情况
-                # 由于我们接受了draft token，需要从target model采样一个新token
-                t = sample(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-
-                # rollback target_model_cache，因为我们已经消费了它的输出
-                # 这里n相当于prefix_len（接受了1个token）
-                n = prefix_len  # 接受了位置为prefix_len of token
-                target_model_cache.rollback(n + 2)  # 等同于rollback(prefix_len + 2)
-
-                # 将新采样的token添加到序列中
-                if prefix.shape[1] < max_tokens:
-                    prefix = torch.cat((prefix, t), dim=1)
-
-                comm_simulator.transfer(
-                    t, None, link_type="edge_cloud"
-                )  # 传输接受的token和新采样的token
+                # No bonus token from target (target was not called)
+                # No KVCache rollback needed (target cache was not advanced)
 
                 if use_early_stopping and self._check_stopping_criteria(
                     prefix, stop_sequences
@@ -1219,11 +1472,13 @@ class Baselines(Decoding):
 
                 continue
 
-            is_accepted_last_step = False
+            # High uncertainty: run target model for verification
+            t0 = time.time()
+            _ = target_model_cache.generate(x.to(target_device), 1)
+            target_comp_time += time.time() - t0
+            target_forward_times += 1
 
-            # 拒绝采样
-
-            # 压缩
+            # Rejection sampling with compressed probability distribution
             current_probs = comm_simulator._get_current_probs(
                 approx_model_cache.prob_history
             )
@@ -1231,10 +1486,7 @@ class Baselines(Decoding):
                 current_probs, vocab_size
             )
 
-            # rebuild_probs = comm_simulator.rebuild_full_probs(compressed_prob)
-            # approx_model_cache.prob_history[:, -1, : self.vocab_size] = (
-            #     rebuild_probs  # 完成概率的重建
-            # )
+            n = prefix_len + 1 - 1
 
             verification_inputs = prepare_verification_inputs(
                 draft_model_cache=approx_model_cache,
@@ -1244,25 +1496,25 @@ class Baselines(Decoding):
                 gamma=1,
             )
             acceptance_result = compute_acceptance_result(verification_inputs)
-            n = acceptance_result.n
+            accepted_count, n, _ = materialize_acceptance(
+                verification_inputs, acceptance_result
+            )
 
             self.color_print(
                 f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
             )
 
-            if acceptance_result.accepted_count < verification_inputs.actual_gamma:
-                comm_simulator.send_reject_message(
-                    linktype="edge_cloud"
-                )  # 发送消息告知应该拒绝、
+            if accepted_count < verification_inputs.actual_gamma:
+                comm_simulator.send_reject_message(linktype="edge_cloud")
                 comm_simulator.transfer(
-                    None,  # 一开始已经传输过
+                    None,
                     approx_model_cache.prob_history[:, -1, : self.vocab_size],
                     link_type="edge_cloud",
                     is_compressed=True,
                     compressed_k=vocab_size,
                 )
 
-            total_accepted_tokens += acceptance_result.accepted_count
+            total_accepted_tokens += accepted_count
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
             prefix = x[:, : n + 1]
@@ -1274,7 +1526,6 @@ class Baselines(Decoding):
             )
 
             if not rollback_plan.all_accepted:
-                # reject someone, sample from the pos n
                 target_prob_row = verification_inputs.target_probs_batch[:, 0, :]
                 t = sample_reject_token(
                     target_prob_row,
@@ -1282,7 +1533,6 @@ class Baselines(Decoding):
                     output_device=prefix.device,
                 )
             else:
-                # all approx model decoding accepted
                 t = sample_accept_token(
                     target_model_cache.prob_history[:, -1, : self.vocab_size],
                     output_device=prefix.device,
@@ -1294,9 +1544,7 @@ class Baselines(Decoding):
                 rollback_plan,
             )
 
-            comm_simulator.transfer(
-                t, None, link_type="edge_cloud"
-            )  # 传输新采样的token
+            comm_simulator.transfer(t, None, link_type="edge_cloud")
             prefix = torch.cat((prefix, t), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
@@ -1312,6 +1560,8 @@ class Baselines(Decoding):
 
         metrics["draft_forward_times"] = draft_forward_times
         metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = prefix.shape[1] - input_len
         metrics["draft_generated_tokens"] = draft_forward_times
         metrics["draft_accepted_tokens"] = total_accepted_tokens
@@ -1323,6 +1573,14 @@ class Baselines(Decoding):
             (prefix.shape[1] - input_len) / metrics["wall_time"]
             if metrics["wall_time"] > 0
             else 0
+        )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time,
+            queuing_time=queuing_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
         )
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["computation_time"] = elapsed_time
@@ -1362,9 +1620,9 @@ class Baselines(Decoding):
         **kwargs,
     ):
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        little_device = self.get_model_input_device(self.little_model)
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         caches = self.build_adaptive_tridecoding_caches(transfer_top_k)
         little_model_cache = caches["little"]
@@ -1372,7 +1630,7 @@ class Baselines(Decoding):
         target_model_cache = caches["target"]
 
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1408,12 +1666,6 @@ class Baselines(Decoding):
         sum_top_k = 0
 
         idx = 0
-        # Keep the target forward metric aligned with CUHLM's original accounting:
-        # when the previous draft->target step fully accepts, the next target
-        # verification call is treated as part of the same logical verification chain
-        # and is not counted again, even though target_model_cache.generate() still runs.
-        is_draft_accepted_last_step = False
-
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
@@ -1432,11 +1684,14 @@ class Baselines(Decoding):
 
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             little_rebuilt_probs = None
+            little_rebuilt_meta = None
             if current_proposal_top_k is not None:
-                x, little_rebuilt_probs = little_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(little_device),
-                    self.args.gamma2,
-                    current_proposal_top_k,
+                x, little_rebuilt_probs, little_rebuilt_meta = (
+                    little_model_cache.generate_with_rebuilt_topk_metadata(
+                        prefix.to(little_device),
+                        self.args.gamma2,
+                        current_proposal_top_k,
+                    )
                 )
             else:
                 x = little_model_cache.generate(
@@ -1486,6 +1741,10 @@ class Baselines(Decoding):
                     prefix_len,
                     little_rebuilt_probs,
                 ),
+                draft_topk_history=stage_topk_proposal_history(
+                    little_rebuilt_meta,
+                    self.args.gamma2,
+                ),
             )
             n1 = first_stage_acceptance.n
             little_accepted_this_iter = first_stage_acceptance.accepted_count
@@ -1521,13 +1780,25 @@ class Baselines(Decoding):
                     transfer_top_k,
                 )
 
-                t = sample_reject_token(
-                    draft_model_cache.prob_history[:, n1, : self.vocab_size],
-                    first_stage_inputs.draft_probs_batch[
-                        :, n1 - (prefix_len - 1), : self.vocab_size
-                    ],
-                    output_device=little_device,
-                )
+                rejection_offset = n1 - (prefix_len - 1)
+                if little_rebuilt_meta is not None:
+                    t = sample_reject_token_from_topk_proposal(
+                        draft_model_cache.prob_history[:, n1, : self.vocab_size],
+                        stage_topk_proposal_history(
+                            little_rebuilt_meta,
+                            self.args.gamma2,
+                        ),
+                        rejection_offset,
+                        output_device=little_device,
+                    )
+                else:
+                    t = sample_reject_token(
+                        draft_model_cache.prob_history[:, n1, : self.vocab_size],
+                        first_stage_inputs.draft_probs_batch[
+                            :, rejection_offset, : self.vocab_size
+                        ],
+                        output_device=little_device,
+                    )
 
                 draft_model_cache.rollback(
                     first_stage_rollback_plan.target_end_pos_reject
@@ -1557,7 +1828,7 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 prefix.to(draft_device),
                 self.args.gamma1,
@@ -1606,6 +1877,10 @@ class Baselines(Decoding):
                     prefix_len,
                     draft_rebuilt_probs,
                 ),
+                draft_topk_history=stage_topk_proposal_history(
+                    draft_rebuilt_meta,
+                    total_gamma,
+                ),
             )
             n2 = second_stage_acceptance.n
             draft_accepted_this_iter = second_stage_acceptance.accepted_count
@@ -1640,13 +1915,25 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
-                t = sample_reject_token(
-                    target_model_cache.prob_history[:, n2, : self.vocab_size],
-                    second_stage_inputs.draft_probs_batch[
-                        :, n2 - (prefix_len - 1), : self.vocab_size
-                    ],
-                    output_device=draft_device,
-                )
+                rejection_offset = n2 - (prefix_len - 1)
+                if draft_rebuilt_meta is not None:
+                    t = sample_reject_token_from_topk_proposal(
+                        target_model_cache.prob_history[:, n2, : self.vocab_size],
+                        stage_topk_proposal_history(
+                            draft_rebuilt_meta,
+                            total_gamma,
+                        ),
+                        rejection_offset,
+                        output_device=draft_device,
+                    )
+                else:
+                    t = sample_reject_token(
+                        target_model_cache.prob_history[:, n2, : self.vocab_size],
+                        second_stage_inputs.draft_probs_batch[
+                            :, rejection_offset, : self.vocab_size
+                        ],
+                        output_device=draft_device,
+                    )
                 new_generated_token = prefix[:, prefix_len:]
 
                 target_model_cache.rollback(
@@ -1725,6 +2012,13 @@ class Baselines(Decoding):
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
 
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+        )
+
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
@@ -1756,9 +2050,9 @@ class Baselines(Decoding):
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        little_device = self.get_model_input_device(self.little_model)
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -1784,7 +2078,7 @@ class Baselines(Decoding):
         target_model_cache.vocab_size = self.vocab_size
 
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1813,6 +2107,11 @@ class Baselines(Decoding):
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
         wall_time = 0
+        little_comp_time = 0.0
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+        arp_overhead_time = 0.0
+        dra_overhead_time = 0.0
 
         idx = 0
 
@@ -1836,11 +2135,12 @@ class Baselines(Decoding):
             edge_end_comm_start = comm_simulator.edge_end_comm_time
             step_start_time = time.time()
 
-            x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+            x, little_rebuilt_probs, little_rebuilt_meta, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 prefix.to(little_device),
                 self.args.gamma2,
                 current_proposal_top_k,
+                need_topk_metadata=True,
             )
 
             if self.little_rl_adapter is not None:
@@ -1882,20 +2182,27 @@ class Baselines(Decoding):
                     actual_gamma2,
                 )
                 comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                little_stage_kwargs = {
+                    "proposer_cache": little_model_cache,
+                    "verifier_cache": draft_model_cache,
+                    "x": x,
+                    "prefix_len": prefix_len,
+                    "gamma": actual_gamma2,
+                    "output_device": little_device,
+                    "draft_probs_override": cast(torch.Tensor, little_stage_probs),
+                }
+                little_topk_history = stage_topk_proposal_history(
+                    little_rebuilt_meta,
+                    actual_gamma2,
+                )
+                if little_topk_history is not None:
+                    little_stage_kwargs["draft_topk_history"] = little_topk_history
                 (
                     little_accepted_this_iter,
                     n1,
                     t,
                     little_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=little_model_cache,
-                    verifier_cache=draft_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=actual_gamma2,
-                    output_device=little_device,
-                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
-                )
+                ) = resolve_stage_verification(**little_stage_kwargs)
                 if not little_all_accepted:
                     comm_simulator.send_reject_message("edge_end")
             else:
@@ -1960,7 +2267,7 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+            x, draft_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 prefix.to(draft_device),
                 self.args.gamma1,
@@ -2130,6 +2437,15 @@ class Baselines(Decoding):
             if metrics["wall_time"] > 0
             else 0
         )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+            little_comp_time=little_comp_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
+        )
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
         )
@@ -2141,12 +2457,6 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-        if self.rl_adapter is not None:
-            self.rl_adapter.save(metrics.get("throughput"))
-        if self.little_rl_adapter is not None:
-            self.little_rl_adapter.save(metrics.get("throughput"))
-
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
@@ -2156,6 +2466,9 @@ class Baselines(Decoding):
         metrics["edge_cloud_draft_len_history"] = (
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
+
+        metrics["arp_overhead_time"] = arp_overhead_time
+        metrics["dra_overhead_time"] = dra_overhead_time
 
         return prefix, metrics
 
@@ -2174,7 +2487,7 @@ class Baselines(Decoding):
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2199,8 +2512,8 @@ class Baselines(Decoding):
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -2276,7 +2589,7 @@ class Baselines(Decoding):
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
 
             self.adapter.reset_step()
-            x, rebuilt_draft_probs, q = self._generate_with_optional_rebuilt_proposal(
+            x, rebuilt_draft_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 approx_model_cache,
                 prefix.to(draft_device),
                 current_gamma,
@@ -2372,8 +2685,8 @@ class Baselines(Decoding):
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
+            step_end_time = time.time()
             if self.rl_adapter is not None:
-                step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = (
                     comm_simulator.edge_cloud_comm_time - step_comm_time_start
@@ -2475,6 +2788,12 @@ class Baselines(Decoding):
         metrics["throughput"] = (
             generated_tokens / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
         )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time,
+            queuing_time=queuing_time,
+        )
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
@@ -2510,6 +2829,7 @@ class Baselines(Decoding):
         ntt_ms_edge_end=1,
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
+        _opportunistic_first_stage: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if prefix.dtype != torch.long:
@@ -2518,9 +2838,9 @@ class Baselines(Decoding):
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        little_device = self.get_model_input_device(self.little_model)
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -2546,7 +2866,7 @@ class Baselines(Decoding):
         target_model_cache.vocab_size = self.vocab_size
 
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2589,7 +2909,6 @@ class Baselines(Decoding):
         draft_accepted_transfer_topk_rank_history: List[int] = []
 
         idx = 0
-        is_draft_accepted_last_step = False
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -2599,6 +2918,31 @@ class Baselines(Decoding):
         start_event.record(stream=torch.cuda.current_stream())
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
+
+        cuhlm_uncertainty_sim: Optional[CUHLM] = None
+        if _opportunistic_first_stage:
+            _, little_uncertainty_threshold = self._select_cuhlm_stage_config(
+                stage="little_to_draft",
+                transfer_top_k=transfer_top_k,
+                uncertainty_threshold=getattr(
+                    self.args, "uncertainty_threshold", 0.8
+                ),
+            )
+            cuhlm_uncertainty_sim = CUHLM(
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.args.edge_end_bandwidth,
+                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                uncertainty_threshold=little_uncertainty_threshold,
+                vocab_size=self.vocab_size,
+                dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
+            )
+
+        little_comp_time = 0.0
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
 
         while prefix.shape[1] < max_tokens:
             idx += 1
@@ -2612,20 +2956,19 @@ class Baselines(Decoding):
             # 第一层 speculative
             edge_end_comm_start = comm_simulator.edge_end_comm_time
 
-            # x = little_model_cache.generate(
-            #     prefix.to(little_device), self.args.gamma2
-            # )
-
             self.small_draft_adapter.reset_step()
             adapter = self.small_draft_adapter
             assert adapter.device != torch.device("cpu")
-            x, little_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+            little_gamma = 1 if _opportunistic_first_stage else self.args.gamma2
+            t0 = time.time()
+            x, little_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 _move_token_tensor(prefix, little_device),
-                self.args.gamma2,
+                little_gamma,
                 current_proposal_top_k,
                 adapter=adapter,
             )
+            little_comp_time += time.time() - t0
 
             if q is None:
                 raise ValueError(
@@ -2643,12 +2986,14 @@ class Baselines(Decoding):
                 latency = comm_simulator.ntt_edge_end
                 acc_probs = getattr(self.small_draft_adapter, "step_acc_probs", [])
 
-                if q is None:
-                    raise ValueError("Logits q should not be None for RL adapter")
-
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.little_rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, little_entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    little_entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
                 # transfer_top_k = next_topk  # edge-end 通常不压缩
@@ -2657,51 +3002,101 @@ class Baselines(Decoding):
 
             actual_gamma2 = x.shape[1] - prefix_len
 
-            _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
-
             little_model_forward_times += actual_gamma2
-            draft_model_forward_times += 1
             total_little_model_generated_tokens += actual_gamma2
 
             n1: int = prefix_len + actual_gamma2 - 1
-
             little_accepted_this_iter = 0
-            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
-            if actual_gamma2 > 0:
+            little_all_accepted = True
+
+            skip_first_stage_draft = False
+            if _opportunistic_first_stage and actual_gamma2 > 0:
                 little_stage_probs = stage_prob_history(
                     little_model_cache,
                     prefix_len,
                     little_rebuilt_probs,
                 )
-                draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs,
-                    x,
-                    prefix_len,
-                    actual_gamma2,
+                assert cuhlm_uncertainty_sim is not None
+                if self.little_rl_adapter is not None:
+                    cuhlm_uncertainty_sim.uncertainty_threshold = float(
+                        self.small_draft_adapter.threshold
+                    )
+                little_token_id = int(x[:, prefix_len].item())
+                if little_model_cache.logits_history is None:
+                    raise ValueError(
+                        "Little model logits history is required for "
+                        "opportunistic CEE-SD"
+                    )
+                current_little_logits = little_model_cache.logits_history[
+                    :, prefix_len - 1, : self.vocab_size
+                ]
+                uncertainty = cuhlm_uncertainty_sim.calculate_uncertainty(
+                    current_little_logits,
+                    M=20,
+                    theta_max=2.0,
+                    draft_token=little_token_id,
                 )
-                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                should_transfer, _ = cuhlm_uncertainty_sim.determine_transfer_strategy(
+                    uncertainty,
+                    little_stage_probs[:, prefix_len - 1, : self.vocab_size],
+                )
+                skip_first_stage_draft = not should_transfer
 
-            if actual_gamma2 > 0:
-                (
-                    little_accepted_this_iter,
-                    n1,
-                    t,
-                    little_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=little_model_cache,
-                    verifier_cache=draft_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=actual_gamma2,
-                    output_device=little_device,
-                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
-                )
-            else:
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
+            if skip_first_stage_draft:
+                little_accepted_this_iter = actual_gamma2
+                n1 = prefix_len + actual_gamma2 - 1
                 little_all_accepted = True
+                t = torch.empty(
+                    (prefix.shape[0], 0), dtype=torch.long, device=little_device
+                )
+                comm_simulator.simulate_transfer(8, "edge_end")
+                comm_simulator.send_accept_message("edge_end")
+            else:
+                # Pre-launch draft verification on GPU (overlaps with CPU code below)
+                t0 = time.time()
+                _ = draft_model_cache.generate(
+                    _move_token_tensor(x, draft_device), 1
+                )
+                draft_comp_time += time.time() - t0
+                draft_model_forward_times += 1
+
+                # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
+                if actual_gamma2 > 0:
+                    if little_stage_probs is None:
+                        little_stage_probs = stage_prob_history(
+                            little_model_cache,
+                            prefix_len,
+                            little_rebuilt_probs,
+                        )
+                    draft_tokens, draft_probs = collect_verification_payload(
+                        little_stage_probs,
+                        x,
+                        prefix_len,
+                        actual_gamma2,
+                    )
+                    comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+
+                if actual_gamma2 > 0:
+                    (
+                        little_accepted_this_iter,
+                        n1,
+                        t,
+                        little_all_accepted,
+                    ) = resolve_stage_verification(
+                        proposer_cache=little_model_cache,
+                        verifier_cache=draft_model_cache,
+                        x=x,
+                        prefix_len=prefix_len,
+                        gamma=actual_gamma2,
+                        output_device=little_device,
+                        draft_probs_override=cast(torch.Tensor, little_stage_probs),
+                    )
+                else:
+                    t = sample_accept_token(
+                        draft_model_cache.prob_history[:, -1, : self.vocab_size],
+                        output_device=little_device,
+                    )
+                    little_all_accepted = True
 
             total_little_model_accepted_tokens += little_accepted_this_iter
             little_accept_rate_history.append(
@@ -2727,12 +3122,12 @@ class Baselines(Decoding):
                 tps_part = little_accepted_this_iter / (
                     step_time + step_comm_time + 1e-9
                 )
-                reward = math.exp(min(tps_part, 100) / 20.0)
-
-                # 平滑的幂次惩罚
-                if actual_gamma2 > 1:
-                    acc_rate = little_accepted_this_iter / actual_gamma2
-                    reward *= acc_rate**2
+                reward = compute_stage_reward(
+                    tps_part=tps_part,
+                    generated_tokens=actual_gamma2,
+                    accepted_tokens=little_accepted_this_iter,
+                    opportunistic=_opportunistic_first_stage,
+                )
 
                 if not getattr(self.args, "disable_rl_update", False):
                     self.little_rl_adapter.step(reward)
@@ -2773,10 +3168,14 @@ class Baselines(Decoding):
 
             # 传输索引和 token t (一次 RTT)
             # 包含了 rejection overhead (如果发生) 和 probs (如果发生)
-            total_bytes = (
-                INT_SIZE + t.element_size() * t.numel() + prob_bytes + reject_overhead
-            )
-            comm_simulator.simulate_transfer(total_bytes, "edge_end")
+            if not skip_first_stage_draft:
+                total_bytes = (
+                    INT_SIZE
+                    + t.element_size() * t.numel()
+                    + prob_bytes
+                    + reject_overhead
+                )
+                comm_simulator.simulate_transfer(total_bytes, "edge_end")
 
             _validate_token_range(
                 t,
@@ -2795,25 +3194,33 @@ class Baselines(Decoding):
             edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             step_start_time = time.time()
 
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
-
-            # x = draft_model_cache.generate(
-            #     prefix.to(draft_device), self.args.gamma1
-            # )
-
+            # Pre-launch GPU draft generation (overlaps with CPU comm sim below)
             self.draft_target_adapter.reset_step()
             adapter = self.draft_target_adapter
             assert adapter.device != torch.device("cpu")
-            x, draft_rebuilt_probs, q = self._generate_with_optional_rebuilt_proposal(
+            t0 = time.time()
+            x, draft_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 _move_token_tensor(prefix, draft_device),
                 self.args.gamma1,
                 current_proposal_top_k,
                 adapter=adapter,
             )
+            draft_comp_time += time.time() - t0
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
+
+            actual_gamma1 = x.shape[1] - prefix.shape[1]
+
+            queuing_time += batch_delay
+            # Pre-launch target forward on GPU (overlaps with RL/entropy CPU code below)
+            t0 = time.time()
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
+            target_comp_time += time.time() - t0
 
             if q is None:
                 raise ValueError(
@@ -2836,21 +3243,20 @@ class Baselines(Decoding):
 
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, draft_entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    draft_entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 # 更新 top-k 压缩参数和 ARP 阈值
                 transfer_top_k = next_topk
                 self.draft_target_adapter.threshold = next_threshold
                 dra_overhead_time += time.time() - dra_start
 
-            actual_gamma1 = x.shape[1] - prefix.shape[1]
-
-            queuing_time += batch_delay
-            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
-
             draft_model_forward_times += actual_gamma1
-            if not is_draft_accepted_last_step:
-                target_model_forward_times += 1
+            target_model_forward_times += 1
             total_draft_model_generated_tokens += (
                 new_generated_token.shape[1] + actual_gamma1
             )
@@ -2971,8 +3377,6 @@ class Baselines(Decoding):
             else:
                 new_generated_token = prefix[:, prefix_len:]
 
-            is_draft_accepted_last_step = draft_all_accepted
-
             prefix = torch.cat((prefix, t), dim=1)
             # 传输索引和 token t (各链路一次 RTT)
             token_size = t.element_size() * t.numel()
@@ -3006,6 +3410,9 @@ class Baselines(Decoding):
         metrics["little_forward_times"] = little_model_forward_times
         metrics["draft_forward_times"] = draft_model_forward_times
         metrics["target_forward_times"] = target_model_forward_times
+        metrics["little_computation_time"] = little_comp_time
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = generated_tokens
         metrics["little_generated_tokens"] = total_little_model_generated_tokens
         metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
@@ -3017,6 +3424,15 @@ class Baselines(Decoding):
             metrics["generated_tokens"] / metrics["wall_time"]
             if metrics["wall_time"] > 0
             else 0
+        )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+            little_comp_time=little_comp_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
         )
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -3032,14 +3448,9 @@ class Baselines(Decoding):
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
 
-        if self.rl_adapter is not None:
-            dra_start = time.time()
-            self.rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
-        if self.little_rl_adapter is not None:
-            dra_start = time.time()
-            self.little_rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
+        dra_start = time.time()
+        self._save_adaptive_rl_checkpoints(metrics["throughput"])
+        metrics["dra_overhead_time"] += time.time() - dra_start
 
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
@@ -3051,52 +3462,67 @@ class Baselines(Decoding):
         metrics["edge_cloud_draft_len_history"] = (
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
-        metrics["little_entropy_history"] = little_entropy_history
-        metrics["draft_entropy_history"] = draft_entropy_history
-        metrics["little_accept_rate_history"] = little_accept_rate_history
-        metrics["draft_accept_rate_history"] = draft_accept_rate_history
-        metrics["little_accepted_vocab_rank_history"] = (
-            little_accepted_vocab_rank_history
-        )
-        metrics["draft_accepted_vocab_rank_history"] = draft_accepted_vocab_rank_history
-        metrics["little_accepted_in_transfer_topk_history"] = (
-            little_accepted_in_transfer_topk_history
-        )
-        metrics["draft_accepted_in_transfer_topk_history"] = (
-            draft_accepted_in_transfer_topk_history
-        )
-        metrics["little_accepted_transfer_topk_rank_history"] = (
-            little_accepted_transfer_topk_rank_history
-        )
-        metrics["draft_accepted_transfer_topk_rank_history"] = (
-            draft_accepted_transfer_topk_rank_history
-        )
 
         return prefix, metrics
+
+    @Register.register_decoding("cee_sd_opportunistic")
+    @torch.no_grad()
+    def cee_sd_opportunistic(
+        self,
+        prefix: torch.Tensor,
+        transfer_top_k: int | None = 300,
+        use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
+        ntt_ms_edge_cloud: float = 10,
+        ntt_ms_edge_end: float = 1,
+        use_early_stopping: bool = False,
+        stop_sequences: list[str] | None = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, DecodingMetrics]:
+        return self.adaptive_tridecoding(
+            prefix,
+            transfer_top_k=transfer_top_k,
+            use_precise_comm_sim=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            use_early_stopping=use_early_stopping,
+            stop_sequences=stop_sequences,
+            _opportunistic_first_stage=True,
+            **kwargs,
+        )
 
     # Two-stage CUHLM variant using uncertainty-gated acceptance on both layers.
     @Register.register_decoding("cee_cuhlm")
     @torch.no_grad()
     def cee_cuhlm(
         self,
-        prefix,
-        transfer_top_k=300,
-        use_precise_comm_sim=False,
+        prefix: torch.Tensor,
+        max_tokens: int | None = None,
+        # --- 传输控制 ---
+        transfer_top_k: int | None = 300,
+        use_precise_comm_sim: bool = True,
         use_stochastic_comm: bool = False,
-        ntt_ms_edge_cloud=10,
-        ntt_ms_edge_end=1,
+        ntt_ms_edge_cloud: float | int = 0,
+        ntt_ms_edge_end: float | int = 0,
         use_early_stopping: bool = False,
-        stop_sequences: Optional[List[str]] = None,
-        **kwargs,
-    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        stop_sequences: list[str] | None = None,
+    ) -> tuple[torch.Tensor, DecodingMetrics]:
+        if max_tokens is None:
+            max_tokens = prefix.shape[1] + self.args.max_tokens + self.args.gamma1 + self.args.gamma2 + 1
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record(stream=torch.cuda.current_stream())
+
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
+        little_device = self.get_model_input_device(self.little_model)
+
+        # --- Communication Simulator ---
         if use_precise_comm_sim:
-            comm_simulator = PreciseCUHLM(
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
+            comm_simulator: CUHLM = PreciseCUHLM(
+                bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
                 send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
             )
         else:
             comm_simulator = CUHLM(
@@ -3112,37 +3538,27 @@ class Baselines(Decoding):
 
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
-        max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
-        _, uncertainty_threshold = self._select_cuhlm_stage_config(
-            stage="shared",
-            transfer_top_k=transfer_top_k,
-            uncertainty_threshold=comm_simulator.uncertainty_threshold,
-        )
-        comm_simulator.uncertainty_threshold = uncertainty_threshold
 
-        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
-        draft_top_k = (
-            transfer_top_k
-            if (transfer_top_k is not None and transfer_top_k > 0)
-            else self.args.top_k
-        )
+        # 如果不使用精准通信模拟器，则应用推荐的初始阈值
+        if not use_precise_comm_sim:
+            _, uncertainty_threshold = self._select_cuhlm_stage_config(
+                stage="shared",
+                transfer_top_k=transfer_top_k,
+                uncertainty_threshold=comm_simulator.uncertainty_threshold,
+            )
+            comm_simulator.uncertainty_threshold = uncertainty_threshold
 
+        # --- KVCache Models ---
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
+            self.little_model, self.args.temp, 0, 0,
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+            self.draft_model, self.args.temp, 0, 0,
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
+            self.target_model, self.args.temp, 0, 0,
         )
         target_model_cache.vocab_size = self.vocab_size
 
@@ -3150,6 +3566,9 @@ class Baselines(Decoding):
         little_model_forward_times = 0
         draft_model_forward_times = 0
         target_model_forward_times = 0
+        little_comp_time = 0.0
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
         total_little_model_generated_tokens = 0
         total_draft_model_generated_tokens = 0
         total_little_model_accepted_tokens = 0
@@ -3159,12 +3578,11 @@ class Baselines(Decoding):
         dra_overhead_time = 0.0
 
         idx = 0
-        is_draft_accepted_last_step = False
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
-        current_tokens = prefix.clone()  # 用于计算生成token数
+        current_tokens = prefix.clone()
 
         start_event.record(stream=torch.cuda.current_stream())
 
@@ -3185,93 +3603,90 @@ class Baselines(Decoding):
             little_stage_probs: Optional[torch.Tensor] = None
             draft_stage_probs: Optional[torch.Tensor] = None
 
-            # 第一层 speculative (Little -> Draft)
-            x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+            # Stage 1 speculative (Little -> Draft) with rejection sampling
+            # Replaces CUHLM so Draft's distribution governs what enters Stage 2,
+            # improving distribution consistency for the Stage 2 CUHLM check.
+            t0 = time.time()
+            x, little_rebuilt_probs, little_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 _move_token_tensor(prefix, little_device),
                 self.args.gamma2,
                 current_proposal_top_k,
                 adapter=None,
+                need_topk_metadata=False,
             )
+            little_comp_time += time.time() - t0
 
             actual_gamma2 = x.shape[1] - prefix_len
 
+            t0 = time.time()
             _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
+            draft_comp_time += time.time() - t0
 
             little_model_forward_times += actual_gamma2
             draft_model_forward_times += 1
             total_little_model_generated_tokens += actual_gamma2
 
             n1: int = prefix_len + actual_gamma2 - 1
-
             little_accepted_this_iter = 0
             little_all_accepted = True
+            prob_bytes = 0.0
+            reject_overhead = 0.0
+
             if actual_gamma2 > 0:
                 little_stage_probs = stage_prob_history(
-                    little_model_cache,
-                    prefix_len,
-                    little_rebuilt_probs,
+                    little_model_cache, prefix_len, little_rebuilt_probs,
                 )
                 draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs,
-                    x,
-                    prefix_len,
-                    actual_gamma2,
+                    little_stage_probs, x, prefix_len, actual_gamma2,
                 )
                 comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
-                original_threshold = comm_simulator.uncertainty_threshold
-                comm_simulator.uncertainty_threshold = little_uncertainty_threshold
-                for i in range(actual_gamma2):
-                    logit_idx = prefix_len + i - 1
-                    assert little_model_cache.logits_history is not None, (
-                        "Little model logits history is None"
-                    )
-                    current_logit = little_model_cache.logits_history[
-                        :, logit_idx, : self.vocab_size
-                    ]
-                    current_token_id = int(x[:, prefix_len + i].item())
-                    uncertainty = comm_simulator.calculate_uncertainty(
-                        current_logit,
-                        M=20,
-                        theta_max=2.0,
-                        draft_token=current_token_id,
-                    )
-                    should_transfer, vocab_size = (
-                        comm_simulator.determine_transfer_strategy(
-                            uncertainty,
-                            cast(torch.Tensor, little_stage_probs)[
-                                :, logit_idx, : self.vocab_size
-                            ],
-                        )
-                    )
-                    if should_transfer:
-                        n1 = prefix_len + i - 1
-                        prob_size = vocab_size * 4
-                        token_size = 8
-                        comm_simulator.simulate_transfer(
-                            token_size + prob_size,
-                            "edge_end",
-                        )
-                        comm_simulator.send_reject_message("edge_end")
-                        little_all_accepted = False
-                        break
 
+                # Standard rejection sampling: Draft verifies Little's tokens
+                verification_inputs = prepare_verification_inputs(
+                    draft_model_cache=little_model_cache,
+                    target_model_cache=draft_model_cache,
+                    x=x, prefix_len=prefix_len, gamma=actual_gamma2,
+                    draft_probs_override=little_stage_probs,
+                )
+                acceptance_result = compute_acceptance_result(verification_inputs)
+                little_accepted_this_iter, n1, little_all_accepted = materialize_acceptance(
+                    verification_inputs, acceptance_result
+                )
+
+                # Communication simulation (matching per-token granularity)
+                for i in range(little_accepted_this_iter):
                     comm_simulator.simulate_transfer(8, "edge_end")
                     comm_simulator.send_accept_message("edge_end")
-                    little_accepted_this_iter += 1
-                comm_simulator.uncertainty_threshold = original_threshold
+                if not little_all_accepted:
+                    reject_pos = little_accepted_this_iter
+                    prob_data = verification_inputs.draft_probs_batch[
+                        :, reject_pos, : self.vocab_size
+                    ]
+                    prob_bytes = prob_data.element_size() * prob_data.numel()
+                    if little_transfer_top_k is not None and little_transfer_top_k > 0:
+                        prob_bytes = little_transfer_top_k * prob_data.element_size()
+                    reject_overhead = 6.0
+                    comm_simulator.simulate_transfer(8 + prob_bytes, "edge_end")
+                    comm_simulator.send_reject_message("edge_end")
 
-                if little_all_accepted:
+                # Rollback and sample bonus/replacement token
+                rollback_plan = build_rollback_plan(
+                    prefix_len, verification_inputs.actual_gamma, n1
+                )
+                apply_rollback(little_model_cache, draft_model_cache, rollback_plan)
+
+                if rollback_plan.all_accepted:
                     t = sample_accept_token(
                         draft_model_cache.prob_history[:, -1, : self.vocab_size],
                         output_device=little_device,
                     )
                 else:
-                    t = sample_accept_token(
-                        draft_model_cache.prob_history[:, n1, : self.vocab_size],
+                    t = sample_reject_token(
+                        verification_inputs.target_probs_batch[:, reject_pos, :],
+                        verification_inputs.draft_probs_batch[:, reject_pos, :],
                         output_device=little_device,
                     )
-                    draft_model_cache.rollback(n1 + 1)
             else:
                 t = sample_accept_token(
                     draft_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -3282,20 +3697,6 @@ class Baselines(Decoding):
 
             assert n1 >= prefix_len - 1
             prefix = x[:, : n1 + 1]
-            little_model_cache.rollback(n1 + 1)
-
-            prob_bytes = 0.0
-            reject_overhead = 0.0
-
-            if not little_all_accepted:
-                prob_data = cast(torch.Tensor, little_stage_probs)[
-                    :, n1, : self.vocab_size
-                ]
-                prob_bytes = prob_data.element_size() * prob_data.numel()
-                if little_transfer_top_k is not None and little_transfer_top_k > 0:
-                    prob_bytes = little_transfer_top_k * prob_data.element_size()
-
-                reject_overhead = 6.0
 
             total_bytes = (
                 INT_SIZE + t.element_size() * t.numel() + prob_bytes + reject_overhead
@@ -3319,13 +3720,16 @@ class Baselines(Decoding):
             else:
                 comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
-            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+            t0 = time.time()
+            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 _move_token_tensor(prefix, draft_device),
                 self.args.gamma1,
                 proposal_top_k(draft_transfer_top_k),
                 adapter=None,
+                need_topk_metadata=False,
             )
+            draft_comp_time += time.time() - t0
             _validate_token_range(
                 x,
                 vocab_size=self.vocab_size,
@@ -3333,45 +3737,28 @@ class Baselines(Decoding):
             )
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
-
-            queuing_time += batch_delay
-            _validate_token_range(
-                x,
-                vocab_size=self.vocab_size,
-                label="cee_cuhlm.before_target_generate",
-            )
-            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
-
-            draft_model_forward_times += actual_gamma1
-            if not is_draft_accepted_last_step:
-                target_model_forward_times += 1
-            total_draft_model_generated_tokens += (
-                new_generated_token.shape[1] + actual_gamma1
-            )
-
             total_gamma = new_generated_token.shape[1] + actual_gamma1
 
+            draft_model_forward_times += actual_gamma1
+            total_draft_model_generated_tokens += total_gamma
+
+            # Compute draft_stage_probs BEFORE target call (only needs draft_model_cache)
             draft_accepted_this_iter = 0
             draft_stage_probs = stage_prob_history(
                 draft_model_cache,
                 prefix_len + new_generated_token.shape[1],
                 draft_rebuilt_probs,
             )
-            verification_inputs = prepare_verification_inputs(
-                draft_model_cache=draft_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=total_gamma,
-                draft_probs_override=draft_stage_probs,
-            )
-            effective_gamma = verification_inputs.actual_gamma
-            n2 = prefix_len + effective_gamma - 1
-            reject_offset: Optional[int] = None
 
-            # CUHLM Uncertainty Check Loop
+            # CUHLM Uncertainty Check Loop (BEFORE target call — as in the paper)
             original_threshold = comm_simulator.uncertainty_threshold
             comm_simulator.uncertainty_threshold = draft_uncertainty_threshold
+            reject_offset: Optional[int] = None
+            effective_gamma = min(
+                total_gamma,
+                draft_stage_probs.shape[1] - prefix_len,
+            )
+            n2 = prefix_len + effective_gamma - 1
             for i in range(effective_gamma):
                 logit_idx = prefix_len + i - 1
                 assert draft_model_cache.logits_history is not None, (
@@ -3389,14 +3776,13 @@ class Baselines(Decoding):
                 should_transfer, vocab_size = (
                     comm_simulator.determine_transfer_strategy(
                         uncertainty,
-                        verification_inputs.draft_probs_batch[:, i, : self.vocab_size],
+                        draft_stage_probs[:, prefix_len - 1 + i, : self.vocab_size],
                     )
                 )
 
                 if should_transfer:
-                    # Simulation: Transfer Token + Compressed Probs
-                    prob_size = vocab_size * 4  # float32
-                    token_size = 8  # int64
+                    prob_size = vocab_size * 4
+                    token_size = 8
                     total_bytes_transfer = token_size + prob_size
                     comm_simulator.simulate_transfer(
                         total_bytes_transfer, "edge_cloud", topk=vocab_size, draft_len=1
@@ -3420,7 +3806,24 @@ class Baselines(Decoding):
             reject_overhead = 0.0
 
             if reject_offset is not None:
-                # Rejected
+                # High uncertainty: run target model for verification
+                queuing_time += batch_delay
+                t0 = time.time()
+                _ = target_model_cache.generate(
+                    _move_token_tensor(x, target_device), 1
+                )
+                target_comp_time += time.time() - t0
+                target_model_forward_times += 1
+
+                verification_inputs = prepare_verification_inputs(
+                    draft_model_cache=draft_model_cache,
+                    target_model_cache=target_model_cache,
+                    x=x,
+                    prefix_len=prefix_len,
+                    gamma=total_gamma,
+                    draft_probs_override=draft_stage_probs,
+                )
+
                 prob_data = verification_inputs.draft_probs_batch[
                     :, reject_offset, : self.vocab_size
                 ]
@@ -3430,25 +3833,28 @@ class Baselines(Decoding):
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
-                # A rejection breaks the logical verification chain, so the next
-                # target verification should contribute a new counted forward.
-                is_draft_accepted_last_step = False
-            else:
-                new_generated_token = prefix[:, prefix_len:]
-                # Mirror CUHLM's metric convention: consecutive fully accepted
-                # target verifications are collapsed into a single counted forward.
-                is_draft_accepted_last_step = True
 
-            n2, t, _ = _finalize_cuhlm_verification(
-                proposer_cache=draft_model_cache,
-                verifier_cache=target_model_cache,
-                verification_inputs=verification_inputs,
-                x=x,
-                prefix_len=prefix_len,
-                accepted_count=draft_accepted_this_iter,
-                reject_offset=reject_offset,
-                output_device=draft_device,
-            )
+                n2, t, _ = _finalize_cuhlm_verification(
+                    proposer_cache=draft_model_cache,
+                    verifier_cache=target_model_cache,
+                    verification_inputs=verification_inputs,
+                    x=x,
+                    prefix_len=prefix_len,
+                    accepted_count=draft_accepted_this_iter,
+                    reject_offset=reject_offset,
+                    output_device=draft_device,
+                )
+            else:
+                # All tokens pass CUHLM check: truly skip target model
+                # target_model_forward_times NOT incremented (target genuinely not called)
+                new_generated_token = prefix[:, prefix_len:]
+
+                # Sample bonus token from draft model (target not available)
+                bonus_probs = draft_stage_probs[:, n2, : self.vocab_size]
+                t = sample_accept_token(bonus_probs, output_device=draft_device)
+
+                # Rollback draft model to n2+1 for proper KVCache continuation
+                draft_model_cache.rollback(n2 + 1)
 
             prefix = x[:, : n2 + 1]
             if n2 <= little_model_cache.current_length:
@@ -3467,7 +3873,7 @@ class Baselines(Decoding):
             comm_simulator.simulate_transfer(
                 total_bytes,
                 "edge_cloud",
-                topk=draft_transfer_top_k,
+                topk=cast(int, draft_transfer_top_k),
                 draft_len=effective_gamma,
             )
             comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
@@ -3502,6 +3908,15 @@ class Baselines(Decoding):
             metrics["generated_tokens"] / metrics["wall_time"]
             if metrics["wall_time"] > 0
             else 0
+        )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+            little_comp_time=little_comp_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
         )
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -3558,9 +3973,9 @@ class Baselines(Decoding):
         Uses serial verification similar to DSSD but in a 3-layer architecture.
         """
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        little_device = self.get_model_input_device(self.little_model)
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
@@ -3581,7 +3996,7 @@ class Baselines(Decoding):
         target_model_cache.vocab_size = self.vocab_size
 
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3632,11 +4047,12 @@ class Baselines(Decoding):
             draft_stage_probs: Optional[torch.Tensor] = None
 
             # --- Layer 1: Little -> Draft (Serial) ---
-            x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+            x, little_rebuilt_probs, little_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 prefix.to(little_device),
                 self.args.gamma2,
                 current_proposal_top_k,
+                need_topk_metadata=True,
             )
             # Sync with Draft Model
             _ = draft_model_cache.generate(x.to(draft_device), 1)
@@ -3660,20 +4076,27 @@ class Baselines(Decoding):
                     self.args.gamma2,
                 )
                 comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                little_stage_kwargs = {
+                    "proposer_cache": little_model_cache,
+                    "verifier_cache": draft_model_cache,
+                    "x": x,
+                    "prefix_len": prefix_len,
+                    "gamma": self.args.gamma2,
+                    "output_device": little_device,
+                    "draft_probs_override": cast(torch.Tensor, little_stage_probs),
+                }
+                little_topk_history = stage_topk_proposal_history(
+                    little_rebuilt_meta,
+                    self.args.gamma2,
+                )
+                if little_topk_history is not None:
+                    little_stage_kwargs["draft_topk_history"] = little_topk_history
                 (
                     little_accepted_this_iter,
                     n1,
                     t,
                     little_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=little_model_cache,
-                    verifier_cache=draft_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=self.args.gamma2,
-                    output_device=little_device,
-                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
-                )
+                ) = resolve_stage_verification(**little_stage_kwargs)
                 if not little_all_accepted:
                     comm_simulator.send_reject_message("edge_end")
             else:
@@ -3709,22 +4132,25 @@ class Baselines(Decoding):
             new_generated_token_layer1 = prefix[:, prefix_len:]
 
             # --- Layer 2: Draft -> Target (Serial) ---
+            # Pre-launch GPU work (draft + target) to overlap with CPU comm simulation
 
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
-
-            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
+            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 prefix.to(draft_device),
                 self.args.gamma1,
                 current_proposal_top_k,
+                need_topk_metadata=True,
             )
 
             queuing_time += batch_delay
-            # Sync with Target Model
+            # Sync with Target Model (runs on GPU, overlaps with CPU comm below)
             _ = target_model_cache.generate(x.to(target_device), 1)
+
+            # Communication simulation (pure CPU): overlaps with target GPU forward above
+            if idx == 1:
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+            else:
+                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
 
             draft_model_forward_times += self.args.gamma1
             target_model_forward_times += 1
@@ -3757,20 +4183,45 @@ class Baselines(Decoding):
                     draft_probs_second,
                     "edge_cloud",
                 )
+                draft_stage_kwargs = {
+                    "proposer_cache": draft_model_cache,
+                    "verifier_cache": target_model_cache,
+                    "x": x,
+                    "prefix_len": prefix_len,
+                    "gamma": total_gamma_layer2,
+                    "output_device": draft_device,
+                    "draft_probs_override": cast(torch.Tensor, draft_stage_probs),
+                }
+                prefix_topk_history_dssd = None
+                if new_generated_token_layer1.shape[1] > 0:
+                    prefix_prob_rows = draft_model_cache.prob_history[
+                        :,
+                        prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
+                        :,
+                    ]
+                    prefix_topk_history_dssd = build_stage_prefix_topk_history(
+                        prefix_prob_rows,
+                        current_proposal_top_k,
+                    )
+                draft_stage_topk_history = merge_stage_topk_histories(
+                    prefix_topk_history_dssd,
+                    stage_topk_proposal_history(
+                        draft_rebuilt_meta,
+                        self.args.gamma1,
+                    ),
+                )
+                draft_stage_topk_history = stage_topk_proposal_history(
+                    draft_stage_topk_history,
+                    total_gamma_layer2,
+                )
+                if draft_stage_topk_history is not None:
+                    draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
                 (
                     draft_accepted_this_iter,
                     n2,
                     t,
                     draft_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=draft_model_cache,
-                    verifier_cache=target_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=total_gamma_layer2,
-                    output_device=draft_device,
-                    draft_probs_override=cast(torch.Tensor, draft_stage_probs),
-                )
+                ) = resolve_stage_verification(**draft_stage_kwargs)
                 if not draft_all_accepted:
                     comm_simulator.send_reject_message("edge_cloud")
             else:
@@ -3851,6 +4302,13 @@ class Baselines(Decoding):
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
 
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+        )
+
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
@@ -3883,9 +4341,9 @@ class Baselines(Decoding):
         Uses parallel/batch verification (send all probs at once) similar to DSD.
         """
         max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.little_model.device
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
+        little_device = self.get_model_input_device(self.little_model)
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
 
         draft_top_k = (
             transfer_top_k
@@ -3905,7 +4363,7 @@ class Baselines(Decoding):
         target_model_cache.vocab_size = self.vocab_size
 
         if use_precise_comm_sim:
-            comm_simulator = PreciseCommunicationSimulator(
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3944,6 +4402,16 @@ class Baselines(Decoding):
 
         current_tokens = prefix.clone()
 
+        # Pre-allocate prefix buffer to avoid O(n²) torch.cat during generation
+        # x can grow up to max_tokens + gamma2 + gamma1 + 1 inside the loop
+        buffer_size = max_tokens + self.args.gamma1 + self.args.gamma2 + 1
+        prefix_buffer = torch.empty(
+            1, buffer_size, dtype=prefix.dtype, device=prefix.device
+        )
+        prefix_len_tracker = prefix.shape[1]
+        prefix_buffer[:, :prefix_len_tracker] = prefix
+        prefix = prefix_buffer[:, :prefix_len_tracker]
+
         start_event.record(stream=torch.cuda.current_stream())
 
         comm_simulator.transfer(prefix, None, "edge_end")
@@ -3952,21 +4420,31 @@ class Baselines(Decoding):
             idx += 1
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
-            little_stage_probs: Optional[torch.Tensor] = None
-            draft_stage_probs: Optional[torch.Tensor] = None
 
             # --- Layer 1: Little -> Draft (Parallel) ---
-            x, little_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
-                little_model_cache,
-                prefix.to(little_device),
-                self.args.gamma2,
-                current_proposal_top_k,
-            )
-            # Transfer all tokens
-            comm_simulator.transfer(x, None, "edge_end")
+            if current_proposal_top_k is not None and hasattr(
+                little_model_cache, "generate_with_topk_metadata_only"
+            ):
+                x, little_topk_history = little_model_cache.generate_with_topk_metadata_only(
+                    prefix.to(little_device),
+                    self.args.gamma2,
+                    current_proposal_top_k,
+                )
+            else:
+                x, little_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
+                    little_model_cache,
+                    prefix.to(little_device),
+                    self.args.gamma2,
+                    current_proposal_top_k,
+                    need_topk_metadata=False,
+                )[:2]
+                little_topk_history = None
 
-            # Sync
+            # Launch draft verification on GPU immediately (overlaps with CPU comm below)
             _ = draft_model_cache.generate(x.to(draft_device), 1)
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+            comm_simulator.transfer(x, None, "edge_end")
 
             little_model_forward_times += self.args.gamma2
             draft_model_forward_times += 1
@@ -3974,45 +4452,46 @@ class Baselines(Decoding):
 
             n1: int = prefix_len + self.args.gamma2 - 1
 
-            # Transfer all probs
-            # Need to slice probs relevant to the generated tokens
-            # generated indices: prefix_len to prefix_len + gamma2 - 1
-            start_idx = prefix_len - 1  # indices in prob history
-            end_idx = prefix_len + self.args.gamma2 - 1
-            # Note: _prob_history includes prompt history.
-
-            little_stage_probs = stage_prob_history(
-                little_model_cache,
-                prefix_len,
-                little_rebuilt_probs,
-            )
-            prob_chunk = little_stage_probs[:, start_idx:end_idx, :]
-            comm_simulator.transfer(
-                None,
-                prob_chunk,
-                "edge_end",
-                transfer_top_k is not None and transfer_top_k > 0,
-                transfer_top_k,
-            )
-
             little_accepted_this_iter = 0
             if self.args.gamma2 > 0:
-                (
-                    little_accepted_this_iter,
-                    n1,
-                    t,
-                    little_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=little_model_cache,
-                    verifier_cache=draft_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=self.args.gamma2,
-                    output_device=little_device,
-                    draft_probs_override=cast(torch.Tensor, little_stage_probs),
-                )
-                if not little_all_accepted:
-                    comm_simulator.send_reject_message("edge_end")
+                l1_actual_gamma = min(self.args.gamma2, x.shape[1] - prefix_len)
+                if l1_actual_gamma <= 0:
+                    little_accepted_this_iter = 0
+                    n1 = prefix_len - 1
+                    t = sample(
+                        draft_model_cache.prob_history[
+                            :, -1, : draft_model_cache.vocab_size
+                        ]
+                    ).to(little_device)
+                    little_all_accepted = True
+                    little_model_cache.rollback(n1 + 1)
+                    draft_model_cache.rollback(n1 + 2)
+                else:
+                    _simulate_topk_prob_transfer(
+                        comm_simulator,
+                        link_type="edge_end",
+                        draft_len=l1_actual_gamma,
+                        transfer_top_k=transfer_top_k,
+                        prob_dtype=draft_model_cache.prob_history.dtype,
+                    )
+                    little_stage_kwargs = {
+                        "proposer_cache": little_model_cache,
+                        "verifier_cache": draft_model_cache,
+                        "x": x,
+                        "prefix_len": prefix_len,
+                        "gamma": self.args.gamma2,
+                        "output_device": little_device,
+                    }
+                    if little_topk_history is not None:
+                        little_stage_kwargs["draft_topk_history"] = little_topk_history
+                    (
+                        little_accepted_this_iter,
+                        n1,
+                        t,
+                        little_all_accepted,
+                    ) = resolve_stage_verification(**little_stage_kwargs)
+                    if not little_all_accepted:
+                        comm_simulator.send_reject_message("edge_end")
             else:
                 t = sample_accept_token(
                     draft_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -4023,36 +4502,52 @@ class Baselines(Decoding):
             total_little_model_accepted_tokens += little_accepted_this_iter
 
             assert n1 >= prefix_len - 1
-            prefix = x[:, : n1 + 1]
+            n1_plus1 = n1 + 1
+            prefix_buffer[:, :n1_plus1] = x[:, :n1_plus1]
+            prefix_len_tracker = n1_plus1
 
-            # Transfer sampled token index back
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            # Transfer sampled token index + token back (merged)
+            comm_simulator.simulate_transfer(INT_SIZE + t.element_size() * t.numel(), "edge_end")
 
-            prefix = torch.cat((prefix, t), dim=1)
+            prefix_buffer[:, prefix_len_tracker : prefix_len_tracker + t.shape[1]] = t
+            prefix_len_tracker += t.shape[1]
+            prefix = prefix_buffer[:, :prefix_len_tracker]
 
             new_generated_token_layer1 = prefix[:, prefix_len:]
 
             # --- Layer 2: Draft -> Target (Parallel) ---
+            # Pre-launch GPU work (draft) to overlap with CPU comm simulation
 
+            if current_proposal_top_k is not None and hasattr(
+                draft_model_cache, "generate_with_topk_metadata_only"
+            ):
+                x, draft_topk_history = draft_model_cache.generate_with_topk_metadata_only(
+                    prefix.to(draft_device),
+                    self.args.gamma1,
+                    current_proposal_top_k,
+                )
+            else:
+                x, draft_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
+                    draft_model_cache,
+                    prefix.to(draft_device),
+                    self.args.gamma1,
+                    current_proposal_top_k,
+                    need_topk_metadata=False,
+                )[:2]
+                draft_topk_history = None
+
+            # Transfer generated tokens by draft model (CPU: overlaps with GPU above)
+            speculated_tokens = x[:, -self.args.gamma1 :]
+
+            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
             if idx == 1:
                 comm_simulator.transfer(prefix, None, "edge_cloud")
             else:
                 comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
-
-            x, draft_rebuilt_probs, _ = self._generate_with_optional_rebuilt_proposal(
-                draft_model_cache,
-                prefix.to(draft_device),
-                self.args.gamma1,
-                current_proposal_top_k,
-            )
-
-            # Transfer generated tokens by draft model
-            speculated_tokens = x[:, -self.args.gamma1 :]
             comm_simulator.transfer(speculated_tokens, None, "edge_cloud")
 
             queuing_time += batch_delay
-            # Sync
+            # Sync with Target Model (runs on GPU while CPU does verification prep below)
             _ = target_model_cache.generate(x.to(target_device), 1)
 
             draft_model_forward_times += self.args.gamma1
@@ -4064,44 +4559,66 @@ class Baselines(Decoding):
             total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
             n2: int = prefix_len + total_gamma_layer2 - 1
 
-            # Transfer probs for verification
-            # The range of tokens to verify is [prefix_len, prefix_len + total_gamma_layer2)
-            start_idx = prefix_len - 1
-            end_idx = prefix_len + total_gamma_layer2 - 1
-            draft_stage_probs = stage_prob_history(
-                draft_model_cache,
-                prefix_len + new_generated_token_layer1.shape[1],
-                draft_rebuilt_probs,
-            )
-            prob_chunk = draft_stage_probs[:, start_idx:end_idx, :]
-
-            comm_simulator.transfer(
-                None,
-                prob_chunk,
-                "edge_cloud",
-                transfer_top_k is not None and transfer_top_k > 0,
-                transfer_top_k,
-            )
-
             draft_accepted_this_iter = 0
 
             if total_gamma_layer2 > 0:
-                (
-                    draft_accepted_this_iter,
-                    n2,
-                    t,
-                    draft_all_accepted,
-                ) = resolve_stage_verification(
-                    proposer_cache=draft_model_cache,
-                    verifier_cache=target_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=total_gamma_layer2,
-                    output_device=draft_device,
-                    draft_probs_override=cast(torch.Tensor, draft_stage_probs),
-                )
-                if not draft_all_accepted:
-                    comm_simulator.send_reject_message("edge_cloud")
+                l2_actual_gamma = min(total_gamma_layer2, x.shape[1] - prefix_len)
+                if l2_actual_gamma <= 0:
+                    draft_accepted_this_iter = 0
+                    n2 = prefix_len - 1
+                    t = sample(
+                        target_model_cache.prob_history[
+                            :, -1, : target_model_cache.vocab_size
+                        ]
+                    ).to(draft_device)
+                    draft_all_accepted = True
+                    draft_model_cache.rollback(n2 + 1)
+                    target_model_cache.rollback(n2 + 2)
+                else:
+                    _simulate_topk_prob_transfer(
+                        comm_simulator,
+                        link_type="edge_cloud",
+                        draft_len=l2_actual_gamma,
+                        transfer_top_k=transfer_top_k,
+                        prob_dtype=target_model_cache.prob_history.dtype,
+                    )
+                    prefix_topk_history = None
+                    if new_generated_token_layer1.shape[1] > 0:
+                        prefix_prob_rows = draft_model_cache.prob_history[
+                            :,
+                            prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
+                            :,
+                        ]
+                        prefix_topk_history = build_stage_prefix_topk_history(
+                            prefix_prob_rows,
+                            current_proposal_top_k,
+                        )
+                    draft_stage_topk_history = merge_stage_topk_histories(
+                        prefix_topk_history,
+                        draft_topk_history,
+                    )
+                    draft_stage_topk_history = stage_topk_proposal_history(
+                        draft_stage_topk_history,
+                        total_gamma_layer2,
+                    )
+                    draft_stage_kwargs = {
+                        "proposer_cache": draft_model_cache,
+                        "verifier_cache": target_model_cache,
+                        "x": x,
+                        "prefix_len": prefix_len,
+                        "gamma": total_gamma_layer2,
+                        "output_device": draft_device,
+                    }
+                    if draft_stage_topk_history is not None:
+                        draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
+                    (
+                        draft_accepted_this_iter,
+                        n2,
+                        t,
+                        draft_all_accepted,
+                    ) = resolve_stage_verification(**draft_stage_kwargs)
+                    if not draft_all_accepted:
+                        comm_simulator.send_reject_message("edge_cloud")
             else:
                 t = sample_accept_token(
                     target_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -4112,17 +4629,20 @@ class Baselines(Decoding):
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
             assert n2 >= prefix_len - 1
-            prefix = x[:, : n2 + 1]
+            n2_plus1 = n2 + 1
+            prefix_buffer[:, :n2_plus1] = x[:, :n2_plus1]
+            prefix_len_tracker = n2_plus1
             if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(n2 + 1)
+                little_model_cache.rollback(n2_plus1)
 
-            prefix = torch.cat((prefix, t), dim=1)
+            prefix_buffer[:, prefix_len_tracker : prefix_len_tracker + t.shape[1]] = t
+            prefix_len_tracker += t.shape[1]
+            prefix = prefix_buffer[:, :prefix_len_tracker]
 
-            # Transfer index back
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            # Transfer index + token back to both links (merged)
+            _t_bytes = INT_SIZE + t.element_size() * t.numel()
+            comm_simulator.simulate_transfer(_t_bytes, "edge_cloud")
+            comm_simulator.simulate_transfer(_t_bytes, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -4168,6 +4688,13 @@ class Baselines(Decoding):
         metrics["wall_time"] += metrics["queuing_time"]
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
+
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
+            queuing_time=queuing_time,
+        )
 
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (

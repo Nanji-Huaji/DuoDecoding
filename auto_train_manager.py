@@ -80,14 +80,12 @@ class TrainingManager:
         self.status_file = self.checkpoint_dir / "training_status.json"
         self.best_checkpoints_dir = self.checkpoint_dir / "best"
         self.main_rl_spec = get_rl_agent_spec(
-            "adaptive_tridecoding",
             ROLE_MAIN,
             little_model=self.models[0],
             draft_model=self.models[1],
             target_model=self.models[2],
         )
         self.little_rl_spec = get_rl_agent_spec(
-            "adaptive_tridecoding",
             ROLE_LITTLE,
             little_model=self.models[0],
             draft_model=self.models[1],
@@ -229,7 +227,7 @@ class TrainingManager:
             return 4
         elif total_size >= 35:  # 35B+需要3个GPU (例如 1.7B + 14B + 32B = 47.7B)
             return 3
-        elif total_size >= 15:  # 15B+需要2个GPU (例如 0.6B + 1.7B + 14B = 16.3B)
+        elif total_size >= 25:  # 25B+需要2个GPU (保守估计，A6000 49GB 可装下 ~25B)
             return 2
         else:
             return 1  # 默认单GPU
@@ -420,6 +418,7 @@ class TrainingManager:
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_ids
         env["PYTHONUNBUFFERED"] = "1"
+        env["DUODEC_SKIP_VALIDATE"] = "1"  # skip per-step token validation to avoid CPU-GPU sync
 
         print(
             f"[{datetime.now()}] 模型系列 {self.model_series_name} 需要 {required_gpu_count} 个GPU"
@@ -429,7 +428,7 @@ class TrainingManager:
         # Pass model series to training script
         env["MODEL_SERIES_NAME"] = self.model_series_name
         env["LITTLE_MODEL"] = self.models[0]
-        env["DRAFT_MODEL"] = self.models[1] if not self.args.adaptive_decoding else None
+        env["DRAFT_MODEL"] = self.models[1]
         env["TARGET_MODEL"] = self.models[2]
 
         env["MAIN_RL_PATH"] = self.main_rl_spec.latest_path
