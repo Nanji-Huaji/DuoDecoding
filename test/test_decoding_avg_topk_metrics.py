@@ -42,6 +42,8 @@ class _FakeCommSimulator:
     def __init__(self, *args, **kwargs):
         self.edge_cloud_comm_time = 0.0
         self.edge_end_comm_time = 0.0
+        self.total_serialization_time = 0.0
+        self.total_fixed_latency_time = 0.0
         self.edge_cloud_data = 0
         self.edge_end_data = 0
         self.cloud_end_data = 0

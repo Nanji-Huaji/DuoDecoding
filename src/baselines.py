@@ -313,6 +313,18 @@ def _add_per_model_wall_time(
     metrics["target_computation_time"] = target_comp_time
 
 
+def _record_communication_components(
+    metrics: DecodingMetrics,
+    comm_simulator: CommunicationSimulator,
+) -> None:
+    metrics["communication_serialization_time"] = (
+        comm_simulator.total_serialization_time
+    )
+    metrics["communication_fixed_latency_time"] = (
+        comm_simulator.total_fixed_latency_time
+    )
+
+
 def get_decoding_fn(instance: "Baselines", name: str) -> Callable:
     if hasattr(instance, name):
         method = getattr(instance, name)
@@ -717,6 +729,7 @@ class Baselines(Decoding):
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -726,6 +739,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
                 use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
@@ -1023,6 +1037,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("dist_spec")
@@ -1048,6 +1063,7 @@ class Baselines(Decoding):
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -1057,6 +1073,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
                 use_stochastic=use_stochastic_comm,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
@@ -1334,6 +1351,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("uncertainty_decoding")
@@ -1362,6 +1380,7 @@ class Baselines(Decoding):
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             threshold = getattr(self.args, "uncertainty_threshold", 0.8)
@@ -1372,6 +1391,7 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -1603,6 +1623,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("tridecoding")
@@ -1648,6 +1669,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         # Metrics tracking
@@ -2030,6 +2052,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("ceesd_w/o_arp")
@@ -2096,6 +2119,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         # Metrics tracking
@@ -2470,6 +2494,7 @@ class Baselines(Decoding):
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("adaptive_decoding")
@@ -2504,6 +2529,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -2814,6 +2840,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("adaptive_tridecoding")
@@ -2884,6 +2911,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         # Metrics tracking
@@ -2938,6 +2966,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         little_comp_time = 0.0
@@ -3162,7 +3191,11 @@ class Baselines(Decoding):
                     ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
-                    prob_bytes = transfer_top_k * prob_data.element_size()
+                    prob_bytes = CommunicationSimulator._compressed_topk_payload_bytes(
+                        compressed_k=transfer_top_k,
+                        seq_length=1,
+                        prob_element_size=prob_data.element_size(),
+                    )
 
                 reject_overhead = 6.0
 
@@ -3369,7 +3402,11 @@ class Baselines(Decoding):
                 ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
-                    prob_bytes = transfer_top_k * prob_data.element_size()
+                    prob_bytes = CommunicationSimulator._compressed_topk_payload_bytes(
+                        compressed_k=transfer_top_k,
+                        seq_length=1,
+                        prob_element_size=prob_data.element_size(),
+                    )
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
@@ -3463,6 +3500,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("cee_sd_opportunistic")
@@ -3522,7 +3560,12 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CUHLM = PreciseCUHLM(
                 bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
+                channel_gain=1e-8,
                 send_power_watt=0.5,
+                noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             comm_simulator = CUHLM(
@@ -3533,6 +3576,7 @@ class Baselines(Decoding):
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
                 use_stochastic=use_stochastic_comm,
             )
 
@@ -3665,7 +3709,13 @@ class Baselines(Decoding):
                     ]
                     prob_bytes = prob_data.element_size() * prob_data.numel()
                     if little_transfer_top_k is not None and little_transfer_top_k > 0:
-                        prob_bytes = little_transfer_top_k * prob_data.element_size()
+                        prob_bytes = (
+                            CommunicationSimulator._compressed_topk_payload_bytes(
+                                compressed_k=little_transfer_top_k,
+                                seq_length=1,
+                                prob_element_size=prob_data.element_size(),
+                            )
+                        )
                     reject_overhead = 6.0
                     comm_simulator.simulate_transfer(8 + prob_bytes, "edge_end")
                     comm_simulator.send_reject_message("edge_end")
@@ -3829,7 +3879,11 @@ class Baselines(Decoding):
                 ]
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if draft_transfer_top_k is not None and draft_transfer_top_k > 0:
-                    prob_bytes = draft_transfer_top_k * prob_data.element_size()
+                    prob_bytes = CommunicationSimulator._compressed_topk_payload_bytes(
+                        compressed_k=draft_transfer_top_k,
+                        seq_length=1,
+                        prob_element_size=prob_data.element_size(),
+                    )
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
@@ -3952,6 +4006,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("cee_dssd")
@@ -4003,6 +4058,7 @@ class Baselines(Decoding):
                 noise_power_watt=1e-10,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -4014,6 +4070,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         # Metrics tracking
@@ -4320,6 +4377,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics
 
     @Register.register_decoding("cee_dsd")
@@ -4381,6 +4439,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
 
         # Metrics tracking
@@ -4707,4 +4766,5 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        _record_communication_components(metrics, comm_simulator)
         return prefix, metrics

@@ -67,6 +67,8 @@ class DecodingMetrics(TypedDict):
     wall_time: float
     throughput: float
     communication_time: float
+    communication_serialization_time: float
+    communication_fixed_latency_time: float
     computation_time: float
     edge_end_comm_time: float
     edge_cloud_data_bytes: int | float
@@ -116,6 +118,8 @@ def get_empty_metrics() -> DecodingMetrics:
         wall_time=0.0,
         throughput=0.0,
         communication_time=0.0,
+        communication_serialization_time=0.0,
+        communication_fixed_latency_time=0.0,
         computation_time=0.0,
         edge_end_comm_time=0.0,
         edge_cloud_data_bytes=0,

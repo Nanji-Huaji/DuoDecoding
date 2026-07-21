@@ -49,6 +49,8 @@ class ExpPrint:
         "wall_time",
         "throughput",
         "communication_time",
+        "communication_serialization_time",
+        "communication_fixed_latency_time",
         "computation_time",
         "edge_end_comm_time",
         "edge_cloud_data_bytes",

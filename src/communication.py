@@ -1,7 +1,7 @@
 import logging
 import math
 import warnings
-from typing import List, Literal, Optional, Tuple, TypedDict, cast, Protocol
+from typing import List, Literal, Optional, Tuple, TypedDict, cast
 
 import torch
 
@@ -11,6 +11,9 @@ from src.utils import read_trace_file, return_closest_mean_index
 class TransferUnit(TypedDict):
     data_size_bytes: int | float
     transfer_time: float
+    serialization_time: float
+    fixed_latency_time: float
+    bandwidth_bytes_per_second: float
 
 
 class Statistics(TypedDict):
@@ -64,7 +67,11 @@ class CommunicationSimulator:
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
+        min_bandwidth_mbps: Optional[float] = None,
     ):
+        self._validate_configured_bandwidth(bandwidth_edge_cloud)
+        self._validate_configured_bandwidth(bandwidth_edge_end)
+        self._validate_configured_bandwidth(bandwidth_cloud_end)
         self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
             bandwidth_edge_cloud, dimension
         )
@@ -81,9 +88,13 @@ class CommunicationSimulator:
             cloud_end=[],
         )
         self.transfer_top_k = transfer_top_k
+        self.min_bandwidth_bytes_per_second = self._minimum_bandwidth_bytes_per_second(
+            min_bandwidth_mbps
+        )
 
-        self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
-        self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
+        # NTT parameters model one-way fixed latency for each transfer.
+        self.ntt_edge_end = ntt_ms_edge_end / 1000
+        self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000
 
         self.connect_times = {"edge_end": 0, "cloud_end": 0, "edge_cloud": 0}
 
@@ -115,7 +126,6 @@ class CommunicationSimulator:
             else:
                 mbps_to_dim = 1.0
 
-            floor_val = 5.0 * mbps_to_dim
             self.trace_file_dict = {
                 "driving": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/driving/5g/throughput.list",
                 "static": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/static/5g/away_p1.list",
@@ -126,8 +136,7 @@ class CommunicationSimulator:
             self.trace_index = 0
 
             if set_mean_bandwidth and bandwidth_edge_cloud is not None:
-                # target_mean is in the current dimension
-                target_mean = max(0.1 * mbps_to_dim, bandwidth_edge_cloud)
+                target_mean = bandwidth_edge_cloud
                 # return_closest_mean_index expects Mbps
                 run_id = return_closest_mean_index(
                     trace_file, target_mean / mbps_to_dim
@@ -137,24 +146,18 @@ class CommunicationSimulator:
 
                 raw_data = read_trace_file(trace_file, run_id)
                 if raw_data:
+                    self._validate_trace_samples(raw_data)
                     current_mean = sum(raw_data) / len(raw_data)  # This is in Mbps
                     if current_mean > 0:
                         scale_factor = (target_mean / mbps_to_dim) / current_mean
-                        # Apply scale factor and ensure a reasonable floor (5 Mbps in current dimension)
                         self.trace_data = [
-                            max(floor_val, x * scale_factor * mbps_to_dim)
+                            x * scale_factor * mbps_to_dim
                             for x in raw_data
                         ]
-
-                        # Re-calculate mean and adjust to match exactly if needed
-                        actual_mean = sum(self.trace_data) / len(self.trace_data)
-                        if actual_mean > 0:
-                            re_scale = target_mean / actual_mean
-                            self.trace_data = [
-                                max(floor_val, x * re_scale) for x in self.trace_data
-                            ]
                     else:
-                        self.trace_data = [target_mean] * len(raw_data)
+                        raise ValueError(
+                            "Cannot scale a zero-mean stochastic bandwidth trace."
+                        )
                 else:
                     self.trace_data = [target_mean]
             else:
@@ -162,30 +165,120 @@ class CommunicationSimulator:
                 if not self.trace_data:
                     run_id = return_closest_mean_index(trace_file, None)
                     self.trace_data = read_trace_file(trace_file, run_id)
-                # Convert from Mbps to target dimension and apply floor
+                self._validate_trace_samples(self.trace_data)
+                self.trace_data = [x * mbps_to_dim for x in self.trace_data]
+            if self.min_bandwidth_bytes_per_second is not None:
+                floor_in_dimension = self.min_bandwidth_bytes_per_second / (
+                    _convert_to_bytes_per_second(1.0, cast(Dimension, dimension))
+                )
                 self.trace_data = [
-                    max(floor_val, x * mbps_to_dim) for x in self.trace_data
+                    max(sample, floor_in_dimension) for sample in self.trace_data
                 ]
+
+    @staticmethod
+    def _validate_configured_bandwidth(bandwidth: float) -> None:
+        if not math.isinf(bandwidth) and (
+            not math.isfinite(bandwidth) or bandwidth <= 0
+        ):
+            raise ValueError("Finite bandwidth must be greater than zero.")
+
+    @staticmethod
+    def _validate_trace_samples(samples: list[float]) -> None:
+        if any(not math.isfinite(sample) or sample < 0 for sample in samples):
+            raise ValueError(
+                "Stochastic trace samples must be non-negative and finite."
+            )
+
+    @staticmethod
+    def _minimum_bandwidth_bytes_per_second(
+        min_bandwidth_mbps: Optional[float],
+    ) -> Optional[float]:
+        if min_bandwidth_mbps is None:
+            return None
+        if not math.isfinite(min_bandwidth_mbps) or min_bandwidth_mbps <= 0:
+            raise ValueError(
+                "min_bandwidth_mbps must be finite and greater than zero."
+            )
+        return _convert_to_bytes_per_second(min_bandwidth_mbps, "Mbps")
+
+    @staticmethod
+    def _effective_bandwidth_bytes_per_second(
+        bandwidth_bytes_per_second: float,
+        min_bandwidth_bytes_per_second: Optional[float],
+    ) -> float:
+        if math.isinf(bandwidth_bytes_per_second):
+            return bandwidth_bytes_per_second
+        if (
+            not math.isfinite(bandwidth_bytes_per_second)
+            or bandwidth_bytes_per_second < 0
+        ):
+            raise ValueError("Finite bandwidth must be greater than zero.")
+        if min_bandwidth_bytes_per_second is None:
+            return bandwidth_bytes_per_second
+        return max(bandwidth_bytes_per_second, min_bandwidth_bytes_per_second)
+
+    def _link_fixed_latency_time(self, link_type: LinkType) -> float:
+        if link_type == "edge_end":
+            return self.ntt_edge_end
+        if link_type == "edge_cloud":
+            return self.ntt_edge_cloud
+        return self.ntt_edge_cloud + self.ntt_edge_end
+
+    def _aggregate_transfer_component(
+        self, component: str, link_type: LinkType
+    ) -> float:
+        return sum(unit[component] for unit in self.stats[link_type])
 
     @property
     def edge_cloud_comm_time(self):
-        return sum(
-            self.stats["edge_cloud"][i]["transfer_time"]
-            for i in range(len(self.stats["edge_cloud"]))
-        )
+        return self._aggregate_transfer_component("transfer_time", "edge_cloud")
 
     @property
     def edge_end_comm_time(self):
-        return sum(
-            self.stats["edge_end"][i]["transfer_time"]
-            for i in range(len(self.stats["edge_end"]))
-        )
+        return self._aggregate_transfer_component("transfer_time", "edge_end")
 
     @property
     def cloud_end_comm_time(self):
-        return sum(
-            self.stats["cloud_end"][i]["transfer_time"]
-            for i in range(len(self.stats["cloud_end"]))
+        return self._aggregate_transfer_component("transfer_time", "cloud_end")
+
+    @property
+    def edge_cloud_serialization_time(self) -> float:
+        return self._aggregate_transfer_component("serialization_time", "edge_cloud")
+
+    @property
+    def edge_end_serialization_time(self) -> float:
+        return self._aggregate_transfer_component("serialization_time", "edge_end")
+
+    @property
+    def cloud_end_serialization_time(self) -> float:
+        return self._aggregate_transfer_component("serialization_time", "cloud_end")
+
+    @property
+    def edge_cloud_fixed_latency_time(self) -> float:
+        return self._aggregate_transfer_component("fixed_latency_time", "edge_cloud")
+
+    @property
+    def edge_end_fixed_latency_time(self) -> float:
+        return self._aggregate_transfer_component("fixed_latency_time", "edge_end")
+
+    @property
+    def cloud_end_fixed_latency_time(self) -> float:
+        return self._aggregate_transfer_component("fixed_latency_time", "cloud_end")
+
+    @property
+    def total_serialization_time(self) -> float:
+        return (
+            self.edge_cloud_serialization_time
+            + self.edge_end_serialization_time
+            + self.cloud_end_serialization_time
+        )
+
+    @property
+    def total_fixed_latency_time(self) -> float:
+        return (
+            self.edge_cloud_fixed_latency_time
+            + self.edge_end_fixed_latency_time
+            + self.cloud_end_fixed_latency_time
         )
 
     @property
@@ -244,31 +337,34 @@ class CommunicationSimulator:
         else:
             raise ValueError(f"Unknown link type: {link_type}")
 
-        # Ensure bandwidth is not too low (floor at 5 Mbps)
-        # Use explicit "Mbps" to ensure the floor is always 5 Mbps regardless of self.dimension
-        bandwidth = max(_convert_to_bytes_per_second(5.0, "Mbps"), bandwidth)
-        transfer_time = data_size_bytes / bandwidth
-
-        if link_type == "edge_end":
-            ntt = self.ntt_edge_end
-        elif link_type == "edge_cloud":
-            ntt = self.ntt_edge_cloud
-        elif link_type == "cloud_end":
-            ntt = self.ntt_edge_cloud + self.ntt_edge_end
+        bandwidth = self._effective_bandwidth_bytes_per_second(
+            bandwidth, self.min_bandwidth_bytes_per_second
+        )
+        if math.isinf(bandwidth) or data_size_bytes == 0:
+            serialization_time = 0.0
+        elif bandwidth == 0:
+            serialization_time = math.inf
+        else:
+            serialization_time = data_size_bytes / bandwidth
+        fixed_latency_time = self._link_fixed_latency_time(link_type)
 
         self.connect_times[link_type] += 1
 
-        transfer_time += ntt
+        transfer_time = serialization_time + fixed_latency_time
 
         if add_to_stats:
             transfer_unit = TransferUnit(
-                data_size_bytes=data_size_bytes, transfer_time=transfer_time
+                data_size_bytes=data_size_bytes,
+                transfer_time=transfer_time,
+                serialization_time=serialization_time,
+                fixed_latency_time=fixed_latency_time,
+                bandwidth_bytes_per_second=bandwidth,
             )
             self.stats[link_type].append(transfer_unit)
 
             # 记录 edge-cloud 的瞬时带宽、Top-K 和 Draft Length
             if link_type == "edge_cloud":
-                bandwidth_mbps = bandwidth / (1024 * 1024 / 8)  # 转换为 Mbps
+                bandwidth_mbps = bandwidth * 8 / 1e6
                 self.edge_cloud_bandwidth_history.append(bandwidth_mbps)
                 self.record_edge_cloud_draft_info(topk, draft_len)
 
@@ -537,6 +633,7 @@ class CUHLM(CommunicationSimulator):
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
+        min_bandwidth_mbps: Optional[float] = None,
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
         super().__init__(
@@ -549,6 +646,7 @@ class CUHLM(CommunicationSimulator):
             use_stochastic=use_stochastic,
             set_mean_bandwidth=set_mean_bandwidth,
             mode=mode,
+            min_bandwidth_mbps=min_bandwidth_mbps,
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -824,6 +922,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         ntt_ms_edge_cloud: float = 200,
         edge_cloud_args: dict | None = None,
         edge_end_args: dict | None = None,
+        min_bandwidth_mbps: Optional[float] = None,
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
@@ -870,6 +969,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             dimension="bps",
             ntt_ms_edge_end=ntt_ms_edge_end,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            min_bandwidth_mbps=min_bandwidth_mbps,
         )  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
@@ -910,6 +1010,7 @@ class PreciseCUHLM(CUHLM):
         vocab_size: int = 32000,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
+        min_bandwidth_mbps: Optional[float] = None,
     ):
         # 计算信噪比
         SNR = channel_gain * send_power_watt / noise_power_watt
@@ -934,6 +1035,7 @@ class PreciseCUHLM(CUHLM):
             dimension="bps",
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             ntt_ms_edge_end=ntt_ms_edge_end,
+            min_bandwidth_mbps=min_bandwidth_mbps,
         )
 
         # 存储通信物理参数

@@ -444,6 +444,12 @@ def parse_arguments():
         help="The bandwidth between cloud and end device in Mbps.",
     )
     parser.add_argument(
+        "--min_bandwidth_mbps",
+        type=float,
+        default=None,
+        help="Optional explicit lower bandwidth bound in Mbps for communication.",
+    )
+    parser.add_argument(
         "--dtype_comm",
         type=str,
         choices=["float16", "bfloat16", "float32", "int8"],
@@ -587,8 +593,8 @@ def parse_arguments():
     parser.add_argument(
         "--batch_delay",
         type=float,
-        default=50e-3,  # 50 ms
-        help="The delay time added to each batch in seconds.",
+        default=0.0,
+        help="Serving queue delay per batch in seconds; zero models single-session latency.",
     )
     parser.add_argument(
         "--use_early_stopping",
@@ -919,12 +925,7 @@ def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
                 data_line = line
 
         if run_id == read_idx and data_line:
-            data = [float(x) for x in data_line.split(",")]
-            # 1. First pop trailing values that are less than 5.0
-            while data and data[-1] < 5.0:
-                data.pop()
-            # 2. Then apply clamping to the remaining values (middle and start)
-            return [max(5.0, x) for x in data]
+            return [float(x) for x in data_line.split(",")]
 
     raise ValueError(f"Run ID {read_idx} not found in trace file.")
 
@@ -962,14 +963,9 @@ def return_closest_mean_index(trace_file: str, mean_value: float | None = None) 
 
         if run_id != -1 and data_line:
             try:
-                # Use the same logic as read_trace_file: pop trailing < 5.0, then clamp remaining
                 data = [float(x) for x in data_line.split(",")]
-                while data and data[-1] < 5.0:
-                    data.pop()
-                processed_data = [max(5.0, x) for x in data]
-
-                if processed_data:
-                    run_means[run_id] = sum(processed_data) / len(processed_data)
+                if data:
+                    run_means[run_id] = sum(data) / len(data)
             except ValueError:
                 pass
 

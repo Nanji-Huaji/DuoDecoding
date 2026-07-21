@@ -46,6 +46,7 @@ class ExpConfig(TypedDict):
     edge_end_bandwidth: int | float
     edge_cloud_bandwidth: int | float
     cloud_end_bandwidth: int | float
+    min_bandwidth_mbps: int | float | None
     transfer_top_k: int
     num_shots: int
     num_samples_per_task: int
@@ -191,6 +192,12 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "use_precise")
     if config.get("use_stochastic_comm", False):
         cmd = add_args(cmd, "use_stochastic_comm")
+    if config.get("min_bandwidth_mbps") is not None:
+        cmd = add_args(
+            cmd,
+            "min_bandwidth_mbps",
+            str(config["min_bandwidth_mbps"]),
+        )
     if config.get("use_rl_adapter", False):
         cmd = add_args(cmd, "use_rl_adapter")
     if config.get("disable_rl_update", False):
@@ -501,7 +508,7 @@ def create_config(
     eval_mode: str | EvalMode,
     ntt_ms_edge_cloud: int | float = 0,
     ntt_ms_edge_end: int | float = 0,
-    batch_delay: int | float = 50e-3,
+    batch_delay: int | float = 0.0,
     use_precise: bool = True,
     use_stochastic_comm: bool = False,
     CUDA_VISIBLE_DEVICES: str | int = "0",
@@ -510,6 +517,7 @@ def create_config(
     edge_end_bandwidth: int | float = 100,
     edge_cloud_bandwidth: int | float = 100,
     cloud_end_bandwidth: int | float = 100,
+    min_bandwidth_mbps: int | float | None = None,
     small_draft_threshold: float = 0.3,
     draft_target_threshold: float = 0.9,
     uncertainty_threshold: float = 0.8,
@@ -636,6 +644,7 @@ def create_config(
         edge_end_bandwidth=edge_end_bandwidth,
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
+        min_bandwidth_mbps=min_bandwidth_mbps,
         transfer_top_k=transfer_top_k,
         gamma=gamma,
         gamma1=gamma1,
@@ -741,7 +750,7 @@ edge_cloud_bandwidth = [
     # 50.0,  # 标准 50M 宽带满速
 ]
 
-batch_delay_values = [50e-3]
+batch_delay_values = [0.0]
 gamma1_values = [3]  # 扫描最优值：draft→target 推测窗口
 gamma2_values = [3]  # 扫描最优值：little→draft 推测窗口
 

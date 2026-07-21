@@ -1005,6 +1005,7 @@ class Decoding(Register, ABC):
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         else:
             comm_simulator = CommunicationSimulator(
@@ -1012,6 +1013,7 @@ class Decoding(Register, ABC):
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", None),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1207,6 +1209,12 @@ class Decoding(Register, ABC):
         metrics["throughput"] = throughput
         metrics["queuing_time"] = queuing_time
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
+        metrics["communication_serialization_time"] = (
+            comm_simulator.total_serialization_time
+        )
+        metrics["communication_fixed_latency_time"] = (
+            comm_simulator.total_fixed_latency_time
+        )
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
