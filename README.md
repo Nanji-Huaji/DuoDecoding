@@ -1,46 +1,104 @@
 # DuoDecoding
 
-This is an experiment framework based on Duodecoding.
+Experiment framework for speculative decoding with communication simulation,
+RL-based threshold selection, and adaptive candidate lengths (SpecDec++).
 
 ## Setup
 
+### Prerequisites
 
-Firstly, install the requirements with:
+- **Python** &ge; 3.10
+- **CUDA**-capable GPU(s) with sufficient VRAM for the models you intend to run
+- **HuggingFace Hub** access (for downloading models — a [HF token](https://huggingface.co/settings/tokens) may be required for gated models such as Llama 2)
+
+### Environment
+
+The project uses `uv` for dependency management. If you prefer plain `pip`, a
+`requirements.txt` is also provided.
+
 ```bash
+# Clone and enter the repository
+git clone https://github.com/Nanji-Huaji/DuoDecoding && cd DuoDecoding
+
+# Option A: uv (recommended — uses locked dependencies)
+uv sync
+
+# Option B: pip + venv
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Then, prepare the models you want to evaluate. The repository currently supports:
+### Download Models & Checkpoints
 
-- local aliases defined in `src/utils.py::model_zoo`
-- direct local paths
-- Hugging Face model IDs
+Use `scripts/download_models.py` to fetch all artifacts needed for experiments.
 
-The following are commonly used local alias targets:
+```bash
+# Download all 9 base models (llama + qwen3 + qwen1.5 series)
+python scripts/download_models.py
 
-Llama Series:
+# Also download SpecDec++ acceptance prediction heads
+python scripts/download_models.py --checkpoints
 
-- [Llama-68M](https://huggingface.co/JackFram/llama-68m)
-- [TinyLlama-1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0)
-- [Llama-2-13B](https://huggingface.co/meta-llama/Llama-2-13b)
-
-Vicuna Series:
-
-- [Vicuna-68M](https://huggingface.co/double7/vicuna-68m)
-- [TinyVicuna-1B](https://huggingface.co/Jiayi-Pan/Tiny-Vicuna-1B)
-- [Vicuna-13B-v1.5](https://huggingface.co/lmsys/vicuna-13b-v1.5)
-
-For the local alias-based workflow, place them under paths expected by `model_zoo`, for example:
-```
-./llama/<your-model-dir>
-./vicuna/<your-model-dir>
+# Preview what would be downloaded
+python scripts/download_models.py --checkpoints --dry-run
 ```
 
-Some newer models, such as Qwen variants, are already mapped to Hugging Face IDs in `model_zoo`, so they do not need to follow the `./llama/...` or `./vicuna/...` layout.
+| Flag | Effect |
+|------|--------|
+| `--series llama` | Only the llama series (llama-68m, tiny-llama-1.1b, llama-2-13b) |
+| `--series qwen` | Only Qwen3 series (0.6B, 1.7B, 14B) |
+| `--series qwen15` | Only Qwen1.5 series (0.5B-Chat, 1.8B-Chat, 7B-Chat) |
+| `--checkpoints` | Also download SpecDec++ acceptance heads from HuggingFace |
+| `--force` | Re-download even if files already exist |
+| `--dry-run` | Show what would happen without downloading |
+| `--rl-guide` | Print RL agent checkpoint status and training commands |
 
-If a path does not match your environment, modify `model_zoo` in `src/utils.py`.
+**What the script downloads:**
 
-Model paths are defined on the `zoo` dict on the `model_zoo` function. And their vocab sizes are defined on the `vocab_size` dict on the same function.
+| Category | Models | Source | Local path |
+|----------|--------|--------|------------|
+| Llama series | llama-68m, tiny-llama-1.1b, llama-2-13b | HuggingFace | `./llama/` |
+| Qwen3 series | Qwen3-0.6B, Qwen3-1.7B, Qwen3-14B | HuggingFace | `./Qwen/` |
+| Qwen1.5 series | Qwen1.5-0.5B-Chat, Qwen1.5-1.8B-Chat, Qwen1.5-7B-Chat | HuggingFace | `./Qwen/` |
+| Acceptance heads | 7 model pairs (speculative decoding) | `ArcticHuaji/specdecpp-acc-heads` | `src/SpecDec_pp/checkpoints/acc_head/` |
+
+**RL agent checkpoints** are NOT downloadable — they are produced by local RL
+training. Run `python scripts/download_models.py --rl-guide` to see the expected
+paths, current status, and training commands for each model series.
+
+```bash
+# Example: train RL agents for the llama series
+LITTLE_MODEL=llama-68m DRAFT_MODEL=tiny-llama-1.1b TARGET_MODEL=llama-2-13b \
+  bash cmds/train_rl_mixed.sh
+```
+
+### Model Resolution
+
+The repository supports three ways to specify models:
+
+- **local aliases** defined in `src/utils.py::model_zoo` (e.g. `llama-68m`, `tiny-llama-1.1b`)
+- **direct local paths** (e.g. `./llama/llama-68m`)
+- **Hugging Face model IDs** (e.g. `Qwen/Qwen3-0.6B`)
+
+For local aliases, models must be placed under paths expected by `model_zoo`
+(e.g. `./llama/llama-68m`). The download script handles this automatically.
+
+If paths don't match your environment, edit the `zoo` dict in `src/utils.py`.
+
+### SpecDec++ Environment (optional)
+
+The `src/SpecDec_pp/` subproject has its own dual-environment setup for training
+acceptance prediction heads:
+
+```bash
+cd src/SpecDec_pp
+uv venv --clear .venv --python 3.10
+uv pip install --python .venv/bin/python -r requirements.txt
+./scripts/setup_vllm_env.sh   # creates .venv-vllm for data generation
+```
+
+This is only needed if you plan to train new acceptance heads. Pre-trained heads
+are downloaded by `scripts/download_models.py --checkpoints`.
 
 ## Usage
 
@@ -196,6 +254,9 @@ You can resolve checkpoint paths from the command line:
 ```bash
 python -m src.rl_agent_registry main "tiny-llama-1.1b" "Llama-2-13b" --kind latest --format path
 python -m src.rl_agent_registry little "llama-68m" "tiny-llama-1.1b" --kind best --format path
+
+# Or use the download script to check RL agent status
+python scripts/download_models.py --rl-guide
 ```
 
 The training scripts already use this resolver automatically:
