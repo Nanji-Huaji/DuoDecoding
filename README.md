@@ -18,7 +18,7 @@ The project uses `uv` for dependency management. If you prefer plain `pip`, a
 
 ```bash
 # Clone and enter the repository
-git clone https://github.com/Nanji-Huaji/DuoDecoding && cd DuoDecoding
+git clone <repo-url> && cd DuoDecoding
 
 # Option A: uv (recommended — uses locked dependencies)
 uv sync
@@ -26,6 +26,23 @@ uv sync
 # Option B: pip + venv
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+### Git LFS
+
+RL agent checkpoints (`.pth` / `.pth.buffer` files under `checkpoints/`) are
+stored via [Git LFS](https://git-lfs.com). Install `git-lfs` before cloning, or
+pull LFS objects after the fact:
+
+```bash
+# Install git-lfs (once per machine)
+# Linux (Debian/Ubuntu):   sudo apt install git-lfs
+# macOS (Homebrew):         brew install git-lfs
+# Or download from:         https://git-lfs.com
+git lfs install
+
+# If you cloned without git-lfs, pull LFS objects now
+git lfs pull
 ```
 
 ### Download Models & Checkpoints
