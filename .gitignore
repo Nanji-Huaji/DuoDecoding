@@ -21,6 +21,7 @@ venv_docker/
 
 # Temporary local files
 ._____temp/
+.omo/
 *.log
 *.tmp
 
@@ -37,6 +38,7 @@ src/model/rest/DraftRetriever/target/
 /google/
 /llama/
 /meta-llama/
+/microsoft/
 /vicuna/
 
 # Downloaded or generated checkpoints and weights
@@ -52,6 +54,12 @@ src/model/rest/DraftRetriever/target/
 *.bin
 *.safetensors
 *.tar.gz
+*.gguf
+
+# HuggingFace download cache artifacts
+*.lock
+*.metadata
+**/.cache/huggingface/
 
 # Experiment outputs
 /archive/
