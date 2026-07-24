@@ -79,9 +79,16 @@ python scripts/download_models.py --checkpoints --dry-run
 | Qwen1.5 series | Qwen1.5-0.5B-Chat, Qwen1.5-1.8B-Chat, Qwen1.5-7B-Chat | HuggingFace | `./Qwen/` |
 | Acceptance heads | 7 model pairs (speculative decoding) | `ArcticHuaji/specdecpp-acc-heads` | `src/SpecDec_pp/checkpoints/acc_head/` |
 
-**RL agent checkpoints** are NOT downloadable — they are produced by local RL
-training. Run `python scripts/download_models.py --rl-guide` to see the expected
-paths, current status, and training commands for each model series.
+**RL agent checkpoints** come in two forms:
+
+- **Legacy checkpoints** (`.pth` / `.pth.buffer` under `checkpoints/`) are
+  stored via Git LFS and included with the repository. Make sure you have
+  [Git LFS](#git-lfs) installed, then run `git lfs pull` after cloning.
+
+- **Pair-based checkpoints** (`checkpoints/rl_agents/`) are produced by local RL
+  training and are **not** committed to the repo. Run
+  `python scripts/download_models.py --rl-guide` to see the expected paths,
+  current status, and training commands for each model series.
 
 ```bash
 # Example: train RL agents for the llama series
@@ -101,7 +108,7 @@ For local aliases, models must be placed under paths expected by `model_zoo`
 (e.g. `./llama/llama-68m`). The download script handles this automatically.
 
 If paths don't match your environment, edit the `zoo` dict in `src/utils.py`.
-
+  
 ### SpecDec++ Environment (optional)
 
 The `src/SpecDec_pp/` subproject has its own dual-environment setup for training
