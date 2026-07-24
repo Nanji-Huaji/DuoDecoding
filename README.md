@@ -18,7 +18,7 @@ The project uses `uv` for dependency management. If you prefer plain `pip`, a
 
 ```bash
 # Clone and enter the repository
-git clone <repo-url> && cd DuoDecoding
+git clone https://github.com/Nanji-Huaji/DuoDecoding.git && cd DuoDecoding
 
 # Option A: uv (recommended — uses locked dependencies)
 uv sync
