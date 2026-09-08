@@ -87,9 +87,10 @@ class _FakeAdapter:
 class _FakeCache:
     instances = []
 
-    def __init__(self, model, temperature, top_k, top_p):
+    def __init__(self, model, temperature, top_k, top_p, **kwargs):
         self.model = model
         self.device = model.device
+        self.constructor_kwargs = kwargs
         self.vocab_size = 4
         self.current_length = 0
         self.prob_history = None
@@ -254,6 +255,47 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         self.assertEqual(stage_calls[1]["verifier"], "target")
         self.assertEqual(stage_calls[1]["prefix_len"], 1)
         self.assertGreaterEqual(stage_calls[1]["gamma"], 1)
+
+    def test_adaptive_tridecoding_uses_probe_cache_capacity_only_when_configured(self):
+        prefix = torch.tensor([[0]], dtype=torch.long)
+
+        def fake_stage_verify(
+            proposer_cache,
+            verifier_cache,
+            x,
+            prefix_len,
+            gamma,
+            *,
+            output_device,
+            draft_probs_override=None,
+        ):
+            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
+            return gamma, prefix_len + gamma - 1, token, True
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
+            patch(
+                "src.baselines.resolve_stage_verification",
+                side_effect=fake_stage_verify,
+            ),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            self.instance.adaptive_tridecoding(prefix)
+            default_constructor_kwargs = [
+                cache.constructor_kwargs for cache in _FakeCache.instances
+            ]
+            _FakeCache.instances = []
+            self.instance.args.probe_cache_max_length = 7
+            self.instance.adaptive_tridecoding(prefix)
+
+        self.assertEqual(default_constructor_kwargs, [{}, {}, {}])
+        self.assertEqual(
+            [cache.constructor_kwargs for cache in _FakeCache.instances],
+            [{"max_length": 7}, {"max_length": 7}, {"max_length": 7}],
+        )
 
     def test_adaptive_tridecoding_transfers_vectorized_payloads(self):
         prefix = torch.tensor([[0]], dtype=torch.long)

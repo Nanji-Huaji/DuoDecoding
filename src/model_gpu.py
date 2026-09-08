@@ -64,7 +64,7 @@ class KVCacheModel:
         top_k: int = 0,
         top_p: float = 0,
         return_hidden_states: bool = False,
-        max_length: int = 16384,
+        max_length: int | None = None,
     ) -> None:
         self._model: CausalModel = model
         self._past_key_values: PastKeyValues = None
@@ -72,7 +72,8 @@ class KVCacheModel:
         self._temperature: float = temperature
         self._top_k: int = top_k
         self._top_p: float = top_p
-        self.max_length: int = max_length
+        self._has_explicit_max_length = max_length is not None
+        self.max_length: int = max_length if max_length is not None else 16384
 
         self.hidden_states: Sequence[torch.Tensor] | None = None
         embeddings = cast(EmbeddingLike, model.get_input_embeddings())
@@ -182,7 +183,10 @@ class KVCacheModel:
     ):
         # Dynamically resize buffers to prevent OOM on large context while maintaining contiguous memory access
         if self._prob_buffer is None:
-            self.max_length = max(2048, seq_len + 1024)
+            if not self._has_explicit_max_length:
+                self.max_length = max(2048, seq_len + 1024)
+            elif seq_len > self.max_length:
+                self.max_length = max(self.max_length * 2, seq_len + 1024)
             self._prob_buffer = torch.empty(
                 (batch_size, self.max_length, self.vocab_size),
                 device=device,

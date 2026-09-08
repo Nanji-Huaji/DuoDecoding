@@ -559,6 +559,7 @@ class Baselines(Decoding):
             self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
         elif self.args.eval_mode in [
             "adaptive_tridecoding",
+            "cee_sd",
             "cee_cuhlm",
             "cee_dsd",
             "cee_dssd",
@@ -2860,13 +2861,27 @@ class Baselines(Decoding):
             if (transfer_top_k is not None and transfer_top_k > 0)
             else self.args.top_k
         )
+        probe_cache_max_length = getattr(self.args, "probe_cache_max_length", None)
+        cache_kwargs = (
+            {"max_length": probe_cache_max_length}
+            if probe_cache_max_length is not None
+            else {}
+        )
 
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
+            self.little_model,
+            self.args.temp,
+            draft_top_k,
+            self.args.top_p,
+            **cache_kwargs,
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+            self.draft_model,
+            self.args.temp,
+            draft_top_k,
+            self.args.top_p,
+            **cache_kwargs,
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
@@ -2874,6 +2889,7 @@ class Baselines(Decoding):
             self.args.temp,
             0,
             0,  # 目标模型不压缩
+            **cache_kwargs,
         )
         target_model_cache.vocab_size = self.vocab_size
 

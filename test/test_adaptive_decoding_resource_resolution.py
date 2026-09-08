@@ -1,6 +1,6 @@
 import unittest
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from exp import EvalMode, create_config
 from src.baselines import Baselines
@@ -114,6 +114,40 @@ class AdaptiveDecodingRLInitTests(unittest.TestCase):
         self.assertIsNone(instance.little_rl_adapter)
         self.assertEqual(get_spec.call_count, 1)
         self.assertEqual(rl_adapter.call_count, 1)
+
+
+class AdaptiveTriDecodingAcceptanceHeadInitTests(unittest.TestCase):
+    def test_cee_sd_initializes_both_acceptance_adapters(self):
+        args = Namespace(
+            eval_mode="cee_sd",
+            small_draft_threshold=0.1,
+            draft_target_threshold=0.2,
+            small_draft_acc_head_path="small-draft-head",
+            draft_target_acc_head_path="draft-target-head",
+        )
+
+        with (
+            patch("src.baselines.Decoding.__init__", return_value=None),
+            patch("src.baselines.load_acceptance_prediction_head") as load_head,
+            patch("src.baselines.DecodingAdapter") as adapter,
+        ):
+            instance = _TestBaselines(args)
+            instance.args = args
+            instance.load_acc_head()
+
+        self.assertIs(instance.small_draft_adapter, adapter.return_value)
+        self.assertIs(instance.draft_target_adapter, adapter.return_value)
+        self.assertEqual(
+            load_head.call_args_list,
+            [call("small-draft-head"), call("draft-target-head")],
+        )
+        self.assertEqual(
+            adapter.call_args_list,
+            [
+                call(load_head.return_value, 0.1),
+                call(load_head.return_value, 0.2),
+            ],
+        )
 
 
 if __name__ == "__main__":

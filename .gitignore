@@ -104,3 +104,8 @@ experiment_results/*
 !/notebooks/*.ipynb
 
 microsoft/*
+
+# RL experiment checkpoint backups (binaries, kept out of git)
+checkpoints_backup_*/
+# Harness session artifacts
+thinking-effort-loaded.json
