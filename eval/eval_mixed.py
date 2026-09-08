@@ -15,7 +15,12 @@ from functools import partial
 from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines
-from src.utils import parse_arguments, seed_everything
+from src.utils import (
+    parse_arguments,
+    parse_range_spec,
+    sample_curriculum_condition,
+    seed_everything,
+)
 from utils import select_eval_data
 
 # 同步 rl_adapter.py 中的定义
@@ -239,6 +244,17 @@ class EvalMixed(Baselines):
         )
         self.color_print(f"Available Tasks: {available_tasks}", 3)
 
+        # 解析课程式环境参数（带宽/延迟范围随训练进度从易到难插值）
+        bw_start = parse_range_spec(self.args.curriculum_bw_start)
+        bw_end = parse_range_spec(self.args.curriculum_bw_end)
+        ntt_start = parse_range_spec(self.args.curriculum_ntt_start)
+        ntt_end = parse_range_spec(self.args.curriculum_ntt_end)
+        self.color_print(
+            f"Curriculum: bw {bw_start} -> {bw_end} Mbps, "
+            f"ntt {ntt_start} -> {ntt_end} ms, sampling={self.args.curriculum_sampling}",
+            3,
+        )
+
         for step in range(total_steps):
             # 1. 先随机选择一个任务种类
             task = random.choice(available_tasks)
@@ -251,10 +267,18 @@ class EvalMixed(Baselines):
             # 4. 模式固定为 tridecoding
             decoding_fn = getattr(self, mode)
 
-            # 4. 环境参数随机模拟 (模仿 train_rl.sh)
-            # 随机化网络带宽和延迟，模拟真实场景的多样性
-            self.args.edge_cloud_bandwidth = random.uniform(20.0, 50.0)  # 20-50 Mbps
-            self.args.ntt_ms_edge_cloud = random.uniform(0.0, 5.0)  # 0-5 ms 延迟
+            # 4. 环境参数课程式采样：带宽/延迟范围随训练进度从易到难扩展
+            bw_mbps, ntt_ms = sample_curriculum_condition(
+                step,
+                total_steps,
+                bw_start,
+                bw_end,
+                ntt_start,
+                ntt_end,
+                sampling=self.args.curriculum_sampling,
+            )
+            self.args.edge_cloud_bandwidth = bw_mbps
+            self.args.ntt_ms_edge_cloud = ntt_ms
             self.args.edge_end_bandwidth = random.uniform(300.0, 800.0)  # 300-800 Mbps
 
             # 5. 构建输入
@@ -267,7 +291,9 @@ class EvalMixed(Baselines):
             input_ids = self.clamp_token_ids(input_ids)
 
             # 6. 执行解码 (此过程会触发 RL RLNetworkAdapter 的 select_config 和 update)
-            print(f"[{step + 1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20}")
+            print(
+                f"[{step + 1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20} | bw={bw_mbps:.2f}Mbps ntt={ntt_ms:.1f}ms"
+            )
 
             fn = partial(
                 decoding_fn,

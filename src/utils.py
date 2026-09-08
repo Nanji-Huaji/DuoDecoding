@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import random
 import sys
@@ -15,6 +16,61 @@ from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 
 logger = logging.getLogger(__name__)
 _LIMITED_WARNING_COUNTS: dict[str, int] = {}
+
+
+def parse_range_spec(spec: str) -> tuple[float, float]:
+    """Parse a "low,high" range string into a (low, high) float tuple."""
+    try:
+        low_s, high_s = spec.split(",")
+        low, high = float(low_s.strip()), float(high_s.strip())
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"Invalid range spec {spec!r}, expected 'low,high'") from exc
+    if low > high:
+        raise ValueError(f"Range low ({low}) must not exceed high ({high})")
+    return low, high
+
+
+def sample_curriculum_condition(
+    step: int,
+    total_steps: int,
+    bw_start: tuple[float, float],
+    bw_end: tuple[float, float],
+    ntt_start: tuple[float, float],
+    ntt_end: tuple[float, float],
+    sampling: str = "uniform",
+) -> tuple[float, float]:
+    """Sample the network condition for one RL training step.
+
+    Implements a smooth curriculum: the (bandwidth, latency) sampling ranges
+    are interpolated from the start ranges (easy conditions) to the end
+    ranges (hard conditions, e.g. constrained links) as training progresses.
+
+    - Bandwidth bounds are interpolated geometrically, and the bandwidth is
+      sampled log-uniformly within the bounds when sampling="loguniform"
+      (bandwidth perception is roughly logarithmic: 1->2 Mbps matters more
+      than 40->41 Mbps).
+    - Latency bounds are interpolated linearly, sampled uniformly.
+
+    Returns (bandwidth_mbps, ntt_ms).
+    """
+    progress = step / max(1, total_steps - 1)
+
+    def interp_bw_bound(start: float, end: float) -> float:
+        if start > 0 and end > 0:
+            return start * (end / start) ** progress
+        return start + (end - start) * progress
+
+    bw_low = interp_bw_bound(bw_start[0], bw_end[0])
+    bw_high = interp_bw_bound(bw_start[1], bw_end[1])
+    if sampling == "loguniform" and bw_low > 0 and bw_high > 0:
+        bw = math.exp(random.uniform(math.log(bw_low), math.log(bw_high)))
+    else:
+        bw = random.uniform(bw_low, bw_high)
+
+    ntt_low = ntt_start[0] + (ntt_end[0] - ntt_start[0]) * progress
+    ntt_high = ntt_start[1] + (ntt_end[1] - ntt_start[1]) * progress
+    ntt = random.uniform(ntt_low, ntt_high)
+    return bw, ntt
 
 
 def _env_flag_enabled(name: str, default: str = "0") -> bool:
@@ -515,6 +571,58 @@ def parse_arguments():
         help="Whether to use stochastic communication simulator.",
     )
     parser.add_argument(
+        "--min_bandwidth_mbps",
+        type=float,
+        default=5.0,
+        help=(
+            "Minimum bandwidth floor (Mbps) applied inside the communication "
+            "simulator; bandwidth below this value is clamped. Set to 0 to "
+            "disable the floor (e.g. to study links weaker than 5 Mbps)."
+        ),
+    )
+    parser.add_argument(
+        "--curriculum_bw_start",
+        type=str,
+        default="20,50",
+        help=(
+            "Curriculum bandwidth range (Mbps) at the start of RL training, "
+            "format 'low,high'. Sampled per step; interpolates towards "
+            "--curriculum_bw_end as training progresses."
+        ),
+    )
+    parser.add_argument(
+        "--curriculum_bw_end",
+        type=str,
+        default="20,50",
+        help="Curriculum bandwidth range (Mbps) at the end of RL training, format 'low,high'.",
+    )
+    parser.add_argument(
+        "--curriculum_ntt_start",
+        type=str,
+        default="0,5",
+        help=(
+            "Curriculum edge-cloud latency range (ms) at the start of RL "
+            "training, format 'low,high'."
+        ),
+    )
+    parser.add_argument(
+        "--curriculum_ntt_end",
+        type=str,
+        default="0,5",
+        help="Curriculum edge-cloud latency range (ms) at the end of RL training, format 'low,high'.",
+    )
+    parser.add_argument(
+        "--curriculum_sampling",
+        type=str,
+        choices=["uniform", "loguniform"],
+        default="uniform",
+        help=(
+            "How bandwidth is sampled within the curriculum range: 'uniform' "
+            "(legacy behavior) or 'loguniform' (recommended; bandwidth "
+            "perception is roughly logarithmic)."
+        ),
+    )
+    parser.add_argument(
         "--use_rl_adapter",
         action="store_true",
         help="Whether to use RL adapter for dynamic k selection.",
@@ -613,6 +721,11 @@ def parse_arguments():
         choices=["auto", "4bit", "none"],
         default="auto",
         help="Quantization mode for the target model.",
+    )
+    parser.add_argument(
+        "--keep_target_on_single_gpu",
+        action="store_true",
+        help="Keep the DSD target model on its selected GPU instead of auto-sharding.",
     )
     parser.add_argument(
         "--little_quantization",

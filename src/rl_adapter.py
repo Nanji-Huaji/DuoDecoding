@@ -1,6 +1,7 @@
 import os
 import pickle
 import random
+import warnings
 from collections import deque
 from typing import List, Tuple
 
@@ -348,6 +349,7 @@ class RLNetworkAdapter:
     def _get_current_feature_vector(
         self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name
     ):
+        self._check_state_units(bandwidth_mbps, latency_ms)
         norm_bw = min(bandwidth_mbps / self.max_bandwidth, 1.0)
         norm_lat = min(latency_ms / self.max_latency, 1.0)
         norm_entropy = min(entropy / 10.0, 1.0)
@@ -360,6 +362,28 @@ class RLNetworkAdapter:
             [[norm_bw, norm_lat, norm_entropy, last_acc_prob], task_vec]
         ).astype(np.float32)
 
+    def _check_state_units(self, bandwidth_mbps: float, latency_ms: float):
+        """
+        单位自检：select_config 期望带宽单位为 Mbps、延迟单位为毫秒。
+        CommunicationSimulator 内部以 bytes/second 和 seconds 存储，
+        若调用方误传原始内部单位，会导致特征退化（带宽恒为 1、延迟恒为 0）。
+        """
+        if bandwidth_mbps > 10.0 * self.max_bandwidth:
+            warnings.warn(
+                f"[{self.agent.name}] bandwidth {bandwidth_mbps:.3e} exceeds the "
+                f"plausible Mbps range (>{10.0 * self.max_bandwidth:.0f} Mbps); "
+                f"it may have been passed in bytes/second (see "
+                f"CommunicationSimulator.bandwidth_*_mbps).",
+                stacklevel=3,
+            )
+        if 0.0 < latency_ms < 0.5:
+            warnings.warn(
+                f"[{self.agent.name}] latency {latency_ms:.3e} ms is implausibly "
+                f"small; it may have been passed in seconds (see "
+                f"CommunicationSimulator.ntt_*_ms).",
+                stacklevel=3,
+            )
+
     def select_config(
         self,
         bandwidth_mbps: float,
@@ -369,6 +393,18 @@ class RLNetworkAdapter:
         task_name: str = "unknown",
         training=True,
     ) -> Tuple[int, float]:
+        """
+        Args:
+            bandwidth_mbps: 链路带宽，单位 **Mbps**（兆比特每秒）。
+                注意 CommunicationSimulator 内部以 bytes/second 存储，
+                请使用 comm_simulator.bandwidth_*_mbps 属性传入。
+            latency_ms: 网络传输时间（NTT），单位 **毫秒**。
+                CommunicationSimulator 内部以 seconds 存储，
+                请使用 comm_simulator.ntt_*_ms 属性传入。
+            acc_probs: 本步接受预测头输出的接受概率列表（可为空）。
+            entropy: 当前 logits 的平均熵。
+            task_name: 任务名（KNOWN_TASKS 之一或 "unknown"）。
+        """
         last_acc = acc_probs[-1] if len(acc_probs) > 0 else 0.5
         current_feat = self._get_current_feature_vector(
             bandwidth_mbps, latency_ms, entropy, last_acc, task_name

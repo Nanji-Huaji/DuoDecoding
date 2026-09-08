@@ -462,7 +462,11 @@ class Decoding(Register, ABC):
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
             target_max_memory = None
-            if target_quant is None and num_gpus >= 2:
+            if (
+                target_quant is None
+                and num_gpus >= 2
+                and not getattr(self.args, "keep_target_on_single_gpu", False)
+            ):
                 reserve_gib = estimate_model_reserve_gib(
                     self.args.draft_model,
                     getattr(self.args, "draft_quantization", "auto"),
@@ -1001,6 +1005,7 @@ class Decoding(Register, ABC):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e6,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1008,6 +1013,7 @@ class Decoding(Register, ABC):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),

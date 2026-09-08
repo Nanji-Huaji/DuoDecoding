@@ -11,6 +11,9 @@ from src.utils import read_trace_file, return_closest_mean_index
 class TransferUnit(TypedDict):
     data_size_bytes: int | float
     transfer_time: float
+    # 纯发射时间（不含传播延迟 NTT），用于能耗计算：
+    # 传播时延期间无线电并不发射，能耗只应按发射时长计。
+    tx_time: float
 
 
 class Statistics(TypedDict):
@@ -64,7 +67,16 @@ class CommunicationSimulator:
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
+        min_bandwidth_mbps: float = 5.0,
+        trace_interval_s: float = 0.2,
     ):
+        # 带宽下限（Mbps）：低于该值的带宽会被钳制。设为 0 可禁用下限。
+        # 注意：mmWave 等无线链路深衰时吞吐会跌到接近 0，5 Mbps 的默认
+        # 下限会削平这些最有价值的低带宽时段，需要研究弱链路时请调低。
+        self.min_bandwidth_mbps = min_bandwidth_mbps
+        # 随机带宽 trace 的采样间隔（秒）。trace 是时间序列，必须按仿真
+        # 时间推进索引，而不是按消息数推进，否则带宽的时间相关性失真。
+        self.trace_interval_s = trace_interval_s
         self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
             bandwidth_edge_cloud, dimension
         )
@@ -115,7 +127,7 @@ class CommunicationSimulator:
             else:
                 mbps_to_dim = 1.0
 
-            floor_val = 5.0 * mbps_to_dim
+            floor_val = self.min_bandwidth_mbps * mbps_to_dim
             self.trace_file_dict = {
                 "driving": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/driving/5g/throughput.list",
                 "static": "data/sigcomm-5gmemu-5g-mmWave-uplink-data/throughput/static/5g/away_p1.list",
@@ -188,6 +200,31 @@ class CommunicationSimulator:
             for i in range(len(self.stats["cloud_end"]))
         )
 
+    # ==========================================
+    # Unit-explicit accessors for external consumers.
+    # Internal storage is bytes/second (bandwidth) and seconds (NTT),
+    # but the RL adapter and other consumers expect Mbps and milliseconds.
+    # ==========================================
+    @property
+    def bandwidth_edge_cloud_mbps(self):
+        return self.bandwidth_edge_cloud / (1e6 / 8)
+
+    @property
+    def bandwidth_edge_end_mbps(self):
+        return self.bandwidth_edge_end / (1e6 / 8)
+
+    @property
+    def bandwidth_cloud_end_mbps(self):
+        return self.bandwidth_cloud_end / (1e6 / 8)
+
+    @property
+    def ntt_edge_end_ms(self):
+        return self.ntt_edge_end * 1000
+
+    @property
+    def ntt_edge_cloud_ms(self):
+        return self.ntt_edge_cloud * 1000
+
     @property
     def edge_cloud_data(self):
         return sum(
@@ -233,7 +270,6 @@ class CommunicationSimulator:
             self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
                 current_bw, cast(Dimension, self.dimension)
             )
-            self.trace_index = (self.trace_index + 1) % len(self.trace_data)
 
         if link_type == "edge_cloud":
             bandwidth = self.bandwidth_edge_cloud
@@ -244,10 +280,13 @@ class CommunicationSimulator:
         else:
             raise ValueError(f"Unknown link type: {link_type}")
 
-        # Ensure bandwidth is not too low (floor at 5 Mbps)
-        # Use explicit "Mbps" to ensure the floor is always 5 Mbps regardless of self.dimension
-        bandwidth = max(_convert_to_bytes_per_second(5.0, "Mbps"), bandwidth)
-        transfer_time = data_size_bytes / bandwidth
+        # 带宽下限（默认 5 Mbps，可通过 min_bandwidth_mbps 配置，0 表示不设下限）。
+        # 显式使用 "Mbps" 保证下限与 self.dimension 无关。
+        bandwidth = max(
+            _convert_to_bytes_per_second(self.min_bandwidth_mbps, "Mbps"), bandwidth
+        )
+        tx_time = data_size_bytes / bandwidth
+        transfer_time = tx_time
 
         if link_type == "edge_end":
             ntt = self.ntt_edge_end
@@ -260,15 +299,24 @@ class CommunicationSimulator:
 
         transfer_time += ntt
 
+        # 随机带宽 trace 按仿真时间推进：本次传输耗时 transfer_time 秒，
+        # 对应 trace 上 round(transfer_time / trace_interval_s) 个采样点。
+        # 之前按"每传输一次 +1"推进，带宽的时间相关性随传输时长漂移。
+        if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
+            steps = round(transfer_time / self.trace_interval_s)
+            self.trace_index = (self.trace_index + max(1, steps)) % len(self.trace_data)
+
         if add_to_stats:
             transfer_unit = TransferUnit(
-                data_size_bytes=data_size_bytes, transfer_time=transfer_time
+                data_size_bytes=data_size_bytes,
+                transfer_time=transfer_time,
+                tx_time=tx_time,
             )
             self.stats[link_type].append(transfer_unit)
 
             # 记录 edge-cloud 的瞬时带宽、Top-K 和 Draft Length
             if link_type == "edge_cloud":
-                bandwidth_mbps = bandwidth / (1024 * 1024 / 8)  # 转换为 Mbps
+                bandwidth_mbps = bandwidth / (1e6 / 8)  # 转换为 Mbps (与 _convert_to_bytes_per_second 一致)
                 self.edge_cloud_bandwidth_history.append(bandwidth_mbps)
                 self.record_edge_cloud_draft_info(topk, draft_len)
 
@@ -537,6 +585,8 @@ class CUHLM(CommunicationSimulator):
         use_stochastic: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
+        min_bandwidth_mbps: float = 5.0,
+        trace_interval_s: float = 0.2,
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
         super().__init__(
@@ -549,6 +599,8 @@ class CUHLM(CommunicationSimulator):
             use_stochastic=use_stochastic,
             set_mean_bandwidth=set_mean_bandwidth,
             mode=mode,
+            min_bandwidth_mbps=min_bandwidth_mbps,
+            trace_interval_s=trace_interval_s,
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -824,17 +876,19 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         ntt_ms_edge_cloud: float = 200,
         edge_cloud_args: dict | None = None,
         edge_end_args: dict | None = None,
+        min_bandwidth_mbps: float = 5.0,
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
         if not getattr(PreciseCommunicationSimulator, "_has_logged", False):
             logging.info(
-                f"信道容量: {channel_capacity_bps / 1e6:.2f} Mbps, 以 {channel_capacity_bps / 10} bps, {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps 初始化 "
+                f"信道容量: {channel_capacity_bps / 1e6:.2f} Mbps, 以 {channel_capacity_bps} bps, {channel_capacity_bps / 10} bps, {channel_capacity_bps / 10} bps 初始化 "
             )
             PreciseCommunicationSimulator._has_logged = True
 
         if edge_cloud_args is None:
-            edge_cloud_bandwidth = channel_capacity_bps / 10
+            # edge-cloud 是承载概率分布上行数据的无线链路，默认取完整信道容量
+            edge_cloud_bandwidth = channel_capacity_bps
         else:
             try:
                 edge_cloud_SNR = (
@@ -846,7 +900,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
                     1 + edge_cloud_SNR
                 )
             except KeyError:
-                edge_cloud_bandwidth = channel_capacity_bps / 10
+                edge_cloud_bandwidth = channel_capacity_bps
 
         if edge_end_args is None:
             edge_end_bandwidth = channel_capacity_bps / 10
@@ -863,14 +917,18 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             except KeyError:
                 edge_end_bandwidth = channel_capacity_bps / 10
 
+        # 云端链路与边缘端链路带宽均为信道容量的十分之一
+        cloud_end_bandwidth = channel_capacity_bps / 10
+
         super().__init__(
             edge_cloud_bandwidth,
-            channel_capacity_bps,
             edge_end_bandwidth,
+            cloud_end_bandwidth,
             dimension="bps",
             ntt_ms_edge_end=ntt_ms_edge_end,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-        )  # 假设云端链路和边缘端链路带宽均为信道容量的十分之一
+            min_bandwidth_mbps=min_bandwidth_mbps,
+        )
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
         self.send_power_watt = send_power_watt
@@ -880,10 +938,11 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
 
     @property
     def total_comm_energy(self):
+        # 能耗只按纯发射时间 tx_time 计算（传播时延期间不发射，不计能耗）
         energy = 0.0
         for link_type in ["edge_cloud", "edge_end", "cloud_end"]:
             for unit in self.stats[link_type]:
-                energy += unit["transfer_time"] * self.send_power_watt
+                energy += unit["tx_time"] * self.send_power_watt
         return energy
 
 
@@ -910,6 +969,7 @@ class PreciseCUHLM(CUHLM):
         vocab_size: int = 32000,
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
+        min_bandwidth_mbps: float = 5.0,
     ):
         # 计算信噪比
         SNR = channel_gain * send_power_watt / noise_power_watt
@@ -934,6 +994,7 @@ class PreciseCUHLM(CUHLM):
             dimension="bps",
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             ntt_ms_edge_end=ntt_ms_edge_end,
+            min_bandwidth_mbps=min_bandwidth_mbps,
         )
 
         # 存储通信物理参数
@@ -949,9 +1010,9 @@ class PreciseCUHLM(CUHLM):
 
     @property
     def total_comm_energy(self) -> float:
-        """计算总通信能耗（焦耳）"""
+        """计算总通信能耗（焦耳），只按纯发射时间 tx_time 计算"""
         energy = 0.0
         for link_type in ["edge_cloud", "edge_end", "cloud_end"]:
             for unit in self.stats[link_type]:
-                energy += unit["transfer_time"] * self.send_power_watt
+                energy += unit["tx_time"] * self.send_power_watt
         return energy

@@ -711,6 +711,7 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -720,6 +721,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -1042,6 +1044,7 @@ class Baselines(Decoding):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1051,6 +1054,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -1356,6 +1360,7 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator: CUHLM = PreciseCUHLM(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1366,6 +1371,7 @@ class Baselines(Decoding):
         else:
             threshold = getattr(self.args, "uncertainty_threshold", 0.8)
             comm_simulator = CUHLM(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 uncertainty_threshold=threshold,
                 dimension="Mbps",
@@ -1631,6 +1637,7 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1640,6 +1647,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -2079,6 +2087,7 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2088,6 +2097,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -2144,8 +2154,8 @@ class Baselines(Decoding):
             )
 
             if self.little_rl_adapter is not None:
-                bandwidth = comm_simulator.bandwidth_edge_end
-                latency = comm_simulator.ntt_edge_end
+                bandwidth = comm_simulator.bandwidth_edge_end_mbps
+                latency = comm_simulator.ntt_edge_end_ms
                 acc_probs = []  # No ARP head
                 assert q is not None, "Logits q should not be None"
                 probs = torch.softmax(q, dim=-1)
@@ -2275,8 +2285,8 @@ class Baselines(Decoding):
             )
 
             if self.rl_adapter is not None:
-                bandwidth = comm_simulator.bandwidth_edge_cloud
-                latency = comm_simulator.ntt_edge_cloud
+                bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
+                latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = []
                 if q is not None:
                     probs = torch.softmax(q, dim=-1)
@@ -2488,6 +2498,7 @@ class Baselines(Decoding):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2497,6 +2508,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -2598,8 +2610,8 @@ class Baselines(Decoding):
             )
 
             if self.rl_adapter is not None:
-                bandwidth = comm_simulator.bandwidth_edge_cloud
-                latency = comm_simulator.ntt_edge_cloud
+                bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
+                latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = getattr(self.adapter, "step_acc_probs", [])
 
                 if q is None:
@@ -2867,6 +2879,7 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2876,6 +2889,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -2929,6 +2943,7 @@ class Baselines(Decoding):
                 ),
             )
             cuhlm_uncertainty_sim = CUHLM(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -2982,8 +2997,8 @@ class Baselines(Decoding):
 
             if self.little_rl_adapter is not None:
                 dra_start = time.time()
-                bandwidth = comm_simulator.bandwidth_edge_end
-                latency = comm_simulator.ntt_edge_end
+                bandwidth = comm_simulator.bandwidth_edge_end_mbps
+                latency = comm_simulator.ntt_edge_end_ms
                 acc_probs = getattr(self.small_draft_adapter, "step_acc_probs", [])
 
                 task_name = getattr(self, "task", "unknown")
@@ -3234,8 +3249,8 @@ class Baselines(Decoding):
 
             if self.rl_adapter is not None:
                 dra_start = time.time()
-                bandwidth = comm_simulator.bandwidth_edge_cloud
-                latency = comm_simulator.ntt_edge_cloud
+                bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
+                latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = getattr(self.draft_target_adapter, "step_acc_probs", [])
 
                 if q is None:
@@ -3521,11 +3536,13 @@ class Baselines(Decoding):
         # --- Communication Simulator ---
         if use_precise_comm_sim:
             comm_simulator: CUHLM = PreciseCUHLM(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
                 send_power_watt=0.5,
             )
         else:
             comm_simulator = CUHLM(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -3997,6 +4014,7 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -4006,6 +4024,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -4364,6 +4383,7 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -4373,6 +4393,7 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
