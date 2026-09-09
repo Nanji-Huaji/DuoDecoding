@@ -106,6 +106,6 @@ experiment_results/*
 microsoft/*
 
 # RL experiment checkpoint backups (binaries, kept out of git)
-checkpoints_backup_*/
+checkpoints_backup_buggy_units/
 # Harness session artifacts
 thinking-effort-loaded.json

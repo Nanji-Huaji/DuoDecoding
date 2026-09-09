@@ -1,0 +1,34 @@
+{
+  "eval_mode": "cee_sd_opportunistic",
+  "status": "pilot_rejected_for_formal_training",
+  "initialization": {
+    "strategy": "fresh_deterministic",
+    "main_seed": 73,
+    "little_seed": 74,
+    "warm_start": false,
+    "little_action_space": "threshold_only"
+  },
+  "models": {
+    "little": "llama-68m",
+    "draft": "tiny-llama-1.1b",
+    "target": "llama-2-13b"
+  },
+  "training": {
+    "task": "gsm8k",
+    "temperature": 0,
+    "gamma1": 1,
+    "gamma2": 1,
+    "max_tokens": 64,
+    "main_update_count": 31,
+    "little_update_count": 31
+  },
+  "evaluation": {
+    "fresh_policy_tps": 1.3020339875660598,
+    "trained_policy_tps": 1.2125842359979078,
+    "static_policy_mean_tps": 1.168765,
+    "trained_vs_fresh_percent": -6.869998027548811,
+    "trained_vs_static_percent": 3.749378195581717,
+    "accuracy": 0.0
+  },
+  "decision": "Formal training was not started because the trained policy did not beat the fresh policy and improved less than five percent over the static policy."
+}
