@@ -1,0 +1,14 @@
+{
+  "little": 0.0017596987012987013,
+  "draft": 0.028465714285714285,
+  "target": 0.14628888888888888,
+  "_meta": {
+    "source_logs": [
+      "exp_logs/smoke_legacy_wall.log"
+    ],
+    "samples": 2,
+    "median_draft_forwards_per_sample": 23.0,
+    "median_target_forwards_per_sample": 7.0,
+    "note": "seconds per forward pass; absolute values scale with host speed, the ratios (little:draft:target) are what the reward's action ranking depends on. Re-run on an idle machine for the nominal constants."
+  }
+}
