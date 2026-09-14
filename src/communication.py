@@ -1,5 +1,8 @@
+import json
 import logging
 import math
+import os
+import sys
 import warnings
 from typing import List, Literal, Optional, Tuple, TypedDict, cast, Protocol
 
@@ -41,6 +44,23 @@ def _convert_to_bytes_per_second(bandwidth: float, dimension: Dimension) -> floa
         return bandwidth
     else:
         raise ValueError(f"Unknown dimension: {dimension}")
+
+
+def _trace_comm(kind: str, link: str, nbytes: float, **extra) -> None:
+    """环境变量 COMM_TRACE 门控的通信追踪（不设时零开销、不改变行为）。"""
+    path = os.environ.get("COMM_TRACE")
+    if not path:
+        return
+    try:
+        frame = sys._getframe(2)
+        caller = f"{os.path.basename(frame.f_code.co_filename)}:{frame.f_lineno}"
+        rec = {"kind": kind, "link": link, "bytes": round(float(nbytes), 1),
+               "caller": caller}
+        rec.update(extra)
+        with open(path, "a") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 class CommunicationSimulator:
@@ -96,6 +116,14 @@ class CommunicationSimulator:
 
         self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
         self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
+
+        # 按轮合并（block / 每次往返一次）：
+        # 真实实现里一轮只需每条链路一次 WAN 往返；把同一轮内多条消息累积到
+        # `_pending_bytes`，在 set_round()/flush_round() 时按链路各计一次。
+        # 默认关闭，保持历史口径可复现。
+        self.coalesce_rounds = False
+        self._round_idx: Optional[int] = None
+        self._pending_bytes: dict = {}
 
         self.connect_times = {"edge_end": 0, "cloud_end": 0, "edge_cloud": 0}
 
@@ -250,6 +278,27 @@ class CommunicationSimulator:
     def get_connect_times(self) -> dict:
         return self.connect_times
 
+    def set_round(self, round_idx: int) -> None:
+        """标记进入新一轮；按轮合并模式下先把上一轮的累积量结算掉。"""
+        if not self.coalesce_rounds:
+            return
+        if self._round_idx is None or round_idx != self._round_idx:
+            self.flush_round()
+            self._round_idx = round_idx
+
+    def flush_round(self) -> None:
+        """结算本轮累积的字节：每条链路只计一次传输（一次往返、一次 NTT）。"""
+        pending, self._pending_bytes = self._pending_bytes, {}
+        for link_type, bucket in pending.items():
+            if bucket.get("bytes", 0.0) > 0:
+                self._charge_transfer(
+                    bucket["bytes"],
+                    cast(Literal["edge_cloud", "edge_end", "cloud_end"], link_type),
+                    topk=int(bucket.get("topk", 0)),
+                    draft_len=int(bucket.get("draft_len", 0)),
+                    trace_kind="flushed",
+                )
+
     def simulate_transfer(
         self,
         data_size_bytes: int | float,
@@ -264,7 +313,52 @@ class CommunicationSimulator:
         - link_type: 传输链路类型，"edge_cloud", "edge_end", "cloud_end"
         - topk: 可选，记录此次传输关联的 top-k 值
         - draft_len: 可选，记录此次传输关联的草稿长度
+
+        `coalesce_rounds=True` 时只累积字节（往返与 NTT 推迟到 flush_round 结算），
+        用来模拟"每轮每条链路一次往返"的成批实现；此时返回 0.0。
         """
+        if self.coalesce_rounds:
+            if os.environ.get("COMM_TRACE"):
+                _trace_comm(
+                    "pending", link_type, data_size_bytes, topk=topk, draft_len=draft_len
+                )
+            bucket = self._pending_bytes.setdefault(
+                link_type, {"bytes": 0.0, "topk": 0, "draft_len": 0}
+            )
+            bucket["bytes"] += float(data_size_bytes)
+            bucket["topk"] = max(int(bucket["topk"]), int(topk))
+            bucket["draft_len"] += int(draft_len)
+            return 0.0
+        trace_kind = None
+        if os.environ.get("COMM_TRACE"):
+            # 来自 transfer() 的转发已在 transfer() 里打过 "transfer" 点
+            trace_kind = (
+                None
+                if sys._getframe(1).f_code.co_name == "transfer"
+                else "direct"
+            )
+        return self._charge_transfer(
+            data_size_bytes, link_type, add_to_stats, topk, draft_len, trace_kind
+        )
+
+    def _charge_transfer(
+        self,
+        data_size_bytes: int | float,
+        link_type: Literal["edge_cloud", "edge_end", "cloud_end"],
+        add_to_stats=True,
+        topk: int = 0,
+        draft_len: int = 0,
+        trace_kind: str = "direct",
+    ) -> float:
+        """真正的计费入口（原 simulate_transfer 主体）。"""
+        if trace_kind and os.environ.get("COMM_TRACE"):
+            _trace_comm(
+                trace_kind,
+                link_type,
+                data_size_bytes,
+                topk=topk,
+                draft_len=draft_len,
+            )
         if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
             current_bw = self.trace_data[self.trace_index]
             self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
@@ -449,6 +543,7 @@ class CommunicationSimulator:
         link_type: Literal["edge_cloud", "edge_end", "cloud_end"],
         is_compressed: bool = False,
         compressed_k: Optional[int] = 300,
+        prob_bits: Optional[int] = None,
     ) -> float:
         token_bytes = 0
         prob_bytes = 0
@@ -457,9 +552,16 @@ class CommunicationSimulator:
         if tokens is not None and tokens.numel() > 0:
             token_bytes = tokens.element_size() * tokens.numel()
 
+        # 概率载荷位宽（默认 None ⇒ 用 element_size()，与历史口径一致 ✓）
+        prob_elem = None
+        if prob is not None:
+            prob_elem = prob.element_size()
+            if prob_bits is not None and 0 < int(prob_bits) < 8 * prob_elem:
+                prob_elem = int(prob_bits) / 8.0
+
         # Probability history data size (float32 or float16)
-        if prob is not None and prob.numel() > 0:
-            prob_bytes = prob.element_size() * prob.numel()
+        if prob is not None and prob.numel() > 0 and prob_elem is not None:
+            prob_bytes = prob_elem * prob.numel()
 
         total_bytes = token_bytes + prob_bytes
 
@@ -478,7 +580,9 @@ class CommunicationSimulator:
             compressed_payload_bytes = self._compressed_topk_payload_bytes(
                 compressed_k=compressed_k,
                 seq_length=seq_length,
-                prob_element_size=prob.element_size(),
+                prob_element_size=(
+                    prob_elem if prob_elem is not None else prob.element_size()
+                ),
             )
             total_bytes = (
                 token_bytes + compressed_payload_bytes + self.protocol_overhead_bytes
@@ -495,6 +599,25 @@ class CommunicationSimulator:
                 tokens.numel() if (tokens is not None and tokens.numel() > 0) else 0
             )
 
+        _trace_comm(
+            "transfer",
+            link_type,
+            total_bytes,
+            compressed=bool(is_compressed),
+            k=compressed_k if is_compressed else 0,
+            tokens=int(token_bytes),
+            probs=int(prob_bytes),
+        )
+        if os.environ.get("COMM_TRACE"):
+            _trace_comm(
+                "transfer",
+                link_type,
+                total_bytes,
+                compressed=bool(is_compressed),
+                k=compressed_k if is_compressed else 0,
+                tokens=int(token_bytes),
+                probs=int(prob_bytes),
+            )
         transfer_time = self.simulate_transfer(
             total_bytes, link_type, topk=topk_val, draft_len=draft_len_val
         )
@@ -529,6 +652,7 @@ class CommunicationSimulator:
         prob_history_dtype=torch.float16,
         is_compressed: bool = False,
         compressed_k: Optional[int] = 300,
+        prob_bits: Optional[int] = None,
         description="",
     ) -> Tuple[float, str]:
         if link_type not in ["edge_cloud", "edge_end", "cloud_end"]:
@@ -545,7 +669,12 @@ class CommunicationSimulator:
         if prob_history is not None and prob_history.numel() > 0:
             if prob_history_dtype is not None:
                 prob_history = prob_history.to(prob_history_dtype)
-            prob_bytes = prob_history.element_size() * prob_history.numel()
+            if prob_bits is not None and 0 < int(prob_bits) < 8 * prob_history.element_size():
+                # 概率载荷按位宽计费：b bits/项（b<16 时即真实量化后的表示，
+                # 4bit 视为 2 项/字节）。默认 None ⇒ 沿用 element_size() 历史口径 ✓
+                prob_bytes = prob_history.numel() * int(prob_bits) / 8.0
+            else:
+                prob_bytes = prob_history.element_size() * prob_history.numel()
             total_bytes += prob_bytes
 
         transfer_time = self.simulate_transfer(total_bytes, link_type)
