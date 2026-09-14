@@ -2159,11 +2159,13 @@ class Baselines(Decoding):
         )
 
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
@@ -4460,11 +4462,13 @@ class Baselines(Decoding):
         )
 
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)
@@ -4829,11 +4833,13 @@ class Baselines(Decoding):
         )
 
         little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p
+            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)

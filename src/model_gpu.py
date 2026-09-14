@@ -65,8 +65,15 @@ class KVCacheModel:
         top_p: float = 0,
         return_hidden_states: bool = False,
         max_length: int | None = None,
+        use_cuda_graph: bool = False,
     ) -> None:
         self._model: CausalModel = model
+        # CUDA Graph 模式：把 gamma 次单 token decode 捕获成图回放，绕开
+        # per-op 启动开销（实测 68M 12.85x、1.1B 4.13x）。默认关闭以保持
+        # 结果与历史实验逐位可复现；开启后仍与 eager 路径逐 token 一致
+        # （见 scripts/test_graph_decode.py 的等价性验证）。
+        self._use_cuda_graph = bool(use_cuda_graph)
+        self._graph_runner = None
         self._past_key_values: PastKeyValues = None
 
         self._temperature: float = temperature
@@ -258,6 +265,8 @@ class KVCacheModel:
         output: (batch_size, vocab_size) - probabilities for the next token after the entire input sequence
         """
         self._validate_input_ids(input_ids)
+        if self._use_cuda_graph:
+            return self._prefill_graph(input_ids)
         seq_length = input_ids.shape[1]
         batch_size = input_ids.shape[0]
         self._past_key_values = self._new_dynamic_cache()
@@ -299,6 +308,51 @@ class KVCacheModel:
 
         return probs[:, -1, :]
 
+    @torch.inference_mode()
+    def _prefill_graph(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """图模式下的 prefill：用 StaticCache 走完整段 prompt 并捕获后续单步图。
+
+        为什么不能只把 decode 换掉：DynamicCache 会随解码增长，张量形状每步都变，
+        而图冻结的是形状与地址。所以图模式必须**整体**换成按 max_length 预分配的
+        StaticCache —— 代价是显存按 max_length 预留，收益是 decode 走图回放。
+        prefill 本身是变长的、不进图（只做一次，摊薄后影响很小）。
+        """
+        from .graph_decode import GraphDecodeRunner
+
+        device = self.device
+        dtype = next(iter(self._model.parameters())).dtype
+        runner = GraphDecodeRunner(
+            self._model, max_len=self.max_length, device=device, dtype=dtype
+        )
+        raw_logits = runner.prefill(input_ids)
+
+        batch_size, seq_length = input_ids.shape
+        full_logits = runner.prefill_logits
+        assert full_logits is not None
+        self._ensure_buffer_size(batch_size, seq_length, full_logits.device, full_logits.dtype)
+        sliced_logits = full_logits[..., : self.vocab_size]
+        assert self._logits_buffer is not None
+        self._logits_buffer[:, :seq_length, :] = sliced_logits
+
+        with torch.no_grad():
+            _lg = sliced_logits.float()
+            _lp = torch.log_softmax(_lg, dim=-1)
+            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
+        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
+        log_prob_tensor_if_invalid(
+            probs[:, -1, :], "KVCacheModel._prefill_graph.initial_probs"
+        )
+        assert self._prob_buffer is not None
+        self._prob_buffer[:, :seq_length, :] = probs
+
+        self._current_seq_len = seq_length
+        self._past_key_values = runner.cache
+        self.hidden_states = (
+            (runner.hidden_buf,) if runner.hidden_buf is not None else None
+        )
+        self._graph_runner = runner
+        return probs[:, -1, :]
+
     # @torch.compile()
     @torch.inference_mode()
     def _decode_step(self, last_input_id: torch.Tensor) -> torch.Tensor:
@@ -321,20 +375,38 @@ class KVCacheModel:
 
         batch_size = last_input_id.shape[0]
         new_len = last_input_id.shape[1]
-        outputs = self._model(
-            **self._prepare_generation_inputs(
-                last_input_id,
-                past_key_values=past_key_values,
-            )
+
+        # 图模式只覆盖 (1,1) 的单步；多 token（如回滚后的短后缀）退回 eager。
+        graph_used = (
+            self._graph_runner is not None
+            and self._graph_runner.graph is not None
+            and new_len == 1
+            and batch_size == 1
         )
-        logits = outputs.logits
+        if graph_used:
+            assert self._graph_runner is not None
+            # runner.step 返回的已经是最后一个位置的 (1, V)；下游统一按
+            # (batch, new_len, V) 处理，这里补回序列维（view，不复制）
+            logits, hidden_last = self._graph_runner.step(last_input_id)
+            logits = logits.unsqueeze(1)
+            # 图内缓存是 prefill 用的那个 StaticCache，地址不变，无需替换
+            new_past_key_values = None
+            self.hidden_states = (hidden_last,) if hidden_last is not None else None
+        else:
+            outputs = self._model(
+                **self._prepare_generation_inputs(
+                    last_input_id,
+                    past_key_values=past_key_values,
+                )
+            )
+            logits = outputs.logits
 
-        if logits is None:
-            raise RuntimeError("Model returned logits=None in decode step")
+            if logits is None:
+                raise RuntimeError("Model returned logits=None in decode step")
 
-        new_past_key_values = outputs.past_key_values
-        if new_past_key_values is None:
-            raise RuntimeError("Model returned past_key_values=None in decode step")
+            new_past_key_values = outputs.past_key_values
+            if new_past_key_values is None:
+                raise RuntimeError("Model returned past_key_values=None in decode step")
 
         end_pos = self._current_seq_len + new_len
 
@@ -358,8 +430,9 @@ class KVCacheModel:
             self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
 
         self._current_seq_len = end_pos
-        self._past_key_values = new_past_key_values
-        self.hidden_states = outputs.hidden_states
+        if not graph_used:
+            self._past_key_values = new_past_key_values
+            self.hidden_states = outputs.hidden_states
 
         return probs[:, -1, :]
 
@@ -640,6 +713,15 @@ class KVCacheModel:
         if self._past_key_values is None:
             return
 
+        # 图模式：缓存是按 max_length 预分配的 StaticCache，没有 crop 的概念
+        # （StaticCache 上的 crop 会转发到不存在的 StaticLayer.crop）。回滚只需把
+        # 写入指针退回去，旧槽位会在后续写入时被覆盖 —— 这正是论文里"回滚=指针移动"
+        # 的实现，也是图模式省掉一次 KV 内存搬运的额外收益。
+        if self._graph_runner is not None:
+            self._graph_runner.rollback(end_pos)
+            self._current_seq_len = min(end_pos, self.current_length)
+            return
+
         if _is_cache_like(self._past_key_values) and hasattr(
             self._past_key_values, "crop"
         ):
@@ -664,6 +746,8 @@ class KVCacheModel:
 
     @property
     def current_length(self) -> int:
+        if self._graph_runner is not None and self._graph_runner.graph is not None:
+            return self._graph_runner.nnz
         if self._past_key_values is None:
             return 0
         if _is_cache_like(self._past_key_values):

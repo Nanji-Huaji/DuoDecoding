@@ -821,7 +821,13 @@ class Decoding(Register, ABC):
         target_device = self.target_model.device
 
         approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model,
+            self.args.temp,
+            self.args.top_k,
+            self.args.top_p,
+            # 只有草稿缓存跑 gamma 步单 token 循环，是 CUDA Graph 的收益点；
+            # target 是 gamma=1 的整段前向，开图无收益反而多占显存。
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         approx_model_cache.vocab_size = int(self.vocab_size)
         target_model_cache = KVCacheModel(
@@ -1045,7 +1051,13 @@ class Decoding(Register, ABC):
         target_device = self.target_model.device
 
         approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+            self.draft_model,
+            self.args.temp,
+            self.args.top_k,
+            self.args.top_p,
+            # 只有草稿缓存跑 gamma 步单 token 循环，是 CUDA Graph 的收益点；
+            # target 是 gamma=1 的整段前向，开图无收益反而多占显存。
+            use_cuda_graph=self.args.use_cuda_graph,
         )
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
