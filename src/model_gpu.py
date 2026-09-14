@@ -90,6 +90,15 @@ class KVCacheModel:
 
         # Pre-allocate buffers to eliminate O(N^2) memory allocations via torch.cat
         self._prob_buffer: torch.Tensor | None = None
+        # 最近一次前向在**原始 logits（温度 1）**下的平均熵。
+        #
+        # 为什么需要它：RL 控制器把 entropy 当作状态特征，但原先是在 baselines.py
+        # 里对 `_forward_with_kvcache` 的返回值再 softmax 一次——那个返回值已经是
+        # `norm_logits` 归一化过的**概率**，再 softmax 就近似均匀分布，熵恒等于
+        # ln(vocab)≈10.3735，归一化(min(entropy/10,1))后饱和成常数 1.0，特征完全
+        # 失效（实测轨迹 300 步只有一个取值）。而且 --temp 0.0 时 norm_logits 直接
+        # 返回 one-hot，熵恒为 0 —— 所以必须从**归一化之前的 logits** 算。
+        self._last_entropy: float | None = None
         self._logits_buffer: torch.Tensor | None = None
         self._current_seq_len: int = 0
 
@@ -151,6 +160,11 @@ class KVCacheModel:
         model_inputs["past_key_values"] = past_key_values
         model_inputs["cache_position"] = cache_position
         return model_inputs
+
+    @property
+    def last_entropy(self) -> float | None:
+        """最近一次前向在原始 logits（温度 1）下的平均熵，供 RL 控制器使用。"""
+        return self._last_entropy
 
     @property
     def _prob_history(self) -> torch.Tensor | None:
@@ -264,6 +278,11 @@ class KVCacheModel:
         )
         self._logits_buffer[:, :seq_length, :] = sliced_logits
 
+        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征）
+        with torch.no_grad():
+            _lg = sliced_logits.float()
+            _lp = torch.log_softmax(_lg, dim=-1)
+            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
         probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
         log_prob_tensor_if_invalid(
             probs[:, -1, :],
@@ -325,6 +344,11 @@ class KVCacheModel:
         if self._logits_buffer is not None:
             self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
 
+        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征）
+        with torch.no_grad():
+            _lg = sliced_logits.float()
+            _lp = torch.log_softmax(_lg, dim=-1)
+            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
         probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
         log_prob_tensor_if_invalid(
             probs,

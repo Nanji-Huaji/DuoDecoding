@@ -20,9 +20,31 @@ def should_quantize(model_name: str) -> bool:
     return size > 20 and not is_awq
 
 
+# 计算精度（决定 logits 用什么浮点算，进而决定 argmax 在 near-tie 上的稳定性）：
+#   bf16 = 8 位尾数（相对精度 ~0.2%，logits 量级 10~20 时间隔 ~0.06-0.12）
+#   fp16 = 10 位（间隔 ~0.01）
+#   fp32 = 24 位（~1e-6）
+# 项目原本硬编码 bf16；`--model_dtype` 用来做"数值噪声是否导致 argmax 翻转"的
+# 对照实验（见 docs/rl_controller_diagnosis.md F24/F29）。
+MODEL_DTYPES = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+    "fp32": torch.float32,
+}
+
+
+def resolve_model_dtype(name: str) -> torch.dtype:
+    if name not in MODEL_DTYPES:
+        raise ValueError(
+            f"Unsupported model dtype: {name} (choose from {sorted(MODEL_DTYPES)})"
+        )
+    return MODEL_DTYPES[name]
+
+
 def build_quant_config(
     model_name: str,
     quantization: str = "auto",
+    compute_dtype: torch.dtype = torch.bfloat16,
 ) -> BitsAndBytesConfig | None:
     if quantization == "none":
         return None
@@ -34,7 +56,7 @@ def build_quant_config(
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=compute_dtype,
     )
 
 

@@ -32,6 +32,7 @@ from .proposal_utils import stage_topk_proposal_history
 from .model_loading import (
     build_sharded_target_device_map,
     build_quant_config,
+    resolve_model_dtype,
     estimate_model_reserve_gib,
     get_model_size,
     load_causal_lm,
@@ -378,12 +379,17 @@ class Decoding(Register, ABC):
             self.color_print("CUDA_VISIBLE_DEVICES is not set", 3)
         self.color_print(f"Available GPUs: {num_gpus}", 3)
 
+        # 计算精度由 --model_dtype 控制（默认 bf16，与历史行为一致）。
+        model_dtype = resolve_model_dtype(
+            getattr(self.args, "model_dtype", "bf16")
+        )
+        self.color_print(f"Model compute dtype: {model_dtype}", 3)
         loader = partial(
             AutoModelForCausalLM.from_pretrained,
             local_files_only=False,
             attn_implementation=attn_impl,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=model_dtype,
         )
         if self.args.eval_mode == "small":
             device_map = "cuda:0"
@@ -391,6 +397,7 @@ class Decoding(Register, ABC):
             draft_quant = build_quant_config(
                 self.args.draft_model,
                 getattr(self.args, "draft_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
@@ -407,6 +414,7 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(
                 self.args.target_model,
                 getattr(self.args, "target_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
@@ -445,6 +453,7 @@ class Decoding(Register, ABC):
             draft_quant = build_quant_config(
                 self.args.draft_model,
                 getattr(self.args, "draft_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
@@ -458,6 +467,7 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(
                 self.args.target_model,
                 getattr(self.args, "target_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
@@ -503,6 +513,7 @@ class Decoding(Register, ABC):
             draft_quant = build_quant_config(
                 self.args.draft_model,
                 getattr(self.args, "draft_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
@@ -517,6 +528,7 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(
                 self.args.target_model,
                 getattr(self.args, "target_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
@@ -547,6 +559,9 @@ class Decoding(Register, ABC):
         elif self.args.eval_mode in [
             "tridecoding",
             "adaptive_tridecoding",
+            # target_only 只需要目标模型，但复用它这一支的三模型加载路径最省事，
+            # 也保证与三级流水线共用同一套量化/设备配置（对照才可比）。
+            "target_only",
             "cee_sd",
             "cee_sd_opportunistic",
             "ceesd_without_arp",
@@ -583,6 +598,7 @@ class Decoding(Register, ABC):
             little_quant = build_quant_config(
                 self.args.little_model,
                 getattr(self.args, "little_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if little_quant is not None:
                 log_quantization_decision(self.color_print, self.args.little_model)
@@ -597,6 +613,7 @@ class Decoding(Register, ABC):
             draft_quant = build_quant_config(
                 self.args.draft_model,
                 getattr(self.args, "draft_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if draft_quant is not None:
                 log_quantization_decision(self.color_print, self.args.draft_model)
@@ -611,6 +628,7 @@ class Decoding(Register, ABC):
             target_quant = build_quant_config(
                 self.args.target_model,
                 getattr(self.args, "target_quantization", "auto"),
+                compute_dtype=model_dtype,
             )
             if target_quant is not None:
                 log_quantization_decision(self.color_print, self.args.target_model)
