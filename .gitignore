@@ -109,3 +109,6 @@ microsoft/*
 checkpoints_backup_buggy_units/
 # Harness session artifacts
 thinking-effort-loaded.json
+
+# 机器生成的 RL 训练状态日志（3977 行数据，非代码，不入版本管理）
+/checkpoints/training_status.json
