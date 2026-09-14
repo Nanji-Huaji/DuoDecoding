@@ -1,0 +1,81 @@
+{
+  "_comment": "模型清单。local 路径必须与 src/model_loading.py 的解析方式一致（llama/<name>）。tier: little=端侧草稿, draft=边缘草稿, target=云端目标。",
+  "sets": {
+    "paper": {
+      "desc": "论文最小可复现集（llama-68m → tiny-llama-1.1b → Llama-2-13b-hf），约 52 GB",
+      "models": ["llama-68m", "tiny-llama-1.1b", "llama-2-13b-hf"]
+    },
+    "paper-70b": {
+      "desc": "论文 70B 扩展实验，额外约 386 GB",
+      "models": ["llama-2-70b-hf"]
+    },
+    "scaling": {
+      "desc": "规模对照（7B / 1B / 160m），用于 γ 与规模敏感性实验",
+      "models": ["llama-2-7b-hf", "llama-3.2-1b", "llama-160m"]
+    }
+  },
+  "models": {
+    "llama-68m": {
+      "repo": "JackFram/llama-68m",
+      "local": "llama/llama-68m",
+      "approx": "780M",
+      "tier": "little",
+      "gated": false
+    },
+    "tiny-llama-1.1b": {
+      "repo": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+      "local": "llama/tiny-llama-1.1b",
+      "approx": "2.1G",
+      "tier": "draft",
+      "gated": false
+    },
+    "llama-2-13b-hf": {
+      "repo": "meta-llama/Llama-2-13b-hf",
+      "local": "llama/Llama-2-13b-hf",
+      "approx": "49G",
+      "tier": "target",
+      "gated": true,
+      "note": "需要 HF_TOKEN 且在 HF 页面接受 Llama-2 许可"
+    },
+    "llama-2-70b-hf": {
+      "repo": "meta-llama/Llama-2-70b-hf",
+      "local": "llama/llama-2-70b",
+      "approx": "386G",
+      "tier": "target",
+      "gated": true,
+      "note": "论文 70B 扩展实验用；需要接受许可"
+    },
+    "llama-2-7b-hf": {
+      "repo": "meta-llama/Llama-2-7b-hf",
+      "local": "llama/Llama-2-7b-hf",
+      "approx": "26G",
+      "tier": "target",
+      "gated": true
+    },
+    "llama-3.2-1b": {
+      "repo": "meta-llama/Llama-3.2-1B",
+      "local": "llama/llama-3.2-1b",
+      "approx": "4.7G",
+      "tier": "draft",
+      "gated": true
+    },
+    "llama-160m": {
+      "repo": "JackFram/llama-160m",
+      "local": "llama/llama-160m",
+      "approx": "2.5G",
+      "tier": "little",
+      "gated": false
+    }
+  },
+  "datasets": [
+    {"name": "gsm8k", "config": "main", "split": "test", "used_by": "eval_gsm8k.py"},
+    {"name": "openai_humaneval", "config": null, "split": "test", "used_by": "eval_humaneval.py"},
+    {"name": "xsum", "config": null, "split": "test", "used_by": "摘要任务"},
+    {"name": "cnn_dailymail", "config": "3.0.0", "split": "test", "used_by": "摘要任务"}
+  ],
+  "acc_head_registry": "src/SpecDec_pp/checkpoints/acc_head_registry.json",
+  "acc_head_required": [
+    "llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3",
+    "tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"
+  ]
+}
