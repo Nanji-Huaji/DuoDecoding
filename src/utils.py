@@ -281,6 +281,7 @@ def model_zoo(args):
         "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
         "llama-3.2-1b": "llama/llama-3.2-1b",
         "llama-2-13b": "llama/Llama-2-13b-hf",
+        "llama-2-70b": "llama/llama-2-70b",
         "llama-13b-hf": "llama/Llama-2-13b-hf",
         "tiny-vicuna-1b": "vicuna/tiny-vicuna-1b",
         "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
@@ -566,6 +567,13 @@ def parse_arguments():
         help="The threshold for the draft-target model for adaptive decoding. Default is 0.8.",
     )
     parser.add_argument(
+        "--comm_trace_mode",
+        choices=["static", "driving", "walking"],
+        default="static",
+        help=("随机通信 trace 的移动模式（配合 --use_stochastic_comm）："
+              "driving=5G mmWave 车载轨迹，波动最剧烈；static=静止场景（历史默认）。"),
+    )
+    parser.add_argument(
         "--use_stochastic_comm",
         action="store_true",
         help="Whether to use stochastic communication simulator.",
@@ -621,6 +629,292 @@ def parse_arguments():
             "(legacy behavior) or 'loguniform' (recommended; bandwidth "
             "perception is roughly logarithmic)."
         ),
+    )
+    parser.add_argument(
+        "--state_bw_scaling",
+        type=str,
+        choices=["linear", "log"],
+        default="linear",
+        help=(
+            "How the bandwidth state feature is scaled before it enters the RL "
+            "network: 'linear' (legacy bw/1000, which squeezes the whole "
+            "0.5-50 Mbps range into [0.0005, 0.05] and makes the policy "
+            "effectively bandwidth-blind) or 'log' "
+            "(log10(bw+1)/log10(1000+1), spreads it over [0.0, 0.57])."
+        ),
+    )
+    parser.add_argument(
+        "--state_latency_scaling",
+        type=str,
+        choices=["linear", "centi", "log"],
+        default="linear",
+        help=(
+            "How the latency state feature is scaled: 'linear' (legacy "
+            "ntt/500 -> only 0-0.2 for a 0-100 ms curriculum), 'centi' "
+            "(ntt/100, uses the full range) or 'log'."
+        ),
+    )
+    parser.add_argument(
+        "--rl_reward_mode",
+        type=str,
+        choices=["legacy", "linear", "lagrangian", "slo", "energy"],
+        default="legacy",
+        help=(
+            "Reward for the RL adapters. 'legacy' = the v1 hand-tuned reward "
+            "exp(min(N_acc/T,100)/20) * (N_acc/gamma)^2 with the wall-clock T "
+            "(kept as default so earlier results stay reproducible). "
+            "'linear' = N_acc/T. 'lagrangian' = N_acc - lambda*T, the Lagrangian "
+            "relaxation of the ratio objective E[N]/E[T] (recommended). "
+            "'slo' = deadline-aware variant, 'energy' = adds a comm-energy term."
+        ),
+    )
+    parser.add_argument(
+        "--rl_reward_lambda",
+        type=float,
+        default=0.0,
+        help=(
+            "Shadow price of time (tokens/second) for --rl_reward_mode "
+            "lagrangian/energy. 0 (default) tracks the policy's observed "
+            "tokens/second with an EMA; set a fixed value for reproducible "
+            "ablations (e.g. the pilot run's mean throughput)."
+        ),
+    )
+    parser.add_argument(
+        "--rl_reward_deadline_ms",
+        type=float,
+        default=0.0,
+        help="Per-decision deadline (ms) for --rl_reward_mode slo.",
+    )
+    parser.add_argument(
+        "--rl_reward_deadline_penalty",
+        type=float,
+        default=1.0,
+        help="Penalty per second of deadline overrun for --rl_reward_mode slo.",
+    )
+    parser.add_argument(
+        "--rl_reward_energy_weight",
+        type=float,
+        default=0.0,
+        help="Weight mu of the communication-energy term for --rl_reward_mode energy.",
+    )
+    parser.add_argument(
+        "--rl_force_threshold_little",
+        type=float,
+        default=None,
+        help=(
+            "Ablation: pin the *little* (edge-end) stage threshold, separately from "
+            "--rl_force_threshold. Needed because the little stage is opportunistic "
+            "and its early stop changes how many unverified tokens are accepted, "
+            "which moves accuracy -- mixing the two confounds the main-stage "
+            "threshold ablation."
+        ),
+    )
+    parser.add_argument(
+        "--model_dtype",
+        type=str,
+        default="bf16",
+        choices=["bf16", "fp16", "fp32"],
+        help=(
+            "Compute dtype for all models (and bnb_4bit_compute_dtype). Default "
+            "bf16 reproduces the historical behaviour. This exists to test whether "
+            "argmax flips between batched speculative verification and sequential "
+            "decoding come from low-precision near-ties: bf16 has 8 mantissa bits "
+            "(~0.2%% relative), fp16 10, fp32 24."
+        ),
+    )
+    parser.add_argument(
+        "--disable_eos_stop",
+        action="store_true",
+        help=(
+            "Disable EOS early stopping (restores the historical behaviour of "
+            "always generating max_tokens). EOS stopping is ON by default because "
+            "without it task quality cannot be measured at all: GSM8K never emits "
+            "'#### <answer>' and HumanEval code is truncated. Note that enabling it "
+            "changes all throughput/latency numbers, so baselines must be re-run."
+        ),
+    )
+    parser.add_argument(
+        "--comm_round_trip_mode",
+        choices=["per_transfer", "per_round"],
+        default="per_transfer",
+        help=("通信往返口径：per_transfer=每次消息各付一次 NTT（历史口径）；"
+              "per_round=同一轮内每条链路合并为一次往返（成批实现的真实情形）。"),
+    )
+    parser.add_argument(
+        "--transfer_top_k_cap",
+        type=int,
+        default=0,
+        help="给（含 RL 选出的）transfer_top_k 设上限；0 表示不设上限。",
+    )
+    parser.add_argument(
+        "--force_full_vocab_transfer",
+        action="store_true",
+        help="强制传输完整词表分布（不做 top-k 稀疏化）。用于构造"
+             "标准投机采样的通信基线；默认关闭，保证历史数字可复现。",
+    )
+    parser.add_argument(
+        "--prob_payload_bits",
+        type=int,
+        default=16,
+        help="传输概率载荷的位宽（16=与历史一致；8=int8 量化；4=上界数据点）。"
+             "量化在对数域进行并重归一化、保持序关系；作用于验证路径与计费。",
+    )
+    parser.add_argument(
+        "--charge_residual_payload",
+        action="store_true",
+        help=(
+            "F43：如实计入拒绝位置残差采样所需的提案分布载荷。开启时解码改用精确的 "
+            "top-k + 均匀尾表示（TopKProposalHistory），并按 k*(4+元素大小)+元素大小 "
+            "字节/拒绝位置/链路计费；关闭时沿用只计标量的旧口径（历史数字可复现）。"
+        ),
+    )
+    parser.add_argument(
+        "--dump_outputs",
+        type=str,
+        default=None,
+        help=(
+            "Write one JSON line per evaluated sample (task, item, prompt_len, "
+            "generated token ids, decoded text) to this path. Needed for the "
+            "losslessness identity test (temp=0: speculative output must be "
+            "token-identical to target_only) and for offline task-quality scoring."
+        ),
+    )
+    parser.add_argument(
+        "--arp_stop_mode",
+        type=str,
+        choices=["cumulative", "per_token"],
+        default="cumulative",
+        help=(
+            "Acceptance-prediction early-stop rule. 'cumulative' (default) is the "
+            "historical 1 - prod_i p_i > threshold, which saturates after ~2 "
+            "drafted tokens and makes the threshold dimension inert. 'per_token' "
+            "stops when 1 - p_last > threshold, which is monotone in the threshold."
+        ),
+    )
+    parser.add_argument(
+        "--rl_force_threshold",
+        type=float,
+        default=None,
+        help=(
+            "Ablation: pin the ARP early-stop threshold to the nearest candidate "
+            "and let the policy choose top-k (and gamma, if in the action space) "
+            "around it.  Used to split the end-to-end effect into the dimension "
+            "that actually controls how long the draft runs."
+        ),
+    )
+    parser.add_argument(
+        "--rl_byte_price",
+        type=float,
+        default=0.0,
+        help=(
+            "Price of transferred bytes, expressed as equivalent seconds per "
+            "megabyte, added to the reward's time term. 0 (default) keeps the "
+            "historical behaviour, where bytes are only priced through the "
+            "physical transmission time inside comm_s (3-9%% of comm at 0.5-1 "
+            "Mbps) -- which is why the policy happily trades bytes for round "
+            "trips. 16 s/MB is the physical transmission cost at 0.5 Mbps; use "
+            "larger values to emulate metered or more expensive links."
+        ),
+    )
+    parser.add_argument(
+        "--rl_compute_time_mode",
+        type=str,
+        choices=["wall", "model"],
+        default="wall",
+        help=(
+            "Where the reward's compute time comes from: 'wall' (measured wall "
+            "clock, host-load dependent -- this is what v1 used) or 'model' "
+            "(reconstructed from forward counts and --rl_compute_cost_json, "
+            "making the reward independent of host load)."
+        ),
+    )
+    parser.add_argument(
+        "--rl_compute_cost_json",
+        type=str,
+        default=None,
+        help=(
+            "JSON with seconds per forward pass, e.g. "
+            '{"little": 0.002, "draft": 0.006, "target": 0.020}; produced by '
+            "scripts/calibrate_compute_model.py."
+        ),
+    )
+    parser.add_argument(
+        "--rl_reward_no_alpha2",
+        action="store_true",
+        help="Drop the (N_acc/gamma)^2 factor from the legacy reward (ablation).",
+    )
+    parser.add_argument(
+        "--rl_action_space",
+        type=str,
+        choices=["topk_thr", "topk_thr_gamma"],
+        default="topk_thr",
+        help=(
+            "Action space of the RL adapters. 'topk_thr' = (top-k, ARP threshold) "
+            "= 88 actions (legacy, keeps old checkpoints loadable). "
+            "'topk_thr_gamma' additionally selects the draft length per round: the "
+            "communication time is ~97%% round-trip time and the number of WAN "
+            "round trips is ~tokens/gamma, so gamma is the lever that decides the "
+            "dominant term (measured: gamma 4 -> 16 gives -17.7%% round trips, "
+            "-11.9%% compute and +22.1%% throughput at 0.5 Mbps)."
+        ),
+    )
+    parser.add_argument(
+        "--rl_gamma_candidates",
+        type=str,
+        default="2,4,8,16",
+        help="Comma-separated draft lengths for --rl_action_space topk_thr_gamma.",
+    )
+    parser.add_argument(
+        "--rl_force_gamma",
+        type=int,
+        default=None,
+        help=(
+            "Ablation: pin the draft length gamma to this value while top-k and the "
+            "ARP threshold are still chosen by the loaded policy. Lets an A/B gain be "
+            "split into the gamma contribution and the top-k/threshold contribution "
+            "(otherwise 'the joint agent wins because it learned to use a large "
+            "top-k' cannot be ruled out)."
+        ),
+    )
+    parser.add_argument(
+        "--rl_factored_q",
+        action="store_true",
+        help=(
+            "Use a branching (factored) dueling Q-network for the joint "
+            "topk x threshold x gamma action space: Q(s,a) = V(s) + sum_h A_h(s,a_h) "
+            "with per-dimension centering. argmax stays exact because Q is additive, "
+            "and every decision trains all three heads, which fixes the credit "
+            "assignment problem of a flat 352-way head (each combination was visited "
+            "only ~27 times in a 400-sample run, so the agent never learned that "
+            "larger gamma is worth +0.83 reward per decision)."
+        ),
+    )
+    parser.add_argument(
+        "--rl_include_gamma_in_state",
+        action="store_true",
+        help="Append the last chosen draft length to the RL state vector.",
+    )
+    parser.add_argument(
+        "--rl_buffer_size",
+        type=int,
+        default=5000,
+        help="Replay-buffer size of the DDQN agents (larger for bigger action spaces).",
+    )
+    parser.add_argument(
+        "--rl_team_reward",
+        action="store_true",
+        help=(
+            "Give both adapters the same iteration-level team reward instead of "
+            "each one's local reward. The first (end->edge) stage decides before "
+            "the second one, so it consumes the previous iteration's team reward "
+            "(one-step delay), which is the standard cooperative-MARL treatment."
+        ),
+    )
+    parser.add_argument(
+        "--rl_reward_log_window",
+        type=int,
+        default=200,
+        help="Window of the adapter's windowed reward log.",
     )
     parser.add_argument(
         "--use_rl_adapter",
@@ -975,6 +1269,33 @@ def rebuild_topk_uniform_probs(
 ) -> torch.Tensor:
     return rebuild_topk_probs(probs, top_k, strategy="uniform")
 
+
+
+def state_entropy(probs: "torch.Tensor | None", cache=None) -> float:
+    """RL 控制器的 entropy 状态特征（**不要**对概率再 softmax 一次）。
+
+    背景（真实 bug）：缓存的 `_forward_with_kvcache` 返回的是 `norm_logits` 归一化
+    之后的**概率**。原实现在此处 `torch.softmax(q)` 再算熵，等于对概率分布再做一次
+    softmax —— 得到近似均匀分布，熵恒为 ln(vocab)≈10.3735，经 `min(entropy/10,1)`
+    归一化后饱和成常数 1.0，该特征从未携带信息（实测 300 步只有一个取值）。
+    另外 `--temp 0.0` 时 `norm_logits` 直接返回 one-hot，从返回的概率算熵同样恒为 0。
+
+    因此优先取缓存里按**原始 logits（温度 1）**算好的 `last_entropy`；回退时才从
+    传入张量算，并按"已是概率"处理（仅当出现负值才认为传的是 logits）。
+    """
+    if cache is not None:
+        value = getattr(cache, "last_entropy", None)
+        if value is not None:
+            return float(value)
+    if probs is None:
+        return 0.0
+    p = probs.float()
+    if float(p.min()) < 0:
+        p = torch.softmax(p, dim=-1)
+    p = p.clamp_min(0)
+    total = p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    p = p / total
+    return float(-(p * torch.log(p + 1e-9)).sum(dim=-1).mean().item())
 
 def max_fn(x):
     """
