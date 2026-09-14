@@ -1,8 +1,16 @@
+import json
+import os
+
 import torch
 from torch import nn
 from collections.abc import Sequence
 
 from .model_gpu import KVCacheModel
+
+# 可选：把 acc-head 的逐 token 接受概率写出来（RL_ACC_PROB_TRACE=/path.jsonl）。
+# 动机：ARP 的停止判据依赖这些概率，但它们的分布从未被观测过——而"阈值维度是否
+# 可能可分辨"完全取决于它（诊断文档 F18）。
+ACC_PROB_TRACE_PATH = os.environ.get("RL_ACC_PROB_TRACE")
 
 
 class DecodingAdapter:
@@ -11,10 +19,20 @@ class DecodingAdapter:
         acc_head: nn.Module,
         threshold: float | None,
         model: KVCacheModel | None = None,
+        stop_mode: str = "cumulative",
     ):
         self.acc_head = acc_head
         self.model: KVCacheModel | None = model
         self.threshold = threshold
+        # "cumulative" (default, historical): stop when 1 - prod_i p_i > threshold.
+        # The product saturates after ~2 drafted tokens whatever the threshold, which
+        # makes the whole threshold dimension inert (measured: 0.05..0.95 give
+        # byte-identical rollouts -- diagnosis doc F18).
+        # "per_token": stop when the *latest* token's rejection probability exceeds
+        # the threshold, i.e. 1 - p_last > threshold.  Monotone in the threshold, so
+        # the action space dimension becomes discriminable again.
+        assert stop_mode in {"cumulative", "per_token"}, stop_mode
+        self.stop_mode = stop_mode
         self.last_acc_prob = 0.5
         self.step_acc_probs = []
 
@@ -48,6 +66,22 @@ class DecodingAdapter:
 
         self.last_acc_prob = acc_prob
         self.step_acc_probs.append(acc_prob)
+        if ACC_PROB_TRACE_PATH:
+            try:
+                with open(ACC_PROB_TRACE_PATH, "a") as fh:
+                    fh.write(
+                        json.dumps(
+                            {
+                                "step_pos": len(self.step_acc_probs),
+                                "acc_prob": float(acc_prob),
+                                "threshold": None if self.threshold is None else float(self.threshold),
+                                "stop_mode": self.stop_mode,
+                            }
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
 
         if self.threshold is not None:
             # Re-calculate cumulative rejection prob for stopping decision

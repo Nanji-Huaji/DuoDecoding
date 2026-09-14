@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Literal, Optional, Tuple
 
+import json
+import os
+
 import torch
 
 from .communication import CommunicationSimulator
@@ -178,6 +181,9 @@ def prepare_verification_inputs(
     )
 
 
+VERIFY_TRACE_PATH = os.environ.get("RL_VERIFY_TRACE")
+
+
 def compute_acceptance_result(
     verification_inputs: VerificationInputs,
     *,
@@ -215,6 +221,37 @@ def compute_acceptance_result(
     accept_mask = r <= (selected_target_p / selected_draft_p)
     continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
     accepted_count = continuous_accept.sum(dim=1, dtype=torch.int64)
+
+    # 可选验证轨迹（RL_VERIFY_TRACE=/path.jsonl）：投机解码的正确性要求
+    # "被接受的 token 必须就是验证者分布下的样子"。在 temp=0 下这等价于
+    # "被接受的 token == 目标模型的 argmax"，任何违例都说明 accept/reject 路径
+    # 偏离了目标分布（恒等检验中观察到的输出分歧就是这一类）。
+    # 这里只做只读统计，不改变任何解码行为。
+    if VERIFY_TRACE_PATH:
+        try:
+            target_argmax = verification_inputs.target_probs_batch.argmax(dim=-1)
+            drafted = verification_inputs.draft_token_indices
+            for b in range(drafted.shape[0]):
+                n_acc = int(accepted_count[b].item())
+                for pos in range(n_acc):
+                    if int(drafted[b, pos].item()) != int(target_argmax[b, pos].item()):
+                        with open(VERIFY_TRACE_PATH, "a") as fh:
+                            fh.write(
+                                json.dumps(
+                                    {
+                                        "kind": "accepted_but_not_target_argmax",
+                                        "pos": pos,
+                                        "draft_token": int(drafted[b, pos].item()),
+                                        "target_argmax": int(target_argmax[b, pos].item()),
+                                        "p_target_selected": float(selected_target_p[b, pos].item()),
+                                        "p_draft_selected": float(selected_draft_p[b, pos].item()),
+                                        "r": float(r[b, pos].item()),
+                                    }
+                                )
+                                + "\n"
+                            )
+        except Exception:
+            pass
 
     return AcceptanceResult(
         accepted_count=accepted_count,

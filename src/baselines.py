@@ -1,4 +1,5 @@
 import json
+import os
 import math
 import time
 import warnings
@@ -40,6 +41,8 @@ from .model_gpu import KVCacheModel
 from .proposal_utils import (
     build_stage_prefix_topk_history,
     build_draft_probs_override,
+    build_topk_proposal_history_step,
+    concat_topk_proposal_history,
     merge_stage_topk_histories,
     proposal_top_k,
     stage_topk_proposal_history,
@@ -59,6 +62,7 @@ from .utils import (
     rebuild_topk_uniform_probs,
     sample,
     skip_token_validation,
+    state_entropy,
 )
 
 
@@ -105,6 +109,28 @@ def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tens
     if tokens.dtype != torch.long:
         tokens = tokens.to(torch.long)
     return tokens.to("cpu", non_blocking=False).to(device, non_blocking=True)
+
+
+def _quantize_probs_logspace(probs: torch.Tensor, bits: int) -> torch.Tensor:
+    """概率载荷量化的**真实**实现（不只是记账）：对数域均匀量化 → 还原 → 重归一化。
+
+    · 对数域量化使各项的相对误差均匀 ✓（接受判据 min(1,p/q) 关心的是相对误差）
+    · 量化映射单调 ⇒ **保持序关系** ✓（top-k 选择不受影响）
+    · 重归一化保证和为 1 ✓（否则接受判据的比值会失真）
+    · bits >= 16 时原样返回 ⇒ 默认路径与历史数字完全一致 ✓
+    """
+    if bits is None or bits >= 16 or probs is None or probs.numel() == 0:
+        return probs
+    levels = float((1 << int(bits)) - 1)
+    p32 = probs.to(torch.float32)
+    logp = torch.log(p32.clamp_min(1e-12))
+    lo = logp.amin(dim=-1, keepdim=True)
+    hi = logp.amax(dim=-1, keepdim=True)
+    span = (hi - lo).clamp_min(1e-9)
+    q = torch.round((logp - lo) / span * levels)
+    out = torch.exp(lo + q / levels * span)
+    out = out / out.sum(dim=-1, keepdim=True).clamp_min(1e-30)
+    return out.to(probs.dtype)
 
 
 def _simulate_topk_prob_transfer(
@@ -478,6 +504,15 @@ class Baselines(Decoding):
                     epsilon_decay=epsilon_decay,
                     reward_scale=reward_scale,
                     batch_size=batch_size,
+                    # 默认 None：little 级不继承 --rl_force_threshold（那一级是
+                    # opportunistic，可能接受未验证 token，混淆主阈值的消融结论）。
+                    # 用 --rl_force_threshold_little 单独指定。
+                    force_threshold_override=(
+                        getattr(args, "rl_force_threshold_little", None)
+                        if getattr(args, "rl_force_threshold_little", None)
+                        is not None
+                        else -1.0  # 哨兵：显式"不强制"，避免继承主级 flag
+                    ),
                 )
             else:
                 self.little_rl_adapter = None
@@ -556,7 +591,11 @@ class Baselines(Decoding):
             self.acc_head.eval()
             if hasattr(self, "draft_model"):
                 self.acc_head.to(self.draft_model.device)
-            self.adapter = DecodingAdapter(self.acc_head, draft_target_threshold)
+            self.adapter = DecodingAdapter(
+                self.acc_head,
+                draft_target_threshold,
+                stop_mode=getattr(self.args, "arp_stop_mode", "cumulative"),
+            )
         elif self.args.eval_mode in [
             "adaptive_tridecoding",
             "cee_sd",
@@ -582,10 +621,14 @@ class Baselines(Decoding):
             if hasattr(self, "draft_model"):
                 self.draft_target_acc_head.to(self.draft_model.device)
             self.small_draft_adapter = DecodingAdapter(
-                self.small_draft_acc_head, small_draft_threshold
+                self.small_draft_acc_head,
+                small_draft_threshold,
+                stop_mode=getattr(self.args, "arp_stop_mode", "cumulative"),
             )
             self.draft_target_adapter = DecodingAdapter(
-                self.draft_target_acc_head, draft_target_threshold
+                self.draft_target_acc_head,
+                draft_target_threshold,
+                stop_mode=getattr(self.args, "arp_stop_mode", "cumulative"),
             )
 
     @staticmethod
@@ -631,12 +674,20 @@ class Baselines(Decoding):
 
         x = prefix.clone()
         rebuilt_rows: list[torch.Tensor] = []
+        proposal_steps = []
         q: Optional[torch.Tensor] = None
         for _ in range(gamma):
             q = cache._forward_with_kvcache(x)
             sample_probs = rebuild_topk_uniform_probs(q, proposal_top_k)
             if proposal_top_k is not None:
                 rebuilt_rows.append(sample_probs.unsqueeze(1))
+            # F43：记录每一步的 (top-k 索引, top-k 概率, 均匀尾)。验证方在**拒绝**时
+            # 必须从 norm(max(0, p−q)) 采样，这需要提案分布本身；有了这个精确表示，
+            # 跨链路只需 k×(4+p)+p 字节/位置，而不是整行 V×p（32k 词表下差 ~70×）。
+            if need_topk_metadata:
+                _step_meta = build_topk_proposal_history_step(q, proposal_top_k)
+                if _step_meta is not None:
+                    proposal_steps.append(_step_meta)
             next_tok = sample(sample_probs)
             x = torch.cat((x, next_tok), dim=1)
 
@@ -650,7 +701,12 @@ class Baselines(Decoding):
         rebuilt_draft_probs = None
         if rebuilt_rows:
             rebuilt_draft_probs = torch.cat(rebuilt_rows, dim=1)
-        return x, rebuilt_draft_probs, None, q
+        rebuilt_meta = (
+            concat_topk_proposal_history(proposal_steps)
+            if need_topk_metadata
+            else None
+        )
+        return x, rebuilt_draft_probs, rebuilt_meta, q
 
     def _select_cuhlm_stage_config(
         self,
@@ -1026,6 +1082,7 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
         return prefix, metrics
 
     @Register.register_decoding("dist_spec")
@@ -1339,6 +1396,12 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token。
+        # 参照 dist_spec（它靠 max(0, remaining-1) 截断 γ 来保证不越界），这里显式
+        # 截断，保证与 target_only / 普通 SD 的长度契约一致——否则会多拿 token，
+        # 使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         return prefix, metrics
 
     @Register.register_decoding("uncertainty_decoding")
@@ -1755,8 +1818,13 @@ class Baselines(Decoding):
                     self.args.gamma2,
                 ),
             )
-            n1 = first_stage_acceptance.n
-            little_accepted_this_iter = first_stage_acceptance.accepted_count
+            # 注意：AcceptanceResult 只有 accepted_count（接受计数），绝对位置 n
+            # 必须经 materialize_acceptance 求（n = prefix_len + accepted_count - 1，
+            # 全部接受时取 prefix_len + actual_gamma - 1）。这里原先写的 `.n` 是
+            # 重构前的旧字段，会让 tridecoding/ceesd_without_arp 直接崩溃。
+            little_accepted_this_iter, n1, _ = materialize_acceptance(
+                first_stage_inputs, first_stage_acceptance
+            )
 
             total_little_model_accepted_tokens += little_accepted_this_iter
 
@@ -1865,15 +1933,28 @@ class Baselines(Decoding):
                 )
                 if draft_stage_probs is None:
                     draft_stage_probs = draft_model_cache.prob_history
+                # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
+                # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
+                _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
+                if _prob_bits < 16:
+                    draft_stage_probs = _quantize_probs_logspace(
+                        draft_stage_probs, _prob_bits
+                    )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
                 )
-                comm_simulator.transfer(
-                    draft_tokens_second, draft_probs_second, "edge_cloud"
-                )
+                if _prob_bits < 16:
+                    comm_simulator.transfer(
+                        draft_tokens_second, draft_probs_second, "edge_cloud",
+                        prob_bits=_prob_bits,
+                    )
+                else:
+                    comm_simulator.transfer(
+                        draft_tokens_second, draft_probs_second, "edge_cloud"
+                    )
 
             second_stage_inputs, second_stage_acceptance = verify_draft_sequence_result(
                 draft_model_cache=draft_model_cache,
@@ -1891,8 +1972,10 @@ class Baselines(Decoding):
                     total_gamma,
                 ),
             )
-            n2 = second_stage_acceptance.n
-            draft_accepted_this_iter = second_stage_acceptance.accepted_count
+            # 同上：用 materialize_acceptance 求绝对位置，而不是旧字段 `.n`
+            draft_accepted_this_iter, n2, _ = materialize_acceptance(
+                second_stage_inputs, second_stage_acceptance
+            )
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
             assert n2 >= prefix_len - 1, (
@@ -1978,6 +2061,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机按整块追加，最后一轮会多出若干 token。对照基线
+        # dist_spec 严格 128，而本方法此前 14/20 样本超预算（最多 +9），会让配对
+        # 质量比较与时延/吞吐统计都不公平（F33）。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -2158,11 +2246,11 @@ class Baselines(Decoding):
                 bandwidth = comm_simulator.bandwidth_edge_end_mbps
                 latency = comm_simulator.ntt_edge_end_ms
                 acc_probs = []  # No ARP head
-                assert q is not None, "Logits q should not be None"
-                probs = torch.softmax(q, dim=-1)
-                entropy = (
-                    -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                )
+                # 注意：ceesd_without_arp 不带 ARP adapter 且可能没开 top-k 压缩，
+                # 此时 `_generate_with_optional_rebuilt_proposal` 会合法地返回 q=None
+                # （它只在需要重建 top-k 概率时才返回 q）。熵因此必须走缓存里按原始
+                # logits 算好的 last_entropy——原先的 assert 会让这个消融直接崩溃。
+                entropy = state_entropy(q, little_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_k, _ = self.little_rl_adapter.select_config(
                     bandwidth, latency, acc_probs, entropy, task_name
@@ -2289,13 +2377,8 @@ class Baselines(Decoding):
                 bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
                 latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = []
-                if q is not None:
-                    probs = torch.softmax(q, dim=-1)
-                else:
-                    raise ValueError("Logits q should not be None for RL adapter")
-                entropy = (
-                    -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                )
+                # 同上：q 可能为 None（无 ARP adapter / 未开 top-k），熵来自缓存
+                entropy = state_entropy(q, draft_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_k, _ = self.rl_adapter.select_config(
                     bandwidth, latency, acc_probs, entropy, task_name
@@ -2483,6 +2566,141 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    # ------------------------------------------------------------------
+    # EOS 停止
+    # ------------------------------------------------------------------
+    # 项目里本来就有 `_check_stopping_criteria`（engine.py，检查**最后一个位置**
+    # 的 EOS），并且已接进各解码循环，但 `eval/eval_mixed.py` 从不传
+    # `use_early_stopping`，所以默认 False、在混合评测里从未生效。后果是结构性
+    # 的：GSM8K 的 "#### <答案>" 不出现、HumanEval 函数体被截断，任务质量无法
+    # 评测（实测 20/20 样本全部触顶 max_tokens）。
+    #
+    # 这里补两件事：
+    #  1) 让混合评测显式启用 `use_early_stopping`（见 eval/eval_mixed.py）；
+    #  2) `_check_stopping_criteria` 只看最后一个位置，而 gamma>1 时一个 chunk 里
+    #     可能有多个 token、EOS 出现在中间就会被漏掉；`_stop_at_eos` 在生成段里
+    #     找**第一个** EOS 并截断到它，避免多生成无意义的后缀。
+    # 需要旧行为（不截断）时传 --disable_eos_stop。
+    def _residual_payload_bytes(
+        self,
+        stage_probs: Optional[torch.Tensor],
+        top_k: Optional[int],
+    ) -> float:
+        """拒绝位置残差所需的**增量**载荷（字节）——F43 修正版。
+
+        既有代码已经在两处 `simulate_transfer` 里为拒绝位置计费了
+        **概率部分**：``top_k × element_size``（``transfer_top_k`` 有效时）或整行
+        ``V × element_size``（`src/baselines.py` 阶段一/阶段二各一处）。本函数只补上
+        被漏掉的部分：
+
+          · top-k 表示还需要 **k 个索引**（每个 4 B：int32）与 **1 个尾部标量**；
+          · 走整行时既有的 ``V × element_size`` 已经完整，无需再加。
+
+        因此返回值仅为 ``k×4 + element``（top-k 有效时），否则为 0。
+        """
+        if stage_probs is None or stage_probs.numel() == 0:
+            return 0.0
+        vocab = int(stage_probs.shape[-1])
+        element = int(stage_probs.element_size())
+        if top_k is not None and 0 < int(top_k) < vocab:
+            return float(int(top_k)) * 4 + element
+        return 0.0
+
+    def _eos_token_id(self) -> Optional[int]:
+        if getattr(self.args, "disable_eos_stop", False):
+            return None
+        tokenizer = getattr(self, "tokenizer", None)
+        eos_id = getattr(tokenizer, "eos_token_id", None)
+        return int(eos_id) if eos_id is not None else None
+
+    def _stop_at_eos(
+        self, prefix: torch.Tensor, prompt_len: int
+    ) -> tuple[torch.Tensor, bool]:
+        """生成段里出现 EOS 时截断到该 token（含），并报告应当停止。"""
+        eos_id = self._eos_token_id()
+        if eos_id is None or prefix.shape[1] <= prompt_len:
+            return prefix, False
+        hits = (prefix[:, prompt_len:] == eos_id).nonzero(as_tuple=False)
+        if hits.numel() == 0:
+            return prefix, False
+        end = prompt_len + int(hits[0, 1].item()) + 1
+        return prefix[:, :end], True
+
+    @Register.register_decoding("target_only")
+    @torch.no_grad()
+    def target_only(
+        self,
+        prefix,
+        transfer_top_k=300,
+        use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
+        ntt_ms_edge_cloud: float = 0,
+        ntt_ms_edge_end: float = 0,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """只用目标模型解码（无草稿、无投机、无 ARP、无通信）。
+
+        这个模式承担两个不可替代的作用：
+        1. **论文缺失的对照行**：加速比的分母只能是"不投机"的目标模型本身，
+           而不是另一个投机配置（审稿人 R5 质疑的正是后者）。
+        2. **无损性检验的基准**：在 temp=0（贪心）下，任何正确的投机解码
+           都必须逐 token 复现目标模型的输出。把它与三级流水线的输出逐 token
+           比对，就能把"加速是否以输出分布为代价"变成零噪声的二值判定
+           （见 docs/rl_controller_diagnosis.md 的 E-A 实验）。
+        """
+        if prefix.dtype != torch.long:
+            prefix = prefix.long()
+
+        target_device = self.get_model_input_device(self.target_model)
+        if use_precise_comm_sim or use_stochastic_comm:
+            raise ValueError(
+                "target_only has no communication stage; "
+                "use_precise_comm_sim/use_stochastic_comm are not applicable."
+            )
+
+        target_model_cache = KVCacheModel(
+            self.target_model,
+            self.args.temp,
+            self.args.top_k,
+            self.args.top_p,
+        )
+        target_model_cache.vocab_size = self.vocab_size
+
+        max_new_tokens = int(self.args.max_tokens)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record(stream=torch.cuda.current_stream())
+        prompt_len = prefix.shape[1]
+        generated = target_model_cache.generate(
+            prefix.to(target_device), max_new_tokens
+        )
+        generated, _ = self._stop_at_eos(generated, prompt_len)
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+
+        generated_tokens = generated.shape[1] - prefix.shape[1]
+        metrics = get_empty_metrics()
+        metrics["generated_tokens"] = generated_tokens
+        metrics["target_forward_times"] = max(generated_tokens, 0)
+        metrics["wall_time"] = elapsed_time
+        metrics["throughput"] = (
+            generated_tokens / elapsed_time if elapsed_time > 0 else 0.0
+        )
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=0.0,
+            queuing_time=0.0,
+        )
+        metrics["communication_time"] = 0.0
+        metrics["edge_cloud_data_bytes"] = 0
+        metrics["comm_energy"] = 0.0
+
+        return generated, metrics
+
     @Register.register_decoding("adaptive_decoding")
     @torch.no_grad()
     def adaptive_decoding(
@@ -2565,6 +2783,7 @@ class Baselines(Decoding):
         sum_draft_len = 0.0
         sum_top_k = 0.0
 
+        prompt_len = prefix.shape[1]
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
 
@@ -2615,13 +2834,8 @@ class Baselines(Decoding):
                 latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = getattr(self.adapter, "step_acc_probs", [])
 
-                if q is None:
-                    raise ValueError("Logits q should not be None for RL adapter")
-
-                probs = torch.softmax(q, dim=-1)
-                entropy = (
-                    -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-                )
+                # q 可能为 None（未开 top-k/无 adapter）；熵来自缓存的 last_entropy
+                entropy = state_entropy(q, approx_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
                     bandwidth, latency, acc_probs, entropy, task_name
@@ -2767,6 +2981,32 @@ class Baselines(Decoding):
             if prefix.shape[1] < max_tokens:
                 t = t.to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
+                prefix, _eos_hit = self._stop_at_eos(prefix, prompt_len)
+                if _eos_hit:
+                    break
+                # 逐迭代轨迹（APPEND_TRACE）：记录每一步确认下来的 token 与
+                # 验证者的接受情况，用于把"输出与 target_only 分歧"定位到具体
+                # 某一步的接受/重采样/上下文记账上。
+                _append_trace = os.environ.get("APPEND_TRACE")
+                if _append_trace:
+                    try:
+                        with open(_append_trace, "a") as _fh:
+                            _fh.write(
+                                json.dumps(
+                                    {
+                                        "iter": int(idx),
+                                        "prefix_len_before": int(prefix_len),
+                                        "gamma": int(current_gamma),
+                                        "n": int(n),
+                                        "accepted": int(this_step_accepted_tokens),
+                                        "appended_token": int(t.item()),
+                                        "prefix_len_after": int(prefix.shape[1]),
+                                    }
+                                )
+                                + "\n"
+                            )
+                    except Exception:
+                        pass
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -2780,6 +3020,10 @@ class Baselines(Decoding):
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
+        prefix, _ = self._stop_at_eos(prefix, prompt_len)
+        # 同上：按 max_tokens 截断，保证长度契约与基线一致
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
 
         metrics = get_empty_metrics()
@@ -2848,6 +3092,14 @@ class Baselines(Decoding):
         if prefix.dtype != torch.long:
             prefix = prefix.long()
 
+        # 新增开关（默认关闭，保证历史数字可复现）：
+        #   force_full_vocab_transfer=True ⇒ 传完整词表分布（标准投机采样基线）。
+        #   机制：proposal_top_k(vocab_size) 返回 None（不截断），且计费公式
+        #   draft_len × vocab_size × (prob+index) 会如实 charge 全词表载荷。
+        #   必须在方法入口改写，才能同时影响「真实截断」与「通信计费」两条路径。
+        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+            transfer_top_k = int(getattr(self, "vocab_size", 0) or 32000)
+
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -2860,6 +3112,12 @@ class Baselines(Decoding):
             transfer_top_k
             if (transfer_top_k is not None and transfer_top_k > 0)
             else self.args.top_k
+        )
+        # F43：是否按"拒绝位置残差所需的分布载荷"计费，并改用精确的
+        # top-k + 均匀尾表示（TopKProposalHistory）而不是整行。默认关闭以保持
+        # 历史数字可复现；开启后通信记账才与真实分布式实现一致。
+        charge_residual = bool(
+            getattr(self.args, "charge_residual_payload", False)
         )
         probe_cache_max_length = getattr(self.args, "probe_cache_max_length", None)
         cache_kwargs = (
@@ -2914,7 +3172,28 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                mode=getattr(self.args, "comm_trace_mode", "static"),
             )
+
+        # B 组改造（便宜且确定的收益）：
+        #  · comm_round_trip_mode=per_round：同一轮内多条消息合成"每链路一次往返"，
+        #    只付一次 NTT（原实现一轮要付 3.2+3.0 次）；
+        #  · transfer_top_k_cap：给 RL 选出的 top-k 设上限，直接压低拒绝载荷字节。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer")) == "per_round"
+        )
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+            # 强制全词表：cap 不再覆盖，并把全词表规模告知 simulator 用于计费
+            comm_simulator.transfer_top_k = transfer_top_k
+        elif _topk_cap > 0:
+            if (
+                transfer_top_k is None
+                or int(transfer_top_k) <= 0
+                or int(transfer_top_k) > _topk_cap
+            ):
+                transfer_top_k = _topk_cap
+            comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -2975,8 +3254,10 @@ class Baselines(Decoding):
         draft_comp_time = 0.0
         target_comp_time = 0.0
 
+        _tri_prompt_len = prefix.shape[1]
         while prefix.shape[1] < max_tokens:
             idx += 1
+            comm_simulator.set_round(idx)
             step_start_time = time.time()
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
@@ -2986,29 +3267,30 @@ class Baselines(Decoding):
 
             # 第一层 speculative
             edge_end_comm_start = comm_simulator.edge_end_comm_time
+            edge_end_energy_start = comm_simulator.total_comm_energy
 
             self.small_draft_adapter.reset_step()
             adapter = self.small_draft_adapter
             assert adapter.device != torch.device("cpu")
-            little_gamma = 1 if _opportunistic_first_stage else self.args.gamma2
+            # 第一层的 draft 长度同理：动作空间含 gamma 时由策略决定。
+            gamma2_used = getattr(self, "_next_gamma2", None) or self.args.gamma2
+            little_gamma = 1 if _opportunistic_first_stage else gamma2_used
             t0 = time.time()
-            x, little_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
-                little_model_cache,
-                _move_token_tensor(prefix, little_device),
-                little_gamma,
-                current_proposal_top_k,
-                adapter=adapter,
+            x, little_rebuilt_probs, little_rebuilt_meta, q = (
+                self._generate_with_optional_rebuilt_proposal(
+                    little_model_cache,
+                    _move_token_tensor(prefix, little_device),
+                    little_gamma,
+                    current_proposal_top_k,
+                    adapter=adapter,
+                    need_topk_metadata=charge_residual,
+                )
             )
             little_comp_time += time.time() - t0
 
-            if q is None:
-                raise ValueError(
-                    "Logits q should not be None for CEESD entropy analysis"
-                )
-            probs = torch.softmax(q, dim=-1)
-            little_entropy = (
-                -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-            )
+            # q 可能为 None（未开 top-k 压缩时不会重建概率）；熵取自缓存的
+            # last_entropy（原始 logits、温度 1）——原实现在这里直接抛错/二次 softmax
+            little_entropy = state_entropy(q, little_model_cache)
             little_entropy_history.append(little_entropy)
 
             if self.little_rl_adapter is not None:
@@ -3029,6 +3311,12 @@ class Baselines(Decoding):
                 # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
                 # transfer_top_k = next_topk  # edge-end 通常不压缩
                 self.small_draft_adapter.threshold = next_threshold
+                # 同主适配器：只有动作空间含 gamma 时才覆盖（本路径下第一级被
+                # opportunistic 接管，gamma2 实际恒为 1，见诊断文档 F7）。
+                if getattr(self.little_rl_adapter, "gamma_dim", 1) > 1:
+                    self._next_gamma2 = int(
+                        getattr(self.little_rl_adapter, "last_gamma", None) or gamma2_used
+                    )
                 dra_overhead_time += time.time() - dra_start
 
             actual_gamma2 = x.shape[1] - prefix_len
@@ -3121,7 +3409,25 @@ class Baselines(Decoding):
                         gamma=actual_gamma2,
                         output_device=little_device,
                         draft_probs_override=cast(torch.Tensor, little_stage_probs),
+                        # F43：拒绝时要算残差 ⇒ 验证方需要提案分布。传精确的
+                        # top-k+均匀尾表示，避免"整行 128 kB"被无声地省掉。
+                        draft_topk_history=(
+                            stage_topk_proposal_history(
+                                little_rebuilt_meta, actual_gamma2
+                            )
+                            if charge_residual
+                            else None
+                        ),
                     )
+                    if charge_residual and not little_all_accepted:
+                        # 小模型→草稿链路：补记被拒位置残差载荷中**缺失的索引部分**
+                        #（概率部分已由既有的 simulate_transfer 计费）
+                        comm_simulator.simulate_transfer(
+                            self._residual_payload_bytes(
+                                little_stage_probs, current_proposal_top_k
+                            ),
+                            "edge_end",
+                        )
                 else:
                     t = sample_accept_token(
                         draft_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -3149,16 +3455,26 @@ class Baselines(Decoding):
                 step_time = step_end_time - step_start_time
                 step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
 
-                # 去掉分子 +1
-                tps_part = little_accepted_this_iter / (
-                    step_time + step_comm_time + 1e-9
-                )
-                reward = compute_stage_reward(
-                    tps_part=tps_part,
-                    generated_tokens=actual_gamma2,
-                    accepted_tokens=little_accepted_this_iter,
+                # 第一层（end->edge）奖励，走同一套奖励实现（见 src/rl_reward.py）。
+                # 注意：当前版本的信用分配是"各层局部奖励"，两层强耦合时这是有偏的；
+                # 团队奖励 / difference reward 是后续改进方向。
+                reward = self.little_rl_adapter.compute_reward(
+                    accepted=little_accepted_this_iter,
+                    generated=actual_gamma2,
+                    comm_s=step_comm_time,
+                    compute_s=step_time,
+                    energy_j=comm_simulator.total_comm_energy - edge_end_energy_start,
+                    forward_counts={"little": float(actual_gamma2)},
                     opportunistic=_opportunistic_first_stage,
                 )
+
+                if getattr(self.args, "rl_team_reward", False):
+                    # 团队奖励：两层共享同一个 iteration 级奖励。第一层先于第二层
+                    # 决策，因此使用上一轮写入的团队奖励（延迟一步），这是 cooperative
+                    # MARL 中处理时序耦合的标准做法；首轮退化为本地奖励。
+                    team = getattr(self, "_team_reward_buffer", None)
+                    if team is not None:
+                        reward = team
 
                 if not getattr(self.args, "disable_rl_update", False):
                     self.little_rl_adapter.step(reward)
@@ -3194,6 +3510,11 @@ class Baselines(Decoding):
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
+                _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
+                if _pb < 16:                      # 概率载荷按位宽计费 ✓
+                    _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
+                          else prob_data.numel())
+                    prob_bytes = int(_n) * _pb / 8.0
 
                 reject_overhead = 6.0
 
@@ -3214,6 +3535,9 @@ class Baselines(Decoding):
                 label="cee_cuhlm.edge_end.sampled_token",
             )
             prefix = torch.cat((prefix, t), dim=1)
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             _validate_token_range(
                 prefix,
                 vocab_size=self.vocab_size,
@@ -3223,19 +3547,29 @@ class Baselines(Decoding):
 
             # 第二层 speculative
             edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
+            edge_cloud_energy_start = comm_simulator.total_comm_energy
+            edge_cloud_bytes_start = comm_simulator.edge_cloud_data
             step_start_time = time.time()
+
+            # draft 长度：默认用固定超参 args.gamma1；当 DRA 的动作空间包含 gamma 时
+            # （--rl_action_space topk_thr_gamma），用策略上一轮选出的档位。gamma 决定
+            # "每个 WAN 往返验证多少 token"，即往返次数（通信时间的 ~97% 来源）。
+            gamma1_used = getattr(self, "_next_gamma1", None) or self.args.gamma1
 
             # Pre-launch GPU draft generation (overlaps with CPU comm sim below)
             self.draft_target_adapter.reset_step()
             adapter = self.draft_target_adapter
             assert adapter.device != torch.device("cpu")
             t0 = time.time()
-            x, draft_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
-                draft_model_cache,
-                _move_token_tensor(prefix, draft_device),
-                self.args.gamma1,
-                current_proposal_top_k,
-                adapter=adapter,
+            x, draft_rebuilt_probs, draft_rebuilt_meta, q = (
+                self._generate_with_optional_rebuilt_proposal(
+                    draft_model_cache,
+                    _move_token_tensor(prefix, draft_device),
+                    gamma1_used,
+                    current_proposal_top_k,
+                    adapter=adapter,
+                    need_topk_metadata=charge_residual,
+                )
             )
             draft_comp_time += time.time() - t0
 
@@ -3253,14 +3587,8 @@ class Baselines(Decoding):
             _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
             target_comp_time += time.time() - t0
 
-            if q is None:
-                raise ValueError(
-                    "Logits q should not be None for CEESD entropy analysis"
-                )
-            probs = torch.softmax(q, dim=-1)
-            draft_entropy = (
-                -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean().item()
-            )
+            # 同上：这是 adaptive_tridecoding 主适配器实际使用的熵特征
+            draft_entropy = state_entropy(q, draft_model_cache)
             draft_entropy_history.append(draft_entropy)
 
             if self.rl_adapter is not None:
@@ -3269,9 +3597,8 @@ class Baselines(Decoding):
                 latency = comm_simulator.ntt_edge_cloud_ms
                 acc_probs = getattr(self.draft_target_adapter, "step_acc_probs", [])
 
-                if q is None:
-                    raise ValueError("Logits q should not be None for RL adapter")
-
+                # q 可能为 None（未开 top-k 压缩）；RL 的熵特征已在上面由
+                # state_entropy(q, draft_model_cache) 取到，这里不需要 q。
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
                     bandwidth,
@@ -3283,7 +3610,17 @@ class Baselines(Decoding):
                 )
                 # 更新 top-k 压缩参数和 ARP 阈值
                 transfer_top_k = next_topk
+                if _topk_cap > 0 and transfer_top_k is not None:
+                    transfer_top_k = min(int(transfer_top_k), _topk_cap)
                 self.draft_target_adapter.threshold = next_threshold
+                # 只有动作空间真的包含 gamma 时才覆盖固定超参。legacy 适配器
+                # （gamma_dim == 1）的 last_gamma 只是 gamma_candidates[0]（默认 2），
+                # 无条件赋值会把 --gamma1 悄悄改掉 —— 这个 bug 曾让 A/B 的基线全部
+                # 跑在 gamma=2 上，从而虚增了扩展动作空间的收益（诊断文档 F14）。
+                if getattr(self.rl_adapter, "gamma_dim", 1) > 1:
+                    self._next_gamma1 = int(
+                        getattr(self.rl_adapter, "last_gamma", None) or gamma1_used
+                    )
                 dra_overhead_time += time.time() - dra_start
 
             draft_model_forward_times += actual_gamma1
@@ -3295,6 +3632,29 @@ class Baselines(Decoding):
             total_gamma = new_generated_token.shape[1] + actual_gamma1
             n2: int = prefix_len + total_gamma - 1
 
+            # F43：构造阶段二验证所需的提案分布历史（含 bonus 前缀位置）
+            draft_stage_topk_history = None
+            if charge_residual:
+                _prefix_topk_history = None
+                if new_generated_token.shape[1] > 0:
+                    _prefix_prob_rows = draft_model_cache.prob_history[
+                        :,
+                        prefix_len - 1 : prefix_len - 1 + new_generated_token.shape[1],
+                        :,
+                    ]
+                    _prefix_topk_history = build_stage_prefix_topk_history(
+                        _prefix_prob_rows,
+                        current_proposal_top_k,
+                    )
+                draft_stage_topk_history = stage_topk_proposal_history(
+                    merge_stage_topk_histories(
+                        _prefix_topk_history,
+                        stage_topk_proposal_history(draft_rebuilt_meta, gamma1_used),
+                    ),
+                    total_gamma,
+                )
+
+
             # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
             if actual_gamma1 > 0:
                 draft_stage_probs = stage_prob_history(
@@ -3302,17 +3662,58 @@ class Baselines(Decoding):
                     prefix_len + new_generated_token.shape[1],
                     draft_rebuilt_probs,
                 )
+                # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
+                # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
+                _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
+                if _prob_bits < 16:
+                    draft_stage_probs = _quantize_probs_logspace(
+                        draft_stage_probs, _prob_bits
+                    )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
                 )
-                comm_simulator.transfer(
-                    draft_tokens_second, draft_probs_second, "edge_cloud"
-                )
+                if _prob_bits < 16:
+                    comm_simulator.transfer(
+                        draft_tokens_second, draft_probs_second, "edge_cloud",
+                        prob_bits=_prob_bits,
+                    )
+                else:
+                    comm_simulator.transfer(
+                        draft_tokens_second, draft_probs_second, "edge_cloud"
+                    )
 
             if actual_gamma1 > 0:
+                # 缓存一致性自检（CACHE_CHECK_TRACE）：验证者 cache 里应当恰好有
+                # prefix_len 个 token（= 已确认的上下文）。若实际长度与之不符，
+                # 说明此前的 rollback 截断位置错了，后续前向会在错误的上下文上
+                # 计算 logits —— 恒等检验里"模型把 prompt 又写一遍"的分歧就是
+                # 这种失配的典型症状。
+                _cache_trace = os.environ.get("CACHE_CHECK_TRACE")
+                if _cache_trace:
+                    try:
+                        with open(_cache_trace, "a") as _fh:
+                            _fh.write(
+                                json.dumps(
+                                    {
+                                        "where": "pre_verify",
+                                        "x_len": int(x.shape[1]),
+                                        "prefix_len": int(prefix_len),
+                                        "target_cache_len": int(
+                                            target_model_cache.current_length
+                                        ),
+                                        "draft_cache_len": int(
+                                            draft_model_cache.current_length
+                                        ),
+                                        "actual_gamma1": int(actual_gamma1),
+                                    }
+                                )
+                                + "\n"
+                            )
+                    except Exception:
+                        pass
                 (
                     draft_accepted_this_iter,
                     n2,
@@ -3326,7 +3727,20 @@ class Baselines(Decoding):
                     gamma=total_gamma,
                     output_device=draft_device,
                     draft_probs_override=cast(torch.Tensor, draft_stage_probs),
+                    # F43：同阶段一，拒绝时残差需要提案分布。注意阶段二的验证
+                    # 窗口比本轮草稿长：前 `new_generated_token.shape[1]` 个位置是
+                    # 上一轮带过来的 bonus token（分布取自草稿缓存的原始行），必须
+                    # 用 merge_stage_topk_histories 补上，否则长度不匹配。
+                    draft_topk_history=draft_stage_topk_history,
                 )
+                if charge_residual and not draft_all_accepted:
+                    # 草稿→目标链路：同上，补记缺失的索引/尾部字节
+                    comm_simulator.simulate_transfer(
+                        self._residual_payload_bytes(
+                            draft_stage_probs, current_proposal_top_k
+                        ),
+                        "edge_cloud",
+                    )
             else:
                 draft_accepted_this_iter = 0
                 t = sample_accept_token(
@@ -3356,16 +3770,29 @@ class Baselines(Decoding):
                     comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
                 )
 
-                # 去掉分子 +1
-                tps_part = draft_accepted_this_iter / (
-                    step_time + step_comm_time + 1e-9
+                # 奖励统一由 src/rl_reward.py 实现：默认 legacy 即 v1 原式
+                # exp(min(N_acc/T,100)/20)*(N_acc/gamma)^2，可完全复现旧结果；
+                # 其余模式为 N_acc - lambda*T 等线性形式，且可用与主机无关的
+                # 计算时间模型（rl_compute_time_mode=model）。
+                reward = self.rl_adapter.compute_reward(
+                    accepted=draft_accepted_this_iter,
+                    generated=actual_gamma1,
+                    comm_s=step_comm_time,
+                    compute_s=step_time,
+                    energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
+                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）
+                    transferred_bytes=comm_simulator.edge_cloud_data
+                    - edge_cloud_bytes_start,
+                    forward_counts={
+                        "little": float(actual_gamma2),
+                        "draft": float(actual_gamma1),
+                        "target": 1.0,
+                    },
                 )
-                reward = math.exp(min(tps_part, 100) / 20.0)
 
-                # 平滑的幂次惩罚
-                if actual_gamma1 > 1:
-                    acc_rate = draft_accepted_this_iter / actual_gamma1
-                    reward *= acc_rate**2
+                if getattr(self.args, "rl_team_reward", False):
+                    # 供第一层下一轮取用的团队奖励（见 little 侧的说明）。
+                    self._team_reward_buffer = reward
 
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
@@ -3401,6 +3828,11 @@ class Baselines(Decoding):
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
+                _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
+                if _pb < 16:                      # 概率载荷按位宽计费 ✓
+                    _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
+                          else prob_data.numel())
+                    prob_bytes = int(_n) * _pb / 8.0
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
@@ -3409,6 +3841,9 @@ class Baselines(Decoding):
                 new_generated_token = prefix[:, prefix_len:]
 
             prefix = torch.cat((prefix, t), dim=1)
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             # 传输索引和 token t (各链路一次 RTT)
             token_size = t.element_size() * t.numel()
 
@@ -3465,6 +3900,7 @@ class Baselines(Decoding):
             draft_comp_time=draft_comp_time,
             target_comp_time=target_comp_time,
         )
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
         )
@@ -3494,6 +3930,12 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
+        # 遵守 max_tokens：投机按整块追加，最后一轮会多出若干 token（实测最多 +9）。
+        # 对照基线 dist_spec 严格 128；不截断会让配对质量比较与时延/吞吐统计都不公平。
+        # 注意：此前补丁用了有歧义的锚点，误插到别的函数（约 2018 行），
+        # adaptive_tridecoding（实际使用的路径）一直没有截断——由实测长度分布发现并修正。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         return prefix, metrics
 
     @Register.register_decoding("cee_sd_opportunistic")
