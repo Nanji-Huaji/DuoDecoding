@@ -312,5 +312,5 @@ class EvalSpecbench(Decoding):
 
 if __name__ == "__main__":
     args = parse_arguments()
-    alg = EvalHumaneval(args)
+    alg = EvalSpecbench(args)   # 修正：本文件定义的类名是 EvalSpecbench
     alg.eval()

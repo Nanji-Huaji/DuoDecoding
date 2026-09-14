@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import random
@@ -92,7 +93,13 @@ class EvalMixed(Baselines):
         if "gemma" in target:
             return "gemma"
         if "llama-2" in target:
-            return "llama-2-chat"
+            # 只有真正的 chat/instruct 变体才套对话模板。`llama-2-13b` 在本项目里
+            # 映射到 base 权重（llama/Llama-2-13b-hf），套上 [INST] 会让 base 模型
+            # **复读提示词**——训练/评测协议就与论文的 eval_gsm8k 路径（纯文本续写）
+            # 不一致了，RL 会在一个没有可学结构的退化分布上训练。
+            if "chat" in target or "instruct" in target:
+                return "llama-2-chat"
+            return "base"
         return "vicuna"
 
     def load_data(self):
@@ -224,7 +231,14 @@ class EvalMixed(Baselines):
     def eval(self):
         # 训练轮数
         total_steps = self.args.eval_data_num if self.args.eval_data_num else 500
-        mode = "adaptive_tridecoding"
+        # 解码模式可切换：默认仍是三级流水线（历史行为），但 target_only 是论文
+        # 缺失的"不投机"对照行，也是无损性检验的基准（temp=0 下两者必须逐 token 相同）。
+        mode = getattr(self.args, "eval_mode", None) or "adaptive_tridecoding"
+        if not hasattr(self, mode):
+            self.color_print(
+                f"Unknown eval_mode {mode!r}, falling back to adaptive_tridecoding", 1
+            )
+            mode = "adaptive_tridecoding"
 
         # 获取所有有数据的任务列表
         available_tasks = [
@@ -302,11 +316,49 @@ class EvalMixed(Baselines):
                 use_stochastic_comm=self.args.use_stochastic_comm,
                 ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
                 ntt_ms_edge_end=self.args.ntt_ms_edge_end,
+                # 项目自带 `_check_stopping_criteria`（EOS 检查），但它一直挂在
+                # `use_early_stopping` 开关后面而这个开关**从未被传入**，于是混合
+                # 评测永远跑满 max_tokens（gsm8k 的 "#### 答案" 不出现、humaneval
+                # 被截断，质量无法评测）。这里显式启用。
+                use_early_stopping=not getattr(self.args, "disable_eos_stop", False),
             )
 
             try:
                 # 运行解码
                 output_ids, metrics = fn(input_ids)
+
+                # 落盘生成结果：无损性检验（temp=0 下投机流水线必须与 target_only
+                # 逐 token 相同）和离线的任务质量评测都依赖它。
+                # eval/eval_mixed.py 原本只打印速度/接受率，不保存文本，
+                # 因此"输出质量是否不变"在这套评测里从未被测量过。
+                dump_path = getattr(self.args, "dump_outputs", None)
+                if dump_path:
+                    try:
+                        prompt_len = int(input_ids.shape[1])
+                        gen_ids = output_ids[:, prompt_len:].tolist()
+                        # prompt 指纹：恒等检验必须先排除"两次运行输入不同"这一解释
+                        prompt_sha = hashlib.sha1(
+                            input_ids[0].tolist().__str__().encode()
+                        ).hexdigest()[:12]
+                        record = {
+                            "step": step,
+                            "task": task,
+                            "prompt_sha": prompt_sha,
+                            "eval_mode": mode,
+                            "seed": getattr(self.args, "seed", None),
+                            "prompt_len": prompt_len,
+                            "gen_ids": gen_ids[0] if gen_ids else [],
+                            "text": self.tokenizer.decode(
+                                output_ids[0, prompt_len:], skip_special_tokens=True
+                            ),
+                            "item": item,
+                            "bw_mbps": float(bw_mbps),
+                            "ntt_ms": float(ntt_ms),
+                        }
+                        with open(dump_path, "a") as dump_fh:
+                            dump_fh.write(json.dumps(record, default=str) + "\n")
+                    except Exception as dump_err:  # 落盘失败不应中断评测
+                        self.color_print(f"dump_outputs failed: {dump_err}", 1)
 
                 # 打印单步结果
                 tps = metrics.get("throughput", 0)
@@ -318,6 +370,36 @@ class EvalMixed(Baselines):
                 print(
                     f"   -> Result: Latency={metrics.get('wall_time', 0):.2f}s | Speed={tps:.2f} tokens/s | Acc={acc:.1%}"
                 )
+                # Deterministic, machine-load-independent policy metrics: the simulated
+                # communication time / transferred bytes / round-trips depend only on the
+                # policy's actions and the configured link, not on how busy this host is.
+                # `compute` (wall - comm) is printed precisely so that host contention
+                # stays visible instead of silently polluting the throughput numbers.
+                try:
+                    comm = float(metrics.get("communication_time", 0.0))
+                    wall = float(metrics.get("wall_time", 0.0))
+                    connects = metrics.get("connect_times", {})
+                    connects_str = (
+                        "/".join(f"{k}:{int(v)}" for k, v in connects.items())
+                        if isinstance(connects, dict)
+                        else str(connects)
+                    )
+                    print(
+                        f"   -> Metrics: comm={comm:.4f}s bytes={int(metrics.get('edge_cloud_data_bytes', 0))} "
+                        f"connects={connects_str} "
+                        f"energy={float(metrics.get('comm_energy', 0.0)):.3e} "
+                        f"compute={max(wall - comm, 0.0):.4f}s "
+                        f"gen={int(metrics.get('generated_tokens', 0))} "
+                        f"draft_gen={int(metrics.get('draft_generated_tokens', 0))} "
+                        f"draft_acc={int(metrics.get('draft_accepted_tokens', 0))} "
+                        f"fwd={int(metrics.get('little_forward_times', 0))}/"
+                        f"{int(metrics.get('draft_forward_times', 0))}/"
+                        f"{int(metrics.get('target_forward_times', 0))} "
+                        f"comp_time={float(metrics.get('draft_computation_time', 0.0)):.3f}/"
+                        f"{float(metrics.get('target_computation_time', 0.0)):.3f}s"
+                    )
+                except Exception as metric_err:  # never let logging break the run
+                    print(f"   -> [Metrics Error]: {metric_err}")
             except Exception as e:
                 print(f"   -> [Step Error]: {e}")
                 import traceback

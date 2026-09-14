@@ -238,51 +238,64 @@ class EvalGSM8K(Baselines):
                     self.tokenizer.encode(prompt, add_special_tokens=True)
                 ).unsqueeze(0)
 
-            # Run Decoding
-            torch.cuda.synchronize()
-            start_time = time.time()
+            # 多样本：`--num_samples_per_task K` 时对同一 prompt 重复采样 K 次，
+            # 每次换一个种子。用途是**分布检验**（"无损 = 输出分布相同"的定义），
+            # 逐 token 比对无法验证这一点，需要比较两个配置的经验分布。
+            n_rep = max(1, int(getattr(self.args, "num_samples_per_task", 1) or 1))
+            for rep in range(n_rep):
+                if n_rep > 1:
+                    torch.manual_seed(int(self.args.seed) + rep * 7919)
 
-            output_ids = decoding(input_ids)
-            if isinstance(output_ids, tuple):
-                output_ids, metrics = output_ids
-                # Merge metrics
-                for key in decoding_metrics.keys():
-                    if (
-                        key in metrics
-                        and key != "throughput"
-                        and hasattr(metrics[key], "__add__")
-                    ):
-                        decoding_metrics[key] += metrics[key]
+                # Run Decoding
+                torch.cuda.synchronize()
+                start_time = time.time()
 
-            torch.cuda.synchronize()
-            end_time = time.time()
+                output_ids = decoding(input_ids)
+                if isinstance(output_ids, tuple):
+                    output_ids, metrics = output_ids
+                    # Merge metrics
+                    for key in decoding_metrics.keys():
+                        if (
+                            key in metrics
+                            and key != "throughput"
+                            and hasattr(metrics[key], "__add__")
+                        ):
+                            decoding_metrics[key] += metrics[key]
 
-            # Decode output
-            output_text = self.tokenizer.decode(
-                output_ids[0][input_ids.shape[1] :], skip_special_tokens=True
-            )
+                torch.cuda.synchronize()
+                end_time = time.time()
 
-            # Check correctness
-            clean_output = output_text.strip()
-            is_correct = self.is_correct(clean_output, answer_gt)
-            self.acc_list.append(1 if is_correct else 0)
+                # Decode output
+                output_text = self.tokenizer.decode(
+                    output_ids[0][input_ids.shape[1] :], skip_special_tokens=True
+                )
 
-            # Record stats
-            if self.accelerator.is_main_process:
-                new_tokens = output_ids.shape[1] - input_ids.shape[1]
-                wall_times["time"].append(end_time - start_time)
-                wall_times["num_tokens"].append(new_tokens)
+                # Check correctness
+                clean_output = output_text.strip()
+                is_correct = self.is_correct(clean_output, answer_gt)
+                self.acc_list.append(1 if is_correct else 0)
 
-                result_json = {
-                    "question": question,
-                    "generated_answer": clean_output,
-                    "ground_truth": answer_gt,
-                    "correct": is_correct,
-                    "time": end_time - start_time,
-                    "new_tokens": new_tokens,
-                }
-                out_f.write(json.dumps(result_json, ensure_ascii=False) + "\n")
-                out_f.flush()
+                # Record stats
+                if self.accelerator.is_main_process:
+                    new_tokens = output_ids.shape[1] - input_ids.shape[1]
+                    wall_times["time"].append(end_time - start_time)
+                    wall_times["num_tokens"].append(new_tokens)
+
+                    result_json = {
+                        "question": question,
+                        # 逐 token 保存生成 id：论文路径（exp.py → 本脚本）此前只存文本，
+                        # 无法做"投机流水线 vs 只用目标模型"的逐 token 恒等检验。
+                        "gen_ids": output_ids[0][input_ids.shape[1] :].tolist(),
+                        "prompt_len": int(input_ids.shape[1]),
+                    "sample_idx": rep,
+                        "generated_answer": clean_output,
+                        "ground_truth": answer_gt,
+                        "correct": is_correct,
+                        "time": end_time - start_time,
+                        "new_tokens": new_tokens,
+                    }
+                    out_f.write(json.dumps(result_json, ensure_ascii=False) + "\n")
+                    out_f.flush()
 
         out_f.close()
 
