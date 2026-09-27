@@ -81,6 +81,7 @@ class ExpConfig(TypedDict):
     use_early_stopping: bool
     dump_network_stats: bool
     batch_delay: int | float
+    use_cuda_graph: bool
 
 
 # Global Constants
@@ -245,6 +246,10 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         cmd = add_args(cmd, "run_full_dataset")
     if config.get("random_sample", False):
         cmd = add_args(cmd, "random_sample")
+    if config.get("use_cuda_graph", False):
+        # 定长 decode 前向捕获成 CUDA Graph（单步图 + (1,K) padding 验证图），
+        # 绕开逐算子 ~70µs 的 launch 开销；KV 缓存跨样本复用（见 graph_decode.py）
+        cmd = add_args(cmd, "use_cuda_graph")
 
     # Derive task_name based on eval_dataset or manually
     script_path = str(config.get("eval_dataset", ""))
@@ -538,6 +543,7 @@ def create_config(
     main_rl_best_path: str | None = None,
     little_rl_best_path: str | None = None,
     dump_network_stats: bool = False,
+    use_cuda_graph: bool = False,
 ) -> ExpConfig:
     eval_mode_value = eval_mode.value if isinstance(eval_mode, EvalMode) else eval_mode
     eval_dataset_value = (
@@ -649,7 +655,8 @@ def create_config(
         uncertainty_threshold=uncertainty_threshold,
         exp_name=(
             f"{eval_mode_value}/{eval_dataset_name}/"
-            f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms_{timestamp}"
+            f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms"
+            f"{'_cudagraph' if use_cuda_graph else ''}_{timestamp}"
         ),
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
@@ -670,6 +677,7 @@ def create_config(
         main_rl_best_path=main_rl_best_path,
         little_rl_best_path=little_rl_best_path,
         dump_network_stats=dump_network_stats,
+        use_cuda_graph=use_cuda_graph,
     )
 
 
@@ -762,7 +770,13 @@ for little_model, draft_model, target_model in (
         EvalDataset.humaneval
         # EvalDataset.cnndm,
     ):
-        for mode in (EvalMode.cuhlm, EvalMode.cee_cuhlm):
+        for mode in (
+            EvalMode.dsd,
+            EvalMode.dssd,
+            EvalMode.cuhlm,
+            EvalMode.cee_cuhlm,
+            EvalMode.ceesd,
+        ):
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     for gamma1 in gamma1_values:
@@ -804,6 +818,7 @@ for little_model, draft_model, target_model in (
                                 use_rl_adapter=True,
                                 disable_rl_update=True,
                                 use_early_stopping=False,
+                                use_cuda_graph=True,
                                 eval_data_num=80,
                                 run_full_dataset=False,
                                 random_sample=True,
