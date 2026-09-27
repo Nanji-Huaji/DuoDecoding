@@ -1,0 +1,12 @@
+{
+  "little": 0.0013,
+  "draft": 0.0036,
+  "target": 0.060,
+  "_meta": {
+    "source": "t5a_ceesd_thr04 轮预算分解（CUDA Graph 时代, 2026-09-27）",
+    "derivation": "每轮 183.5ms = NTT 50 + 排队 50 + 真实计算 ~83.5ms; 每轮前向组合 = 1 target + 4.4 draft + 1.5 little; 取 target=60ms(4bit+graph 实测区间), 剩余 23.5ms 分给 draft*4.4 + little*1.5 + glue 6ms ⇒ draft≈3.6ms",
+    "why_not_metrics_fields": "metrics 的 *_computation_time 在 graph 模式下只归因 CPU 侧部分(target 3.2ms/次不合理, vg2 已知归因偏移), 不可用于标定",
+    "ratio_vs_old": "旧 model(0.00176/0.0285/0.146) 把 draft 相对 target 高估 3.4x ⇒ 长草稿被系统性低估, 这是 v2 重训偏好短草稿的第二个原因",
+    "note": "reward 的动作排序只依赖三者比例; 绝对值随主机速度缩放"
+  }
+}

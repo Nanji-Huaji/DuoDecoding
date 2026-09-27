@@ -3954,6 +3954,9 @@ class Baselines(Decoding):
                         "draft": float(actual_gamma1),
                         "target": 1.0,
                     },
+                    # 排队按每主决策一次 batch_delay 计（与 queuing_time 累计口径
+                    # 一致）；是否计入 T 由 RewardConfig.charge_queue 决定。
+                    queue_s=float(getattr(self.args, "batch_delay", 0.0)),
                 )
 
                 if getattr(self.args, "rl_team_reward", False):

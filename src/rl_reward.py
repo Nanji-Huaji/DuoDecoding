@@ -77,6 +77,10 @@ class RewardConfig:
     byte_price_s_per_mb: float = 0.0
     # compute-time source: "wall" (legacy, host dependent) or "model"
     compute_mode: str = "wall"
+    # 把每轮排队时延计入 T（batch_delay）。长草稿摊薄的不只是 NTT 还有排队
+    # （t5a 轮预算: NTT 50ms + 排队 50ms = 55% 轮预算），不计价会系统性低估
+    # 长草稿的边际价值。默认 False 保持历史 reward 逐位可复现。
+    charge_queue: bool = False
     # seconds per forward pass, per model; used when compute_mode == "model"
     compute_cost_s: dict[str, float] = field(default_factory=lambda: {
         "little": 0.0, "draft": 0.0, "target": 0.0,
@@ -145,6 +149,7 @@ class RewardShaper:
         forward_counts: dict[str, float] | None = None,
         opportunistic: bool | None = None,
         transferred_bytes: float = 0.0,
+        queue_s: float = 0.0,
     ) -> tuple[float, dict]:
         cfg = self.cfg
         t_comp = (
@@ -158,12 +163,14 @@ class RewardShaper:
         #   byte_price_s_per_mb = 16   -> 0.5 Mbps 的物理发送成本（1 MB / 0.0625 MB/s）
         #   byte_price_s_per_mb > 16   -> 模拟按流量计费/更贵链路
         byte_s = (float(transferred_bytes) / 1e6) * float(cfg.byte_price_s_per_mb)
-        t_total = max(float(comm_s) + t_comp + byte_s, 1e-9)
+        q_s = float(queue_s) if cfg.charge_queue else 0.0
+        t_total = max(float(comm_s) + t_comp + byte_s + q_s, 1e-9)
         comp = {
             "mode": cfg.mode,
             "accepted": float(accepted),
             "generated": float(generated),
             "comm_s": float(comm_s),
+            "queue_s": q_s,
             "compute_s": t_comp,
             "compute_source": cfg.compute_mode,
             "total_s": t_total,

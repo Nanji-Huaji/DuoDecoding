@@ -529,6 +529,7 @@ class RLNetworkAdapter:
                 ),
                 compute_mode=getattr(args, "rl_compute_time_mode", "wall"),
                 compute_cost_s=compute_costs,
+                charge_queue=bool(getattr(args, "rl_charge_queue", False)),
                 legacy_alpha2=not bool(getattr(args, "rl_reward_no_alpha2", False)),
                 legacy_warp=float(getattr(args, "rl_reward_legacy_warp", 20.0) or 20.0),
                 legacy_cap=float(getattr(args, "rl_reward_legacy_cap", 100.0) or 100.0),
@@ -870,6 +871,7 @@ class RLNetworkAdapter:
         forward_counts: dict | None = None,
         opportunistic: bool | None = None,
         transferred_bytes: float = 0.0,
+        queue_s: float = 0.0,
     ) -> float:
         """Reward of ONE decoding decision, plus its component bookkeeping.
 
@@ -887,6 +889,7 @@ class RLNetworkAdapter:
             forward_counts=forward_counts,
             opportunistic=opportunistic,
             transferred_bytes=transferred_bytes,
+            queue_s=queue_s,
         )
         self.reward_log.add(reward)
         self.last_reward_components = components

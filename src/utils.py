@@ -713,6 +713,16 @@ def parse_arguments():
         ),
     )
     parser.add_argument(
+        "--rl_charge_queue",
+        action="store_true",
+        help=(
+            "Reward 修复：把每轮排队时延（batch_delay）计入 lagrangian reward 的 "
+            "T。t5a 轮预算里排队占 27%，与 NTT 一样被长草稿摊薄——不计价会让策略"
+            "系统性偏好短草稿（v2 重训 3.58 vs 钉死0.4 的 4.43 的主因之一）。"
+            "默认关闭保持历史 reward 逐位可复现。"
+        ),
+    )
+    parser.add_argument(
         "--rl_reward_lambda",
         type=float,
         default=0.0,
