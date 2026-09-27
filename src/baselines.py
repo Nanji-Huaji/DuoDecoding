@@ -66,6 +66,18 @@ from .utils import (
 )
 
 
+
+def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
+    """L1：把 edge-cloud 动态 NTT 观测历史挂进 per-sample metrics。
+
+    列表字段会被 eval 层用 += 拼接成全运行历史；口径标签等运行级常量由
+    eval/utils.py 的 get_save_dict 从 args 写入最终 json（单一事实源）。
+    """
+    metrics["edge_cloud_ntt_history"] = list(
+        getattr(comm_simulator, "ntt_edge_cloud_history", [])
+    )
+
+
 def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead:
     path = Path(model_path)
     try:
@@ -813,6 +825,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1120,6 +1133,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -1165,6 +1179,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1448,6 +1463,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -1499,6 +1515,7 @@ class Baselines(Decoding):
                 uncertainty_threshold=threshold,
                 dimension="Mbps",
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
             )
@@ -1746,6 +1763,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -1800,6 +1818,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         # Metrics tracking
@@ -2200,6 +2219,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -2277,6 +2297,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         # Metrics tracking
@@ -2636,6 +2657,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -2817,6 +2839,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -3146,6 +3169,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -3312,6 +3336,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
                 mode=getattr(self.args, "comm_trace_mode", "static"),
             )
 
@@ -3388,6 +3413,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         little_comp_time = 0.0
@@ -4063,6 +4089,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -4149,6 +4176,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         batch_delay = self.args.batch_delay
@@ -4581,6 +4609,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -4654,6 +4683,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         # Metrics tracking
@@ -4953,6 +4983,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )
@@ -5025,6 +5056,7 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
 
         # Metrics tracking
@@ -5344,6 +5376,7 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
         )

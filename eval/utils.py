@@ -90,6 +90,7 @@ class ExpPrint:
         if self.args.dump_network_stats:
             key_to_dump += [
                 "edge_cloud_bandwidth_history",
+                "edge_cloud_ntt_history",
                 "edge_cloud_topk_history",
                 "edge_cloud_draft_len_history",
             ]
@@ -117,4 +118,34 @@ class ExpPrint:
         eval_result["gamma"] = self.args.gamma if self.args.gamma is not None else -1
         eval_result["gamma1"] = self.args.gamma1 if self.args.gamma1 is not None else -1
         eval_result["gamma2"] = self.args.gamma2 if self.args.gamma2 is not None else -1
+        # L1 口径收敛：每个结果工件自带通信计费口径与动态链路统计（可复现性）。
+        charge = bool(getattr(self.args, "charge_residual_payload", False))
+        mode = str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+        cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        if charge and mode == "per_round" and cap > 0:
+            label = "honest"
+        elif (not charge) and mode == "per_transfer" and cap == 0:
+            label = "legacy"
+        else:
+            label = "custom"
+        eval_result["comm_accounting"] = label
+        eval_result["charge_residual_payload"] = charge
+        eval_result["comm_round_trip_mode"] = mode
+        eval_result["transfer_top_k_cap"] = cap
+        eval_result["stochastic_ntt"] = bool(
+            getattr(self.args, "stochastic_ntt", False)
+        )
+
+        def _link_stats(key, scale=1.0):
+            vals = [v * scale for v in (metrics.get(key) or [])]
+            if not vals:
+                return None
+            return {"min": min(vals), "mean": sum(vals) / len(vals), "max": max(vals)}
+
+        eval_result["edge_cloud_ntt_ms_stats"] = _link_stats(
+            "edge_cloud_ntt_history"
+        )
+        eval_result["edge_cloud_bandwidth_mbps_stats"] = _link_stats(
+            "edge_cloud_bandwidth_history"
+        )
         return eval_result

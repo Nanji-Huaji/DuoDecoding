@@ -85,6 +85,7 @@ class CommunicationSimulator:
         ntt_ms_edge_end: float = 20,
         ntt_ms_edge_cloud: float = 200,
         use_stochastic: bool = False,
+        stochastic_ntt: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
         min_bandwidth_mbps: float = 5.0,
@@ -116,6 +117,15 @@ class CommunicationSimulator:
 
         self.ntt_edge_end = ntt_ms_edge_end / 1000  # 转换为秒
         self.ntt_edge_cloud = ntt_ms_edge_cloud / 1000  # 转换为秒
+        # 动态 NTT（L1）：与带宽 trace 同源的拥塞相关 RTT 模型。
+        # 物理动机：5G/WAN 深衰时（带宽采样低于 trace 均值）链路排队，RTT 随
+        # 拥塞程度放大；带宽充足时 NTT 保持基值。公式（确定性，无随机项）：
+        #   ntt_t = ntt_base * (1 + (mean_bw / bw_t - 1)^+)   # bw 跌到均值一半 ⇒ RTT×2
+        # 默认关闭（False）保证历史数字逐位可复现；开启要求 use_stochastic。
+        self.stochastic_ntt = stochastic_ntt and use_stochastic
+        self.ntt_edge_cloud_base = self.ntt_edge_cloud
+        self.trace_mean_bw = 0.0  # trace 加载后计算（字节/秒）
+        self.ntt_edge_cloud_history = []  # 每次计费观察到的 edge-cloud NTT（毫秒）
 
         # 按轮合并（block / 每次往返一次）：
         # 真实实现里一轮只需每条链路一次 WAN 往返；把同一轮内多条消息累积到
@@ -206,6 +216,10 @@ class CommunicationSimulator:
                 self.trace_data = [
                     max(floor_val, x * mbps_to_dim) for x in self.trace_data
                 ]
+
+            # 动态 NTT（L1）用：trace 均值（与 trace_data 同单位，dimension 口径）
+            if self.trace_data:
+                self.trace_mean_bw = sum(self.trace_data) / len(self.trace_data)
 
     @property
     def edge_cloud_comm_time(self):
@@ -364,6 +378,16 @@ class CommunicationSimulator:
             self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
                 current_bw, cast(Dimension, self.dimension)
             )
+            # 动态 NTT（L1）：拥塞相关 RTT，与带宽采样同源、同索引（确定性）。
+            # 带宽低于 trace 均值 ⇒ 排队 ⇒ RTT 放大；恢复基值 otherwise。
+            if self.stochastic_ntt and self.trace_mean_bw > 0:
+                congestion = max(
+                    0.0, self.trace_mean_bw / max(current_bw, 1e-9) - 1.0
+                )
+                self.ntt_edge_cloud = self.ntt_edge_cloud_base * (1.0 + congestion)
+            else:
+                self.ntt_edge_cloud = self.ntt_edge_cloud_base
+            self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
 
         if link_type == "edge_cloud":
             bandwidth = self.bandwidth_edge_cloud
@@ -712,6 +736,7 @@ class CUHLM(CommunicationSimulator):
         ntt_ms_edge_end: float = 20,
         ntt_ms_edge_cloud: float = 200,
         use_stochastic: bool = False,
+        stochastic_ntt: bool = False,
         set_mean_bandwidth: bool = True,
         mode: Literal["driving", "static", "walking"] = "static",
         min_bandwidth_mbps: float = 5.0,
@@ -726,6 +751,7 @@ class CUHLM(CommunicationSimulator):
             ntt_ms_edge_end=ntt_ms_edge_end,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             use_stochastic=use_stochastic,
+            stochastic_ntt=stochastic_ntt,
             set_mean_bandwidth=set_mean_bandwidth,
             mode=mode,
             min_bandwidth_mbps=min_bandwidth_mbps,

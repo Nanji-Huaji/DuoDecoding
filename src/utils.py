@@ -601,6 +601,28 @@ def parse_arguments():
         help="Whether to use stochastic communication simulator.",
     )
     parser.add_argument(
+        "--stochastic_ntt",
+        action="store_true",
+        help=(
+            "L1：edge-cloud NTT 动态化（要求 --use_stochastic_comm）。拥塞相关 RTT 模型，"
+            "与带宽 trace 同源同索引、确定性可复现：ntt_t = ntt_base * (1 + (mean_bw/bw_t "
+            "- 1)^+)，带宽跌到 trace 均值一半时 RTT 翻倍（排队延迟），带宽充足时保持基值。"
+            "默认关闭（历史数字逐位可复现）；开启后 RL 的网络状态输入才有时延维度的变化。"
+            "edge-end 链路（LAN）保持固定 NTT。"
+        ),
+    )
+    parser.add_argument(
+        "--comm_accounting",
+        choices=["honest", "legacy"],
+        default=None,
+        help=(
+            "L1 口径收敛总开关：honest = 残差计费 + per_round + top-k cap16（论文协议，"
+            "= 仓库默认）；legacy = --no-charge_residual_payload + per_transfer + cap0"
+            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时覆盖"
+            "三个子开关并在日志回显；不给出时子开关独立生效。metrics json 会记录实际口径。"
+        ),
+    )
+    parser.add_argument(
         "--min_bandwidth_mbps",
         type=float,
         default=5.0,
@@ -1101,6 +1123,25 @@ def parse_arguments():
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+
+    # L1 口径收敛：显式给出 --comm_accounting 时统一覆盖三个子开关。
+    # 解决 Table V 对齐时发现的"口径不可辨"问题：以后每个 run 的口径都有唯一标签。
+    if getattr(args, "comm_accounting", None):
+        if args.comm_accounting == "honest":
+            args.charge_residual_payload = True
+            args.comm_round_trip_mode = "per_round"
+            args.transfer_top_k_cap = 16
+        else:  # legacy
+            args.charge_residual_payload = False
+            args.comm_round_trip_mode = "per_transfer"
+            args.transfer_top_k_cap = 0
+        print(
+            f"[comm-accounting] 口径={args.comm_accounting} ⇒ "
+            f"charge_residual={args.charge_residual_payload}, "
+            f"round_trip={args.comm_round_trip_mode}, "
+            f"topk_cap={args.transfer_top_k_cap}"
+        )
+
     if args.run_full_dataset:
         args.eval_data_num = None
 

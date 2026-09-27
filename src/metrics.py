@@ -83,6 +83,7 @@ class DecodingMetrics(TypedDict):
     avg_top_k: float
     avg_draft_len: float
     edge_cloud_bandwidth_history: List[float]
+    edge_cloud_ntt_history: List[float]
     edge_cloud_topk_history: List[int]
     edge_cloud_draft_len_history: List[int]
     little_entropy_history: List[float]
@@ -132,6 +133,7 @@ def get_empty_metrics() -> DecodingMetrics:
         avg_top_k=0.0,
         avg_draft_len=0.0,
         edge_cloud_bandwidth_history=[],
+        edge_cloud_ntt_history=[],
         edge_cloud_topk_history=[],
         edge_cloud_draft_len_history=[],
         little_entropy_history=[],
