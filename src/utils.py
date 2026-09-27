@@ -601,6 +601,22 @@ def parse_arguments():
         help="Whether to use stochastic communication simulator.",
     )
     parser.add_argument(
+        "--ntt_trace_file",
+        type=str,
+        default="",
+        help=(
+            "真实 RTT trace 回放（sigcomm ping/ 实测，与 throughput trace 同 Campaign）。"
+            "设置后 edge-cloud NTT 逐次传输从 trace 采样（优先级高于 --stochastic_ntt "
+            "拥塞模型与固定基值）；与带宽 trace 独立推进。空 = 不回放。"
+        ),
+    )
+    parser.add_argument(
+        "--ntt_trace_scale",
+        type=float,
+        default=1.0,
+        help="RTT trace 回放缩放（1.0=原样；ping 数据为往返毫秒值）。",
+    )
+    parser.add_argument(
         "--stochastic_ntt",
         action="store_true",
         help=(

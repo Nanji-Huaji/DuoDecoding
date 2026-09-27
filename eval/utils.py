@@ -1,6 +1,7 @@
 from src.metrics import DecodingMetrics
 from src.metrics_dumper import ArgsLike
 import json
+import os
 import random
 
 
@@ -135,6 +136,14 @@ class ExpPrint:
         eval_result["stochastic_ntt"] = bool(
             getattr(self.args, "stochastic_ntt", False)
         )
+        ntt_trace_file = getattr(self.args, "ntt_trace_file", "")
+        eval_result["ntt_trace"] = (
+            os.path.basename(ntt_trace_file) if ntt_trace_file else ""
+        )
+        if ntt_trace_file:
+            eval_result["ntt_trace_scale"] = getattr(
+                self.args, "ntt_trace_scale", 1.0
+            )
 
         def _link_stats(key, scale=1.0):
             vals = [v * scale for v in (metrics.get(key) or [])]

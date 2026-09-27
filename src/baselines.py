@@ -420,6 +420,27 @@ class Baselines(Decoding):
 
     def __init__(self, args):
         super().__init__(args)
+        # 真实 RTT trace 回放：模块级一次性配置（所有模拟器实例共享，含基线）
+        ntt_trace_file = getattr(args, "ntt_trace_file", "")
+        if ntt_trace_file:
+            from src.communication import configure_ntt_trace
+            from src.utils import read_trace_file
+
+            trace_vals: list = []
+            for run_id in (1, 2, 3):
+                try:
+                    trace_vals = read_trace_file(ntt_trace_file, run_id)
+                    if trace_vals:
+                        break
+                except Exception:
+                    continue
+            if not trace_vals:
+                raise FileNotFoundError(f"NTT trace 无法加载: {ntt_trace_file}")
+            configure_ntt_trace(
+                trace_vals,
+                scale=getattr(args, "ntt_trace_scale", 1.0),
+                src=os.path.basename(ntt_trace_file),
+            )
         # self.load_acc_head() # Moved to load_model
         eval_mode = getattr(args, "eval_mode", "")
         uses_main_rl = eval_mode in {

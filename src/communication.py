@@ -63,6 +63,31 @@ def _trace_comm(kind: str, link: str, nbytes: float, **extra) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# 真实 RTT trace 回放（sigcomm ping/ 实测数据，与 throughput/ 同 Campaign）
+# 模块级状态：避免在 11 个构造点逐一穿参；由 baselines 初始化处一次性配置。
+# 优先级: ping trace 回放 > 拥塞模型(L1) > 固定基值
+# ---------------------------------------------------------------------------
+_NTT_TRACE_STATE: dict = {"data": [], "index": 0, "scale": 1.0, "src": ""}
+
+
+def configure_ntt_trace(values: list, scale: float = 1.0, src: str = "") -> None:
+    _NTT_TRACE_STATE.update(data=list(values), index=0, scale=float(scale), src=src)
+
+
+def _ntt_trace_active() -> bool:
+    return len(_NTT_TRACE_STATE["data"]) > 0
+
+
+def _next_ntt_trace_value() -> float | None:
+    if not _ntt_trace_active():
+        return None
+    st = _NTT_TRACE_STATE
+    v = st["data"][st["index"]] * st["scale"]
+    st["index"] = (st["index"] + 1) % len(st["data"])
+    return v
+
+
 class CommunicationSimulator:
     """
     用于模拟通信的类
@@ -378,15 +403,21 @@ class CommunicationSimulator:
             self.bandwidth_edge_cloud = _convert_to_bytes_per_second(
                 current_bw, cast(Dimension, self.dimension)
             )
-            # 动态 NTT（L1）：拥塞相关 RTT，与带宽采样同源、同索引（确定性）。
-            # 带宽低于 trace 均值 ⇒ 排队 ⇒ RTT 放大；恢复基值 otherwise。
-            if self.stochastic_ntt and self.trace_mean_bw > 0:
+            # NTT 三级优先: 真实 ping trace 回放 > 拥塞模型(L1) > 固定基值
+            # trace 回放与带宽 trace 独立推进（同 Campaign 配对，非严格时间对齐）。
+            if _ntt_trace_active():
+                self.ntt_edge_cloud = _next_ntt_trace_value()
+            elif self.stochastic_ntt and self.trace_mean_bw > 0:
                 congestion = max(
                     0.0, self.trace_mean_bw / max(current_bw, 1e-9) - 1.0
                 )
                 self.ntt_edge_cloud = self.ntt_edge_cloud_base * (1.0 + congestion)
             else:
                 self.ntt_edge_cloud = self.ntt_edge_cloud_base
+            self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
+        elif link_type == "edge_cloud" and _ntt_trace_active():
+            # 无带宽 trace 时仍可单独回放 RTT trace
+            self.ntt_edge_cloud = _next_ntt_trace_value()
             self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
 
         if link_type == "edge_cloud":
