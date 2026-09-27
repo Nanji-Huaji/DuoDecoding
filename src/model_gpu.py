@@ -66,14 +66,38 @@ class KVCacheModel:
         return_hidden_states: bool = False,
         max_length: int | None = None,
         use_cuda_graph: bool = False,
+        verify_graph_sizes: Sequence[int] = (),
+        graph_len_budget: int = 512,
     ) -> None:
         self._model: CausalModel = model
-        # CUDA Graph 模式：把 gamma 次单 token decode 捕获成图回放，绕开
-        # per-op 启动开销（实测 68M 12.85x、1.1B 4.13x）。默认关闭以保持
-        # 结果与历史实验逐位可复现；开启后仍与 eager 路径逐 token 一致
-        # （见 scripts/test_graph_decode.py 的等价性验证）。
+        # CUDA Graph 模式：把定长 decode 前向捕获成图回放，绕开 per-op 启动开销
+        # （实测单步 68M 12.85×、1.1B 4.13×）。默认关闭以保持结果与历史实验
+        # 逐位可复现；开启后仍与 eager 路径逐 token 一致
+        # （见 scripts/test_graph_decode.py / test_graph_verify.py 的等价性验证）。
+        #
+        # verify_graph_sizes：多 token 前向（resync+草稿 的合成验证前向）用
+        # (1,K) 定长 padding 图接管 —— 拆单步是负优化（每步整读一遍权重），
+        # 这里按档位 padding，回放后取前 k 行（见 graph_decode.py 的论证）。
         self._use_cuda_graph = bool(use_cuda_graph)
+        self._verify_graph_sizes = tuple(
+            sorted({int(s) for s in verify_graph_sizes if int(s) >= 2})
+        )
+        self._graph_len_budget = int(graph_len_budget)
         self._graph_runner = None
+        if self._use_cuda_graph:
+            # 护栏：图只对 gamma>1 的草稿缓存有意义。如果在日志里看不到这一行，
+            # 说明这条 eval_mode 的缓存构造路径没接线 —— 静默漏接会让"开图"
+            # 看起来毫无效果（我们就在 adaptive_tridecoding 上踩过一次）。
+            sizes = (
+                f"，验证图档位 {list(self._verify_graph_sizes)}"
+                if self._verify_graph_sizes
+                else ""
+            )
+            print(
+                f"[cuda-graph] 已启用图回放: {type(model).__name__} "
+                f"vocab={getattr(model.config, 'vocab_size', '?')}{sizes}",
+                flush=True,
+            )
         self._past_key_values: PastKeyValues = None
 
         self._temperature: float = temperature
@@ -105,7 +129,11 @@ class KVCacheModel:
         # ln(vocab)≈10.3735，归一化(min(entropy/10,1))后饱和成常数 1.0，特征完全
         # 失效（实测轨迹 300 步只有一个取值）。而且 --temp 0.0 时 norm_logits 直接
         # 返回 one-hot，熵恒为 0 —— 所以必须从**归一化之前的 logits** 算。
-        self._last_entropy: float | None = None
+        #
+        # 存 GPU 张量、property 里惰性 `.item()`：`.item()` 是一次 host 同步，
+        # 放在每次前向里会把 CPU/GPU 流水线打断（图回放后这就是新的瓶颈）。
+        # RL 每轮读一次 = 每轮 1 次同步，语义仍是"最后一次前向的熵"。
+        self._last_entropy_t: torch.Tensor | None = None
         self._logits_buffer: torch.Tensor | None = None
         self._current_seq_len: int = 0
 
@@ -140,6 +168,14 @@ class KVCacheModel:
         if past_key_values is not None and _is_cache_like(past_key_values):
             cache_start = past_key_values.get_seq_length()
 
+        # 图模式下缓存是预分配的 StaticCache，它的内部计数**不会随我们的回滚后退**
+        # （回滚只改 runner.nnz，旧槽位等后续写入覆盖）。如果这里仍以它为权威，
+        # 回滚之后的 eager 回退（new_len > 1 的短后缀）就会把 KV 写到错位的偏移上，
+        # 表现为 prob_history 越界（曾观测到 n1=358 而 len=341，差 17 = gamma2+1）。
+        # 因此图模式下以 Python 侧的 _current_seq_len 为准。
+        if self._graph_runner is not None:
+            cache_start = self._current_seq_len
+
         attention_mask = torch.ones(
             (batch_size, cache_start + seq_len),
             dtype=torch.long,
@@ -170,8 +206,19 @@ class KVCacheModel:
 
     @property
     def last_entropy(self) -> float | None:
-        """最近一次前向在原始 logits（温度 1）下的平均熵，供 RL 控制器使用。"""
-        return self._last_entropy
+        """最近一次前向在原始 logits（温度 1）下的平均熵，供 RL 控制器使用。
+
+        惰性同步：这里才做 `.item()`（host 同步），前向路径只写 GPU 张量。
+        """
+        if self._last_entropy_t is None:
+            return None
+        return float(self._last_entropy_t.item())
+
+    def _compute_entropy_tensor(self, sliced_logits: torch.Tensor) -> torch.Tensor:
+        """原始 logits（温度 1）下的平均熵，保持为 GPU 张量（不同步）。"""
+        _lg = sliced_logits.float()
+        _lp = torch.log_softmax(_lg, dim=-1)
+        return -(_lp.exp() * _lp).sum(dim=-1).mean()
 
     @property
     def _prob_history(self) -> torch.Tensor | None:
@@ -223,6 +270,20 @@ class KVCacheModel:
         if seq_len > self.max_length:
             old_len = self.max_length
             self.max_length = max(self.max_length * 2, seq_len + 1024)
+
+            runner = getattr(self, "_graph_runner", None)
+            if (
+                runner is not None
+                and runner.graph is not None
+                and getattr(runner, "capture_post", False)
+            ):
+                # 图内 index_copy_ 冻结了旧缓冲地址；扩容换址 = 图回放写野地址。
+                # 图模式桶长公式保证 end_pos < 缓冲长度，走到这里说明不变量被破坏。
+                raise RuntimeError(
+                    "前后处理进图模式下历史缓冲不允许扩容（图冻结了旧地址）；"
+                    f"seq_len={seq_len} > max_length={old_len}，"
+                    "请增大图缓存桶长（graph_len_budget）"
+                )
 
             new_prob = torch.empty(
                 (batch_size, self.max_length, self.vocab_size),
@@ -287,11 +348,9 @@ class KVCacheModel:
         )
         self._logits_buffer[:, :seq_length, :] = sliced_logits
 
-        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征）
+        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征；GPU 张量不同步）
         with torch.no_grad():
-            _lg = sliced_logits.float()
-            _lp = torch.log_softmax(_lg, dim=-1)
-            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
+            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
         probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
         log_prob_tensor_if_invalid(
             probs[:, -1, :],
@@ -308,36 +367,110 @@ class KVCacheModel:
 
         return probs[:, -1, :]
 
+    def _graph_bucket_len(self, seq_length: int) -> int:
+        """图缓存桶长：prompt + 生成预算 + 余量，按 256 取整、512 下限。
+
+        为什么桶宽重要（实测）：StaticCache+SDPA 的 attention 按桶宽计算
+        （mask 填充到 max_cache_len），与当前 pos 无关 —— 桶 512/1024/2048 的
+        裸回放实测 6.42/7.24/8.81 ms（1.1B, k=17, pos=96），桶每多 1 个
+        key 位置 ≈ +1.2µs。256 粒度 + 512 下限让桶紧贴 prompt+生成预算。
+        太松的旧参数（1024 粒度 + 1536 下限）在 GSM8K 典型 prompt 下白付
+        ~0.8ms/前向 × 每轮 4-5 次前向。
+
+        初始建桶与超长重建共用同一公式，保证重建后的桶不会再被相近长度的
+        prompt 立刻打穿。
+        """
+        need = seq_length + self._graph_len_budget
+        return max(512, ((need + 255) // 256) * 256)
+
     @torch.inference_mode()
     def _prefill_graph(self, input_ids: torch.Tensor) -> torch.Tensor:
-        """图模式下的 prefill：用 StaticCache 走完整段 prompt 并捕获后续单步图。
+        """图模式下的 prefill：用 StaticCache 走完整段 prompt 并捕获后续定长图。
 
         为什么不能只把 decode 换掉：DynamicCache 会随解码增长，张量形状每步都变，
         而图冻结的是形状与地址。所以图模式必须**整体**换成按 max_length 预分配的
         StaticCache —— 代价是显存按 max_length 预留，收益是 decode 走图回放。
-        prefill 本身是变长的、不进图（只做一次，摊薄后影响很小）。
+        prefill 本身是变长的、不进图（每样本一次，摊薄后影响很小）。
+
+        跨样本复用：runner 已存在时不重建 —— StaticLayer.reset() 是原地 zero_，
+        地址不变 ⇒ 图仍然有效，只付一次清零（对比每样本重捕获 13B ~534ms）。
+        prompt 超出当前 max_len 时丢弃 runner 重建（罕见，打印一次性提示）。
         """
         from .graph_decode import GraphDecodeRunner
 
-        device = self.device
-        dtype = next(iter(self._model.parameters())).dtype
-        runner = GraphDecodeRunner(
-            self._model, max_len=self.max_length, device=device, dtype=dtype
+        batch_size, seq_length = input_ids.shape
+
+        if (
+            self._graph_runner is not None
+            and seq_length >= self._graph_runner.max_len
+        ):
+            print(
+                f"[cuda-graph] prompt {seq_length} 超出图缓存 "
+                f"{self._graph_runner.max_len}，重建并重捕获",
+                flush=True,
+            )
+            self._graph_runner = None
+            self._past_key_values = None
+            self.max_length = max(self.max_length, self._graph_bucket_len(seq_length))
+            # 旧的历史缓冲按旧 max_length 分配；重建分支抬高了 max_length，
+            # _ensure_buffer_size 会认为"还没超"而跳过扩容（新增长度夹在
+            # 旧缓冲与新 max_length 之间时写入越界 —— 测试抓到过）。新样本
+            # 反正从零开始，直接丢弃按新桶重分配。
+            self._prob_buffer = None
+            self._logits_buffer = None
+
+        if self._graph_runner is None:
+            if not self._has_explicit_max_length:
+                # StaticCache 按 max_len 预分配（attention 也按桶宽计算，见
+                # _graph_bucket_len 的实测注记）：按「prompt + 生成预算 + 余量」
+                # 定桶，256 取整 + 512 下限。数据集内 prompt 长度有分布（GSM8K
+                # 3-shot 约数百 token 差异），首样本定桶太小会让后续长 prompt
+                # 频繁触发重建+重捕获（13B ~0.5s/次）—— graph_len_budget 已含
+                # max_tokens+256 的余量兜底。
+                self.max_length = self._graph_bucket_len(seq_length)
+            device = self.device
+            dtype = next(iter(self._model.parameters())).dtype
+            runner = GraphDecodeRunner(
+                self._model,
+                max_len=self.max_length,
+                device=device,
+                dtype=dtype,
+                verify_sizes=self._verify_graph_sizes,
+            )
+            self._graph_runner = runner
+
+        assert self._graph_runner is not None
+        runner = self._graph_runner
+
+        # 历史缓冲必须在捕获**之前**就位：图内的 index_copy_ 会冻结它们的地址。
+        # 模型 logits dtype == 参数 dtype（bf16），与 eager 路径创建时机等价。
+        model_dtype = next(iter(self._model.parameters())).dtype
+        self._ensure_buffer_size(batch_size, seq_length, self.device, model_dtype)
+        assert self._prob_buffer is not None and self._logits_buffer is not None
+        if self._prob_buffer.shape[1] < runner.max_len:
+            raise RuntimeError(
+                f"历史缓冲 {self._prob_buffer.shape[1]} < 图缓存 {runner.max_len}；"
+                "图内 index_copy_ 会越界（桶长公式被破坏，请检查 max_length 配置）"
+            )
+        runner.attach_history_buffers(
+            self._logits_buffer,
+            self._prob_buffer,
+            vocab_size=self.vocab_size,
+            # 前后处理进图仅覆盖 temp==0（argmax one-hot 定长可捕获）；
+            # temp>0 的 top-k/top-p 分支保守留在图外（回退旧行为）。
+            capture_post=(self._temperature == 0),
         )
         raw_logits = runner.prefill(input_ids)
 
-        batch_size, seq_length = input_ids.shape
-        full_logits = runner.prefill_logits
+        full_logits = self._graph_runner.prefill_logits
         assert full_logits is not None
-        self._ensure_buffer_size(batch_size, seq_length, full_logits.device, full_logits.dtype)
+        # 历史缓冲已在捕获前创建（见上）；prefill 的整段 logits 走 eager 写入
         sliced_logits = full_logits[..., : self.vocab_size]
         assert self._logits_buffer is not None
         self._logits_buffer[:, :seq_length, :] = sliced_logits
 
         with torch.no_grad():
-            _lg = sliced_logits.float()
-            _lp = torch.log_softmax(_lg, dim=-1)
-            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
+            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
         probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
         log_prob_tensor_if_invalid(
             probs[:, -1, :], "KVCacheModel._prefill_graph.initial_probs"
@@ -350,7 +483,6 @@ class KVCacheModel:
         self.hidden_states = (
             (runner.hidden_buf,) if runner.hidden_buf is not None else None
         )
-        self._graph_runner = runner
         return probs[:, -1, :]
 
     # @torch.compile()
@@ -376,22 +508,46 @@ class KVCacheModel:
         batch_size = last_input_id.shape[0]
         new_len = last_input_id.shape[1]
 
-        # 图模式只覆盖 (1,1) 的单步；多 token（如回滚后的短后缀）退回 eager。
-        graph_used = (
+        # 图模式路由：
+        #   new_len == 1 → 单步图（(1,1)）
+        #   new_len > 1  → (1,K) 定长 padding 验证图（resync+草稿的合成前向）；
+        #                 k 超出最大档位时 runner.verify 返回 None → eager 回退。
+        #   batch > 1    → 一律 eager（管线是 bs=1，仅防御）。
+        graph_used = False
+        hidden_last: torch.Tensor | None = None
+        if (
             self._graph_runner is not None
             and self._graph_runner.graph is not None
-            and new_len == 1
             and batch_size == 1
-        )
+        ):
+            runner = self._graph_runner
+            if new_len == 1:
+                # runner.step 返回的已经是最后一个位置的 (1, V)；下游统一按
+                # (batch, new_len, V) 处理，这里补回序列维（view，不复制）
+                logits, hidden_last = runner.step(last_input_id)
+                logits = logits.unsqueeze(1)
+                graph_used = True
+            else:
+                vout = runner.verify(last_input_id)
+                if vout is not None:
+                    # (1, k, V) 的前 k 行真实 logits；hidden 取最后一个真实行
+                    logits, hidden_last = vout
+                    graph_used = True
         if graph_used:
-            assert self._graph_runner is not None
-            # runner.step 返回的已经是最后一个位置的 (1, V)；下游统一按
-            # (batch, new_len, V) 处理，这里补回序列维（view，不复制）
-            logits, hidden_last = self._graph_runner.step(last_input_id)
-            logits = logits.unsqueeze(1)
             # 图内缓存是 prefill 用的那个 StaticCache，地址不变，无需替换
             new_past_key_values = None
             self.hidden_states = (hidden_last,) if hidden_last is not None else None
+            if runner.capture_post:
+                # 前后处理已编进图：logits/prob 历史与每行熵都由图内写入
+                # （pad 行落在 current_seq_len 之外，读端不可见）。这里只剩
+                # 切视图 + 按真实 k 行求熵均值 —— 零 kernel 派发。
+                end_pos = self._current_seq_len + new_len
+                ent_rows = runner.last_entropy_rows
+                if ent_rows is not None:
+                    self._last_entropy_t = ent_rows[:, :new_len].mean()
+                self._current_seq_len = end_pos
+                q = self.prob_history[:, end_pos - 1, :]
+                return q
         else:
             outputs = self._model(
                 **self._prepare_generation_inputs(
@@ -410,17 +566,30 @@ class KVCacheModel:
 
         end_pos = self._current_seq_len + new_len
 
+        if (
+            not graph_used
+            and self._graph_runner is not None
+            and self._graph_runner.graph is not None
+            and end_pos > self._graph_runner.max_len
+        ):
+            # eager 回退与图共用同一个定长 StaticCache：写入超出桶容量是
+            # 静默显存越界（CUDA assert 或更糟）。管线里桶 = prompt +
+            # max_tokens + 余量，正常不可达；测试/特殊配置需要显式失败。
+            raise RuntimeError(
+                f"图模式 eager 回退超出 StaticCache 容量：end_pos={end_pos} > "
+                f"max_len={self._graph_runner.max_len}。增大 max_length 或 "
+                "graph_len_budget（= max_tokens + 余量）"
+            )
+
         self._ensure_buffer_size(batch_size, end_pos, logits.device, logits.dtype)
 
         sliced_logits = logits[..., : self.vocab_size]
         if self._logits_buffer is not None:
             self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
 
-        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征）
+        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征；GPU 张量不同步）
         with torch.no_grad():
-            _lg = sliced_logits.float()
-            _lp = torch.log_softmax(_lg, dim=-1)
-            self._last_entropy = float(-(_lp.exp() * _lp).sum(dim=-1).mean().item())
+            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
         probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
         log_prob_tensor_if_invalid(
             probs,
@@ -433,6 +602,13 @@ class KVCacheModel:
         if not graph_used:
             self._past_key_values = new_past_key_values
             self.hidden_states = outputs.hidden_states
+            if self._graph_runner is not None:
+                # 不变量：runner.nnz 必须恒等于 _current_seq_len。
+                # 图内回放由 runner.step() 自己推进，但这条 eager 回退（new_len > 1 的
+                # 短后缀）不会动 nnz —— 如果不对齐，下一轮 current_length 偏小，
+                # _generate_with_kvcache 会把已经在缓存里的 token 重新喂一遍，
+                # 表现为 prob_history 越界（曾观测 n1=354 而 len=341，差 gamma2+1）。
+                self._graph_runner.nnz = end_pos
 
         return probs[:, -1, :]
 
@@ -707,6 +883,20 @@ class KVCacheModel:
     @torch.no_grad()
     def generate(self, input: torch.Tensor, gamma: int) -> torch.Tensor:
         return self._generate_with_kvcache(input, gamma)
+
+    def reset_for_new_sample(self) -> None:
+        """跨样本复用：清空序列状态，保留已捕获的图与预分配缓冲。
+
+        prob/logits 历史缓冲按 `_current_seq_len` 切片暴露，旧样本的残留行
+        在新样本写满前不可见；graph runner 里 StaticCache 原地清零（地址不变，
+        图仍有效）。eager 路径下 `_past_key_values=None` 等价于重建。
+        """
+        self._current_seq_len = 0
+        self._past_key_values = None
+        self.hidden_states = None
+        self._last_entropy_t = None
+        if self._graph_runner is not None:
+            self._graph_runner.begin_new_sequence()
 
     @torch.no_grad()
     def rollback(self, end_pos: int):

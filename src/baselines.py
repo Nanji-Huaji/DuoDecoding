@@ -4,7 +4,7 @@ import math
 import time
 import warnings
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple, cast
+from typing import Callable, Dict, List, Optional, Tuple, cast
 
 import torch
 import transformers
@@ -101,6 +101,33 @@ def _build_cache(
     cache = KVCacheModel(model, temperature, top_k, top_p)
     cache.vocab_size = vocab_size
     return cache
+
+
+def _graph_mode_cache_kwargs(args, cap: int) -> dict:
+    """CUDA Graph 模式下 KVCacheModel 的公共 kwargs（与 adaptive_tridecoding 接线一致）。
+
+    静默漏接的教训：构造 KVCacheModel 时若不透传 use_cuda_graph，命令行开了
+    --use_cuda_graph 也毫无效果（uncertainty_decoding / cee_cuhlm 曾漏接，靠
+    model_gpu.py 的 "[cuda-graph] 已启用图回放" 金丝雀日志才发现）。cap 为验证
+    前向 k 的上界（调用方按 γ 推导），档位阶梯与 --graph_verify_sizes 语义一致。
+    """
+    if not bool(getattr(args, "use_cuda_graph", False)):
+        return {}
+    raw_sizes = getattr(args, "graph_verify_sizes", None) or ""
+    if isinstance(raw_sizes, str) and raw_sizes.strip():
+        ladder = sorted(
+            {int(x) for x in str(raw_sizes).replace(" ", "").split(",") if x}
+        )
+    else:
+        ladder = [4, 8, 16, 24, 32, 40, 48, 64]
+    sizes = [s for s in ladder if 2 <= s <= cap]
+    if not sizes or sizes[-1] < cap:
+        sizes.append(min(((cap + 7) // 8) * 8, 128))
+    return {
+        "use_cuda_graph": True,
+        "verify_graph_sizes": sizes,
+        "graph_len_budget": int(getattr(args, "max_tokens", 128)) + 256,
+    }
 
 
 def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -801,16 +828,30 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+        # CUDA Graph：草稿缓存走 γ 步循环是图收益点；target 整段前向不图化。
+        # 图开启时挂 self 跨样本复用（StaticCache 原地 reset，不重捕获）。
+        _graph_kw = _graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
+        _reused = getattr(self, "_dssd_caches", None) if _graph_kw else None
+        if _reused is not None:
+            approx_model_cache, target_model_cache = _reused
+            approx_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            approx_model_cache = KVCacheModel(
+                self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
+                **_graph_kw,
+            )
+            target_model_cache = KVCacheModel(
+                self.target_model,
+                self.args.temp,
+                0,
+                0,  # 目标模型不压缩
+            )
+            if _graph_kw:
+                setattr(self, "_dssd_caches", (approx_model_cache, target_model_cache))
         approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
-        )
         target_model_cache.vocab_size = self.vocab_size
 
         draft_forward_times = 0
@@ -824,6 +865,10 @@ class Baselines(Decoding):
         total_draft_steps = 0
         sum_draft_len = 0.0
         sum_top_k = 0.0
+
+        # 原始 prompt 长度：_stop_at_eos 需要（与 adaptive_tridecoding 一致；
+        # 此前漏定义导致 NameError —— dssd 长期不在实验矩阵里未暴露）
+        _tri_prompt_len = prefix.shape[1]
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -1128,13 +1173,27 @@ class Baselines(Decoding):
         draft_device = self.get_model_input_device(self.draft_model)
         target_device = self.get_model_input_device(self.target_model)
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, self.args.top_k, self.args.top_p
+        # CUDA Graph：草稿缓存走 γ 步循环是图收益点；target 整段前向不图化。
+        # 图开启时挂 self 跨样本复用（StaticCache 原地 reset，不重捕获）。
+        _graph_kw = _graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
+        _reused = getattr(self, "_dsd_caches", None) if _graph_kw else None
+        if _reused is not None:
+            approx_model_cache, target_model_cache = _reused
+            approx_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            approx_model_cache = KVCacheModel(
+                self.draft_model, self.args.temp, self.args.top_k, self.args.top_p,
+                **_graph_kw,
+            )
+            target_model_cache = KVCacheModel(
+                self.target_model, self.args.temp, self.args.top_k, self.args.top_p
+            )
+            if _graph_kw:
+                setattr(self, "_dsd_caches", (approx_model_cache, target_model_cache))
         approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
         target_model_cache.vocab_size = self.vocab_size
 
         draft_forward_times = 0
@@ -1456,16 +1515,37 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+        # CUDA Graph：只有草稿缓存跑 γ 步单 token 循环，是图的收益点；
+        # target 是整段前向，开图无收益反而多占显存（与 engine.py 的取舍一致）。
+        # 图开启时缓存挂 self 跨样本复用（StaticCache 原地 reset，不重捕获）。
+        _graph_kw = _graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
+        _reused = (
+            getattr(self, "_uncertainty_decoding_caches", None) if _graph_kw else None
+        )
+        if _reused is not None:
+            approx_model_cache, target_model_cache = _reused
+            approx_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            approx_model_cache = KVCacheModel(
+                self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
+                **_graph_kw,
+            )
+            target_model_cache = KVCacheModel(
+                self.target_model,
+                self.args.temp,
+                0,
+                0,  # 目标模型不压缩
+            )
+            if _graph_kw:
+                setattr(
+                    self,
+                    "_uncertainty_decoding_caches",
+                    (approx_model_cache, target_model_cache),
+                )
         approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
-        )
         target_model_cache.vocab_size = self.vocab_size
 
         # Metrics Tracking
@@ -3128,30 +3208,88 @@ class Baselines(Decoding):
             else {}
         )
 
-        little_model_cache = KVCacheModel(
-            self.little_model,
-            self.args.temp,
-            draft_top_k,
-            self.args.top_p,
-            **cache_kwargs,
-        )
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model,
-            self.args.temp,
-            draft_top_k,
-            self.args.top_p,
-            **cache_kwargs,
-        )
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
-            **cache_kwargs,
-        )
-        target_model_cache.vocab_size = self.vocab_size
+        # ── CUDA Graph 接线（默认关，历史数字逐位可复现）────────────────────
+        # 图模式三件事：
+        #   1. 单步草稿 → (1,1) 单步图（原有能力）；
+        #   2. 验证/resync 的多 token 合成前向 → (1,K) 定长 padding 验证图
+        #      ——这是本轮修复的主体：13B/1.1B 每轮 84~92% 的时间是逐算子调度，
+        #      且主体在多 token 前向上，单步图接不住；
+        #   3. 缓存跨样本复用（StaticCache 原地 reset，图不重捕获）——
+        #      否则每样本 ~534ms 的捕获开销把收益吃光。
+        # 尺寸档位从 γ 上限推导：验证前向 k ≤ 接受数 + γ + 2，取安全帽
+        # γ1+γ2+4；--graph_verify_sizes 可显式覆盖。
+        _graph_enabled = bool(getattr(self.args, "use_cuda_graph", False))
+
+        def _graph_cache_kwargs() -> Dict[str, object]:
+            if not _graph_enabled:
+                return dict(cache_kwargs)
+            raw_sizes = getattr(self.args, "graph_verify_sizes", None) or ""
+            cap = int(self.args.gamma1) + int(self.args.gamma2) + 4
+            if isinstance(raw_sizes, str) and raw_sizes.strip():
+                ladder = sorted(
+                    {int(x) for x in str(raw_sizes).replace(" ", "").split(",") if x}
+                )
+            else:
+                ladder = [4, 8, 16, 24, 32, 40, 48, 64]
+            sizes = [s for s in ladder if 2 <= s <= cap]
+            if not sizes or sizes[-1] < cap:
+                sizes.append(min(((cap + 7) // 8) * 8, 128))
+            return {
+                **cache_kwargs,
+                "use_cuda_graph": True,
+                "verify_graph_sizes": sizes,
+                "graph_len_budget": int(self.args.max_tokens) + 256,
+            }
+
+        # 跨样本复用：图模式的三个缓存挂在 self 上，样本间只 reset（图不重捕获）。
+        # eager 模式保持每样本重建 ⇒ 行为与历史完全一致。
+        _caches_attr = "_adaptive_tridecoding_caches"
+        _reused_caches = getattr(self, _caches_attr, None) if _graph_enabled else None
+        if _reused_caches is not None:
+            little_model_cache = _reused_caches["little"]
+            draft_model_cache = _reused_caches["draft"]
+            target_model_cache = _reused_caches["target"]
+            little_model_cache.reset_for_new_sample()
+            draft_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            _little_kwargs = _graph_cache_kwargs()
+            _draft_kwargs = _graph_cache_kwargs()
+            _target_kwargs = _graph_cache_kwargs()
+            little_model_cache = KVCacheModel(
+                self.little_model,
+                self.args.temp,
+                draft_top_k,
+                self.args.top_p,
+                **_little_kwargs,
+            )
+            little_model_cache.vocab_size = self.vocab_size
+            draft_model_cache = KVCacheModel(
+                self.draft_model,
+                self.args.temp,
+                draft_top_k,
+                self.args.top_p,
+                **_draft_kwargs,
+            )
+            draft_model_cache.vocab_size = self.vocab_size
+            target_model_cache = KVCacheModel(
+                self.target_model,
+                self.args.temp,
+                0,
+                0,  # 目标模型不压缩
+                **_target_kwargs,
+            )
+            target_model_cache.vocab_size = self.vocab_size
+            if _graph_enabled:
+                setattr(
+                    self,
+                    _caches_attr,
+                    {
+                        "little": little_model_cache,
+                        "draft": draft_model_cache,
+                        "target": target_model_cache,
+                    },
+                )
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
@@ -4026,17 +4164,38 @@ class Baselines(Decoding):
             comm_simulator.uncertainty_threshold = uncertainty_threshold
 
         # --- KVCache Models ---
-        little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, 0, 0,
+        # CUDA Graph：little/draft/target 都做多 token 验证前向（调度开销主体），
+        # 三个都开图；图开启时挂 self 跨样本复用（与 adaptive_tridecoding 一致）。
+        _graph_kw = _graph_mode_cache_kwargs(
+            self.args,
+            cap=int(getattr(self.args, "gamma1", 1))
+            + int(getattr(self.args, "gamma2", 1))
+            + 4,
         )
+        _reused = getattr(self, "_cee_cuhlm_caches", None) if _graph_kw else None
+        if _reused is not None:
+            little_model_cache, draft_model_cache, target_model_cache = _reused
+            little_model_cache.reset_for_new_sample()
+            draft_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            little_model_cache = KVCacheModel(
+                self.little_model, self.args.temp, 0, 0, **_graph_kw,
+            )
+            draft_model_cache = KVCacheModel(
+                self.draft_model, self.args.temp, 0, 0, **_graph_kw,
+            )
+            target_model_cache = KVCacheModel(
+                self.target_model, self.args.temp, 0, 0, **_graph_kw,
+            )
+            if _graph_kw:
+                setattr(
+                    self,
+                    "_cee_cuhlm_caches",
+                    (little_model_cache, draft_model_cache, target_model_cache),
+                )
         little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, 0, 0,
-        )
         draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, 0, 0,
-        )
         target_model_cache.vocab_size = self.vocab_size
 
         # Metrics tracking

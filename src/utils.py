@@ -1228,18 +1228,19 @@ def sample(probs: torch.Tensor, num_samples: int = 1):
     probs_sum = probs.sum(dim=-1, keepdim=True)
     invalid_rows = probs_sum.squeeze(-1) <= 0
 
-    if invalid_rows.any():
-        fallback = torch.zeros_like(probs[invalid_rows])
-        fallback.scatter_(
-            -1,
-            probs[invalid_rows].argmax(dim=-1, keepdim=True),
-            1.0,
-        )
-        probs = probs.clone()
-        probs[invalid_rows] = fallback
-        probs_sum = probs.sum(dim=-1, keepdim=True)
+    # 无分支化：invalid 检查不再用 .any()（host 同步）逐次打断 CPU/GPU 流水线
+    # （投机解码热循环里每次采样都要付这个代价）。torch.where 在 GPU 上等价
+    # 完成：有效行归一化，无效行（clamp 后即全零行 ⇒ 和 ≤ 0）回退 argmax
+    # one-hot —— 与原分支逐位一致（含 argmax 平局取 0 的行为），multinomial
+    # 的 RNG 消耗不变。invalid_rows 仅保留给调试断言。
+    del invalid_rows
+    tiny = torch.finfo(probs.dtype).tiny
+    normalized = probs / probs_sum.clamp_min(tiny)
+    fallback = torch.zeros_like(probs).scatter_(
+        -1, probs.argmax(dim=-1, keepdim=True), 1.0
+    )
+    probs = torch.where(probs_sum > 0, normalized, fallback)
 
-    probs = probs / probs_sum
     idx_next = torch.multinomial(probs, num_samples=num_samples)
     return idx_next
 
