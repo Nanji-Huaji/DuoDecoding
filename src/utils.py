@@ -361,10 +361,22 @@ def parse_arguments():
         "--use_cuda_graph",
         action="store_true",
         help=(
-            "把草稿模型的单 token decode 循环捕获成 CUDA Graph 回放，绕开 per-op "
-            "启动开销（实测 68M 4.2x、1.1B 3.1x，输出与 eager 逐 token 一致）。"
-            "默认关闭以保证与历史实验逐位可复现；注意图模式会按 max_length "
-            "预分配 KV 缓存，长上下文时显存占用更高。"
+            "把定长 decode 前向捕获成 CUDA Graph 回放，绕开 per-op 启动开销："
+            "单步草稿走 (1,1) 单步图，验证/resync 的多 token 合成前向走 "
+            "(1,K) 定长 padding 验证图（主体收益：13B/1.1B 验证前向 84~92% "
+            "是逐算子调度开销）。图与 KV 缓存跨样本复用（StaticCache 原地 "
+            "reset，不重捕获）。默认关闭以保证与历史实验逐位可复现；图模式会"
+            "按 prompt+max_tokens+余量 预分配 KV 缓存。"
+        ),
+    )
+    parser.add_argument(
+        "--graph_verify_sizes",
+        type=str,
+        default="",
+        help=(
+            "验证图的捕获档位（逗号分隔升序，如 '4,8,16,32'）。留空则自动："
+            "从 {4,8,16,24,32,40,48,64} 里取 ≤ γ1+γ2+4 的档位并补齐上限。"
+            "回放时选 ≥k 的最小档位 padding，pad 行 KV 随回滚作废。"
         ),
     )
     parser.add_argument(
@@ -746,15 +758,17 @@ def parse_arguments():
     parser.add_argument(
         "--comm_round_trip_mode",
         choices=["per_transfer", "per_round"],
-        default="per_transfer",
-        help=("通信往返口径：per_transfer=每次消息各付一次 NTT（历史口径）；"
-              "per_round=同一轮内每条链路合并为一次往返（成批实现的真实情形）。"),
+        default="per_round",
+        help=("通信往返口径：per_round=同一轮内每条链路合并为一次往返（成批实现的"
+              "真实情形；默认=论文协议 ours_full）；per_transfer=每次消息各付一次"
+              " NTT（遗留口径，复现 2026-09-24 前的历史数字时用）。"),
     )
     parser.add_argument(
         "--transfer_top_k_cap",
         type=int,
-        default=0,
-        help="给（含 RL 选出的）transfer_top_k 设上限；0 表示不设上限。",
+        default=16,
+        help="给（含 RL 选出的）transfer_top_k 设上限，压低拒绝载荷字节"
+             "（默认 16=论文协议）；0 = 不设上限（遗留口径）。",
     )
     parser.add_argument(
         "--force_full_vocab_transfer",
@@ -771,11 +785,14 @@ def parse_arguments():
     )
     parser.add_argument(
         "--charge_residual_payload",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "F43：如实计入拒绝位置残差采样所需的提案分布载荷。开启时解码改用精确的 "
-            "top-k + 均匀尾表示（TopKProposalHistory），并按 k*(4+元素大小)+元素大小 "
-            "字节/拒绝位置/链路计费；关闭时沿用只计标量的旧口径（历史数字可复现）。"
+            "F43：如实计入拒绝位置残差采样所需的提案分布载荷。开启（默认=论文协议 "
+            "ours_full）时解码改用精确的 top-k + 均匀尾表示（TopKProposalHistory），"
+            "并按 k*(4+元素大小)+元素大小 字节/拒绝位置/链路计费；"
+            "--no-charge_residual_payload 回到只计标量的遗留口径（复现 2026-09-24 "
+            "前的历史数字，即 ours_hist）。"
         ),
     )
     parser.add_argument(
