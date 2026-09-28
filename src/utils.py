@@ -867,6 +867,17 @@ def parse_arguments():
         ),
     )
     parser.add_argument(
+        "--rl_force_topk",
+        type=int,
+        default=None,
+        help=(
+            "Ablation: pin the uplink top-k to the nearest candidate and let the "
+            "policy choose threshold (and gamma, if present) within the pinned "
+            "slice. Required for static-k ladders: the policy action otherwise "
+            "overrides --transfer_top_k, making ladder rungs identical."
+        ),
+    )
+    parser.add_argument(
         "--rl_force_threshold",
         type=float,
         default=None,

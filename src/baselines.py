@@ -520,6 +520,10 @@ class Baselines(Decoding):
                     epsilon_decay=epsilon_decay,
                     reward_scale=reward_scale,
                     batch_size=batch_size,
+                    force_threshold_override=getattr(
+                        args, "rl_force_threshold", None
+                    ),
+                    force_topk_override=getattr(args, "rl_force_topk", None),
                 )
             else:
                 self.rl_adapter = None

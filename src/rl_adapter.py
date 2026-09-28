@@ -346,6 +346,7 @@ class RLNetworkAdapter:
         batch_size=32,
         prefer_latest=False,
         force_threshold_override=None,
+        force_topk_override=None,
     ):
         self.args = args
         self.device = device
@@ -425,6 +426,24 @@ class RLNetworkAdapter:
             _cands = [float(c) for c in self.threshold_candidates]
             self._force_threshold_idx = min(
                 range(len(_cands)), key=lambda i: abs(_cands[i] - float(_force_thr))
+            )
+
+        # 反事实消融（--rl_force_topk <值>）：把上行 top-k 钉死（最近候选），
+        # 阈值/γ 仍由策略在钉死的 top-k 切片内选。用于静态 k 阶梯——否则
+        # 策略动作会覆盖 CLI --transfer_top_k，导致阶梯各档实际跑同一配置。
+        self._force_topk_value = (
+            None
+            if force_topk_override is None or float(force_topk_override) <= 0
+            else float(force_topk_override)
+        )
+        if self._force_topk_value is None:
+            self._force_topk_idx = None
+        else:
+            self._force_topk_idx = min(
+                range(len(self.topk_candidates)),
+                key=lambda i: abs(
+                    float(self.topk_candidates[i]) - self._force_topk_value
+                ),
             )
 
         self.model_path = model_path
@@ -743,6 +762,32 @@ class RLNetworkAdapter:
             else:
                 n_kt = n_topk * n_thr
                 lo = gamma_idx * n_kt + topk_idx * n_thr
+                with torch.no_grad():
+                    st = torch.FloatTensor(state_seq).unsqueeze(0).to(self.agent.device)
+                    action_idx = lo + int(
+                        self.agent.policy_net(st)[0, lo:lo + n_thr].argmax()
+                    )
+
+        # 反事实消融（--rl_force_topk <k>）：把 top-k 钉死，γ/阈值在钉死的
+        # top-k 切片内由策略重选。布局 [gamma][topk][threshold]。
+        if self._force_topk_idx is not None:
+            n_thr = len(self.threshold_candidates)
+            n_topk = len(self.topk_candidates)
+            n_kt = n_topk * n_thr
+            if self.gamma_dim > 1:
+                gamma_idx = action_idx // n_kt
+            else:
+                gamma_idx = 0
+            k_idx = self._force_topk_idx
+            if training and not self.frozen and self._random_action_draw():
+                # 探索时 γ/阈值重抽, top-k 保持钉死
+                new_gam = self.agent._random.randrange(self.gamma_dim)
+                action_idx = (
+                    new_gam * n_kt + k_idx * n_thr + self.agent._random.randrange(n_thr)
+                )
+            else:
+                # 保留策略原选的 gamma(若在动作空间), 在钉死 top-k 行内重选阈值
+                lo = gamma_idx * n_kt + k_idx * n_thr
                 with torch.no_grad():
                     st = torch.FloatTensor(state_seq).unsqueeze(0).to(self.agent.device)
                     action_idx = lo + int(

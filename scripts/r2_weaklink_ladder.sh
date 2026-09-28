@@ -41,7 +41,7 @@ run() { local tag=$1 bw=$2 k=$3
   HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=$GPU \
     .venv/bin/accelerate launch --num_processes 1 --main_process_port $PORT \
     eval/eval_gsm8k.py --eval_mode adaptive_tridecoding -e "${tag}" \
-    --edge_cloud_bandwidth "$bw" --transfer_top_k "$k" "${COMMON[@]}" \
+    --edge_cloud_bandwidth "$bw" --transfer_top_k "$k" --rl_force_topk "$k" "${COMMON[@]}" \
     > "exp_logs/${tag}.log" 2>&1
   echo "  exit=$? ($(date +%H:%M:%S))"
 }

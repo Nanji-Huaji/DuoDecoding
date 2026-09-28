@@ -57,7 +57,7 @@ HF_HUB_OFFLINE=1 \
     --eval_data_num "$SAMPLES" \
     --curriculum_bw_start "${CURR_BW:-46,46}" --curriculum_bw_end "${CURR_BW:-46,46}" \
     --curriculum_ntt_start "${CURR_NTT:-50,50}" --curriculum_ntt_end "${CURR_NTT:-50,50}" \
-    --curriculum_sampling uniform \
+    --curriculum_sampling ${SAMPLING:-uniform} \
     --edge_end_bandwidth 563 \
     --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 \
     --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 \
