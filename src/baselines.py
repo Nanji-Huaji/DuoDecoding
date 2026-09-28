@@ -1321,7 +1321,11 @@ class Baselines(Decoding):
                 else self.args.top_k
             )
 
-            comm_simulator.transfer(x, None, "edge_cloud")
+            # 上行只计本轮新草稿（x = prefix + 本轮γ个新token）。KV/前缀留存云端，
+            # 已确认前缀不重发；拒绝回滚后 x 会变短，故按"本轮输入前缀之后"切片，
+            # 不做跨轮长度记账。旧实现按全长 x 计费 ⇒ O(L²) 字节膨胀（曾实测
+            # t5a_dsd 3068B/生成tok，名义 ~8B）。
+            comm_simulator.transfer(x[:, prefix.shape[1] :], None, "edge_cloud")
             draft_prob_window = (
                 rebuilt_draft_probs
                 if rebuilt_draft_probs is not None
@@ -1626,7 +1630,11 @@ class Baselines(Decoding):
             draft_comp_time += time.time() - t0
             queuing_time += batch_delay
 
-            comm_simulator.transfer(x, None, link_type="edge_cloud")
+            # 同 dist_spec：只计本轮新起草的 1 个 token（初始上下文已在上面
+            # loop_idx==1 时计费一次）。旧实现按全长 x 计费 ⇒ O(L²)。
+            comm_simulator.transfer(
+                x[:, prefix.shape[1] :], None, link_type="edge_cloud"
+            )
             if approx_model_cache.logits_history is not None:
                 current_logit = approx_model_cache.logits_history[
                     :, -1, : self.vocab_size
@@ -2640,6 +2648,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
+        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
+        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -4105,6 +4118,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
+        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
+        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -4169,12 +4187,6 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
-        # 遵守 max_tokens：投机按整块追加，最后一轮会多出若干 token（实测最多 +9）。
-        # 对照基线 dist_spec 严格 128；不截断会让配对质量比较与时延/吞吐统计都不公平。
-        # 注意：此前补丁用了有歧义的锚点，误插到别的函数（约 2018 行），
-        # adaptive_tridecoding（实际使用的路径）一直没有截断——由实测长度分布发现并修正。
-        if prefix.shape[1] > max_tokens:
-            prefix = prefix[:, :max_tokens]
         return prefix, metrics
 
     @Register.register_decoding("cee_sd_opportunistic")
@@ -4221,7 +4233,9 @@ class Baselines(Decoding):
         stop_sequences: list[str] | None = None,
     ) -> tuple[torch.Tensor, DecodingMetrics]:
         if max_tokens is None:
-            max_tokens = prefix.shape[1] + self.args.max_tokens + self.args.gamma1 + self.args.gamma2 + 1
+            # 不放大预算：γ1+γ2+1 的放大会让本方法比基线多生成 token、
+            # 高估吞吐（F33 契约）。越界由函数末尾的显式截断兜底。
+            max_tokens = prefix.shape[1] + self.args.max_tokens
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record(stream=torch.cuda.current_stream())
@@ -4627,6 +4641,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
+        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
+        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -5012,6 +5031,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
+        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
+        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -5405,6 +5429,11 @@ class Baselines(Decoding):
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
         wall_time += elapsed_time
+        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
+        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
+        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         wall_time += (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
