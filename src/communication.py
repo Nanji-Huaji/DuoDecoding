@@ -405,8 +405,9 @@ class CommunicationSimulator:
             )
             # NTT 三级优先: 真实 ping trace 回放 > 拥塞模型(L1) > 固定基值
             # trace 回放与带宽 trace 独立推进（同 Campaign 配对，非严格时间对齐）。
+            # 注意: trace 值为毫秒，本字段为秒（历史记录×1000 回毫秒）。
             if _ntt_trace_active():
-                self.ntt_edge_cloud = _next_ntt_trace_value()
+                self.ntt_edge_cloud = float(_next_ntt_trace_value()) / 1000.0
             elif self.stochastic_ntt and self.trace_mean_bw > 0:
                 congestion = max(
                     0.0, self.trace_mean_bw / max(current_bw, 1e-9) - 1.0
@@ -416,8 +417,8 @@ class CommunicationSimulator:
                 self.ntt_edge_cloud = self.ntt_edge_cloud_base
             self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
         elif link_type == "edge_cloud" and _ntt_trace_active():
-            # 无带宽 trace 时仍可单独回放 RTT trace
-            self.ntt_edge_cloud = _next_ntt_trace_value()
+            # 无带宽 trace 时仍可单独回放 RTT trace（毫秒→秒）
+            self.ntt_edge_cloud = float(_next_ntt_trace_value()) / 1000.0
             self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
 
         if link_type == "edge_cloud":

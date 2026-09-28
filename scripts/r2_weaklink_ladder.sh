@@ -53,7 +53,8 @@ for bw in 0.5 1 2 5; do
   done
 done
 
-# ---- 2) R2 域 DRA 重训 (curriculum bw 0.5-5 loguniform, NTT 10) ----
+# ---- 2) R2 域 DRA 重训 (TRAIN=0 跳过; curriculum bw 0.5-5 loguniform) ----
+if [ "${TRAIN:-1}" = "1" ]; then
 echo "=== R2 DRA 重训 $(date +%H:%M:%S) ==="
 OUT=checkpoints/rl_r2_weaklink EXP=rl_r2_weaklink PORT=29985 \
 CURR_BW="0.5,5" CURR_NTT="10,10" SAMPLING=loguniform \
@@ -61,6 +62,7 @@ LAMBDA=0 RL_EXTRA="--rl_charge_queue" \
   bash scripts/run_rl_inregime_training.sh "$GPU" 500 \
   > exp_logs/nohup_train_r2.log 2>&1
 echo "  训练 exit=$? ($(date +%H:%M:%S))"
+else echo "  TRAIN=0 跳过重训"; fi
 
 # ---- 3) DRA 探针 @ 4 个 bw点 (k 由策略自适应, cap 1024) ----
 NEWCKPT=checkpoints/rl_r2_weaklink
@@ -81,29 +83,6 @@ for bw in 0.5 1 2 5; do
 done
 
 # ---- 4) 汇总: 每 bw 的静态最优 vs DRA ----
-.venv/bin/python - <<'EOF' > $SUMMARY 2>&1
-import json, glob, re
-print(f"{'bw':>5} | {'k=64':>16} {'k=256':>16} {'k=1024':>16} | {'DRA(自适应)':>12}")
-print(f"{'':>5} | {'thr/tf/Tp'.^16}..." if False else f"{'':>5} | {'tokfwd Thr':>16} {'tokfwd Thr':>16} {'tokfwd Thr':>16} | {'tokfwd Thr':>12}")
-for bw in ["0.5","1","2","5"]:
-    row=[]
-    best=-1
-    for k in ["64","256","1024"]:
-        try:
-            m=json.load(open(glob.glob(f"exp/${TAGPFX}_bw{bw}_k{k}_thr04/*metrics.json")[0]))
-            tf=m["generated_tokens"]/m["target_forward_times"]
-            row.append(f"{tf:6.2f} {m['throughput']:7.2f}")
-            best=max(best,tf)
-        except Exception:
-            row.append(f"{'—':>16}")
-    try:
-        d=json.load(open(glob.glob(f"exp/${TAGPFX}_bw{bw}_dra/*metrics.json")[0]))
-        dtf=d["generated_tokens"]/d["target_forward_times"]
-        dra=f"{dtf:5.2f} {d['throughput']:5.2f}"
-        gap=(dtf-best)/best*100 if best>0 else 0
-    except Exception:
-        dra="—"; gap=0
-    print(f"{bw:>5} | {row[0]:>16} {row[1]:>16} {row[2]:>16} | {dra:>12}  (DRA vs 静态最优: {gap:+.1f}%)")
-EOF
-cat exp_logs/r2_ladder_summary.txt
+.venv/bin/python scripts/summarize_r2_ladder.py "$TAGPFX" "$SUMMARY"
+cat "$SUMMARY"
 echo "=== R2 链全部完成 $(date +%F\ %H:%M:%S) ==="

@@ -31,11 +31,17 @@ def main():
     )
     model.eval()
 
+    # data/test.jsonl = MT-Bench 格式 (question_id/category/turns): 开放生成域,
+    # 熵更高, 正是 top-p 稀疏化最有趣的场景
     data = [json.loads(l) for l in open("data/test.jsonl") if l.strip()]
-    data = [d for d in data if d.get("type", "") in ("gsm8k", "") or "gsm8k" in json.dumps(d)[:400]][: args.n_prompts]
-    if not data:
-        data = data[: args.n_prompts]
-    prompts = [d["instruction"] if "instruction" in d else list(d.values())[0] for d in data]
+    prompts = []
+    for d in data:
+        if isinstance(d.get("turns"), list) and d["turns"]:
+            prompts.append(d["turns"][0])
+        elif isinstance(d.get("instruction"), str):
+            prompts.append(d["instruction"])
+        if len(prompts) >= args.n_prompts:
+            break
 
     P_TARGETS = [0.8, 0.9, 0.95, 0.99]
     K_TARGETS = [64, 256, 300, 1024]
