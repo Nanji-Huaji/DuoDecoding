@@ -1529,6 +1529,9 @@ class Baselines(Decoding):
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
+                uncertainty_threshold=getattr(
+                    self.args, "uncertainty_threshold", 0.8
+                ),
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
             )
@@ -1635,8 +1638,14 @@ class Baselines(Decoding):
             uncertainty = comm_simulator.calculate_uncertainty(
                 current_logit, M=20, theta_max=2.0, draft_token=int(x[0, -1].item())
             )
+            # 压缩词表公式（论文式 (16)/(23)/(26)）定义在概率分布 x(t) 上：
+            # 不确定度用原始 logits 算（温度扰动采样，设计如此），
+            # 但 k* 的求解必须吃 softmax 后的概率分布。
+            current_probs = comm_simulator._get_current_probs(
+                approx_model_cache.prob_history
+            )
             should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(
-                uncertainty, current_logit
+                uncertainty, current_probs
             )
 
             draft_forward_times += 1
@@ -1671,13 +1680,6 @@ class Baselines(Decoding):
             target_forward_times += 1
 
             # Rejection sampling with compressed probability distribution
-            current_probs = comm_simulator._get_current_probs(
-                approx_model_cache.prob_history
-            )
-            compressed_prob = comm_simulator._apply_top_k_compression(
-                current_probs, vocab_size
-            )
-
             n = prefix_len + 1 - 1
 
             verification_inputs = prepare_verification_inputs(
@@ -3939,6 +3941,48 @@ class Baselines(Decoding):
                     output_device=draft_device,
                 )
                 draft_all_accepted = True
+            # ARP_CALIB_TRACE: 逐位配对 (ARP预测, 真接受概率) —— 校准诊断专用。
+            # 真值 = min(1, p_t(x_i)/p_d(x_i))（采样域）与 argmax 匹配（贪心域），
+            # 两个都dump，分析端按温度取用。arp 行只取 draft_target 头（主级）。
+            _calib_path = os.environ.get("ARP_CALIB_TRACE")
+            _acc_probs_calib = list(
+                getattr(self.draft_target_adapter, "step_acc_probs", []) or []
+            )
+            if _calib_path and _acc_probs_calib:
+                try:
+                    _g_calib = len(_acc_probs_calib)
+                    _toks_calib = x[0, prefix_len : prefix_len + _g_calib].tolist()
+                    _rows_calib = []
+                    for _i, _ap in enumerate(_acc_probs_calib):
+                        _tok = int(_toks_calib[_i])
+                        _row_d = draft_model_cache.prob_history[
+                            0, prefix_len - 1 + _i
+                        ]
+                        _row_t = target_model_cache.prob_history[
+                            0, prefix_len - 1 + _i
+                        ]
+                        _pd = float(_row_d[_tok])
+                        _pt = float(_row_t[_tok])
+                        _rows_calib.append(
+                            json.dumps(
+                                {
+                                    "arp": float(_ap),
+                                    "tok": _tok,
+                                    "pd": _pd,
+                                    "pt": _pt,
+                                    "ratio": (
+                                        min(1.0, _pt / _pd) if _pd > 0 else 1.0
+                                    ),
+                                    "gmatch": int(
+                                        int(_row_t.argmax().item()) == _tok
+                                    ),
+                                }
+                            )
+                        )
+                    with open(_calib_path, "a") as _fh:
+                        _fh.write("\n".join(_rows_calib) + "\n")
+                except Exception:
+                    pass
             total_draft_model_accepted_tokens += draft_accepted_this_iter
             draft_accept_rate_history.append(
                 draft_accepted_this_iter / total_gamma if total_gamma > 0 else 0.0
@@ -4192,6 +4236,9 @@ class Baselines(Decoding):
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
                 send_power_watt=0.5,
+                uncertainty_threshold=getattr(
+                    self.args, "uncertainty_threshold", 0.8
+                ),
             )
         else:
             comm_simulator = CUHLM(
@@ -4199,7 +4246,7 @@ class Baselines(Decoding):
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
-                uncertainty_threshold=0.8,
+                uncertainty_threshold=getattr(self.args, "uncertainty_threshold", 0.8),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,

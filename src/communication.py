@@ -493,15 +493,16 @@ class CommunicationSimulator:
         if probs is None or probs.numel() == 0:
             return torch.empty(0)
 
-        if k >= len(probs):
+        # len() 取的是第一维（batch 维），多维输入会误判；top-k 语义在最后一维。
+        if k >= probs.shape[-1]:
             return probs
 
         # 获取top-k indices
         top_k_values, top_k_indices = torch.topk(probs, k, sorted=True)
 
-        # 创建压缩的概率分布
+        # 创建压缩的概率分布（scatter_ 沿最后一维，对 (..., V) 任意维数都正确）
         compressed_probs = torch.zeros_like(probs)
-        compressed_probs[top_k_indices] = top_k_values
+        compressed_probs.scatter_(-1, top_k_indices, top_k_values)
 
         return compressed_probs
 
@@ -916,15 +917,16 @@ class CUHLM(CommunicationSimulator):
         if probs is None or probs.numel() == 0:
             return torch.empty(0)
 
-        if k >= len(probs):
+        # len() 取的是第一维（batch 维），多维输入会误判；top-k 语义在最后一维。
+        if k >= probs.shape[-1]:
             return probs
 
         # 获取top-k indices
         top_k_values, top_k_indices = torch.topk(probs, k, sorted=True)
 
-        # 创建压缩的概率分布
+        # 创建压缩的概率分布（scatter_ 沿最后一维，对 (..., V) 任意维数都正确）
         compressed_probs = torch.zeros_like(probs)
-        compressed_probs[top_k_indices] = top_k_values
+        compressed_probs.scatter_(-1, top_k_indices, top_k_values)
 
         return compressed_probs
 
@@ -939,71 +941,95 @@ class CUHLM(CommunicationSimulator):
         theta: float = 0.1,
         draft_token: Optional[int] = None,
     ) -> int:
-        """严格按照论文公式(24)实现：k(t)* = arg min {k(t) | U_TV(au(t) + b) ≤ θ}"""
+        """按论文式 (26)（Proposition 2，在线逐轮规则）求最小压缩词表大小：
 
+            k*(t) = arg min { k(t) | U_TV(β_d(t)) ≤ θ }
+
+        （注：论文式 (24) 是离线时间平均版 k* = argmin{k | E_t[U_TV]≤θ}；
+        本实现与其在线变体等价，即用式 (26) 的上界逐轮解约束。）
+
+        所有量均定义在**词表概率分布** x(t) 上（论文第 II-A 节：x(t) 由
+        logit 经 softmax 归一化而来）。喂原始 logits 会得到无意义的 k*。
+        """
         if current_probs is None or current_probs.numel() == 0:
             return 0
 
         # 确保输入是完整的词汇表概率分布
-        if len(current_probs) != self.vocab_size:
+        if current_probs.shape[-1] != self.vocab_size:
             warnings.warn(
-                f"警告：概率分布长度({len(current_probs)})与词汇表大小({self.vocab_size})不匹配"
+                f"警告：概率分布长度({current_probs.shape[-1]})与词汇表大小({self.vocab_size})不匹配"
             )
             return max(1, min(300, self.vocab_size // 100))
+
+        total_mass = float(current_probs.float().sum())
+        if abs(total_mass - 1.0) > 0.05:
+            warnings.warn(
+                f"警告：输入的总质量 {total_mass:.4f} 偏离 1，"
+                "请确认传入的是概率分布（softmax 后）而非原始 logits——"
+                "论文式 (16)/(23)/(26) 均定义在概率分布上"
+            )
 
         # Step 1: 计算rejection probability
         a, b = 0.815, -0.066
         beta_d = max(0, min(1, a * uncertainty + b))
 
-        # Step 2: 对概率分布排序
-        sorted_probs, sorted_indices = torch.sort(current_probs, descending=True)
+        # Step 2: 对概率分布排序（float32 累加，避免半精度累加误差）
+        sorted_probs, _ = torch.sort(
+            current_probs.float().reshape(-1), descending=True
+        )
+        vocab_size = self.vocab_size
 
         # Step 3: 获取draft token概率
         if draft_token is None:
-            x_d = sorted_probs[0].item()
+            x_d = float(sorted_probs[0])
         else:
             # draft_token是索引，获取对应概率
-            if 0 <= draft_token < len(current_probs):
-                x_d = current_probs[draft_token].item()
+            if 0 <= draft_token < vocab_size:
+                x_d = float(current_probs.reshape(-1)[draft_token])
             else:
                 warnings.warn(f"警告：draft_token索引({draft_token})超出范围")
-                x_d = sorted_probs[0].item()
+                x_d = float(sorted_probs[0])
 
         # Step 4: 计算softplus函数
         eta = 1.0
-
         l_neg_1 = self.softplus(torch.tensor(-1.0), eta).item()
         l_neg_beta = self.softplus(torch.tensor(-beta_d), eta).item()
 
-        # Step 5: 计算分母
+        # Step 5: 计算分母（论文式 (26)）：(1-x_d)·ℓ(-1) + x_d·ℓ(-β_d)
         denominator = (1 - x_d) * l_neg_1 + x_d * l_neg_beta
         if denominator <= 0:
             return 30
 
-        # Step 6: 搜索最小的k
-        for k in range(1, self.vocab_size):  # 确保k < vocab_size
-            # 计算top-k概率累积和
-            top_k_sum = torch.sum(sorted_probs[:k]).item()
-            residual_mass = 1.0 - top_k_sum
+        # Step 6: 向量化搜索最小的 k（与逐 k 暴力循环数学等价，O(V) 而非 O(V²)）
+        #
+        # 对每个 k：top_k_sum = Σ_{i≤k} x_i（降序前缀和），
+        #   residual = max(1 - top_k_sum, 0)，uniform = residual / (V-k)
+        #   numerator_k = Σ_{i>k} |x_i - uniform|（论文式 (23) 分子）
+        # 利用降序排列的 crossover 性质（{x_i ≥ u} 恒为前缀）：
+        #   m = 尾部中 ≥ uniform 的元素个数（searchsorted 一次求出全部）
+        #   head = 尾部前 m 个元素之和（前缀和差分）
+        #   numerator = 2·(head - m·uniform) + (V-k)·uniform - tail_sum
+        prefix_sum = torch.cumsum(sorted_probs, dim=0)  # prefix_sum[i] = Σ_{j≤i} x_j
+        ks = torch.arange(1, vocab_size, device=sorted_probs.device)
+        top_k_sum = prefix_sum[ks - 1]
+        tail_sum = prefix_sum[vocab_size - 1] - top_k_sum
+        residual = (1.0 - top_k_sum).clamp_min(0.0)
+        tail_count = vocab_size - ks
+        uniform = residual / tail_count
 
-            # 计算均匀概率（避免除零）
-            if k >= self.vocab_size or residual_mass <= 0:
-                uniform_prob = 0
-            else:
-                uniform_prob = residual_mass / (self.vocab_size - k)
+        asc = -sorted_probs  # 升序，用于 searchsorted
+        # pos[k] = 全数组中 x_i ≥ uniform_k 的个数；{x≥u} 是前缀，故 m = pos - k（≥0 截断）
+        pos = torch.searchsorted(asc, -uniform, right=True)
+        m = (pos - ks).clamp_min(0)
+        idx = (ks + m - 1).clamp_max(vocab_size - 1)
+        head = prefix_sum[idx] - top_k_sum  # 尾部前 m 大元素之和
+        numerator = 2.0 * (head - m * uniform) + tail_count * uniform - tail_sum
+        numerator = numerator.clamp_min(0.0)
 
-            # 计算分子：Σ(i=k+1 to |V|) |x_i(t) - x̂_i(t)|
-            numerator = 0.0
-            for i in range(k, len(sorted_probs)):
-                original_prob = sorted_probs[i].item()
-                numerator += abs(original_prob - uniform_prob)
-
-            # 计算上界 U_TV(β_d(t))
-            u_tv = numerator / denominator
-
-            # 检查约束条件
-            if u_tv <= theta:
-                return k
+        u_tv = numerator / denominator
+        satisfied = u_tv <= theta
+        if bool(satisfied.any()):
+            return int(ks[satisfied][0])
 
         # 如果没找到满足条件的k，返回保守值
         return min(self.DEFAULT_COMPRESSED_VOCAB_SIZE, self.vocab_size // 100)
