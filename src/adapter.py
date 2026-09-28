@@ -12,6 +12,38 @@ from .model_gpu import KVCacheModel
 # 可能可分辨"完全取决于它（诊断文档 F18）。
 ACC_PROB_TRACE_PATH = os.environ.get("RL_ACC_PROB_TRACE")
 
+# 可选：ARP 输出的 isotonic 重校准（ARP_CALIB_MAP=/path.json，含
+# grid_raw / mapped_true 两数组，由 arpcalib 数据拟合）。动机：实测 ARP
+# 系统性欠预测 +0.14（说 0.65 时真值 ~0.91），阈值语义失真；重校准后
+# acc_prob 映到真值尺度，θ 变成可解释的真概率杠杠。env 门控，未设=零效果。
+_CALIB_MAP_PATH = os.environ.get("ARP_CALIB_MAP")
+_CALIB_GRID: list[float] | None = None
+_CALIB_VALUES: list[float] | None = None
+if _CALIB_MAP_PATH:
+    try:
+        with open(_CALIB_MAP_PATH) as _fh:
+            _m = json.load(_fh)
+        _CALIB_GRID = [float(g) for g in _m["grid_raw"]]
+        _CALIB_VALUES = [float(v) for v in _m["mapped_true"]]
+    except Exception as _e:  # 静默降级到未校准（保持历史行为）
+        print(f"[adapter] ARP_CALIB_MAP 加载失败, 不校准: {_e}")
+
+
+def _apply_calib_map(p: float) -> float:
+    """线性插值把 raw acc_prob 映到真值尺度（单调保持）。"""
+    if _CALIB_GRID is None:
+        return p
+    g, v = _CALIB_GRID, _CALIB_VALUES
+    if p <= g[0]:
+        return v[0]
+    if p >= g[-1]:
+        return v[-1]
+    for i in range(1, len(g)):
+        if p <= g[i]:
+            t = (p - g[i - 1]) / (g[i] - g[i - 1])
+            return v[i - 1] + t * (v[i] - v[i - 1])
+    return p
+
 
 class DecodingAdapter:
     def __init__(
@@ -65,6 +97,7 @@ class DecodingAdapter:
             acc_prob = logits.softmax(dim=-1)[1].item()
 
         self.last_acc_prob = acc_prob
+        acc_prob = _apply_calib_map(acc_prob)
         self.step_acc_probs.append(acc_prob)
         if ACC_PROB_TRACE_PATH:
             try:
