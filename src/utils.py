@@ -1120,6 +1120,20 @@ def parse_arguments():
             "例: --draft_model tiny-llama-1.1b --target_model llama-2-13b）"
         )
 
+    # B15：--prob_payload_bits < 16 只在 tri 系双投机阶段协议中接线。
+    # 此前其它模式静默忽略该参数——用户以为设了位宽压缩，实际全宽传输。
+    # 现在显式拒绝，杜绝"参数无效却无告警"。
+    _pb_val = int(getattr(args, "prob_payload_bits", 16) or 16)
+    if _pb_val < 16:
+        _mf_spec = MODE_FEATURES.get(args.eval_mode)
+        if _mf_spec is None or not _mf_spec.supports_prob_bits:
+            parser.error(
+                f"--prob_payload_bits < 16 仅在 tridecoding / "
+                f"adaptive_tridecoding 协议中生效；当前 --eval_mode "
+                f"{args.eval_mode!r} 的上行载荷不参与位宽压缩，"
+                f"如需全宽传输请使用默认值 16"
+            )
+
     # L1 口径收敛：显式给出 --comm_accounting 时统一覆盖三个子开关。
     # 解决 Table V 对齐时发现的"口径不可辨"问题：以后每个 run 的口径都有唯一标签。
     if getattr(args, "comm_accounting", None):

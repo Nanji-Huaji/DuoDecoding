@@ -19,6 +19,9 @@
   * "draft_target" 单头（draft→target，adaptive_decoding）
   * "both"         双头（small_draft + draft_target，tri 族）；
                     ceesd_without_arp 按"无 ARP"设计用 RL 但不带头
+- supports_prob_bits: 上行概率载荷是否参与 --prob_payload_bits 位宽
+  压缩（B15）。只有 tri 系双投机阶段协议（tridecoding/adaptive_
+  tridecoding）接线；其余模式显式拒绝 bits<16 而非静默忽略
 """
 
 from dataclasses import dataclass
@@ -30,6 +33,7 @@ class ModeSpec:
     uses_main_rl: bool = False
     uses_little_rl: bool = False
     acc_head: str = "none"
+    supports_prob_bits: bool = False
 
 
 _TRI_RL_NO_HEAD = dict(models="tri", uses_main_rl=True, uses_little_rl=True)
@@ -61,11 +65,11 @@ MODE_FEATURES = {
         models="dual", uses_main_rl=True, acc_head="draft_target"
     ),
     # 三模型族：无 RL / 无头
-    "tridecoding": ModeSpec(models="tri"),
+    "tridecoding": ModeSpec(models="tri", supports_prob_bits=True),
     "target_only": ModeSpec(models="tri"),
     # 三模型 + 双 RL + 双验收头（CEE 族）
     **{
-        name: ModeSpec(**_TRI_RL_BOTH_HEADS)
+        name: ModeSpec(**(_TRI_RL_BOTH_HEADS | {"supports_prob_bits": name == "adaptive_tridecoding"}))
         for name in (
             "adaptive_tridecoding",
             "cee_sd",

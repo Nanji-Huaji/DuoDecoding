@@ -181,6 +181,26 @@ def _quantize_probs_logspace(probs: torch.Tensor, bits: int) -> torch.Tensor:
     return out.to(probs.dtype)
 
 
+def _uplink_prob_payload(
+    probs: Optional[torch.Tensor], args
+) -> tuple[Optional[torch.Tensor], Optional[int]]:
+    """B15/B16：上行概率载荷的**原子决策**——返回的 (张量, 计费位宽)
+    必须成对使用：张量继续流入下游验证路径，位宽传给 transfer/simulate
+    计费。调用点因此不可能"声明 bits 却不量化"或反过来。
+
+    - bits < 16：对数域真实量化，返回 (q̂, bits)——验证判据与计费
+      看到同一个 q̂
+    - bits >= 16 或 probs 为 None：原样返回 (probs, None)——按
+      element_size 全宽计费（历史口径）
+    """
+    if probs is None:
+        return None, None
+    bits = int(getattr(args, "prob_payload_bits", 16) or 16)
+    if bits >= PROB_QUANT_PASS_THROUGH_BITS:
+        return probs, None
+    return _quantize_probs_logspace(probs, bits), bits
+
+
 def _simulate_topk_prob_transfer(
     comm_simulator: CommunicationSimulator,
     *,
@@ -1944,13 +1964,22 @@ class Baselines(Decoding):
                 )
                 if little_stage_probs is None:
                     little_stage_probs = little_model_cache.prob_history
+                # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
+                little_stage_probs, _little_bits = _uplink_prob_payload(
+                    little_stage_probs, self.args
+                )
                 draft_tokens, draft_probs = collect_verification_payload(
                     little_stage_probs,
                     x,
                     prefix_len,
                     self.args.gamma2,
                 )
-                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                comm_simulator.transfer(
+                    draft_tokens,
+                    draft_probs,
+                    "edge_end",
+                    prob_bits=_little_bits,
+                )
 
             first_stage_inputs, first_stage_acceptance = verify_draft_sequence_result(
                 draft_model_cache=little_model_cache,
@@ -1958,10 +1987,16 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=self.args.gamma2,
-                draft_probs_override=build_draft_probs_override(
-                    little_model_cache,
-                    prefix_len,
-                    little_rebuilt_probs,
+                # B15：验证看到的 q̂ 与上行载荷同源（此前重建未量化副本，
+                # 位宽生效时验证与计费看到的是两个分布）
+                draft_probs_override=(
+                    cast(torch.Tensor, little_stage_probs)
+                    if self.args.gamma2 > 0
+                    else build_draft_probs_override(
+                        little_model_cache,
+                        prefix_len,
+                        little_rebuilt_probs,
+                    )
                 ),
                 draft_topk_history=stage_topk_proposal_history(
                     little_rebuilt_meta,
@@ -1997,14 +2032,19 @@ class Baselines(Decoding):
                 #     rebuild_probs
                 # )
 
-                comm_simulator.transfer(
-                    None,
+                _rej_probs, _rej_bits = _uplink_prob_payload(
                     first_stage_inputs.draft_probs_batch[
                         :, n1 - (prefix_len - 1), : self.vocab_size
                     ],
+                    self.args,
+                )
+                comm_simulator.transfer(
+                    None,
+                    _rej_probs,
                     "edge_end",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
+                    prob_bits=_rej_bits,
                 )
 
                 rejection_offset = n1 - (prefix_len - 1)
@@ -2083,28 +2123,24 @@ class Baselines(Decoding):
                 )
                 if draft_stage_probs is None:
                     draft_stage_probs = draft_model_cache.prob_history
-                # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
-                # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
-                _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
-                    draft_stage_probs = _quantize_probs_logspace(
-                        draft_stage_probs, _prob_bits
-                    )
+                # B15：原子化——原实现量化只作用于计费载荷，verify 的
+                # override 却重建未量化副本（注释承诺的"验证看到同一个
+                # q̂"从未兑现）。现在两者同源；默认 16 时不量化、数字不变
+                draft_stage_probs, _draft_bits = _uplink_prob_payload(
+                    draft_stage_probs, self.args
+                )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
                 )
-                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
-                    comm_simulator.transfer(
-                        draft_tokens_second, draft_probs_second, "edge_cloud",
-                        prob_bits=_prob_bits,
-                    )
-                else:
-                    comm_simulator.transfer(
-                        draft_tokens_second, draft_probs_second, "edge_cloud"
-                    )
+                comm_simulator.transfer(
+                    draft_tokens_second,
+                    draft_probs_second,
+                    "edge_cloud",
+                    prob_bits=_draft_bits,
+                )
 
             second_stage_inputs, second_stage_acceptance = verify_draft_sequence_result(
                 draft_model_cache=draft_model_cache,
@@ -2112,10 +2148,14 @@ class Baselines(Decoding):
                 x=x,
                 prefix_len=prefix_len,
                 gamma=total_gamma,
-                draft_probs_override=build_draft_probs_override(
-                    draft_model_cache,
-                    prefix_len,
-                    draft_rebuilt_probs,
+                draft_probs_override=(
+                    cast(torch.Tensor, draft_stage_probs)
+                    if total_gamma > 0
+                    else build_draft_probs_override(
+                        draft_model_cache,
+                        prefix_len,
+                        draft_rebuilt_probs,
+                    )
                 ),
                 draft_topk_history=stage_topk_proposal_history(
                     draft_rebuilt_meta,
@@ -2148,14 +2188,19 @@ class Baselines(Decoding):
                 #     rebuild_probs
                 # )
 
-                comm_simulator.transfer(
-                    None,
+                _rej_probs2, _rej_bits2 = _uplink_prob_payload(
                     second_stage_inputs.draft_probs_batch[
                         :, n2 - (prefix_len - 1), : self.vocab_size
                     ],
+                    self.args,
+                )
+                comm_simulator.transfer(
+                    None,
+                    _rej_probs2,
                     "edge_cloud",
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
+                    prob_bits=_rej_bits2,
                 )
                 rejection_offset = n2 - (prefix_len - 1)
                 if draft_rebuilt_meta is not None:
@@ -3628,13 +3673,23 @@ class Baselines(Decoding):
                             prefix_len,
                             little_rebuilt_probs,
                         )
+                    # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
+                    # （下方 verify 的 override 复用同一变量，天然同源）
+                    little_stage_probs, _little_bits = _uplink_prob_payload(
+                        little_stage_probs, self.args
+                    )
                     draft_tokens, draft_probs = collect_verification_payload(
                         little_stage_probs,
                         x,
                         prefix_len,
                         actual_gamma2,
                     )
-                    comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+                    comm_simulator.transfer(
+                        draft_tokens,
+                        draft_probs,
+                        "edge_end",
+                        prob_bits=_little_bits,
+                    )
 
                 if actual_gamma2 > 0:
                     (
@@ -3751,11 +3806,13 @@ class Baselines(Decoding):
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
-                _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _pb < PROB_QUANT_PASS_THROUGH_BITS:  # 概率载荷按位宽计费 ✓（B16：与量化门同源）
+                # B15：位宽决策走原子 helper——此前只按 bits 计费却从不
+                # 量化（"收 bits 钱、传全宽信息"的活跃实例）
+                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
-                    prob_bytes = int(_n) * _pb / 8.0
+                    prob_bytes = int(_n) * _pb_bits / 8.0
 
                 reject_overhead = 6.0
 
@@ -3903,28 +3960,23 @@ class Baselines(Decoding):
                     prefix_len + new_generated_token.shape[1],
                     draft_rebuilt_probs,
                 )
-                # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
-                # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
-                _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
-                    draft_stage_probs = _quantize_probs_logspace(
-                        draft_stage_probs, _prob_bits
-                    )
+                # B15：原子化——此点位本就"量化+计费+verify 复用"三对，
+                # 收敛进 helper 消除门控样板；默认 16 行为不变
+                draft_stage_probs, _draft_bits = _uplink_prob_payload(
+                    draft_stage_probs, self.args
+                )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
                     x,
                     prefix_len,
                     total_gamma,
                 )
-                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
-                    comm_simulator.transfer(
-                        draft_tokens_second, draft_probs_second, "edge_cloud",
-                        prob_bits=_prob_bits,
-                    )
-                else:
-                    comm_simulator.transfer(
-                        draft_tokens_second, draft_probs_second, "edge_cloud"
-                    )
+                comm_simulator.transfer(
+                    draft_tokens_second,
+                    draft_probs_second,
+                    "edge_cloud",
+                    prob_bits=_draft_bits,
+                )
 
             if actual_gamma1 > 0:
                 # 缓存一致性自检（CACHE_CHECK_TRACE）：验证者 cache 里应当恰好有
@@ -4114,11 +4166,12 @@ class Baselines(Decoding):
                 prob_bytes = prob_data.element_size() * prob_data.numel()
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
-                _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _pb < PROB_QUANT_PASS_THROUGH_BITS:  # 概率载荷按位宽计费 ✓（B16：与量化门同源）
+                # B15：位宽决策走原子 helper（同 stage-1 拒绝点）
+                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
-                    prob_bytes = int(_n) * _pb / 8.0
+                    prob_bytes = int(_n) * _pb_bits / 8.0
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
