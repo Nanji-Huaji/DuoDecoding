@@ -38,9 +38,15 @@ def get_class_methods(cls) -> List[str]:
     return methods
 
 
-def read_results(file_path):
-    f = open(file_path)
-    data = [json.loads(line) for line in f.readlines()]
+def read_results(file_path, skip_lines=0):
+    """只解析本次运行追加的行（skip_lines = 运行前文件已有的行数）。
+
+    B35：此前 append 写 jsonl、却用本函数读全文件重算速度，重跑时旧数据会混进
+    tokens/s。skip_lines 让统计只覆盖本次写入的样本。
+    """
+    with open(file_path) as f:
+        lines = f.readlines()[skip_lines:]
+    data = [json.loads(line) for line in lines]
     record = {}
     for item in data:
         if item["category"] not in record:
@@ -110,6 +116,9 @@ class EvalMTBench(Baselines):
             decoding,
             transfer_top_k=self.args.transfer_top_k,
             use_precise_comm_sim=self.args.use_precise,
+            # B32：partial 此前漏传 use_stochastic_comm，exp.py 的该开关被静默忽略
+            # （默认扫描里 use_stochastic_comm=True 且包含 mt_bench_noeval）。
+            use_stochastic_comm=self.args.use_stochastic_comm,
             ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
             ntt_ms_edge_end=self.args.ntt_ms_edge_end,
             use_early_stopping=self.args.use_early_stopping,
@@ -118,6 +127,11 @@ class EvalMTBench(Baselines):
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
         )
+        # B35：记录本次运行前的行数，速度统计只覆盖本次追加的行。
+        existing_lines = 0
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                existing_lines = sum(1 for _ in f)
         out_f = open(out_path, "a")
 
         # warmup - 只做第一轮对话以加快速度
@@ -364,7 +378,7 @@ class EvalMTBench(Baselines):
 
         self.color_print(f"current eval mode: {self.args.eval_mode}", 0)
 
-        record = read_results(out_path)
+        record = read_results(out_path, skip_lines=existing_lines)
 
         total_num_token, total_wall_time = [], []
 

@@ -138,15 +138,17 @@ class EvalXSum(Baselines):
         # Warmup
         print("Start warm up...")
         n = 5
+        warmup_count = 0
         for item in tqdm.tqdm(
             self.data,
             total=len(self.data),
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-            n -= 1
-            if n == 0:
+            # B29：原写法先 `n -= 1` 再 break，n=5 实际只热身 4 次。
+            if warmup_count >= n:
                 break
+            warmup_count += 1
 
             article = self.truncate_article(
                 str(item["document"]), self.WARMUP_ARTICLE_TOKENS
@@ -223,10 +225,11 @@ class EvalXSum(Baselines):
                         # 且键缺失时 else 分支潜伏 KeyError）
                         accumulate_metrics(decoding_metrics, metrics)
                 except Exception as e:
+                    # B31：原实现异常时用单个 EOS 占位继续，随后
+                    # num_tokens = 1 - prompt_len 为负并混进 tokens/s 均值，
+                    # 空预测还会以 ROUGE=0 计入均值。异常样本整体剔除。
                     print(f"Error during decoding: {e}")
-                    output_ids = torch.tensor([[self.tokenizer.eos_token_id]]).to(
-                        self.accelerator.device
-                    )
+                    continue
 
                 torch.cuda.synchronize()
                 end_time = time.time()

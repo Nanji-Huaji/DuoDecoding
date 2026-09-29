@@ -53,6 +53,13 @@ def check_correctness(completion, test_code, entry_point, timeout=3.0):
 
 
 class EvalHumaneval(Baselines):
+    # B34：preprocess 里会走 chat template（模板自带 BOS）的 model_id 集合。
+    # 该集合必须与下面 preprocess 的模板分支保持一致。
+    CHAT_TEMPLATE_MODEL_IDS = ("llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma")
+
+    def _uses_chat_template(self) -> bool:
+        return self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
+
     def __init__(self, args):
         super().__init__(args)
 
@@ -86,12 +93,12 @@ class EvalHumaneval(Baselines):
         for datum_item in hf_data:
             datum = dict(datum_item)
             datum["input_text"] = self.preprocess(datum["prompt"])
-            encode_special_token_flag = not (
-                "Llama-3.1" in self.args.draft_model
-                and "Llama-3.1" in self.args.target_model
-            )
+            # B34：走 chat template 的模型族，模板自带 BOS，encode 时必须关
+            # add_special_tokens，否则 Llama-3/3.2/gemma 会双 BOS。此前只豁免了
+            # draft 与 target 同时为 Llama-3.1 的情况。
             input_ids = self.tokenizer.encode(
-                datum["input_text"], add_special_tokens=encode_special_token_flag
+                datum["input_text"],
+                add_special_tokens=not self._uses_chat_template(),
             )
             datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
             data.append(datum)
@@ -105,7 +112,10 @@ class EvalHumaneval(Baselines):
         few_shot_prompt = get_few_shot_prompt("humaneval", self.args.num_shots)
         full_input = few_shot_prompt + input_text
 
-        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
+        if (
+            self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
+            and self.model_id != "gemma"
+        ):
             messages = [
                 {
                     "role": "system",

@@ -25,6 +25,9 @@ from src.utils import parse_arguments, seed_everything
 from utils import select_eval_data
 
 
+_MT_BENCH_GRADE_FAILURES = {"api": 0, "unparsed": 0}
+
+
 async def grade_mt_bench_async(
     question, answer, judge_model="gpt-4", api_key=None, api_base=None
 ):
@@ -65,8 +68,13 @@ Please act as an impartial judge and evaluate the quality of the response provid
         if match:
             return float(match.group(1))
         else:
+            # 判分失败与"评分为 0"必须可区分：原先两者都静默 return 0，一旦
+            # judge API 限流/超时，指标会把基础设施故障显示成"模型答得差"。
+            # 这里不改口径（仍按 0 分计入），只把失败次数统计出来在结束时提示。
+            _MT_BENCH_GRADE_FAILURES["unparsed"] += 1
             return 0
     except Exception as e:
+        _MT_BENCH_GRADE_FAILURES["api"] += 1
         print(f"Error in grading: {e}")
         return 0
 
@@ -84,9 +92,16 @@ def get_class_methods(cls) -> List[str]:
     return methods
 
 
-def read_results(file_path):
-    f = open(file_path)
-    data = [json.loads(line) for line in f.readlines()]
+def read_results(file_path, skip_lines=0):
+    """只解析本次运行追加的行（skip_lines = 运行前文件已有的行数）。
+
+    B35：此前 append 写 jsonl、却用本函数读全文件重算速度，重跑时旧数据会混进
+    tokens/s（而 accuracy 只算本次），两者口径不一致。skip_lines 让统计只覆盖
+    本次写入的样本。
+    """
+    with open(file_path) as f:
+        lines = f.readlines()[skip_lines:]
+    data = [json.loads(line) for line in lines]
     record = {}
     for item in data:
         if item["category"] not in record:
@@ -150,20 +165,27 @@ class EvalMTBench(Baselines):
         out_path = os.path.join(
             self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
         )
+        # B35：记录本次运行前的行数，速度统计只覆盖本次追加的行。
+        existing_lines = 0
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                existing_lines = sum(1 for _ in f)
         out_f = open(out_path, "a")
 
         # warmup
         print("Start warm up...")
         n = 10
+        warmup_count = 0
         for question in tqdm.tqdm(
             self.data,
             total=len(self.data),
             disable=not self.accelerator.is_main_process,
             ncols=50,
         ):
-            n -= 1
-            if n == 0:
+            # B29：原写法先 `n -= 1` 再 break，n=10 实际只热身 9 次。
+            if warmup_count >= n:
                 break
+            warmup_count += 1
             choices = []
             # set random seed. Ensure each experiment runs with a unique random seed.
             for i in range(1):
@@ -434,9 +456,22 @@ class EvalMTBench(Baselines):
                 out_f.flush()
         out_f.close()
 
+        # 判分失败可见化：API 故障/输出不可解析的 turn 都被按 0 分计入
+        # accuracy（口径未变），此前无任何迹象表明低分来自判分而非模型。
+        api_fail = _MT_BENCH_GRADE_FAILURES["api"]
+        unparsed = _MT_BENCH_GRADE_FAILURES["unparsed"]
+        if api_fail or unparsed:
+            self.color_print(
+                f"[mt_bench] 判分未成功：API/网络错误 {api_fail} 次、判分输出无法"
+                f"解析 {unparsed} 次；这些 turn 按 0 分计入 accuracy。若数量可观，"
+                "请勿把 accuracy 读作模型质量（判分服务可能限流/超时）。",
+                1,
+            )
+
         self.color_print(f"current eval mode: {self.args.eval_mode}", 0)
 
-        record = read_results(out_path)
+        # B35：只统计本次运行写入的行，避免重跑时旧数据混入速度。
+        record = read_results(out_path, skip_lines=existing_lines)
 
         total_num_token, total_wall_time = [], []
 

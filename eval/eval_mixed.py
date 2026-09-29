@@ -30,6 +30,13 @@ KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
 
 
 class EvalMixed(Baselines):
+    # B34：preprocess_prompt 里会走 chat template（模板自带 BOS）的 model_id 集合。
+    # 该集合必须与下面 preprocess_prompt 的模板分支保持一致。
+    CHAT_TEMPLATE_MODEL_IDS = ("llama-3.1", "qwen")
+
+    def _uses_chat_template(self) -> bool:
+        return self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
+
     def __init__(self, args):
         super().__init__(args)
         self.device = self.accelerator.device  # 显式定义 device 属性
@@ -200,7 +207,7 @@ class EvalMixed(Baselines):
             prompt_text = few_shot_prompt + str(item)
 
         # 应用模型模板
-        if self.model_id in ["llama-3.1", "qwen"]:
+        if self.model_id in self.CHAT_TEMPLATE_MODEL_IDS:
             messages = [{"role": "user", "content": prompt_text}]
             return self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -257,6 +264,10 @@ class EvalMixed(Baselines):
             3,
         )
 
+        # 失败可见性：单样本异常原先只打印 traceback 就被静默跳过，既不计数
+        # 也不汇总，长跑时"到底少跑了多少样本"无从得知。
+        step_errors = 0
+
         for step in range(total_steps):
             # 1. 先随机选择一个任务种类
             task = random.choice(available_tasks)
@@ -285,9 +296,14 @@ class EvalMixed(Baselines):
 
             # 5. 构建输入
             prompt = self.preprocess_prompt(task, item)
-            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(
-                self.device
-            )
+            # B34：chat 模板路径的 prompt 自带 BOS，必须关 add_special_tokens，
+            # 否则 Llama-3/3.2（model_ids 归一到 llama-3.1）会双 BOS。非模板路径
+            # （vicuna/llama-2-chat/base）保持原有行为。
+            input_ids = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                add_special_tokens=not self._uses_chat_template(),
+            ).input_ids.to(self.device)
 
             # 钳位token IDs，防止越界
             input_ids = self.clamp_token_ids(input_ids)
@@ -389,11 +405,18 @@ class EvalMixed(Baselines):
                 except Exception as metric_err:  # never let logging break the run
                     print(f"   -> [Metrics Error]: {metric_err}")
             except Exception as e:
+                step_errors += 1
                 print(f"   -> [Step Error]: {e}")
                 import traceback
 
                 traceback.print_exc()
 
+        if step_errors:
+            self.color_print(
+                f"[eval_mixed] {step_errors}/{total_steps} 个样本在解码或记账阶段"
+                "抛错并被跳过（不计入任何指标）。若非预期，请检查上方 traceback。",
+                1,
+            )
         self.color_print("\n>>> Mixed Training Finished! <<<", 3)
 
 
