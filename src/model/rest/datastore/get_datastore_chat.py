@@ -15,8 +15,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "--large-datastore",
-    type=bool,
-    default=False,
+    # 原先 type=bool：任何非空字符串（含 "False"）都会被解析成 True。改成
+    # flag 形式，调用方（datastore.sh）同步去掉 "True" 字面量。
+    action="store_true",
     help="Whether to use a large datastore",
 )
 args = parser.parse_args()

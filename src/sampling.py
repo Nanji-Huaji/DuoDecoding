@@ -3,7 +3,6 @@
 包含：top-k/top-p 过滤、温度归一化、采样、top-k 重建、状态熵、max_fn。
 """
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -67,21 +66,6 @@ def norm_logits(
     logits = logits / temperature
     logits = top_k_top_p_filter(logits, top_k=int(top_k), top_p=top_p)
     probs = F.softmax(logits, dim=-1)
-    return probs
-
-
-def norm_numpy_logits(
-    logits: np.ndarray, temperature: float, top_k: float, top_p: float
-) -> np.ndarray:
-    assert logits.ndim == 2
-    if temperature == 0:
-        idx = logits.argmax(axis=1)
-        new_logits = np.zeros_like(logits, dtype=np.float32)
-        new_logits[np.arange(new_logits.shape[0]), idx] = 1
-        return new_logits
-    logits = logits / temperature
-    # logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
-    probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
     return probs
 
 

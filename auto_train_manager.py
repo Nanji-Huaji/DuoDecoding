@@ -729,12 +729,9 @@ if __name__ == "__main__":
         choices=["llama", "llama-70b", "vicuna", "qwen", "qwen-32b", "qwen15"],
         help="Model series to train (llama, llama-70b, vicuna, qwen, qwen-32b, qwen15)",
     )
-    parser.add_argument(
-        "--adaptive_decoding",
-        type=bool,
-        default=False,
-        help="Whether to use adaptive decoding mode (default: False)",
-    )
+    # R12：删除 `--adaptive_decoding`——type=bool 使任何非空字符串（含 "False"）
+    # 都为 True，且解析结果从未被读取（无调用方传该开关）。adaptive 训练由
+    # start_script=cmds/train_rl_mixed.sh 内部选择，与此参数无关。
     args = parser.parse_args()
 
     os.chdir(os.path.dirname(os.path.abspath(__file__)))

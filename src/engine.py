@@ -112,7 +112,6 @@ class Decoding(Register, ABC):
         self.prob_with_flag = []
 
         self.vocab_size: int = -1
-        self.stop_tokens_matrix = None
 
     def get_model_input_device(self, model) -> torch.device:
         if hasattr(model, "hf_device_map"):
@@ -231,100 +230,6 @@ class Decoding(Register, ABC):
                 f"Input token id exceeds runtime shared vocab at {label}: max={max_id}, "
                 f"self.vocab_size={self.vocab_size}, {limits}"
             )
-
-    def _prepare_stop_tokens(self, stop_sequences: List[str]):
-        """
-        预处理停止词序列，将其转换为 GPU 上的张量矩阵，以便在生成过程中进行高效的广播检查。
-        """
-        if not stop_sequences or not getattr(self, "tokenizer", None):
-            raise ValueError("Stop sequences provided but tokenizer is not available.")
-
-        # 1. 获取完整的 ID 序列
-        stop_ids_list = [
-            self.tokenizer.encode(s, add_special_tokens=False) for s in stop_sequences
-        ]
-
-        if not stop_ids_list:
-            self.stop_tokens_matrix = None
-            return
-
-        # 2. 找出最长的停止词长度
-        max_len = max(len(ids) for ids in stop_ids_list)
-
-        # 3. 填充并转为 Tensor (用 -1 填充左侧，方便右对齐比对)
-        # 形状: [停止词个数, 最长长度]
-        # 确保 device 正确，这里假设 self.target_model 已经加载
-        device = (
-            self.get_model_input_device(self.target_model)
-            if hasattr(self, "target_model") and self.target_model is not None
-            else "cpu"
-        )
-
-        matrix = torch.full(
-            (len(stop_ids_list), max_len),
-            -1,
-            dtype=torch.long,
-            device=device,
-        )
-        for i, ids in enumerate(stop_ids_list):
-            matrix[i, -len(ids) :] = torch.tensor(ids, device=device)
-
-        self.stop_tokens_matrix = matrix
-
-    def _should_stop(
-        self,
-        prefix: torch.Tensor,
-        max_tokens: int,
-        use_early_stopping: bool = False,
-    ) -> bool:
-        """
-        Unified stopping criteria check.
-        Prioritizes checks on GPU to minimize synchronization overhead.
-        """
-        # 1. Length check
-        if prefix.shape[1] >= max_tokens:
-            return True
-
-        if not use_early_stopping:
-            return False
-
-        # 2. EOS check
-        if hasattr(self, "tokenizer") and self.tokenizer is not None:
-            # prefix: [batch, seq_len]
-            if prefix[0, -1] == self.tokenizer.eos_token_id:
-                return True
-
-        # 3. Stop tokens matrix check
-        if self.stop_tokens_matrix is not None:
-            max_stop_len = self.stop_tokens_matrix.size(1)
-            # Only check a reasonable window at the end
-            check_window = max(64, max_stop_len + 10)
-
-            # Get the trailing sequence
-            seq = prefix[0, -check_window:]
-
-            # If sequence is shorter than any stop token, skip
-            if seq.size(0) < max_stop_len:
-                return False
-
-            # Use unfold to create sliding windows: [num_windows, max_stop_len]
-            windows = seq.unfold(0, max_stop_len, 1)
-
-            # Broadcasting comparison:
-            # windows: [1, W, L]
-            # matrix:  [S, 1, L]
-            targets = windows.unsqueeze(0)
-            stops = self.stop_tokens_matrix.unsqueeze(1)
-
-            # Check matches, treating -1 in stops as always matching (padding)
-            matches = (targets == stops) | (stops == -1)
-
-            # Check if any full sequence matches in any window
-            # dimensions: [S, W, L] -> all(dim=-1) -> [S, W] -> any() -> bool
-            if matches.all(dim=-1).any():
-                return True
-
-        return False
 
     def _check_stopping_criteria(
         self,

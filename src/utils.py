@@ -15,7 +15,6 @@ from src.model_zoo import get_vocab_size, model_zoo  # noqa: F401 D3 拆分后�
 from src.sampling import (  # noqa: F401 D3 拆分后再导出
     max_fn,
     norm_logits,
-    norm_numpy_logits,
     rebuild_topk_probs,
     rebuild_topk_uniform_probs,
     sample,
