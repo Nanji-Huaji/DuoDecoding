@@ -32,27 +32,27 @@
 
 ### 1.1 Critical
 
-**B1. adaptive 训练编排器构造即崩溃**
+**B1. adaptive 训练编排器构造即崩溃** 【🗑 已删除 2026-03】：文件与配套测试整体删除（零生产引用，功能由 exp.py adaptive 路径承担）
 `auto_train_manager_adaptive.py:74-81` 以两个位置参数调用 `get_rl_agent_spec(ADAPTIVE_METHOD, ROLE_MAIN, ...)`，而 `src/rl_agent_registry.py:143-150` 的签名在 `role` 之后全部 keyword-only（有 `*` 分隔），`_validate_role` 也只认 `main/little` → 实例化即 `TypeError`。其默认 `start_script="cmds/train_rl_mixed_adaptive.sh"`（第 40 行）全仓不存在。测试文件 `test/test_auto_train_manager_adaptive.py:21` 虽实例化该类，但显然未在当前代码状态下运行过。
 **修改**：改为 `get_rl_agent_spec(ROLE_MAIN, little_model=None, draft_model=..., target_model=...)` 并补脚本；或确认无人使用后整文件删除（与 `exp.py` 的 adaptive 路径重复）。
 
 ### 1.2 High：功能直接崩溃
 
-**B2. `eval_specbench.py` 不解包解码返回的二元组**（`eval_specbench.py:245-255`）
+**B2. `eval_specbench.py` 不解包解码返回的二元组**（`eval_specbench.py:245-255`） 【✅ 已修复 2026-03】：两处调用点（warmup+主循环）补元组解包，并新增 `_specbench_metrics.json` 落盘
 `generate_ids = decoding(input_ids)` 之后直接 `generate_ids.shape[1]`。engine 所有已注册解码方法都返回 `(prefix, metrics)`（如 `engine.py:1021`）。对照正确写法 `eval_humaneval.py:249-250` `if isinstance(generate_ids, tuple): generate_ids, _ = generate_ids`。整个 SpecBench 入口是坏的，且该脚本不写任何 `_metrics.json`。
 **修改**：补元组解包 + metrics 落盘。
 
-**B3. `speculative_decoding_with_bandwidth` 签名缺 `**kwargs`**（`engine.py:1024-1029`）
+**B3. `speculative_decoding_with_bandwidth` 签名缺 `**kwargs`**（`engine.py:1024-1029`） 【✅ 已修复 2026-03】
 评测 harness 统一以 `partial(decoding, ..., use_stochastic_comm=..., ntt_ms_edge_cloud=..., ntt_ms_edge_end=..., use_early_stopping=...)` 装配（`eval/eval_xsum.py:140-148` 等），该函数不接受这些参数 → 首个样本即 `TypeError`。其余 11 个方法全部有 `**kwargs` 兜底。该模式同时出现在 `engine.load_model` 分支列表（`engine.py:436-437`），说明它被认为是可用模式。
 **修改**：补齐与 `sd` 一致的参数或统一 `**kwargs`。
 
-**B4. fresh clone 上 `parse_arguments` 在 argparse 默认值阶段崩溃**（`utils.py:562-578` + `acc_head_registry.py:82-84`）
+**B4. fresh clone 上 `parse_arguments` 在 argparse 默认值阶段崩溃**（`utils.py:562-578` + `acc_head_registry.py:82-84`） 【✅ 已修复 2026-03】：注册表加存在性检查降级空表，三个 default 改 None 走后置解析
 三个参数默认值在**每次**解析时求值：`default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b")` → `load_acc_head_registry()` 无任何存在性检查地 `open(_REGISTRY_PATH)`。该 JSON 位于 `src/SpecDec_pp` **子模块**内（`.gitmodules:1-3`），README 的克隆步骤（`git clone` + `uv sync`）不含 `git submodule update --init`，也不含 `scripts/setup/download_assets.py` → 任何 eval 入口在参数解析前就 `FileNotFoundError`，栈指向 argparse 内部，极难定位。另外 `utils.py:1200-1201` 在非显式传参时总会覆盖该默认值——默认值里的这次注册表读取纯属多余。
 **修改**：`load_acc_head_registry` 开头 `if not _REGISTRY_PATH.exists(): return {}`（降级为纯默认路径）+ warning；三个 default 改为 `None`，统一在 parse 后解析（1185-1201 已有该逻辑）；README 补子模块初始化步骤。
 
 ### 1.3 High：科学计量错误（研究代码的最高优先级）
 
-**B5. 两个基线把整条序列重复上行计费**（`baselines.py:1324`、`baselines.py:1626`）
+**B5. 两个基线把整条序列重复上行计费**（`baselines.py:1324`、`baselines.py:1626`） 【✅ 用户已修（commit 9020c22）】
 `comm_simulator.transfer(x, None, "edge_cloud")`——而 `KVCacheModel.generate` 返回**完整序列**（`model_gpu.py:683` `return torch.cat([x] + new_tokens, dim=1)`），每轮按 `(prompt+已生成+γ)×8B` 重复计费整条前缀；`dist_spec` 第 1 轮还先发一次 prompt（1273-1274），prompt 被计费两次。对照 dssd 已改为增量上行（`baselines.py:991-996` `_collect_dssd_uplink_payload` → `collect_verification_payload` 取 `x[:, prefix_len:...]`）。受影响的 `dist_spec` 与 `uncertainty_decoding`(cuhlm) 恰好都是**被比较的对照基线**，O(L²) 膨胀会系统性压低其 TPS。
 **修改**：与 dssd 统一只传 `x[:, prefix_len:]`；若全量重发是刻意的协议假设，加注释并在论文口径中声明。
 
@@ -65,27 +65,27 @@
 `for k in range(1, vocab)` 内层 `for i in range(k, V)` 且逐元素 `.item()`（每次一次 GPU→CPU 同步）。V=32000 时约 5×10⁸ 次同步，单次调用分钟~小时级，且在 per-token 主循环上（`baselines.py:1638`）。即使修好 B6，此循环也让基线跑不完。
 **修改**：预计算 `cum = cumsum(sorted_probs)`，分子 Σ|x_i−u| 可由前缀和闭合表达，整体 O(V) 向量化后二分搜索最小 k。
 
-**B8. 四个方法越过 max_tokens 不截断 / 直接放大预算**（`baselines.py:4179-4180`、2636-2696、4963-5022、5356-5415）
+**B8. 四个方法越过 max_tokens 不截断 / 直接放大预算**（`baselines.py:4179-4180`、2636-2696、4963-5022、5356-5415）【✅ 已修复 2026-03】
 `cee_cuhlm`：`max_tokens = prefix.shape[1] + self.args.max_tokens + gamma1 + gamma2 + 1` 且末尾无截断；`cee_dssd/cee_dsd/ceesd_without_arp` 循环内一次最多追加 γ2+γ1+2 个 token 也无截断。对照 `dist_spec` 的注释（1499-1504）明确写着必须截断"否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平"（F33 契约）。
 **修改**：统一在返回前 `prefix = prefix[:, :prompt_len + self.args.max_tokens]`；`cee_cuhlm` 去掉放大。
 
-**B9. `dssd` 的 metrics 在 EOS 截断之前结算**（`baselines.py:1114-1148` vs `1169`）
+**B9. `dssd` 的 metrics 在 EOS 截断之前结算**（`baselines.py:1114-1148` vs `1169`） 【✅ 已修复 2026-03】：截断上移到 metrics 结算前（wall_time 不回调——计算是真实花费）
 `_stop_at_eos` 在 metrics 全部算完后才执行，被截掉的 token 已计入 `generated_tokens`/吞吐，wall_time 也未随之下调。对照 `adaptive_tridecoding` 是循环内截断后 break 再统计（3728-3731 → 4064）。
 **修改**：截断移到 metrics 结算前，或截断后重算 `generated_tokens`。
 
-**B10. EOS 中途截断只接入 4/11 个方法**（`baselines.py:2698-2712` 注释自认缺陷；调用点仅 1169/2808/3114/3153/3729/4038）
+**B10. EOS 中途截断只接入 4/11 个方法**（`baselines.py:2698-2712` 注释自认缺陷；调用点仅 1169/2808/3114/3153/3729/4038） 【✅ 已修复 2026-03】：7 个方法循环体顶部统一接入 `_stop_at_eos`（含 `_tri_prompt_len` 捕获）；engine `_check_stopping_criteria` 增加 prompt_len 参数扫描整个生成段，修掉 chunk 中部 EOS 漏检
 `dist_spec`、`uncertainty_decoding`、`tridecoding`、`ceesd_without_arp`、`cee_cuhlm`、`cee_dssd`、`cee_dsd` 及 engine.py 全部方法均未接 `_stop_at_eos`；engine 的 `_check_stopping_criteria`（328-347）只查最后一个位置，chunk 中部 EOS 漏检后继续解码到 max_tokens。同一评测里不同方法 EOS 行为不同 → 生成长度、质量分、时延都不可比。
 **修改**：在所有方法返回前统一接 `_stop_at_eos`（建议引擎层做一次），且在 metrics 结算前完成。
 
-**B11. 多样本评测的 seed 永不变化**（`eval_mt_bench.py:305-308`、noeval/cnndm/xsum 同构）
+**B11. 多样本评测的 seed 永不变化**（`eval_mt_bench.py:305-308`、noeval/cnndm/xsum 同构） 【✅ 已修复 2026-03】：4 个 eval 文件补 `seed_set.add`，与 humaneval/specbench 对齐
 `while self.seed in self.seed_set` 恒为假（`seed_set` 为空集且**从不 add**；全仓库仅 humaneval:232、specbench:214 有 add）。`-n K` 时 K 次采样逐字相同——MT-bench 对同一答案打 K 次分。当前 exp.py 传 n=1 未暴露；gsm8k 则用第三套方案（`seed + rep*7919`）。
 **修改**：抽公共 `resolve_sample_seed()`，内部维护 seed_set。
 
-**B12. `finalize_verification` 用请求 γ 而非 actual γ 构建回滚计划**（`decoding_ops.py:604`；对照正确写法 :556-560）
+**B12. `finalize_verification` 用请求 γ 而非 actual γ 构建回滚计划**（`decoding_ops.py:604`；对照正确写法 :556-560） 【✅ 已修复 2026-03】：与 resolve_stage_verification 同公式计算 actual_gamma
 `build_rollback_plan(prefix_len, gamma, n)` 用函数参数（请求值），而 `resolve_stage_verification` 用 `verification_inputs.actual_gamma`。当 `actual_gamma < gamma`（prob_history 被截短，`prepare_verification_inputs:129-134`）且草稿全被接受时，`all_accepted` 误判为 False → bonus token 从 max(p−q) 残差分布而非目标分布 p 采样，序列尾轮输出分布偏离目标。调用方 `engine.py:961、1197-1213` 传的都是请求值。
 **修改**：`finalize_verification` 增加 `actual_gamma` 参数，与 `resolve_stage_verification` 同一公式。
 
-**B13. 评估时 RL 探索未冻结：部分调用点漏传 `training=False`**（`rl_adapter.py:691` 默认 True；`baselines.py:2511-2513`、`2970-2972` 未传 vs `3500`、`3800` 正确传）
+**B13. 评估时 RL 探索未冻结：部分调用点漏传 `training=False`**（`rl_adapter.py:691` 默认 True；`baselines.py:2511-2513`、`2970-2972` 未传 vs `3500`、`3800` 正确传） 【✅ 已修复 2026-03】：3 处补 `training=not disable_rl_update`（与既有 2 处正确写法一致）
 checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 ceesd 与 ceesd_without_arp 的对照被不同的探索噪声污染。
 **修改**："评估冻结"下沉到 adapter（构造时读 `disable_rl_update` 或提供 `eval()` 开关），不依赖 5 个调用点各自记参数。
 
@@ -93,7 +93,7 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 
 | # | 问题 | 位置 → 修改 |
 |---|------|------------|
-| B14 | `transfer()` 对每笔传输写**两条**相同 COMM_TRACE 记录（重构残留：658 无条件调 + 667 条件再调，`_trace_comm` 内部已有门控） | `communication.py:658-676` → 删除 667-676 |
+| B14 | 【✅ 已修复：删条件重复调用（_trace_comm 内部已有门控）】`transfer()` 对每笔传输写**两条**相同 COMM_TRACE 记录（重构残留：658 无条件调 + 667 条件再调，`_trace_comm` 内部已有门控） | `communication.py:658-676` → 删除 667-676 |
 | B15 | `prob_payload_bits` 只在 tridecoding/adaptive_tridecoding 第二级上行生效（4 处接线：2062/3704/3858/4025），其余路径与第一级静默忽略 | 统一收敛进发送 helper，或 argparse 按模式校验报错 |
 | B16 | `prob_bits≥16` 时"不量化"与"按位计费"不一致：量化早退条件 `bits>=16`，计费条件 `bits < 8*element_size` → fp32 概率 + bits=16..31 时收 16bit 钱用 32bit 信息 | `baselines.py:161` 早退改为 `bits >= 8*probs.element_size()`；log 量化锚点 lo/hi 字节计入或声明忽略 |
 | B17 | 下行回传计费口径分裂：旧方法 token 与位置索引分两次传输付 **2 次 NTT**（1107-1108、2019-2020、2482、4824），新方法合并付 1 次（4042-4050） | 抽 `send_downlink_token()` helper 全仓统一 |
@@ -104,7 +104,7 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 | B22 | `model_zoo` 的 `vocab_size` 查表在 zoo 映射**之后**（`utils.py:297-306`），键是别名、值是路径 → 字典对最常用别名全部 miss，每次 parse 都读 config.json 或走 `AutoConfig.from_pretrained(trust_remote_code=True)` 网络回退；dict 还有重复键 `"llama-2-70b"`（234/263） | 查表移到映射前，或删字典（engine 反正会重算） |
 | B23 | zoo 把未部署模型映射为 `"deepseek-1.3b还没部署"` 等占位符（268-279），垃圾路径静默传播 | 删键或映射时 raise |
 | B24 | 默认 `--draft_model codellama-7b` / `--target_model codellama-70b`（319-320）不可解析：zoo 无此键、本地无此目录、HF 无此仓库名 | 改为真实存在的对或 `default=None` 必填 |
-| B25 | legacy RL 回退路径用 **set 迭代**生成顺序（`rl_agent_registry.py:119` `for model_name in {little, draft, target}`），跨进程 hash 随机 → 多个 legacy checkpoint 并存时加载哪个纯凭运气，可能迁错模型对的 agent | 改显式列表按固定优先级排序 |
+| B25 | 【✅ 已修复：显式 (draft, target, little) 固定优先级】legacy RL 回退路径用 **set 迭代**生成顺序（`rl_agent_registry.py:119` `for model_name in {little, draft, target}`），跨进程 hash 随机 → 多个 legacy checkpoint 并存时加载哪个纯凭运气，可能迁错模型对的 agent | 改显式列表按固定优先级排序 |
 | B26 | zoo 别名与 `CANONICAL_MODEL_ALIASES` 分歧：zoo 用 `qwen-3-0.6b`，registry 只认 `qwen3-0.6b`；`llama-2-chat-7b` vs `llama-2-7b-chat` 同病 → 合法别名静默错过已注册对，落到不存在的默认路径（实测复现） | zoo 映射后统一过 canonicalize，两表合并为单一事实源 |
 | B27 | `norm_numpy_logits` 的 top-k/top-p 过滤被注释禁用（`utils.py:1313`），接口名不副实；唯一调用方是死代码 model_cpu.py | 删函数或恢复过滤 |
 | B28 | `seed_everything` 同时设 `cudnn.deterministic=True` 与 `benchmark=True`（223-224）——后者选最快但不一定确定的算法，伪复现保证 | 二选一 |
@@ -115,13 +115,13 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 | B33 | MT-bench few-shot 是静默 no-op：`get_few_shot_prompt("mt_bench", ...)` 无对应分支返回空串（`few_shot_examples.py:83-108`），`--num_shots 3` 无效无告警 | 未知 task raise，或删调用点 |
 | B34 | chat 模板后未关 `add_special_tokens`：`eval_mixed.py:300-302`、`eval_humaneval.py:119-125`（只豁免 Llama-3.1）→ Llama-3/3.2 系潜在双 BOS | 所有 chat 模板路径统一 `add_special_tokens=False` |
 | B35 | mt_bench/noeval 以 append 写 jsonl 却用全文件重算速度（185/497），重跑时速度混入旧数据、accuracy 只算本次 | 记录文件偏移或只统计本次写入行 |
-| B36 | `best.pth` 缺 `best_tps` 键时回退 `+inf`（`rl_adapter.py:315-318`）→ `new_best` 恒 False，"best" 永不更新且无警告 | 告警并回退 -1.0，或迁移脚本补键 |
+| B36 | 【✅ 已修复：告警 + 回退 -1.0】`best.pth` 缺 `best_tps` 键时回退 `+inf`（`rl_adapter.py:315-318`）→ `new_best` 恒 False，"best" 永不更新且无警告 | 告警并回退 -1.0，或迁移脚本补键 |
 | B37 | pkill 清理模式与 MODEL_SERIES 大小写不一致（manager:20 小写 vs :510 大写 `Llama-2-13b`），llama 系列 target 残留进程杀不掉；`pkill -9 -f '{子串}'` 误伤面大 | patterns 由 `self.models` 生成 + 精确匹配 `--target_model ${m}` |
-| B38 | `adaptive_tridecoding` 里的校验标签写成 `cee_cuhlm.*`（3723-3727，复制粘贴错标签） | 改 label |
+| B38 | 【✅ 已修复：改 adaptive_tridecoding.*】`adaptive_tridecoding` 里的校验标签写成 `cee_cuhlm.*`（3723-3727，复制粘贴错标签） | 改 label |
 | B39 | `engine.py` `small` 模式把 draft 前向计数进 `metrics["target_forward_times"]`（777-798，模型身份错标） | 改键 |
 | B40 | `_apply_top_k_compression` 用 `len(probs)` 判 top-k 上界（`communication.py:496、919` 两份拷贝同病），对 (B,V) 取 B 维；`compressed_probs[top_k_indices]` 对 2D 不安全。当前调用方恰好都传 1D，属潜伏 【✅ 已修复：`shape[-1]` + `scatter_(-1)`，附 2D 回归测试】 | 改 `probs.shape[-1]` |
-| B41 | `rebuild_full_probs`/`compress_rebuild_probs` 的 `residual_mass` 无 clamp（:529/:580），top_k_sum>1 时产出负"概率"；`zero_mask==0` 会把本就为 0 的 top-k 项也换 uniform | `(1-sum).clamp_min(0)` + 显式非-top-k 掩码（对齐 `utils.rebuild_topk_probs` 已有的保护） |
-| B42 | `AdaptiveDecodingDebugger.tensor()` 把浮点张量 `.to(torch.long)`（`adaptive_debug.py:36-42`）→ 概率/熵记录全 0 | 浮点走 float 路径 |
+| B41 | 【✅ 已修复：clamp_min(0) + 显式非 top-k 尾掩码（两份拷贝+batch 版）】`rebuild_full_probs`/`compress_rebuild_probs` 的 `residual_mass` 无 clamp（:529/:580），top_k_sum>1 时产出负"概率"；`zero_mask==0` 会把本就为 0 的 top-k 项也换 uniform | `(1-sum).clamp_min(0)` + 显式非-top-k 掩码（对齐 `utils.rebuild_topk_probs` 已有的保护） |
+| B42 | 【✅ 已修复：浮点走 float 路径】`AdaptiveDecodingDebugger.tensor()` 把浮点张量 `.to(torch.long)`（`adaptive_debug.py:36-42`）→ 概率/熵记录全 0 | 浮点走 float 路径 |
 | B43 | `verify_draft_sequence` 指标用请求 γ 而非 actual γ（`decoding_ops.py:498`）；serial 模式 token 只取 batch 0（:492） | 改 actual_gamma；声明 bs=1 约束 |
 | B44 | `build_draft_probs_override` 对 `stage_start_len=0` 静默切成 `[:, :-1]`（`proposal_utils.py:24-30`），潜伏 | `max(stage_start_len-1, 0)` + 断言 |
 
@@ -129,7 +129,7 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 
 ## 二、隐患（数据完整性 / 环境脆弱 / 竞态 / 安全）
 
-**R1. RL 训练成果可被静默丢弃（三条链叠加）**
+**R1. RL 训练成果可被静默丢弃（三条链叠加）**【✅ 已修复 2026-03（含一处勘误）】
 ① 保存非原子：`torch.save` 直接覆写目标文件、replay buffer 走裸 `pickle.dump`（`rl_adapter.py:270-288`），且**每个样本**调用一次（`baselines.py:593-599`）；② manager 收敛时 `os.killpg(SIGKILL)` 10 秒强杀（`auto_train_manager.py:312-319`），检测到新 TPS 又立即拷贝可能正在写的文件（470-478）；③ 加载侧 `except Exception: print("Starting fresh.")`（`rl_adapter.py:326-327`）把文件损坏/shape 不匹配（换 action_space 必触发）与文件不存在一律静默重训，随后 save 覆盖旧成果。load 还有**半加载**问题：policy/target 网络已被覆盖后才失败，"fresh" 实为半新半旧。
 **修改**：tmp + `os.replace` 原子写；非 FileNotFoundError 一律 re-raise 并带 traceback；load 先全量校验（含维度匹配）再一次性 commit；SIGTERM 优先并给 flush 时间。
 
@@ -141,11 +141,11 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 `cmd_temp` 写死 `--main_process_port 29051`，`max_workers=4` 时多个 `accelerate launch` 并发共用同一 rendezvous 端口；`engine.py:94-100` 在 `RANK` 存在时真的 `dist.init_process_group(env://)` 绑端口。≥2 卡空闲即撞车（单卡机器 max_workers 收敛到 1 被掩盖）。
 **修改**：端口按实验分配或传 0 让 accelerate 自选。
 
-**R4. summary JSON 非原子写 + 孤儿子进程**（`exp.py:493-495`、`exp_threshold_vs_quality.py:153-154`）
+**R4. summary JSON 非原子写 + 孤儿子进程**（`exp.py:493-495`、`exp_threshold_vs_quality.py:153-154`） 【✅ 已修复：tmp+os.replace（两文件）；exp.py 改 Popen(start_new_session) + 异常 killpg 收整棵子树】
 每实验完成后原地重写整个 JSON，中断即半个文件（下游 `calculate_consistency.py:90-91` 直接 `json.load` 失败）；exp.py 被杀时 accelerate 子进程树不受管，孤儿进程继续占卡，与 R2 叠加。
 **修改**：`.tmp` + `os.replace`；子进程 `start_new_session=True` 并在异常时 killpg。
 
-**R5. `torch.load` / `pickle.load` 无 `weights_only`**（`rl_adapter.py:293、320-322`、`baselines.py:100`）
+**R5. `torch.load` / `pickle.load` 无 `weights_only`**（`rl_adapter.py:293、320-322`、`baselines.py:100`） 【✅ 已修复：checkpoint/acc-head 加 weights_only=True；replay buffer 白名单 unpickler（numpy/torch/builtins）】
 checkpoint 路径来自 CLI/registry 可指向任意文件，反序列化即任意代码执行面；torch≥2.6 默认翻转后行为突变。replay buffer 的裸 pickle 无等价开关。
 **修改**：`weights_only=True`（当前 payload 均基础类型可过）；buffer 改 torch.save/safetensors 或白名单 unpickler。
 
@@ -266,6 +266,22 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 5. 新增回归测试 `test/test_comm_simulation.py::TestCuhlmCompressedVocab`（5 项：向量化 vs 暴力等价、均匀分布 k\*=1、logits 输入告警、阈值边界语义、2D 压缩），全套 16 passed。
 
 **注意**：k\* 修复后 `uncertainty_decoding`（cuhlm 基线）的压缩字节数计费口径会变化（此前 k\* 是噪声）——与修复前跑出的 CUHLM 通信字节数不可比，涉及该基线的实验需重跑。
+
+**B8 + R1 修复（2026-03 第二批）：**
+1. B8：五个方法（`ceesd_without_arp`、`adaptive_tridecoding`、`cee_cuhlm`、`cee_dssd`、`cee_dsd`）在 `generated_tokens` 结算前统一插入 `if prefix.shape[1] > max_tokens: prefix = prefix[:, :max_tokens]` 截断（F33 契约）。比报告多修一处：`adaptive_tridecoding` 属"截断存在但排在 metrics 之后"的变体，吞吐同样高估；`cee_cuhlm` 的 γ1+γ2+1 预算放大已移除（`cee_dssd` 的 `buffer_size = max_tokens + γ1 + γ2 + 1` 是 KV-cache 容量分配，语义正确，未动）。**这五个方法的吞吐/质量数字修复前后不可比，需重跑。**
+2. R1：① `DDQNAgent.save` / replay buffer / `save_training_status` 全部改 tmp + `os.replace` 原子写（杀进程窗口变无害）；② `load` 重写：文件不存在→返回 False（正常 fresh 路径），损坏/不兼容→抛 RuntimeError 并附原因与抢救提示；新增 `_assert_state_dict_compatible` 先纯校验键集与形状再应用，杜绝半加载；③ `RLNetworkAdapter` 候选链改 `_try_load`：损坏候选高声 CRITICAL、改名 `.corrupt` 保留证据（不会被下次 save 覆盖）、继续尝试下一候选；buffer 损坏降级为告警跳过。
+3. R1 勘误：复核发现 `stop_training`（`auto_train_manager.py:464-476`）**原本就是 SIGTERM→等10s→SIGKILL 升级式**，报告原表述"直接 SIGKILL"不准确；但因训练子进程未装 SIGTERM handler，默认处置仍是立即终止——真正的数据丢失窗口由①的原子写关闭。
+4. 新增回归测试 `test/test_rl_checkpoint_durability.py`（8 项：原子写无 .tmp 残留、损坏抛错不静默、shape 不兼容抛错且网络零污染、正常往返、buffer 损坏降级）。全套件对照：HEAD 25 failed/89 passed → 修复后 25 failed/97 passed（25 个失败为 temperature_sampling 等既有问题，与改动无关；`test_eval_mixed_adaptive.py` 在 HEAD 上即因 `eval/eval_mixed_adaptive.py` 缺失而无法收集）。
+
+**B/R 第三批修复（2026-03，崩溃级 + 高性价比 medium + R4/R5 + B10/B11/B12/B13）：**
+1. B1：`auto_train_manager_adaptive.py` 与配套测试**整体删除**（经确认零生产引用、构造即 TypeError、与 exp.py adaptive 路径重复）。
+2. B2/B3/B4：SpecBench 两处元组解包 + metrics 落盘；`speculative_decoding_with_bandwidth` 补 `**kwargs`；acc-head 注册表存在性检查 + argparse 默认值后置解析（fresh clone 不再裸崩）。
+3. B9/B10：dssd 截断上移 metrics 前；**7 个方法**（dist_spec/uncertainty_decoding/tridecoding/ceesd_without_arp/cee_cuhlm/cee_dssd/cee_dsd）循环顶统一接入 `_stop_at_eos`；engine `_check_stopping_criteria` 新增 `prompt_len` 参数扫描整个生成段，修掉 chunk 中部 EOS 漏检。**B10 使全部方法在 EOS 后停止计算与通信——生成长度/时延/质量口径全部改变，涉及实验需重跑。**
+4. B11/B12/B13：4 个 eval 文件补 `seed_set.add`；`finalize_verification` 改用 actual_gamma（尾轮 bonus 从目标分布采样）；3 处 RL `select_config` 补 `training=not disable_rl_update`（评估冻结探索）。
+5. B14/B25/B36/B38/B41/B42：trace 双写删除；legacy 路径固定优先级；best_tps 回退 -1.0；校验标签勘误；rebuild 三处 clamp+显式尾掩码；调试器浮点路径。
+6. R4/R5：summary JSON 原子写（exp.py + exp_threshold）；exp.py 子进程改 `start_new_session` + 异常 killpg；`torch.load` 加 `weights_only=True`（checkpoint/acc-head）；replay buffer 白名单 unpickler。
+7. R10 查证结论：`profile_cee_dsd.py` 的 `ProfiledBaselines` 与生产 `cee_dsd` 同名注册到类级共享 dict，但**全仓无任何 import 链**（纯休眠地雷）；建议后续把插桩改为上下文包裹式或改名注册，暂未动。
+8. 全量测试对照：HEAD 25 failed/89 passed → 本批后 **21 failed/97 passed**（少的 4 个 = B1 删除的 adaptive 测试文件；21 个失败全部为 temperature_sampling 等既有问题，`comm` 对照**零新增失败**）。
 
 
 
