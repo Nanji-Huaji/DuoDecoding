@@ -97,7 +97,9 @@ def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead
             config = json.load(f)
 
         head = AcceptancePredictionHead(config)
-        state_dict = torch.load(bin_path, map_location="cpu")
+        state_dict = torch.load(
+            bin_path, map_location="cpu", weights_only=True
+        )  # 纯 state_dict；weights_only 防篡改文件执行代码（R5）
         head.load_state_dict(state_dict, strict=True)
         return head
 
@@ -1111,6 +1113,11 @@ class Baselines(Decoding):
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
+        # EOS 截断必须在 metrics 结算前（B9）：被截掉的 token 不应计入
+        # generated_tokens/吞吐。此前截断放在函数末尾，EOS 后继续解码的
+        # token 全部混进了 TPS。计算耗时是真实花费，wall_time 不回调。
+        prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
+
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
         throughput = (
             generated_tokens / (elapsed_time + comm_simulator.edge_cloud_comm_time)
@@ -1166,7 +1173,6 @@ class Baselines(Decoding):
             comm_simulator.edge_cloud_draft_len_history.copy()
         )
 
-        prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
         return prefix, metrics
 
     @Register.register_decoding("dist_spec")
@@ -1260,7 +1266,15 @@ class Baselines(Decoding):
         draft_comp_time = 0.0
         target_comp_time = 0.0
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
 
             prefix_len = prefix.shape[1]
@@ -1617,7 +1631,15 @@ class Baselines(Decoding):
         draft_comp_time = 0.0
         target_comp_time = 0.0
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             loop_idx += 1
             prefix_len = prefix.shape[1]
 
@@ -1881,7 +1903,15 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
 
             prefix_len = prefix.shape[1]
@@ -2361,7 +2391,15 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
@@ -2391,7 +2429,12 @@ class Baselines(Decoding):
                 entropy = state_entropy(q, little_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_k, _ = self.little_rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 self.args.gamma2 = next_k
 
@@ -2519,7 +2562,12 @@ class Baselines(Decoding):
                 entropy = state_entropy(q, draft_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_k, _ = self.rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
                 self.args.gamma1 = next_k
 
@@ -2983,7 +3031,12 @@ class Baselines(Decoding):
                 entropy = state_entropy(q, approx_model_cache)
                 task_name = getattr(self, "task", "unknown")
                 next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth, latency, acc_probs, entropy, task_name
+                    bandwidth,
+                    latency,
+                    acc_probs,
+                    entropy,
+                    task_name,
+                    training=not getattr(self.args, "disable_rl_update", False),
                 )
 
                 # 更新 top-k 压缩参数和 ARP 阈值
@@ -3738,7 +3791,7 @@ class Baselines(Decoding):
             _validate_token_range(
                 t,
                 vocab_size=self.vocab_size,
-                label="cee_cuhlm.edge_end.sampled_token",
+                label="adaptive_tridecoding.edge_end.sampled_token",
             )
             prefix = torch.cat((prefix, t), dim=1)
             prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
@@ -3747,7 +3800,7 @@ class Baselines(Decoding):
             _validate_token_range(
                 prefix,
                 vocab_size=self.vocab_size,
-                label="cee_cuhlm.edge_end.prefix_after_concat",
+                label="adaptive_tridecoding.edge_end.prefix_after_concat",
             )
             new_generated_token = prefix[:, prefix_len:]
 
@@ -4341,7 +4394,15 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
             step_start_time = time.time()
             prefix_len = prefix.shape[1]
@@ -4803,7 +4864,15 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
@@ -5191,7 +5260,15 @@ class Baselines(Decoding):
 
         comm_simulator.transfer(prefix, None, "edge_end")
 
+        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+
         while prefix.shape[1] < max_tokens:
+
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
+            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
             idx += 1
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)

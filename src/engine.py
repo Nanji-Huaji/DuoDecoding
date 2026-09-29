@@ -326,17 +326,22 @@ class Decoding(Register, ABC):
         return False
 
     def _check_stopping_criteria(
-        self, input_ids: torch.Tensor, stop_sequences: Optional[List[str]] = None
+        self,
+        input_ids: torch.Tensor,
+        stop_sequences: Optional[List[str]] = None,
+        prompt_len: Optional[int] = None,
     ) -> bool:
         if not hasattr(self, "tokenizer") or self.tokenizer is None:
             return False
 
-        # Check for EOS at the last position only
-        if (
-            input_ids.shape[1] > 0
-            and input_ids[0, -1].item() == self.tokenizer.eos_token_id
-        ):
-            return True
+        # Check for EOS in the generated span. 此前只查最后一个位置：一轮追加
+        # 多个 token 时，中部的 EOS 会被后续 token 埋掉、永不触发，继续解码
+        # 到 max_tokens。给定 prompt_len 时扫描整个生成段（含中部），否则退回
+        # 仅末位检查（单 token 轮次下两者等价）。
+        if input_ids.shape[1] > 0:
+            span = input_ids[0, prompt_len:] if prompt_len else input_ids[0, -1:]
+            if bool((span == self.tokenizer.eos_token_id).any()):
+                return True
 
         # Check for stop sequences
         if stop_sequences:
@@ -784,7 +789,9 @@ class Decoding(Register, ABC):
             x = model.generate(x, 1)
             target_forward_times += 1
 
-            if use_early_stopping and self._check_stopping_criteria(x, stop_sequences):
+            if use_early_stopping and self._check_stopping_criteria(
+                x, stop_sequences, prompt_len=prefix_len
+            ):
                 break
 
         end_event.record(stream=torch.cuda.current_stream())
@@ -988,7 +995,7 @@ class Decoding(Register, ABC):
             )
 
             if use_early_stopping and self._check_stopping_criteria(
-                prefix, stop_sequences
+                prefix, stop_sequences, prompt_len=prefix_len
             ):
                 break
 
@@ -1026,7 +1033,11 @@ class Decoding(Register, ABC):
         prefix,
         transfer_top_k: Optional[int] = 300,
         use_precise_comm_sim: bool = False,
+        **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        # **kwargs：评测 harness 统一以 partial(decoding, use_stochastic_comm=...,
+        # ntt_ms_*=..., use_early_stopping=...) 装配全部方法；本方法自建仿真器，
+        # 接受并忽略这些参数（与其余 11 个注册方法的兜底模式一致）。
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),

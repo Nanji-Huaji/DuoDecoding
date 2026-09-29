@@ -34,12 +34,20 @@ class AdaptiveDecodingDebugger:
         }
         if tensor.numel() > 0:
             values = tensor.detach()
-            if values.dtype != torch.long:
-                values = values.to(torch.long)
-            flat = values.reshape(-1)
-            record["min"] = int(flat.min().item())
-            record["max"] = int(flat.max().item())
-            record["head"] = flat[:16].tolist()
+            # 浮点张量走 float 路径——此前统一 .to(torch.long) 会把概率/熵
+            # 全部截断成 0/1，调试记录失真
+            if values.dtype.is_floating_point:
+                flat_f = values.reshape(-1)
+                record["min"] = float(flat_f.min().item())
+                record["max"] = float(flat_f.max().item())
+                record["head"] = [float(v) for v in flat_f[:16].tolist()]
+            else:
+                if values.dtype != torch.long:
+                    values = values.to(torch.long)
+                flat = values.reshape(-1)
+                record["min"] = int(flat.min().item())
+                record["max"] = int(flat.max().item())
+                record["head"] = [int(v) for v in flat[:16].tolist()]
         self._write(record)
 
     def invalid_tokens(

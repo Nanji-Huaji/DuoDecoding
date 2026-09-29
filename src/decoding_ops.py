@@ -601,7 +601,17 @@ def finalize_verification(
     draft_topk_history: Optional[TopKProposalHistory] = None,
 ) -> torch.Tensor:
     prefix = x[:, : n + 1]
-    rollback_plan = build_rollback_plan(prefix_len, gamma, n)
+    # 用 actual_gamma（prob_history 截短后的真实草稿数）而非请求 gamma 构建
+    # 回滚计划——与 resolve_stage_verification 同一公式。否则 actual < 请求
+    # 且草稿全接受时 all_accepted 误判 False，bonus token 从残差 (p−q)+
+    # 而非目标分布 p 采样，尾轮输出分布偏离目标。
+    max_idx = min(
+        prefix_len + gamma - 1,
+        approx_model_cache.prob_history.shape[1],
+        target_model_cache.prob_history.shape[1],
+    )
+    actual_gamma = max_idx - (prefix_len - 1)
+    rollback_plan = build_rollback_plan(prefix_len, actual_gamma, n)
 
     approx_model_cache.rollback(rollback_plan.draft_end_pos)
 
