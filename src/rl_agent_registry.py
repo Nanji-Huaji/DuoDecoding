@@ -143,6 +143,38 @@ def resolve_legacy_rl_agent_load_path(
     return None
 
 
+def resolve_rl_agent_paths(
+    role: str,
+    *,
+    little_model: str | None,
+    draft_model: str,
+    target_model: str,
+    latest: str | None = None,
+    best: str | None = None,
+    checkpoint_root: str | Path = DEFAULT_RL_AGENT_ROOT,
+) -> tuple[str, str]:
+    """D3：RL checkpoint 默认路径解析单点化。
+
+    此前同一套"latest 未给→spec.latest_path；best 未给→spec.best_path
+    （latest 已给时回退 latest）"逻辑在 utils.parse_arguments 与 exp.py
+    两处四块复制，漂移风险高。latest/best 任一未给时才查询注册表。
+    """
+    if latest is None:
+        spec = get_rl_agent_spec(
+            role,
+            little_model=little_model,
+            draft_model=draft_model,
+            target_model=target_model,
+            checkpoint_root=checkpoint_root,
+        )
+        latest = spec.latest_path
+        if best is None:
+            best = spec.best_path
+    elif best is None:
+        best = latest
+    return latest, best
+
+
 def get_rl_agent_spec(
     role: str,
     *,

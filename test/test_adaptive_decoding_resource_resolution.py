@@ -26,7 +26,9 @@ class AdaptiveDecodingResourceResolutionTests(unittest.TestCase):
             patch(
                 "exp.resolve_acc_head_path", return_value="resolved/head"
             ) as resolve_head,
-            patch("exp.get_rl_agent_spec") as get_spec,
+            # D3：默认路径解析下沉 registry.resolve_rl_agent_paths，
+            # 其内部调用注册表的 get_rl_agent_spec——mock 源头
+            patch("src.rl_agent_registry.get_rl_agent_spec") as get_spec,
         ):
             get_spec.return_value = type(
                 "Spec",

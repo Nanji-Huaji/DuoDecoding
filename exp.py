@@ -15,7 +15,12 @@ from tqdm import tqdm
 
 from src.acc_head_registry import resolve_acc_head_path
 from src.nvml import get_available_gpus as detect_available_gpus
-from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
+from src.rl_agent_registry import (
+    ROLE_LITTLE,
+    ROLE_MAIN,
+    get_rl_agent_spec,
+    resolve_rl_agent_paths,
+)
 
 
 class EvalDataset(str, Enum):
@@ -577,18 +582,15 @@ def create_config(
         if acc_head_path is None:
             acc_head_path = resolve_acc_head_path(draft_model, target_model)
 
-        if main_rl_path is None:
-            main_spec = get_rl_agent_spec(
-                ROLE_MAIN,
-                little_model=None,
-                draft_model=draft_model,
-                target_model=target_model,
-            )
-            main_rl_path = main_spec.latest_path
-            if main_rl_best_path is None:
-                main_rl_best_path = main_spec.best_path
-        elif main_rl_best_path is None:
-            main_rl_best_path = main_rl_path
+        # D3：默认路径解析单点化（原三处复制逻辑下沉 registry）
+        main_rl_path, main_rl_best_path = resolve_rl_agent_paths(
+            ROLE_MAIN,
+            little_model=None,
+            draft_model=draft_model,
+            target_model=target_model,
+            latest=main_rl_path,
+            best=main_rl_best_path,
+        )
 
         small_draft_acc_head_path = ""
         draft_target_acc_head_path = ""
@@ -610,30 +612,22 @@ def create_config(
                 draft_model, target_model
             )
 
-        if main_rl_path is None:
-            main_spec = get_rl_agent_spec(
-                ROLE_MAIN,
-                little_model=little_model,
-                draft_model=draft_model,
-                target_model=target_model,
-            )
-            main_rl_path = main_spec.latest_path
-            if main_rl_best_path is None:
-                main_rl_best_path = main_spec.best_path
-        elif main_rl_best_path is None:
-            main_rl_best_path = main_rl_path
-        if little_rl_path is None:
-            little_spec = get_rl_agent_spec(
-                ROLE_LITTLE,
-                little_model=little_model,
-                draft_model=draft_model,
-                target_model=target_model,
-            )
-            little_rl_path = little_spec.latest_path
-            if little_rl_best_path is None:
-                little_rl_best_path = little_spec.best_path
-        elif little_rl_best_path is None:
-            little_rl_best_path = little_rl_path
+        main_rl_path, main_rl_best_path = resolve_rl_agent_paths(
+            ROLE_MAIN,
+            little_model=little_model,
+            draft_model=draft_model,
+            target_model=target_model,
+            latest=main_rl_path,
+            best=main_rl_best_path,
+        )
+        little_rl_path, little_rl_best_path = resolve_rl_agent_paths(
+            ROLE_LITTLE,
+            little_model=little_model,
+            draft_model=draft_model,
+            target_model=target_model,
+            latest=little_rl_path,
+            best=little_rl_best_path,
+        )
 
         acc_head_path = ""
 

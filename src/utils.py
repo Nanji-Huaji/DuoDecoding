@@ -11,8 +11,24 @@ import torch
 import torch.nn.functional as F
 
 from src.mode_features import MODE_FEATURES
+from src.model_zoo import get_vocab_size, model_zoo  # noqa: F401 D3 拆分后再导出
+from src.sampling import (  # noqa: F401 D3 拆分后再导出
+    max_fn,
+    norm_logits,
+    norm_numpy_logits,
+    rebuild_topk_probs,
+    rebuild_topk_uniform_probs,
+    sample,
+    state_entropy,
+    top_k_top_p_filter,
+)
+from src.trace_io import read_trace_file, return_closest_mean_index  # noqa: F401
 from src.acc_head_registry import resolve_acc_head_path
-from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
+from src.rl_agent_registry import (
+    ROLE_LITTLE,
+    ROLE_MAIN,
+    resolve_rl_agent_paths,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -223,118 +239,6 @@ def seed_everything(seed: int):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
-
-
-def model_zoo(args):
-    # B24：显式必填。原默认 codellama-7b/codellama-70b 不可解析（zoo 无此
-    # 键、本地无此目录、HF 无此仓库名），依赖默认只会在模型加载阶段以难懂
-    # 的错误失败——提前到解析阶段给出明确报错。
-    if not args.draft_model or not args.target_model:
-        raise ValueError(
-            "--draft_model 与 --target_model 必须显式指定"
-            "（原默认 codellama-7b/codellama-70b 不可解析，已移除。"
-            "例: --draft_model tiny-llama-1.1b --target_model llama-2-13b）"
-        )
-
-    # B23：未部署模型显式拒绝。此前 zoo 把它们映射成 "xxx还没部署" 占位
-    # 路径静默传播，直到模型加载才以难懂的路径/HF 错误失败。
-    undeployed = {
-        "deepseek-1.3b",
-        "deepseek-6.7b",
-        "vicuna-7b-v1.5",
-        "vicuna-7b-v1.3",
-    }
-    for role, model in (
-        ("--draft_model", args.draft_model),
-        ("--target_model", args.target_model),
-        ("--little_model", getattr(args, "little_model", None)),
-    ):
-        if model in undeployed:
-            raise ValueError(
-                f"{role}={model} 对应模型未部署（zoo 占位符）。"
-                f"请先下载到本地并更新 zoo 映射，或改用已部署的别名"
-            )
-
-    vocab_size = {
-        "codellama-7b": 32000,
-        "codellama-34b": 32000,
-        "codellama-70b": 32000,
-        "llama-2-7b": 32000,
-        "llama-2-70b": 32000,
-        "deepseek-1.3b": 32256,
-        "deepseek-6.7b": 32256,
-        "deepseek-33b": 32256,
-        "llama-68m-q5-gguf": 32000,
-        "llama-68m-q8-gguf": 32000,
-        "llama-68m": 32000,
-        "llama-68m-fp16": 32000,
-        "llama-160m-q5-gguf": 32000,
-        "llama-160m": 32000,
-        "vicuna-68m-q5-gguf": 32000,
-        "vicuna-68m": 32000,
-        "vicuna-7b-v1.5": 32000,
-        "vicuna-7b-v1.3": 32000,
-        "llama-290m-q5-gguf": 32000,
-        "llama-290m": 32000,
-        "llama-543m": 32000,
-        "llama-543m-q5-gguf": 32000,
-        "llama-2-7b-chat": 32000,
-        "llama-68m-chat-q5-gguf": 32000,
-        "llama-3.2-1b": 32000,
-        "llama-2-13b": 32000,
-        "tiny-vicuna-1b": 32000,
-        "vicuna-13b-v1.5": 32000,
-        "tiny-llama-1.1b": 32000,
-        "Llama-2-13b": 32000,
-        "llama-3-70b": 32000,
-        "qwen-3-0.6b": 151936,
-        "qwen-3-1.7b": 151936,
-        "qwen-3-14b": 151936,
-    }
-    # 注：原字典末尾有重复键 "llama-2-70b"（Python 静默取后者），已去重（B22）。
-
-    zoo = {
-        "llama-2-chat-7b": "meta-llama/Llama-2-7b-chat-hf",
-        "llama-68m-q5-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q5_0.gguf",
-        "llama-68m-q8-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q8_0.gguf",
-        "llama-68m-fp16": "llama/llama-68m-gguf-series/llama-68m-chat-v1.fp16.gguf",
-        "llama-68m": "llama/llama-68m",
-        "llama-160m-q5-gguf": "llama/llama-160m-q5-gguf",
-        "llama-160m": "llama/llama-160m",
-        "vicuna-68m-q5-gguf": "vicuna/vicuna-68m.Q5_K_M-gguf/vicuna-68m.Q5_K_M.gguf",
-        "vicuna-68m": "vicuna/vicuna-68m",
-        "llama-2-7b-chat": "meta-llama/Llama-2-7b-chat-hf",
-        "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
-        "llama-3.2-1b": "llama/llama-3.2-1b",
-        "llama-2-13b": "llama/Llama-2-13b-hf",
-        "llama-2-70b": "llama/llama-2-70b",
-        "llama-13b-hf": "llama/Llama-2-13b-hf",
-        "tiny-vicuna-1b": "vicuna/tiny-vicuna-1b",
-        "vicuna-13b-v1.5": "vicuna/vicuna-13b-v1.5",
-        "tiny-llama-1.1b": "llama/tiny-llama-1.1b",
-        "Llama-2-13b": "llama/Llama-2-13b-hf",
-        "llama-3-70b": "llama/llama-70B",
-        "qwen-3-0.6b": "Qwen/Qwen3-0.6B",
-        "qwen-3-1.7b": "Qwen/Qwen3-1.7B",
-        "qwen-3-14b": "Qwen/Qwen3-14B",
-        "Qwen/Qwen3-32B-FP8": "Qwen/Qwen3-32B-FP8",
-        "llama-2-chat-70b": "meta-llama/Llama-2-70b-chat-hf",  # mapping to HuggingFace model
-    }
-    # B22：vocab 查表必须在 zoo 映射前用原始别名命中。此前查表放在映射
-    # 之后，键是别名而值已变成本地路径/HF id，最常用别名全部 miss，每次
-    # parse 都落 get_vocab_size 读 config.json 或走网络回退。
-    draft_alias = args.draft_model
-    args.draft_model = zoo.get(args.draft_model, args.draft_model)
-    args.target_model = zoo.get(args.target_model, args.target_model)
-    args.little_model = (
-        zoo.get(args.little_model, args.little_model)
-        if hasattr(args, "little_model")
-        else args.draft_model
-    )
-    args.vocab_size = vocab_size.get(
-        draft_alias,
-        vocab_size.get(args.draft_model, get_vocab_size(args.draft_model)),
-    )
 
 
 def parse_arguments():
@@ -1252,19 +1156,16 @@ def parse_arguments():
     if not explicit_acc_head:
         args.acc_head_path = args.draft_target_acc_head_path
 
-    if getattr(args, "main_rl_path", None) is None:
-        main_spec = get_rl_agent_spec(
-            ROLE_MAIN,
-            little_model=getattr(args, "little_model", None),
-            draft_model=args.draft_model,
-            target_model=args.target_model,
-            checkpoint_root=args.rl_checkpoint_root,
-        )
-        args.main_rl_path = main_spec.latest_path
-        if getattr(args, "main_rl_best_path", None) is None:
-            args.main_rl_best_path = main_spec.best_path
-    elif getattr(args, "main_rl_best_path", None) is None:
-        args.main_rl_best_path = args.main_rl_path
+    # D3：默认路径解析单点化（原两处四块复制逻辑下沉 registry）
+    args.main_rl_path, args.main_rl_best_path = resolve_rl_agent_paths(
+        ROLE_MAIN,
+        little_model=getattr(args, "little_model", None),
+        draft_model=args.draft_model,
+        target_model=args.target_model,
+        latest=args.main_rl_path,
+        best=getattr(args, "main_rl_best_path", None),
+        checkpoint_root=args.rl_checkpoint_root,
+    )
 
     if (
         getattr(args, "little_model", None) is not None
@@ -1273,346 +1174,17 @@ def parse_arguments():
             or _mf_spec.uses_little_rl
         )
     ):
-        if getattr(args, "little_rl_path", None) is None:
-            little_spec = get_rl_agent_spec(
-                ROLE_LITTLE,
-                little_model=args.little_model,
-                draft_model=args.draft_model,
-                target_model=args.target_model,
-                checkpoint_root=args.rl_checkpoint_root,
-            )
-            args.little_rl_path = little_spec.latest_path
-            if getattr(args, "little_rl_best_path", None) is None:
-                args.little_rl_best_path = little_spec.best_path
-        elif getattr(args, "little_rl_best_path", None) is None:
-            args.little_rl_best_path = args.little_rl_path
+        args.little_rl_path, args.little_rl_best_path = resolve_rl_agent_paths(
+            ROLE_LITTLE,
+            little_model=args.little_model,
+            draft_model=args.draft_model,
+            target_model=args.target_model,
+            latest=args.little_rl_path,
+            best=getattr(args, "little_rl_best_path", None),
+            checkpoint_root=args.rl_checkpoint_root,
+        )
 
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
     os.makedirs(args.exp_name, exist_ok=True)
     model_zoo(args)
     return args
-
-
-def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0):
-    """
-
-    Args:
-        logits (torch.Tensor): Tensor with shape (batch, vocab) or (batch, seq_len, vocab)
-        top_k (int, optional): top_k. Defaults to 0.
-        top_p (float, optional): top_p. Defaults to 0.0.
-
-    Returns:
-        torch.Tensor: a renormalized logits
-    """
-    if top_k > 0:
-        # Avoid out of bounds if top_k > vocab_size
-        k = min(top_k, logits.size(-1))
-        # Support multi-dimensional tensor (e.g. 3D: [batch, seq_len, vocab])
-        filter_value = torch.topk(logits, k, dim=-1)[0][..., -1, None]
-        logits = logits.masked_fill(logits < filter_value, float("-inf"))
-
-    if top_p > 0.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-
-        # Determine elements to remove
-        filter_mask = cumulative_probs > top_p
-
-        # Shift mask to the right to keep the first token that exceeds top_p
-        filter_mask[..., 1:] = filter_mask[..., :-1].clone()
-        filter_mask[..., 0] = 0
-
-        # Scatter the mask back to the original index positions
-        indices_to_remove = filter_mask.scatter(-1, sorted_indices, filter_mask)
-        logits = logits.masked_fill(indices_to_remove, float("-inf"))
-
-    return logits
-
-
-def norm_logits(
-    logits: torch.Tensor, temperature: float, top_k: float, top_p: float
-) -> torch.Tensor:
-    """
-
-    Args:
-        logits (torch.Tensor): shape (batch, vocab) or (batch, seq_len, vocab)
-        temperature (float): temperature
-        top_k (float): top_k
-        top_p (float): top_p
-
-    Returns:
-        torch.Tensor: probs with same shape as logits
-    """
-    if temperature == 0:
-        idx = logits.argmax(dim=-1, keepdim=True)
-        new_logits = torch.zeros_like(logits, device=logits.device)
-        new_logits.scatter_(-1, idx, 1)
-        return new_logits.float()
-
-    logits = logits / temperature
-    logits = top_k_top_p_filter(logits, top_k=int(top_k), top_p=top_p)
-    probs = F.softmax(logits, dim=-1)
-    return probs
-
-
-def norm_numpy_logits(
-    logits: np.ndarray, temperature: float, top_k: float, top_p: float
-) -> np.ndarray:
-    assert logits.ndim == 2
-    if temperature == 0:
-        idx = logits.argmax(axis=1)
-        new_logits = np.zeros_like(logits, dtype=np.float32)
-        new_logits[np.arange(new_logits.shape[0]), idx] = 1
-        return new_logits
-    logits = logits / temperature
-    # logits = top_k_top_p_filter(logits, top_k=top_k, top_p=top_p)
-    probs = np.exp(logits) / np.sum(np.exp(logits), axis=1, keepdims=True)
-    return probs
-
-
-def sample(probs: torch.Tensor, num_samples: int = 1):
-    probs = probs.float()
-    probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    probs = probs.clamp_min(0.0)
-
-    probs_sum = probs.sum(dim=-1, keepdim=True)
-    invalid_rows = probs_sum.squeeze(-1) <= 0
-
-    # 无分支化：invalid 检查不再用 .any()（host 同步）逐次打断 CPU/GPU 流水线
-    # （投机解码热循环里每次采样都要付这个代价）。torch.where 在 GPU 上等价
-    # 完成：有效行归一化，无效行（clamp 后即全零行 ⇒ 和 ≤ 0）回退 argmax
-    # one-hot —— 与原分支逐位一致（含 argmax 平局取 0 的行为），multinomial
-    # 的 RNG 消耗不变。invalid_rows 仅保留给调试断言。
-    del invalid_rows
-    tiny = torch.finfo(probs.dtype).tiny
-    normalized = probs / probs_sum.clamp_min(tiny)
-    fallback = torch.zeros_like(probs).scatter_(
-        -1, probs.argmax(dim=-1, keepdim=True), 1.0
-    )
-    probs = torch.where(probs_sum > 0, normalized, fallback)
-
-    idx_next = torch.multinomial(probs, num_samples=num_samples)
-    return idx_next
-
-
-def rebuild_topk_probs(
-    probs: torch.Tensor,
-    top_k: int | None,
-    strategy: str = "uniform",
-) -> torch.Tensor:
-    if strategy != "uniform":
-        raise ValueError(f"Unsupported top-k rebuild strategy: {strategy}")
-
-    if top_k is None or top_k <= 0 or probs.numel() == 0 or top_k >= probs.shape[-1]:
-        return probs
-
-    top_k_values, top_k_indices = torch.topk(probs, top_k, dim=-1, sorted=True)
-    compressed_probs = torch.zeros_like(probs)
-    compressed_probs.scatter_(-1, top_k_indices, top_k_values)
-
-    top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
-    residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
-    zero_mask = compressed_probs == 0
-    zero_count = zero_mask.sum(dim=-1, keepdim=True)
-    uniform_prob = torch.where(
-        zero_count > 0,
-        residual_mass / zero_count,
-        torch.zeros_like(residual_mass),
-    )
-    rebuilt_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
-    rebuilt_sum = rebuilt_probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-    return rebuilt_probs / rebuilt_sum
-
-
-def rebuild_topk_uniform_probs(
-    probs: torch.Tensor,
-    top_k: int | None,
-) -> torch.Tensor:
-    return rebuild_topk_probs(probs, top_k, strategy="uniform")
-
-
-
-def state_entropy(probs: "torch.Tensor | None", cache=None) -> float:
-    """RL 控制器的 entropy 状态特征（**不要**对概率再 softmax 一次）。
-
-    背景（真实 bug）：缓存的 `_forward_with_kvcache` 返回的是 `norm_logits` 归一化
-    之后的**概率**。原实现在此处 `torch.softmax(q)` 再算熵，等于对概率分布再做一次
-    softmax —— 得到近似均匀分布，熵恒为 ln(vocab)≈10.3735，经 `min(entropy/10,1)`
-    归一化后饱和成常数 1.0，该特征从未携带信息（实测 300 步只有一个取值）。
-    另外 `--temp 0.0` 时 `norm_logits` 直接返回 one-hot，从返回的概率算熵同样恒为 0。
-
-    因此优先取缓存里按**原始 logits（温度 1）**算好的 `last_entropy`；回退时才从
-    传入张量算，并按"已是概率"处理（仅当出现负值才认为传的是 logits）。
-    """
-    if cache is not None:
-        value = getattr(cache, "last_entropy", None)
-        if value is not None:
-            return float(value)
-    if probs is None:
-        return 0.0
-    p = probs.float()
-    if float(p.min()) < 0:
-        p = torch.softmax(p, dim=-1)
-    p = p.clamp_min(0)
-    total = p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
-    p = p / total
-    return float(-(p * torch.log(p + 1e-9)).sum(dim=-1).mean().item())
-
-def max_fn(x):
-    """
-    norm(max (x, 0))
-    """
-    x = torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
-    x_max = torch.where(x > 0, x, torch.zeros_like(x))
-    x_max_sum = torch.sum(x_max, dim=1, keepdim=True)
-
-    valid_rows = x_max_sum.squeeze(-1) > 0
-    result = torch.zeros_like(x_max)
-
-    if valid_rows.any():
-        result[valid_rows] = x_max[valid_rows] / x_max_sum[valid_rows]
-
-    if (~valid_rows).any():
-        fallback = torch.zeros_like(x_max[~valid_rows])
-        fallback.scatter_(
-            -1,
-            x[~valid_rows].argmax(dim=-1, keepdim=True),
-            1.0,
-        )
-        result[~valid_rows] = fallback
-
-    return result
-
-
-def read_trace_file(trace_file: str, read_idx: int = 1) -> list:
-    """Read trace file and return a list of floats."""
-    with open(trace_file, "r") as f:
-        content = f.read()
-
-    # Split by the separator
-    blocks = content.split("###############################")
-
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
-
-        lines = block.split("\n")
-        # Find the line starting with Run
-        run_id = -1
-        data_line = ""
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith("Run"):
-                try:
-                    run_id = int(line.split()[1])
-                except:
-                    pass
-            elif line:
-                # Assume this is the data line
-                data_line = line
-
-        if run_id == read_idx and data_line:
-            data = [float(x) for x in data_line.split(",")]
-            # 1. First pop trailing values that are less than 5.0
-            while data and data[-1] < 5.0:
-                data.pop()
-            # 2. Then apply clamping to the remaining values (middle and start)
-            return [max(5.0, x) for x in data]
-
-    raise ValueError(f"Run ID {read_idx} not found in trace file.")
-
-
-def return_closest_mean_index(trace_file: str, mean_value: float | None = None) -> int:
-    """
-    Return the index (Run ID) of the run whose mean value is closest to the target mean_value.
-    If mean_value is None, it is calculated as the average of all runs' means.
-    """
-    with open(trace_file, "r") as f:
-        content = f.read()
-
-    blocks = content.split("###############################")
-    run_means = {}
-
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
-
-        lines = block.split("\n")
-        run_id = -1
-        data_line = ""
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith("Run"):
-                try:
-                    run_id = int(line.split()[1])
-                except:
-                    pass
-            elif line:
-                # Assume this is the data line
-                data_line = line
-
-        if run_id != -1 and data_line:
-            try:
-                # Use the same logic as read_trace_file: pop trailing < 5.0, then clamp remaining
-                data = [float(x) for x in data_line.split(",")]
-                while data and data[-1] < 5.0:
-                    data.pop()
-                processed_data = [max(5.0, x) for x in data]
-
-                if processed_data:
-                    run_means[run_id] = sum(processed_data) / len(processed_data)
-            except ValueError:
-                pass
-
-    if not run_means:
-        return -1
-
-    if mean_value is None:
-        mean_value = sum(run_means.values()) / len(run_means)
-
-    closest_run_id = -1
-    min_diff = float("inf")
-
-    for run_id, r_mean in run_means.items():
-        diff = abs(r_mean - mean_value)
-        if diff < min_diff:
-            min_diff = diff
-            closest_run_id = run_id
-
-    return closest_run_id
-
-
-def get_vocab_size(model_name: str) -> int:
-    try:
-        with open(os.path.join(model_name, "config.json"), "r") as f:
-            config = json.load(f)
-            vocab_size = config.get("vocab_size", None)
-            if vocab_size is not None:
-                return vocab_size
-
-            # Check text_config for multimodal models
-            if "text_config" in config and isinstance(config["text_config"], dict):
-                vocab_size = config["text_config"].get("vocab_size", None)
-                if vocab_size is not None:
-                    return vocab_size
-
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-
-    # Fallback to AutoConfig if not found in JSON or file missing
-    try:
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-        if hasattr(config, "vocab_size"):
-            return config.vocab_size
-        if hasattr(config, "text_config") and hasattr(config.text_config, "vocab_size"):
-            return config.text_config.vocab_size
-    except Exception:
-        pass
-
-    raise ValueError(f"Vocab size not found in config for model {model_name}.")
