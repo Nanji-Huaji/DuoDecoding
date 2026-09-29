@@ -519,28 +519,26 @@ class CommunicationSimulator:
 
         rebuilt_probs = compressed_probs.clone()
 
-        # 处理最后一个维度（vocab_size）
-        # 找到非零位置（top-k位置）
-        nonzero_mask = compressed_probs > 0
-
-        # 计算每个位置的top-k概率总和
+        # top-k 位置 = 非零位置（压缩时只写入 top-k 值）
+        top_k_mask = compressed_probs > 0
         top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
 
-        # 计算剩余概率质量
-        residual_mass = 1.0 - top_k_sum
+        # clamp：数值防御，top-k 之和不应超过 1（浮点误差/异常输入时防负"概率"
+        # ——负 uniform 会让重建分布非法）
+        residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
 
-        # 计算零位置的数量
-        zero_mask = compressed_probs == 0
-        zero_count = zero_mask.sum(dim=-1, keepdim=True)
+        # 尾部 = 显式非 top-k 掩码。此前用 ==0 当尾部，会把本就为 0 的 top-k
+        # 项也换成本轮 uniform，轻微污染重建分布
+        tail_mask = ~top_k_mask
+        tail_count = tail_mask.sum(dim=-1, keepdim=True)
 
-        # 避免除零：如果没有零位置，则不需要重建
+        # 避免除零：没有尾部位置则无需重建
         uniform_prob = torch.where(
-            zero_count > 0,
-            residual_mass / zero_count,
+            tail_count > 0,
+            residual_mass / tail_count,
             torch.zeros_like(residual_mass),
         )
-        # 将均匀概率分配到零位置
-        rebuilt_probs = torch.where(zero_mask, uniform_prob, rebuilt_probs)
+        rebuilt_probs = torch.where(tail_mask, uniform_prob, rebuilt_probs)
 
         return rebuilt_probs
 
@@ -576,19 +574,21 @@ class CommunicationSimulator:
         batch_indices = torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
         compressed_probs[batch_indices, top_k_indices] = top_k_values
 
-        # 重建概率分布
+        # 重建概率分布（tail = 显式非 top-k 掩码；residual clamp 防负"概率"）
         top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
-        residual_mass = 1.0 - top_k_sum
-        zero_mask = compressed_probs == 0
-        zero_count = zero_mask.sum(dim=-1, keepdim=True)
+        residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
+        top_k_mask = torch.zeros_like(compressed_probs, dtype=torch.bool)
+        top_k_mask[batch_indices, top_k_indices] = True
+        tail_mask = ~top_k_mask
+        tail_count = tail_mask.sum(dim=-1, keepdim=True)
 
         uniform_prob = torch.where(
-            zero_count > 0,
-            residual_mass / zero_count,
+            tail_count > 0,
+            residual_mass / tail_count,
             torch.zeros_like(residual_mass),
         )
 
-        rebuilt_flat_probs = torch.where(zero_mask, uniform_prob, compressed_probs)
+        rebuilt_flat_probs = torch.where(tail_mask, uniform_prob, compressed_probs)
 
         # 恢复原始形状
         return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
@@ -665,16 +665,6 @@ class CommunicationSimulator:
             tokens=int(token_bytes),
             probs=int(prob_bytes),
         )
-        if os.environ.get("COMM_TRACE"):
-            _trace_comm(
-                "transfer",
-                link_type,
-                total_bytes,
-                compressed=bool(is_compressed),
-                k=compressed_k if is_compressed else 0,
-                tokens=int(token_bytes),
-                probs=int(prob_bytes),
-            )
         transfer_time = self.simulate_transfer(
             total_bytes, link_type, topk=topk_val, draft_len=draft_len_val
         )
@@ -864,28 +854,26 @@ class CUHLM(CommunicationSimulator):
 
         rebuilt_probs = compressed_probs.clone()
 
-        # 处理最后一个维度（vocab_size）
-        # 找到非零位置（top-k位置）
-        nonzero_mask = compressed_probs > 0
-
-        # 计算每个位置的top-k概率总和
+        # top-k 位置 = 非零位置（压缩时只写入 top-k 值）
+        top_k_mask = compressed_probs > 0
         top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
 
-        # 计算剩余概率质量
-        residual_mass = 1.0 - top_k_sum
+        # clamp：数值防御，top-k 之和不应超过 1（浮点误差/异常输入时防负"概率"
+        # ——负 uniform 会让重建分布非法）
+        residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
 
-        # 计算零位置的数量
-        zero_mask = compressed_probs == 0
-        zero_count = zero_mask.sum(dim=-1, keepdim=True)
+        # 尾部 = 显式非 top-k 掩码。此前用 ==0 当尾部，会把本就为 0 的 top-k
+        # 项也换成本轮 uniform，轻微污染重建分布
+        tail_mask = ~top_k_mask
+        tail_count = tail_mask.sum(dim=-1, keepdim=True)
 
-        # 避免除零：如果没有零位置，则不需要重建
+        # 避免除零：没有尾部位置则无需重建
         uniform_prob = torch.where(
-            zero_count > 0,
-            residual_mass / zero_count,
+            tail_count > 0,
+            residual_mass / tail_count,
             torch.zeros_like(residual_mass),
         )
-        # 将均匀概率分配到零位置
-        rebuilt_probs = torch.where(zero_mask, uniform_prob, rebuilt_probs)
+        rebuilt_probs = torch.where(tail_mask, uniform_prob, rebuilt_probs)
 
         return rebuilt_probs
 
