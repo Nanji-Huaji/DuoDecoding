@@ -116,7 +116,10 @@ def build_legacy_rl_agent_paths(
     legacy_paths: list[str] = []
 
     legacy_filename = f"rl_adapter_{normalized_role}.pth"
-    for model_name in {little_model, draft_model, target_model}:
+    # 显式固定优先级（主链路 draft→target 在前）。此前用 set 迭代，顺序随
+    # 进程 hash 随机——多个 legacy checkpoint 并存时加载哪个纯凭运气，
+    # 可能迁错模型对的 agent
+    for model_name in (draft_model, target_model, little_model):
         if not model_name:
             continue
         series = canonicalize_model_name(model_name)

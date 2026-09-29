@@ -341,11 +341,20 @@ class TrainingManager:
             "reward_history_main": self.reward_history_main,
             "reward_history_little": self.reward_history_little,
         }
+        # 原子写（tmp + os.replace）：该文件会与 checkpoint 一起被
+        # save_best_checkpoint 拷贝、也在训练中途被反复覆写；直接写目标文件
+        # 可能让并发拷贝读到撕裂的半截 JSON，让下次恢复失败。
+        tmp_status_file = self.status_file + ".tmp"
         try:
-            with open(self.status_file, "w") as f:
+            with open(tmp_status_file, "w") as f:
                 json.dump(status, f, indent=4)
+            os.replace(tmp_status_file, self.status_file)
         except Exception as e:
             print(f"[{datetime.now()}] Failed to save status: {e}")
+            try:
+                os.remove(tmp_status_file)
+            except OSError:
+                pass
 
     def prepare_checkpoints(self):
         """Migrate old single checkpoint to new dual checkpoint structure or verify existing ones."""

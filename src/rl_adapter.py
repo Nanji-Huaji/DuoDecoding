@@ -140,6 +140,17 @@ class FactoredRecurrentQNetwork(nn.Module):
         return q.reshape(x.shape[0], self.action_dim)
 
 
+class _BufferUnpickler(pickle.Unpickler):
+    """replay buffer 反序列化白名单：只放行 numpy/torch/builtins 的全局对象。"""
+
+    def find_class(self, module, name):
+        if module.split(".", 1)[0] in {"numpy", "torch", "builtins"}:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Forbidden global in replay buffer: {module}.{name}"
+        )
+
+
 class DDQNAgent:
     def __init__(
         self,
@@ -267,6 +278,11 @@ class DDQNAgent:
         # 尝试获取模型系列名称，用于校验
         model_series = os.environ.get("MODEL_SERIES_NAME", "unknown")
 
+        # 原子写：先写 .tmp 再 os.replace（同目录=同一文件系统，POSIX 原子）。
+        # 若直接覆写目标文件，进程在写入中途被杀（管理器的 SIGKILL/SIGTERM
+        # 均无法被 torch.save 感知）会留下半个损坏的 checkpoint——这是
+        # "训练成果静默丢失"链条的第一环。
+        tmp_path = path + ".tmp"
         torch.save(
             {
                 "policy_net": self.policy_net.state_dict(),
@@ -278,53 +294,129 @@ class DDQNAgent:
                 "init_seed": self.init_seed,
                 "best_tps": self.best_tps,
             },
-            path,
+            tmp_path,
         )
+        os.replace(tmp_path, path)
+
         buffer_path = path + ".buffer"
+        tmp_buffer_path = buffer_path + ".tmp"
         try:
-            with open(buffer_path, "wb") as f:
+            with open(tmp_buffer_path, "wb") as f:
                 pickle.dump(list(self.memory)[-2000:], f)
-        except Exception:
-            pass
+            os.replace(tmp_buffer_path, buffer_path)
+        except Exception as e:
+            # buffer 是辅助数据，保存失败不应中断主流程——但要让人看见
+            print(f"Warning: replay buffer 保存失败（主 checkpoint 不受影响）: {e}")
+            try:
+                os.remove(tmp_buffer_path)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _assert_state_dict_compatible(module: nn.Module, state_dict: dict, name: str):
+        """纯校验（不改动网络）：键集与每个张量形状必须完全一致。
+
+        load_state_dict 在 size 不匹配时可能已经 copy 了部分参数再抛错，
+        留下"policy 一半旧一半新"的混合状态；先整体校验可彻底避免。
+        """
+        ref = module.state_dict()
+        ref_keys, ckpt_keys = set(ref.keys()), set(state_dict.keys())
+        if ref_keys != ckpt_keys:
+            raise RuntimeError(
+                f"{name} 参数键不匹配：缺失 {sorted(ref_keys - ckpt_keys)[:5]}，"
+                f"多余 {sorted(ckpt_keys - ref_keys)[:5]}"
+            )
+        for key in ref_keys:
+            if ref[key].shape != state_dict[key].shape:
+                raise RuntimeError(
+                    f"{name}['{key}'] 形状不匹配："
+                    f"checkpoint {tuple(state_dict[key].shape)} vs 当前 {tuple(ref[key].shape)}"
+                )
 
     def load(self, path):
-        if os.path.exists(path):
-            try:
-                checkpoint = torch.load(path, map_location=self.device)
+        """加载 checkpoint。返回 True=成功；False=文件不存在（全新训练的正常路径）。
 
-                # 严格校验模型系列
-                current_series = os.environ.get("MODEL_SERIES_NAME")
-                saved_series = checkpoint.get("model_series")
-                if (
-                    current_series
-                    and saved_series
-                    and saved_series != "unknown"
-                    and saved_series != current_series
-                ):
+        文件损坏/结构不兼容一律抛 RuntimeError：此前这里对一切异常打印
+        "Starting fresh" 后从零重训，下一次 save 就把唯一一份（往往还能抢救的）
+        checkpoint 覆盖掉——无人值守训练的成果会这样静默丢失（R1 链条第三环）。
+        """
+        if not os.path.exists(path):
+            return False
+
+        try:
+            # weights_only=True：checkpoint 路径来自 CLI/registry，可指向任意
+            # 文件；裸 pickle 反序列化即任意代码执行面。当前 payload 全是
+            # tensor/基础类型，可安全通过
+            checkpoint = torch.load(
+                path, map_location=self.device, weights_only=True
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"checkpoint 损坏或无法反序列化: {path} ({e})。"
+                f"请先抢救/检查该文件；确认无用则手动删除后重训"
+            ) from e
+
+        # 严格校验模型系列（不匹配仅告警，保持向后兼容）
+        current_series = os.environ.get("MODEL_SERIES_NAME")
+        saved_series = checkpoint.get("model_series")
+        if (
+            current_series
+            and saved_series
+            and saved_series != "unknown"
+            and saved_series != current_series
+        ):
+            print(
+                f"CRITICAL WARNING: Checkpoint at {path} belongs to model series "
+                f"'{saved_series}', but current environment is '{current_series}'!"
+            )
+
+        try:
+            # 先纯校验、后应用，杜绝半加载状态
+            self._assert_state_dict_compatible(
+                self.policy_net, checkpoint["policy_net"], "policy_net"
+            )
+            self._assert_state_dict_compatible(
+                self.target_net, checkpoint["target_net"], "target_net"
+            )
+            self.policy_net.load_state_dict(checkpoint["policy_net"])
+            self.target_net.load_state_dict(checkpoint["target_net"])
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+            self.epsilon = checkpoint["epsilon"]
+            self.update_count = checkpoint.get("update_count", 0)
+            if "best_tps" in checkpoint:
+                self.best_tps = checkpoint["best_tps"]
+            else:
+                if os.path.basename(path) == "best.pth":
+                    # 旧版 best.pth 缺该键时曾回退 +inf ⇒ new_best 恒 False，
+                    # best 档静默永不更新。回退 -1.0 让下次 save 重建基准。
                     print(
-                        f"CRITICAL WARNING: Checkpoint at {path} belongs to model series '{saved_series}', but current environment is '{current_series}'!"
+                        "Warning: best.pth 缺 best_tps 键，回退 -1.0"
+                        "（下次 save 将以当时 TPS 重建 best 基准）"
                     )
-                    # 为了向后兼容和避免不必要的崩溃，我们在这里默认只打印警告。
-                    # 如果需要极其严格，可以 raise ValueError。
+                self.best_tps = -1.0
+        except (KeyError, RuntimeError, ValueError, TypeError) as e:
+            raise RuntimeError(
+                f"checkpoint 与当前网络/配置不兼容: {path} ({e})。"
+                f"常见原因：改动了 --rl_action_space / 网络结构 / 优化器设置。"
+                f"请确认后删除旧 checkpoint 或改用其他候选"
+            ) from e
 
-                self.policy_net.load_state_dict(checkpoint["policy_net"])
-                self.target_net.load_state_dict(checkpoint["target_net"])
-                self.optimizer.load_state_dict(checkpoint["optimizer"])
-                self.epsilon = checkpoint["epsilon"]
-                self.update_count = checkpoint.get("update_count", 0)
-                self.best_tps = checkpoint.get(
-                    "best_tps",
-                    float("inf") if os.path.basename(path) == "best.pth" else -1.0,
-                )
-                buffer_path = path + ".buffer"
-                if os.path.exists(buffer_path):
-                    with open(buffer_path, "rb") as f:
-                        self.memory.extend(pickle.load(f))
-                print(
-                    f"Loaded LSTM-RL agent from {path}, series: {saved_series}, steps: {self.update_count}"
-                )
+        buffer_path = path + ".buffer"
+        if os.path.exists(buffer_path):
+            try:
+                with open(buffer_path, "rb") as f:
+                    # 白名单 unpickler：buffer 只应含基础类型/numpy/torch 数据，
+                    # 拒绝其余全局对象——防止被篡改的 .buffer 借反序列化执行代码
+                    self.memory.extend(_BufferUnpickler(f).load())
             except Exception as e:
-                print(f"Failed to load checkpoint: {e}. Starting fresh.")
+                # buffer 是辅助数据：损坏时告警跳过，不应让整个加载失败
+                print(f"Warning: replay buffer {buffer_path} 加载失败，跳过 ({e})")
+
+        print(
+            f"Loaded LSTM-RL agent from {path}, series: {saved_series}, "
+            f"steps: {self.update_count}"
+        )
+        return True
 
 
 class RLNetworkAdapter:
@@ -594,26 +686,50 @@ class RLNetworkAdapter:
             print(
                 f"[{agent_name}] Fresh deterministic initialization with seed {init_seed}"
             )
-        elif prefer_latest and os.path.exists(self.model_path):
-            self.agent.load(self.model_path)
-        elif os.path.exists(self.best_model_path):
-            self.agent.load(self.best_model_path)
-        elif os.path.exists(self.model_path):
-            self.agent.load(self.model_path)
         else:
-            legacy_path = next(
-                (path for path in self.legacy_load_paths if os.path.exists(path)), None
-            )
-            if legacy_path is not None:
-                self.agent.load(legacy_path)
-                print(
-                    f"[{agent_name}] Migrating legacy RL checkpoint from {legacy_path} to {self.model_path}"
-                )
-                self.agent.save(self.model_path)
+
+            def _try_load(load_path: str) -> bool:
+                """单候选加载：损坏时高声告警、改名保留证据，返回 False 继续尝试下一候选。"""
+                try:
+                    return bool(self.agent.load(load_path))
+                except RuntimeError as e:
+                    print(
+                        f"[{agent_name}] CRITICAL: {e}\n"
+                        f"  已将其改名保留为 {load_path}.corrupt（不会被下一次 "
+                        f"save 覆盖），继续尝试下一个候选"
+                    )
+                    try:
+                        os.replace(load_path, load_path + ".corrupt")
+                    except OSError:
+                        pass
+                    return False
+
+            if prefer_latest and os.path.exists(self.model_path) and _try_load(
+                self.model_path
+            ):
+                pass
+            elif os.path.exists(self.best_model_path) and _try_load(
+                self.best_model_path
+            ):
+                pass
+            elif os.path.exists(self.model_path) and _try_load(self.model_path):
+                pass
             else:
-                print(
-                    f"[{agent_name}] No checkpoint found at {self.model_path} or {self.best_model_path}"
+                legacy_path = next(
+                    (path for path in self.legacy_load_paths if os.path.exists(path)),
+                    None,
                 )
+                if legacy_path is not None and _try_load(legacy_path):
+                    print(
+                        f"[{agent_name}] Migrating legacy RL checkpoint from {legacy_path} to {self.model_path}"
+                    )
+                    self.agent.save(self.model_path)
+                else:
+                    print(
+                        f"[{agent_name}] No loadable checkpoint found at "
+                        f"{self.model_path} or {self.best_model_path}"
+                        f"（损坏的候选已保留为 .corrupt，见上方 CRITICAL 日志）"
+                    )
         self.best_tps = self.agent.best_tps
 
     def _get_current_feature_vector(
