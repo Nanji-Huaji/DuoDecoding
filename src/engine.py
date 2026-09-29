@@ -27,6 +27,7 @@ from .communication import (
 )
 from .decoding_ops import finalize_verification, verify_draft_sequence
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
+from .graph_decode import acquire_graph_caches, graph_mode_cache_kwargs
 from .model_gpu import KVCacheModel
 from .mode_features import get_mode_spec
 from .proposal_utils import stage_topk_proposal_history
@@ -701,6 +702,33 @@ class Decoding(Register, ABC):
 
         return x, metrics
 
+    def _acquire_speculative_caches(self, attr: str, graph_kw: dict, top_k: int):
+        """投机解码的两条缓存：draft 走多 token 前向（图收益点），target 单步。
+
+        B19：图开启时经 acquire_graph_caches 跨样本复用（draft 的定长验证图与
+        历史缓冲不重捕获）；eager 模式每次重建，历史数字逐位不变。
+        """
+        return acquire_graph_caches(
+            self,
+            attr,
+            graph_kw,
+            {
+                "draft": lambda: KVCacheModel(
+                    self.draft_model,
+                    self.args.temp,
+                    top_k,
+                    self.args.top_p,
+                    **graph_kw,
+                ),
+                "target": lambda: KVCacheModel(
+                    self.target_model,
+                    self.args.temp,
+                    top_k,
+                    self.args.top_p,
+                ),
+            },
+        )
+
     @Register.register_decoding("sd")
     @torch.inference_mode()
     def speculative_decoding(
@@ -716,19 +744,19 @@ class Decoding(Register, ABC):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model,
-            self.args.temp,
-            self.args.top_k,
-            self.args.top_p,
-            # 只有草稿缓存跑 gamma 步单 token 循环，是 CUDA Graph 的收益点；
-            # target 是 gamma=1 的整段前向，开图无收益反而多占显存。
-            use_cuda_graph=self.args.use_cuda_graph,
+        # CUDA Graph：只有草稿缓存跑 γ 步多 token 前向（generate(prefix, γ)），是
+        # 图的收益点；target 每步只做单 token 前向，开图无收益反而多占显存。
+        # B19：此前只透了 use_cuda_graph —— 没给验证图档位/桶长，也没跨样本复用
+        # ⇒ 多 token 前向仍走 eager，且每样本重捕获。
+        graph_kw = graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
+        caches = self._acquire_speculative_caches(
+            "_speculative_decoding_caches", graph_kw, self.args.top_k
+        )
+        approx_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
         approx_model_cache.vocab_size = int(self.vocab_size)
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
         target_model_cache.vocab_size = int(self.vocab_size)
 
         draft_forward_times = 0
@@ -951,19 +979,18 @@ class Decoding(Register, ABC):
         draft_device = self.draft_model.device
         target_device = self.target_model.device
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model,
-            self.args.temp,
-            self.args.top_k,
-            self.args.top_p,
-            # 只有草稿缓存跑 gamma 步单 token 循环，是 CUDA Graph 的收益点；
-            # target 是 gamma=1 的整段前向，开图无收益反而多占显存。
-            use_cuda_graph=self.args.use_cuda_graph,
+        # CUDA Graph：只有草稿缓存跑 γ 步多 token 前向，是图的收益点；target 每步
+        # 只做单 token 前向，开图无收益反而多占显存（与 speculative_decoding 一致）。
+        # B19：补上验证图档位/桶长与跨样本复用。
+        graph_kw = graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
+        caches = self._acquire_speculative_caches(
+            "_speculative_decoding_bw_caches", graph_kw, self.args.top_k
+        )
+        approx_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
         approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model, self.args.temp, self.args.top_k, self.args.top_p
-        )
         target_model_cache.vocab_size = self.vocab_size
 
         draft_forward_times = 0

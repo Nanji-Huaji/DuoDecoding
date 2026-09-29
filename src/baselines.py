@@ -37,6 +37,10 @@ from .decoding_ops import (
     verify_draft_sequence_result,
 )
 from .engine import Decoding
+from .graph_decode import (  # B19：CUDA Graph 接线的单一入口
+    acquire_graph_caches,
+    graph_mode_cache_kwargs as _graph_mode_cache_kwargs,
+)
 from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
 from .mode_features import MODE_FEATURES
@@ -113,37 +117,11 @@ def _build_cache(
     top_k: int,
     top_p: float,
     vocab_size: int,
+    **cache_kwargs,
 ) -> KVCacheModel:
-    cache = KVCacheModel(model, temperature, top_k, top_p)
+    cache = KVCacheModel(model, temperature, top_k, top_p, **cache_kwargs)
     cache.vocab_size = vocab_size
     return cache
-
-
-def _graph_mode_cache_kwargs(args, cap: int) -> dict:
-    """CUDA Graph 模式下 KVCacheModel 的公共 kwargs（与 adaptive_tridecoding 接线一致）。
-
-    静默漏接的教训：构造 KVCacheModel 时若不透传 use_cuda_graph，命令行开了
-    --use_cuda_graph 也毫无效果（uncertainty_decoding / cee_cuhlm 曾漏接，靠
-    model_gpu.py 的 "[cuda-graph] 已启用图回放" 金丝雀日志才发现）。cap 为验证
-    前向 k 的上界（调用方按 γ 推导），档位阶梯与 --graph_verify_sizes 语义一致。
-    """
-    if not bool(getattr(args, "use_cuda_graph", False)):
-        return {}
-    raw_sizes = getattr(args, "graph_verify_sizes", None) or ""
-    if isinstance(raw_sizes, str) and raw_sizes.strip():
-        ladder = sorted(
-            {int(x) for x in str(raw_sizes).replace(" ", "").split(",") if x}
-        )
-    else:
-        ladder = [4, 8, 16, 24, 32, 40, 48, 64]
-    sizes = [s for s in ladder if 2 <= s <= cap]
-    if not sizes or sizes[-1] < cap:
-        sizes.append(min(((cap + 7) // 8) * 8, 128))
-    return {
-        "use_cuda_graph": True,
-        "verify_graph_sizes": sizes,
-        "graph_len_budget": int(getattr(args, "max_tokens", 128)) + 256,
-    }
 
 
 def _move_token_tensor(tokens: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -611,6 +589,89 @@ class Baselines(Decoding):
         if self.little_rl_adapter is not None:
             self.little_rl_adapter.save(throughput)
 
+    def _acquire_three_layer_caches(
+        self,
+        attr: str,
+        graph_kw: dict,
+        draft_top_k: int,
+    ) -> dict[str, KVCacheModel]:
+        """little/draft/target 三层缓存的统一入口（B19）。
+
+        三个模型每轮都做多 token 验证前向（little 验证 draft、draft 验证 little
+        的接受段、target 验证 draft —— 这是调度开销的主体），所以**三个都开图**；
+        图开启时经 acquire_graph_caches 跨样本复用（StaticCache 原地 reset ⇒ 图
+        不重捕获）。little/draft 用 draft_top_k 压缩、target 不压缩，与各方法
+        历史取值一致。
+        """
+        return acquire_graph_caches(
+            self,
+            attr,
+            graph_kw,
+            {
+                "little": lambda: _build_cache(
+                    self.little_model,
+                    temperature=self.args.temp,
+                    top_k=draft_top_k,
+                    top_p=self.args.top_p,
+                    vocab_size=self.vocab_size,
+                    **graph_kw,
+                ),
+                "draft": lambda: _build_cache(
+                    self.draft_model,
+                    temperature=self.args.temp,
+                    top_k=draft_top_k,
+                    top_p=self.args.top_p,
+                    vocab_size=self.vocab_size,
+                    **graph_kw,
+                ),
+                "target": lambda: _build_cache(
+                    self.target_model,
+                    temperature=self.args.temp,
+                    top_k=0,
+                    top_p=0,
+                    vocab_size=self.vocab_size,
+                    **graph_kw,
+                ),
+            },
+        )
+
+    def _acquire_draft_target_caches(
+        self,
+        attr: str,
+        graph_kw: dict,
+        draft_top_k: int,
+        target_top_k: int,
+        target_top_p: float,
+    ) -> Tuple[KVCacheModel, KVCacheModel]:
+        """草稿 + 目标两条缓存（草稿走多 token 前向 = 图收益点，目标按需 eager）。
+
+        图开启时经 acquire_graph_caches 跨样本复用（草稿缓存不重捕获）。target 的
+        top-k/top-p 由调用方给：多数方法目标不压缩（0/0），dsd 传采样 top-k。
+        """
+        caches = acquire_graph_caches(
+            self,
+            attr,
+            graph_kw,
+            {
+                "draft": lambda: _build_cache(
+                    self.draft_model,
+                    temperature=self.args.temp,
+                    top_k=draft_top_k,
+                    top_p=self.args.top_p,
+                    vocab_size=self.vocab_size,
+                    **graph_kw,
+                ),
+                "target": lambda: _build_cache(
+                    self.target_model,
+                    temperature=self.args.temp,
+                    top_k=target_top_k,
+                    top_p=target_top_p,
+                    vocab_size=self.vocab_size,
+                ),
+            },
+        )
+        return caches["draft"], caches["target"]
+
     def build_adaptive_tridecoding_caches(
         self,
         transfer_top_k: Optional[int],
@@ -620,41 +681,17 @@ class Baselines(Decoding):
             if (transfer_top_k is not None and transfer_top_k > 0)
             else self.args.top_k
         )
-        return {
-            "little": _build_cache(
-                self.little_model,
-                temperature=self.args.temp,
-                top_k=draft_top_k,
-                top_p=self.args.top_p,
-                vocab_size=self.vocab_size,
-            ),
-            "draft": _build_cache(
-                self.draft_model,
-                temperature=self.args.temp,
-                top_k=draft_top_k,
-                top_p=self.args.top_p,
-                vocab_size=self.vocab_size,
-            ),
-            "target": _build_cache(
-                self.target_model,
-                temperature=self.args.temp,
-                top_k=0,
-                top_p=0,
-                vocab_size=self.vocab_size,
-            ),
-        }
-
-        # 确保vocab_size从实际模型获取，而不是从config
-        # if hasattr(self, "target_model") and self.target_model is not None:
-        #     self.vocab_size = self.target_model.get_input_embeddings().weight.shape[0]
-        #     print(
-        #         f"✅ Baselines: Using actual vocab_size from target model: {self.vocab_size}"
-        #     )
-        # elif hasattr(self, "draft_model") and self.draft_model is not None:
-        #     self.vocab_size = self.draft_model.get_input_embeddings().weight.shape[0]
-        #     print(
-        #         f"✅ Baselines: Using actual vocab_size from draft model: {self.vocab_size}"
-        #     )
+        # B19：此前这里直接 _build_cache —— 既没透传 use_cuda_graph（命令行开图
+        # 对 tridecoding 完全无效），也没有跨样本复用（每样本重捕获）。
+        graph_kw = _graph_mode_cache_kwargs(
+            self.args,
+            cap=int(getattr(self.args, "gamma1", 1))
+            + int(getattr(self.args, "gamma2", 1))
+            + 4,
+        )
+        return self._acquire_three_layer_caches(
+            "_tridecoding_caches", graph_kw, draft_top_k
+        )
 
     def load_acc_head(self):
         # Load acc head if adaptive method is used
@@ -2358,25 +2395,21 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        # B19：little/draft/target 都做多 token 验证前向（调度开销主体）⇒ 三个
+        # 都开图并跨样本复用；此前只给 little/draft 单步图、无验证档位、且每
+        # 样本重捕获（~534ms/样本把收益吃光）。target 此前完全没接线。
+        graph_kw = _graph_mode_cache_kwargs(
+            self.args,
+            cap=int(getattr(self.args, "gamma1", 1))
+            + int(getattr(self.args, "gamma2", 1))
+            + 4,
         )
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        caches = self._acquire_three_layer_caches(
+            "_ceesd_without_arp_caches", graph_kw, draft_top_k
         )
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
-            0,
-            0,  # 目标模型不压缩
-        )
-        target_model_cache.vocab_size = self.vocab_size
+        little_model_cache = caches["little"]
+        draft_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
@@ -2977,17 +3010,20 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        approx_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p
+        # CUDA Graph：草稿缓存跑 γ 步多 token 前向是图收益点；target 每步只做
+        # 单 token 前向，开图无收益反而多占显存（与 dsd/dssd 的取舍一致）。
+        # B19：此前 adaptive_decoding 完全没接线 —— 命令行开了 --use_cuda_graph
+        # 对它毫无效果，而 exp.py 的扫描恰恰硬编码了 use_cuda_graph=True。
+        _graph_kw = _graph_mode_cache_kwargs(
+            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
-        approx_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(
-            self.target_model,
-            self.args.temp,
+        approx_model_cache, target_model_cache = self._acquire_draft_target_caches(
+            "_adaptive_decoding_caches",
+            _graph_kw,
+            draft_top_k,
             0,
-            0,  # 目标模型不压缩
+            0.0,  # 目标模型不压缩
         )
-        target_model_cache.vocab_size = self.vocab_size
 
         draft_forward_times = 0
         target_forward_times = 0
@@ -4848,20 +4884,20 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        # B19：little/draft/target 都做多 token 验证前向 ⇒ 三个都开图并跨样本
+        # 复用；此前只给 little/draft 单步图、无验证档位、且每样本重捕获。
+        graph_kw = _graph_mode_cache_kwargs(
+            self.args,
+            cap=int(getattr(self.args, "gamma1", 1))
+            + int(getattr(self.args, "gamma2", 1))
+            + 4,
         )
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        caches = self._acquire_three_layer_caches(
+            "_cee_dssd_caches", graph_kw, draft_top_k
         )
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)
-        target_model_cache.vocab_size = self.vocab_size
+        little_model_cache = caches["little"]
+        draft_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
@@ -5236,20 +5272,20 @@ class Baselines(Decoding):
             else self.args.top_k
         )
 
-        little_model_cache = KVCacheModel(
-            self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        # B19：little/draft/target 都做多 token 验证前向 ⇒ 三个都开图并跨样本
+        # 复用；此前只给 little/draft 单步图、无验证档位、且每样本重捕获。
+        graph_kw = _graph_mode_cache_kwargs(
+            self.args,
+            cap=int(getattr(self.args, "gamma1", 1))
+            + int(getattr(self.args, "gamma2", 1))
+            + 4,
         )
-        little_model_cache.vocab_size = self.vocab_size
-        draft_model_cache = KVCacheModel(
-            self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
-                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
+        caches = self._acquire_three_layer_caches(
+            "_cee_dsd_caches", graph_kw, draft_top_k
         )
-        draft_model_cache.vocab_size = self.vocab_size
-        target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)
-        target_model_cache.vocab_size = self.vocab_size
+        little_model_cache = caches["little"]
+        draft_model_cache = caches["draft"]
+        target_model_cache = caches["target"]
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(

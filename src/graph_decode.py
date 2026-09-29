@@ -83,6 +83,54 @@ import torch
 from transformers import StaticCache
 
 
+def graph_mode_cache_kwargs(args, cap: int) -> dict:
+    """CUDA Graph 模式下 KVCacheModel 的公共 kwargs（**单一接线点**）。
+
+    静默漏接的教训：构造 KVCacheModel 时若不透传 use_cuda_graph，命令行开了
+    --use_cuda_graph 也毫无效果（uncertainty_decoding / cee_cuhlm / tridecoding
+    都曾漏接，靠 model_gpu.py 的 "[cuda-graph] 已启用图回放" 金丝雀日志才发现）。
+    cap 为验证前向 k 的上界（调用方按 γ 推导），档位阶梯与 --graph_verify_sizes
+    语义一致。graph_len_budget 是**生成预算**（KVCacheModel 按 prompt+budget 定桶，
+    见 model_gpu.py），故这里取 max_tokens + 256 余量。
+    """
+    if not bool(getattr(args, "use_cuda_graph", False)):
+        return {}
+    raw_sizes = getattr(args, "graph_verify_sizes", None) or ""
+    if isinstance(raw_sizes, str) and raw_sizes.strip():
+        ladder = sorted(
+            {int(x) for x in str(raw_sizes).replace(" ", "").split(",") if x}
+        )
+    else:
+        ladder = [4, 8, 16, 24, 32, 40, 48, 64]
+    sizes = [s for s in ladder if 2 <= s <= cap]
+    if not sizes or sizes[-1] < cap:
+        sizes.append(min(((cap + 7) // 8) * 8, 128))
+    return {
+        "use_cuda_graph": True,
+        "verify_graph_sizes": sizes,
+        "graph_len_budget": int(getattr(args, "max_tokens", 128)) + 256,
+    }
+
+
+def acquire_graph_caches(holder, attr: str, graph_kw: dict, builders: dict) -> dict:
+    """图模式下跨样本复用缓存；eager 模式每次重建（历史行为逐位不变）。
+
+    `builders` 是 {名字: 零参可调用}，只在未命中复用时调用。命中时只对已有缓存
+    做原地 `reset_for_new_sample()`（StaticCache `zero_()`，地址不变 ⇒ 图不重
+    捕获），避免每样本 ~534ms 的重捕获把收益吃光。`attr` 各方法独立，避免不同
+    top-k 配置的缓存互相串用。
+    """
+    reused = getattr(holder, attr, None) if graph_kw else None
+    if reused is not None:
+        for cache in reused.values():
+            cache.reset_for_new_sample()
+        return reused
+    caches = {name: build() for name, build in builders.items()}
+    if graph_kw:
+        setattr(holder, attr, caches)
+    return caches
+
+
 class GraphDecodeRunner:
     """定长 decode 前向的 CUDA Graph 执行器。
 
