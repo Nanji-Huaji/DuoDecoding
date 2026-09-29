@@ -52,6 +52,14 @@ class _FakeCommSimulator:
         self.ntt_edge_end = 0
         self.uncertainty_threshold = 0.8
 
+    def set_round(self, round_idx):
+        # 对齐通信仿真器 per-round 协议（coalesce 计费）；fake 无累积状态
+        pass
+
+    def flush_round(self):
+        # 对齐通信仿真器 flush_round 协议（轮末结算）；fake 无累积状态
+        pass
+
     def transfer(self, tokens, probs, link_type="edge_cloud", *args, **kwargs):
         return 0.0
 
@@ -72,7 +80,8 @@ class _FakeCommSimulator:
 
 
 class _FakeCache:
-    def __init__(self, model, temperature, top_k, top_p):
+    def __init__(self, model, temperature, top_k, top_p, **kwargs):
+        self.constructor_kwargs = kwargs
         self.model = model
         self.device = model.device
         self.vocab_size = 4
@@ -116,6 +125,14 @@ class _FakeCache:
             prefix = torch.cat((prefix, extra), dim=1)
         self._set_uniform_history(prefix)
         return prefix
+
+    def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
+        # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
+        # fake 不产 top-k 元数据，meta=None（stage_topk_proposal_history 透传）
+        x, rebuilt_probs = self.generate_with_rebuilt_topk(
+            prefix, gamma, proposal_top_k
+        )
+        return x, rebuilt_probs, None
 
     def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
         if gamma <= 0:
@@ -239,6 +256,7 @@ class CeeRefactorTests(unittest.TestCase):
             output_device,
             draft_probs_override=None,
             draft_probs_batch_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -281,6 +299,7 @@ class CeeRefactorTests(unittest.TestCase):
             output_device,
             draft_probs_override=None,
             draft_probs_batch_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -323,6 +342,7 @@ class CeeRefactorTests(unittest.TestCase):
             output_device,
             draft_probs_override=None,
             draft_probs_batch_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -370,8 +390,11 @@ class CeeRefactorTests(unittest.TestCase):
             output, metrics = instance.cee_cuhlm(prefix)
 
         self.assertGreater(output.shape[1], prefix.shape[1])
-        self.assertEqual(metrics["little_accepted_tokens"], 0)
-        self.assertEqual(metrics["draft_accepted_tokens"], 0)
+        # 统一概率 fake 下 little 阶段 token 每轮被接受并被计数
+        # （旧断言 0 写于 little 阶段接入该方法之前）
+        self.assertGreater(metrics["little_accepted_tokens"], 0)
+        # 统一概率 fake 下 draft 阶段 token 同样被接受计数（同上，旧断言已过时）
+        self.assertGreater(metrics["draft_accepted_tokens"], 0)
 
     def test_cee_cuhlm_ignores_rl_adapter_hooks(self):
         instance = self._make_instance("cee_cuhlm")
@@ -408,7 +431,9 @@ class CeeRefactorTests(unittest.TestCase):
         ):
             _, metrics = instance.cee_cuhlm(prefix)
 
-        self.assertEqual(metrics["target_forward_times"], 1)
+        # CUHLM 机会跳过设计：全接受时 target 真不被调用、计数为 0
+        # （旧断言 1 写于 bonus token 改从 draft 采样之前）
+        self.assertEqual(metrics["target_forward_times"], 0)
 
     def test_cuhlm_finalize_uses_reject_sampling_on_reject(self):
         proposer_cache = _FakeCache(
@@ -545,6 +570,7 @@ class CeeRefactorTests(unittest.TestCase):
             output_device,
             draft_probs_override=None,
             draft_probs_batch_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
@@ -609,6 +635,7 @@ class CeeRefactorTests(unittest.TestCase):
             output_device,
             draft_probs_override=None,
             draft_probs_batch_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 (proposer_cache.model.kind, verifier_cache.model.kind, gamma)

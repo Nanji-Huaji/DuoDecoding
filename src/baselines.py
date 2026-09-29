@@ -2325,12 +2325,14 @@ class Baselines(Decoding):
 
         little_model_cache = KVCacheModel(
             self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
             self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(
@@ -4299,10 +4301,15 @@ class Baselines(Decoding):
 
         # --- Communication Simulator ---
         if use_precise_comm_sim:
+            # B45：channel_gain/noise_power_watt 为必填参数，此前缺省导致
+            # cee_cuhlm 的精确仿真分支一进就 TypeError（对齐 1544 处
+            # uncertainty_decoding 的完整调用）
             comm_simulator: CUHLM = PreciseCUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
                 bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
+                channel_gain=1e-8,
                 send_power_watt=0.5,
+                noise_power_watt=1e-10,
                 uncertainty_threshold=getattr(
                     self.args, "uncertainty_threshold", 0.8
                 ),
@@ -4806,12 +4813,14 @@ class Baselines(Decoding):
 
         little_model_cache = KVCacheModel(
             self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
             self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)
@@ -5192,12 +5201,14 @@ class Baselines(Decoding):
 
         little_model_cache = KVCacheModel(
             self.little_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         little_model_cache.vocab_size = self.vocab_size
         draft_model_cache = KVCacheModel(
             self.draft_model, self.args.temp, draft_top_k, self.args.top_p,
-            use_cuda_graph=self.args.use_cuda_graph,
+            # B19：最小 Namespace/编程构造的 args 可能没有该字段，缺省关
+                use_cuda_graph=getattr(self.args, "use_cuda_graph", False),
         )
         draft_model_cache.vocab_size = self.vocab_size
         target_model_cache = KVCacheModel(self.target_model, self.args.temp, 0, 0)

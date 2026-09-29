@@ -5,6 +5,7 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from src.decoding_ops import (
+    materialize_acceptance,
     compute_acceptance_result,
     finalize_verification,
     resolve_stage_verification,
@@ -78,6 +79,7 @@ class TemperatureSamplingTests(unittest.TestCase):
 
     def test_compute_acceptance_result_handles_stochastic_probabilities(self):
         verification_inputs = VerificationInputs(
+            selected_draft_p=torch.tensor([[0.4, 0.7]], dtype=torch.float),
             draft_probs_batch=torch.tensor(
                 [[[0.6, 0.4], [0.3, 0.7]]],
                 dtype=torch.float,
@@ -97,8 +99,11 @@ class TemperatureSamplingTests(unittest.TestCase):
 
         result = compute_acceptance_result(verification_inputs, r=r)
 
-        self.assertEqual(result.accepted_count, 1)
-        self.assertEqual(result.n, 1)
+        self.assertEqual(int(result.accepted_count.item()), 1)
+        # .n 已从 AcceptanceResult 移除，改为 materialize 派生（n=prefix_len+accepted-1）
+        self.assertEqual(
+            materialize_acceptance(verification_inputs, result), (1, 1, False)
+        )
         self.assertTrue(torch.equal(result.accept_mask, torch.tensor([[True, False]])))
         self.assertTrue(
             torch.allclose(result.selected_draft_p, torch.tensor([[0.4, 0.7]]))
@@ -175,6 +180,7 @@ class TemperatureSamplingTests(unittest.TestCase):
 
     def test_compute_acceptance_result_zero_draft_probability_currently_accepts(self):
         verification_inputs = VerificationInputs(
+            selected_draft_p=torch.tensor([[0.0]], dtype=torch.float),
             draft_probs_batch=torch.tensor([[[1.0, 0.0]]], dtype=torch.float),
             target_probs_batch=torch.tensor([[[0.25, 0.75]]], dtype=torch.float),
             draft_tokens=torch.tensor([[1]], dtype=torch.long),
@@ -192,8 +198,10 @@ class TemperatureSamplingTests(unittest.TestCase):
 
         # Current implementation computes target/draft directly, so division by zero
         # yields inf and the token is treated as accepted.
-        self.assertEqual(result.accepted_count, 1)
-        self.assertEqual(result.n, 1)
+        self.assertEqual(int(result.accepted_count.item()), 1)
+        self.assertEqual(
+            materialize_acceptance(verification_inputs, result), (1, 1, True)
+        )
         self.assertTrue(torch.equal(result.accept_mask, torch.tensor([[True]])))
 
     def test_sample_reject_token_falls_back_when_residual_mass_is_zero(self):
@@ -226,6 +234,7 @@ class TemperatureSamplingTests(unittest.TestCase):
             vocab_size=3,
         )
         verification_inputs = VerificationInputs(
+            selected_draft_p=torch.tensor([[0.45]], dtype=torch.float),
             draft_probs_batch=torch.tensor([[[0.55, 0.45, 0.0]]], dtype=torch.float),
             target_probs_batch=torch.tensor([[[0.1, 0.2, 0.7]]], dtype=torch.float),
             draft_tokens=torch.tensor([[1]], dtype=torch.long),
@@ -251,8 +260,9 @@ class TemperatureSamplingTests(unittest.TestCase):
                         "Acceptance",
                         (),
                         {
-                            "accepted_count": 0,
-                            "n": 0,
+                            "accepted_count": torch.tensor(
+                                [0], dtype=torch.int64
+                            ),
                             "selected_draft_p": torch.tensor([[0.45]]),
                             "selected_target_p": torch.tensor([[0.2]]),
                             "accept_mask": torch.tensor([[False]]),

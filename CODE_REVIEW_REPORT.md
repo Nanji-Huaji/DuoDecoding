@@ -283,6 +283,19 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 7. R10 查证结论：`profile_cee_dsd.py` 的 `ProfiledBaselines` 与生产 `cee_dsd` 同名注册到类级共享 dict，但**全仓无任何 import 链**（纯休眠地雷）；建议后续把插桩改为上下文包裹式或改名注册，暂未动。
 8. 全量测试对照：HEAD 25 failed/89 passed → 本批后 **21 failed/97 passed**（少的 4 个 = B1 删除的 adaptive 测试文件；21 个失败全部为 temperature_sampling 等既有问题，`comm` 对照**零新增失败**）。
 
+**第五批修复（2026-03，测试套件复活：21 个既有失败 triage 全清）：**
+1. **B45（新发现，真生产 bug）**：`cee_cuhlm` 的精确仿真分支（baselines.py:4302）缺 `channel_gain`/`noise_power_watt` 必填参数——自 c3b51c6 引入参数起 `use_precise_comm_sim=True` 即 TypeError。因默认 False 而潜伏；6 个测试红了一路无人看。已对齐 1544 处完整调用修复。
+2. B19 部分：6 处 `args.use_cuda_graph` 直取改 `getattr(..., False)`（最小 Namespace/编程构造的 args 不再崩）。
+3. 测试腐化清理（API 演进后替身/断言未跟）：
+   - `VerificationInputs` 构造补 `selected_draft_p`（4 处，值=gather(draft_probs,2,indices).squeeze(-1)，形状 (b,γ)）
+   - `.n` 已从 AcceptanceResult 移除 → 断言改走 `materialize_acceptance` 派生（2 处）；fake 构造 `accepted_count` 张量化（3 处）
+   - comm 替身补 `set_round`/`flush_round` 协议方法（两个文件的基类，覆盖 3 个子类）
+   - `_FakeCache` 补 `generate_with_rebuilt_topk_metadata`（返回三元组、meta=None 透传）+ `**kwargs` 构造
+   - 10 个 fake verify 签名补 `draft_topk_history=None`
+   - `avg_effective_proposal_len` 键断言删除（生产已移除该键）
+4. 旧设计期望更新（语义确认后改写）：cee_cuhlm 全接受时 target 真跳过（CUHLM 机会跳过设计）→ target_forward_times 断言 1→0；little/draft accepted 断言 0→>0（写于对应阶段接入前）；DecodingAdapter 期望补 `stop_mode='cumulative'`。
+5. 全量测试：**21 failed/106 passed → 127 passed / 0 failed（首次全绿）**；test_opportunistic_rl_training 10 passed。
+
 **第四批修复（2026-03，模型解析链 B22/B23/B24/B26/B33）：**
 1. B24：`--draft_model/--target_model` 默认 codellama-7b/70b（不可解析）移除，改 default=None；必填检查放在 parse 后置块开头（parser.error，先于 acc-head/RL 解析——否则 None 会让 canonicalize 以 AttributeError 崩，实测发现的次生问题），model_zoo 内保留同款检查兜底直接调用方。
 2. B23：未部署模型（deepseek-1.3b/6.7b、vicuna-7b-v1.5/v1.3）从 zoo 占位符改为解析阶段显式 ValueError；zoo 表同步删除占位条目。

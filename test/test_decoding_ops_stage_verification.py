@@ -44,6 +44,7 @@ class ResolveStageVerificationTests(unittest.TestCase):
             vocab_size=4,
         )
         verification_inputs = VerificationInputs(
+            selected_draft_p=torch.tensor([[0.4]], dtype=torch.float),
             draft_probs_batch=torch.tensor(
                 [[[0.6, 0.4, 0.0, 0.0]]],
                 dtype=torch.float,
@@ -60,8 +61,7 @@ class ResolveStageVerificationTests(unittest.TestCase):
             max_idx=1,
         )
         acceptance_result = AcceptanceResult(
-            accepted_count=0,
-            n=0,
+            accepted_count=torch.tensor([0], dtype=torch.int64),
             selected_draft_p=torch.tensor([[0.4]], dtype=torch.float),
             selected_target_p=torch.tensor([[0.2]], dtype=torch.float),
             accept_mask=torch.tensor([[False]]),

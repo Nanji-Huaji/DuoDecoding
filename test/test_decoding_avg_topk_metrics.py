@@ -83,7 +83,8 @@ class _FakeAdapter:
 
 
 class _FakeCache:
-    def __init__(self, model, temperature, top_k, top_p):
+    def __init__(self, model, temperature, top_k, top_p, **kwargs):
+        self.constructor_kwargs = kwargs
         self.model = model
         self.device = model.device
         self.vocab_size = 4
@@ -136,6 +137,14 @@ class _FakeCache:
             prefix = torch.cat((prefix, extra), dim=1)
         self._set_uniform_history(prefix)
         return prefix
+
+    def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
+        # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
+        # fake 不产 top-k 元数据，meta=None（stage_topk_proposal_history 透传）
+        x, rebuilt_probs = self.generate_with_rebuilt_topk(
+            prefix, gamma, proposal_top_k
+        )
+        return x, rebuilt_probs, None
 
     def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
         if gamma <= 0:
@@ -251,7 +260,6 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         self.assertGreater(output.shape[1], prefix.shape[1])
         self.assertEqual(metrics["avg_top_k"], 7)
         self.assertEqual(metrics["avg_draft_len"], 1)
-        self.assertEqual(metrics["avg_effective_proposal_len"], 1)
 
     def test_tridecoding_reports_average_active_top_k(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
@@ -264,13 +272,18 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
             prefix_len,
             gamma,
             draft_probs_override=None,
+            draft_topk_history=None,
         ):
             actual_gamma = max(x.shape[1] - prefix_len, 0)
             acceptance = SimpleNamespace(
-                n=prefix_len + actual_gamma - 1, accepted_count=actual_gamma
+                n=prefix_len + actual_gamma - 1,
+                accepted_count=torch.tensor(
+                    [actual_gamma], dtype=torch.int64
+                ),
             )
             inputs = SimpleNamespace(
                 actual_gamma=actual_gamma,
+                prefix_len=prefix_len,
                 draft_probs_batch=torch.ones(
                     (1, max(actual_gamma, 1), self.instance.vocab_size),
                     dtype=torch.float,

@@ -52,6 +52,14 @@ class _FakeCommSimulator:
         self.transfer_calls = []
         self.simulate_transfer_calls = []
 
+    def set_round(self, round_idx):
+        # 对齐通信仿真器 per-round 协议（coalesce 计费）；fake 无累积状态
+        pass
+
+    def flush_round(self):
+        # 对齐通信仿真器 flush_round 协议（轮末结算）；fake 无累积状态
+        pass
+
     def transfer(self, tokens, probs, link_type="edge_cloud", **kwargs):
         self.transfer_calls.append(
             {
@@ -124,6 +132,14 @@ class _FakeCache:
             prefix = torch.cat((prefix, extra), dim=1)
         self._set_uniform_history(prefix)
         return prefix
+
+    def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
+        # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
+        # fake 不产 top-k 元数据，meta=None（stage_topk_proposal_history 透传）
+        x, rebuilt_probs = self.generate_with_rebuilt_topk(
+            prefix, gamma, proposal_top_k
+        )
+        return x, rebuilt_probs, None
 
     def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
         if gamma <= 0:
@@ -212,6 +228,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             *,
             output_device,
             draft_probs_override=None,
+            draft_topk_history=None,
         ):
             stage_calls.append(
                 {
@@ -268,6 +285,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             *,
             output_device,
             draft_probs_override=None,
+            draft_topk_history=None,
         ):
             token = torch.tensor([[1]], dtype=torch.long, device=output_device)
             return gamma, prefix_len + gamma - 1, token, True
@@ -310,6 +328,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             *,
             output_device,
             draft_probs_override=None,
+            draft_topk_history=None,
         ):
             token = torch.tensor([[1]], dtype=torch.long, device=output_device)
             return gamma, prefix_len + gamma - 1, token, True
@@ -351,6 +370,14 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         fake_comm = _FakeCommSimulator()
 
         class _ShortSecondStageCache(_FakeCache):
+            def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
+                # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
+                # fake 不产 top-k 元数据，meta=None（stage_topk_proposal_history 透传）
+                x, rebuilt_probs = self.generate_with_rebuilt_topk(
+                    prefix, gamma, proposal_top_k
+                )
+                return x, rebuilt_probs, None
+
             def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
                 x, rebuilt = super().generate_with_rebuilt_topk(
                     prefix, gamma, proposal_top_k
@@ -372,6 +399,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             *,
             output_device,
             draft_probs_override=None,
+            draft_topk_history=None,
         ):
             token = torch.tensor([[1]], dtype=torch.long, device=output_device)
             accepted = min(gamma, max(x.shape[1] - prefix_len, 0))

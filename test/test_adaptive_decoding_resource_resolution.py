@@ -144,8 +144,10 @@ class AdaptiveTriDecodingAcceptanceHeadInitTests(unittest.TestCase):
         self.assertEqual(
             adapter.call_args_list,
             [
-                call(load_head.return_value, 0.1),
-                call(load_head.return_value, 0.2),
+                # stop_mode 为 ARP 早停模式（Namespace 未给 arp_stop_mode 时
+                # 默认 cumulative）
+                call(load_head.return_value, 0.1, stop_mode="cumulative"),
+                call(load_head.return_value, 0.2, stop_mode="cumulative"),
             ],
         )
 
