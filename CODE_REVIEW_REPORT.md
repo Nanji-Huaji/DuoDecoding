@@ -100,30 +100,30 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 | B18 | `avg_top_k` 语义分叉：无 transfer_top_k 时 dist_spec 记 `args.top_k`（采样参数），dssd/tridecoding 记 0 | 统一为"只统计传输压缩 top-k，未压缩记 0" |
 | B19 | `--use_cuda_graph` 三档接线：tridecoding 完全漏接（`build_adaptive_tridecoding_caches` 无图参数），cee_\* 裸接（无验证图档位、无跨样本复用 → 每样本重捕获 ~534ms） | 全部改走 `_graph_mode_cache_kwargs` + 复用属性 |
 | B20 | RL adapter 直接改写全局 `self.args.gamma1/gamma2`（2386、2514），跨样本/跨任务残留；对照 adaptive_tridecoding 已用实例属性 | 统一为实例级 `_next_gammaN` |
-| B21 | `ceesd_without_arp` 每轮对整条 logits 历史做 `norm_logits` 后**从未使用**（2523-2528，O(L×V) softmax + 跨设备拷贝） | 删除 |
+| B21 | 【✅ 已修复：死块连同只守卫它的 assert 一并删除】`ceesd_without_arp` 每轮对整条 logits 历史做 `norm_logits` 后**从未使用**（O(L×V) softmax + 跨设备拷贝） | 删除 |
 | B22 | 【✅ 已修复：vocab 查表移回映射前用原始别名命中；重复键去重】`model_zoo` 的 `vocab_size` 查表在 zoo 映射**之后**（`utils.py:297-306`），键是别名、值是路径 → 字典对最常用别名全部 miss，每次 parse 都读 config.json 或走 `AutoConfig.from_pretrained(trust_remote_code=True)` 网络回退；dict 还有重复键 `"llama-2-70b"`（234/263） | 查表移到映射前，或删字典（engine 反正会重算） |
 | B23 | 【✅ 已修复：未部署集合 + 解析阶段显式 ValueError】zoo 把未部署模型映射为 `"deepseek-1.3b还没部署"` 等占位符（268-279），垃圾路径静默传播 | 删键或映射时 raise |
 | B24 | 【✅ 已修复：default=None + parse 后置块开头 parser.error（先于 acc-head/RL 解析）】默认 `--draft_model codellama-7b` / `--target_model codellama-70b`（319-320）不可解析：zoo 无此键、本地无此目录、HF 无此仓库名 | 改为真实存在的对或 `default=None` 必填 |
 | B25 | 【✅ 已修复：显式 (draft, target, little) 固定优先级】legacy RL 回退路径用 **set 迭代**生成顺序（`rl_agent_registry.py:119` `for model_name in {little, draft, target}`），跨进程 hash 随机 → 多个 legacy checkpoint 并存时加载哪个纯凭运气，可能迁错模型对的 agent | 改显式列表按固定优先级排序 |
 | B26 | 【✅ 已修复：分歧别名（qwen-3-*/llama-2-chat-7b）并入 CANONICAL_MODEL_ALIASES 统一归一】zoo 别名与 `CANONICAL_MODEL_ALIASES` 分歧：zoo 用 `qwen-3-0.6b`，registry 只认 `qwen3-0.6b`；`llama-2-chat-7b` vs `llama-2-7b-chat` 同病 → 合法别名静默错过已注册对，落到不存在的默认路径（实测复现） | zoo 映射后统一过 canonicalize，两表合并为单一事实源 |
 | B27 | `norm_numpy_logits` 的 top-k/top-p 过滤被注释禁用（`utils.py:1313`），接口名不副实；唯一调用方是死代码 model_cpu.py | 删函数或恢复过滤 |
-| B28 | `seed_everything` 同时设 `cudnn.deterministic=True` 与 `benchmark=True`（223-224）——后者选最快但不一定确定的算法，伪复现保证 | 二选一 |
+| B28 | 【✅ 已修复：benchmark=False，复现优先】`seed_everything` 同时设 `cudnn.deterministic=True` 与 `benchmark=True`——后者选最快但不一定确定的算法，伪复现保证 | 二选一 |
 | B29 | warmup 计数一族 off-by-one 且各脚本不一致：mt_bench/noeval n=10 实际 9 次（break 在生成前），cnndm/xsum n=5 → 4 次，humaneval/specbench 恰好 10 次，gsm8k 0 次 | 抽公共 `warmup(n)`，统一"先检查后生成" |
-| B30 | metrics 合并循环 5 种分叉实现，排除列表互相矛盾且含死键（`little_acceptance_rate/draft_acceptance_rate` 全 src 不存在）；humaneval/mt_bench 两处在键缺失时潜伏 KeyError | `src/metrics.py` 提供单一 `merge_metrics()` |
+| B30 | 【✅ 已修复：accumulate_metrics() 单点化，6 个 eval 脚本接入；死键/幽灵键删除、KeyError 路径关闭；gsm8k/humaneval 的 connect_times 由恒空改为累加（分叉统一的预期变化）】metrics 合并循环 5 种分叉实现，排除列表互相矛盾且含死键（`little_acceptance_rate/draft_acceptance_rate` 全 src 不存在）；humaneval/mt_bench 两处在键缺失时潜伏 KeyError | `src/metrics.py` 提供单一 `merge_metrics()` |
 | B31 | cnndm/xsum 解码异常路径：吞异常 + 用 EOS 占位后 `num_tokens = 1 - prompt_len < 0` 混入均值，污染 tokens/s 与 ROUGE | 异常时 continue 或记 status 剔除，`max(0, ...)` 钳制 |
 | B32 | `eval_cnndm.py:166` 硬编码 `use_early_stopping=True` 覆盖 exp.py 传入值；`eval_mt_bench_noeval.py:141-148` partial 丢 `use_stochastic_comm` | 参数统一由 partial 装配函数生成 |
 | B33 | 【✅ 已修复：不支持的任务显式告警并返回空串】MT-bench few-shot 是静默 no-op：`get_few_shot_prompt("mt_bench", ...)` 无对应分支返回空串（`few_shot_examples.py:83-108`），`--num_shots 3` 无效无告警 | 未知 task raise，或删调用点 |
 | B34 | chat 模板后未关 `add_special_tokens`：`eval_mixed.py:300-302`、`eval_humaneval.py:119-125`（只豁免 Llama-3.1）→ Llama-3/3.2 系潜在双 BOS | 所有 chat 模板路径统一 `add_special_tokens=False` |
 | B35 | mt_bench/noeval 以 append 写 jsonl 却用全文件重算速度（185/497），重跑时速度混入旧数据、accuracy 只算本次 | 记录文件偏移或只统计本次写入行 |
 | B36 | 【✅ 已修复：告警 + 回退 -1.0】`best.pth` 缺 `best_tps` 键时回退 `+inf`（`rl_adapter.py:315-318`）→ `new_best` 恒 False，"best" 永不更新且无警告 | 告警并回退 -1.0，或迁移脚本补键 |
-| B37 | pkill 清理模式与 MODEL_SERIES 大小写不一致（manager:20 小写 vs :510 大写 `Llama-2-13b`），llama 系列 target 残留进程杀不掉；`pkill -9 -f '{子串}'` 误伤面大 | patterns 由 `self.models` 生成 + 精确匹配 `--target_model ${m}` |
+| B37 | 【✅ 已修复：模式由 self.models 生成 + `--*_model <name>` 完整参数匹配 + list exec】pkill 清理模式与 MODEL_SERIES 大小写不一致，llama 系列 target 残留进程杀不掉；裸子串误伤面大 | patterns 由 `self.models` 生成 + 精确匹配 |
 | B38 | 【✅ 已修复：改 adaptive_tridecoding.*】`adaptive_tridecoding` 里的校验标签写成 `cee_cuhlm.*`（3723-3727，复制粘贴错标签） | 改 label |
 | B39 | `engine.py` `small` 模式把 draft 前向计数进 `metrics["target_forward_times"]`（777-798，模型身份错标） | 改键 |
 | B40 | `_apply_top_k_compression` 用 `len(probs)` 判 top-k 上界（`communication.py:496、919` 两份拷贝同病），对 (B,V) 取 B 维；`compressed_probs[top_k_indices]` 对 2D 不安全。当前调用方恰好都传 1D，属潜伏 【✅ 已修复：`shape[-1]` + `scatter_(-1)`，附 2D 回归测试】 | 改 `probs.shape[-1]` |
 | B41 | 【✅ 已修复：clamp_min(0) + 显式非 top-k 尾掩码（两份拷贝+batch 版）】`rebuild_full_probs`/`compress_rebuild_probs` 的 `residual_mass` 无 clamp（:529/:580），top_k_sum>1 时产出负"概率"；`zero_mask==0` 会把本就为 0 的 top-k 项也换 uniform | `(1-sum).clamp_min(0)` + 显式非-top-k 掩码（对齐 `utils.rebuild_topk_probs` 已有的保护） |
 | B42 | 【✅ 已修复：浮点走 float 路径】`AdaptiveDecodingDebugger.tensor()` 把浮点张量 `.to(torch.long)`（`adaptive_debug.py:36-42`）→ 概率/熵记录全 0 | 浮点走 float 路径 |
 | B43 | `verify_draft_sequence` 指标用请求 γ 而非 actual γ（`decoding_ops.py:498`）；serial 模式 token 只取 batch 0（:492） | 改 actual_gamma；声明 bs=1 约束 |
-| B44 | `build_draft_probs_override` 对 `stage_start_len=0` 静默切成 `[:, :-1]`（`proposal_utils.py:24-30`），潜伏 | `max(stage_start_len-1, 0)` + 断言 |
+| B44 | 【✅ 已修复：钳制 + 负值 ValueError，4 项回归测试】`build_draft_probs_override` 对 `stage_start_len=0` 静默切成 `[:, :-1]`，潜伏 | `max(stage_start_len-1, 0)` + 断言 |
 
 ---
 
