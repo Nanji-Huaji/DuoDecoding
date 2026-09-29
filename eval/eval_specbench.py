@@ -224,6 +224,9 @@ class EvalSpecbench(Decoding):
             ):
                 input_ids = datum["input_ids"]
                 generate_ids = decoding(input_ids)
+                # engine 所有注册解码方法都返回 (prefix, metrics) 元组
+                if isinstance(generate_ids, tuple):
+                    generate_ids, _ = generate_ids
                 n = n - 1
                 if n == 0:
                     break
@@ -232,6 +235,7 @@ class EvalSpecbench(Decoding):
             self.target_forward_times = 0
             self.num_acc_tokens = []
             self.prob_with_flag = []  # draft每个token的prob与他是否被接收
+            decoded_metrics = []
 
             for datum in tqdm.tqdm(
                 self.data,
@@ -243,6 +247,10 @@ class EvalSpecbench(Decoding):
                 torch.cuda.synchronize()
                 start_time = time.time()
                 generate_ids = decoding(input_ids)
+                # engine 所有注册解码方法都返回 (prefix, metrics) 元组
+                if isinstance(generate_ids, tuple):
+                    generate_ids, sample_metrics = generate_ids
+                    decoded_metrics.append(sample_metrics)
 
                 torch.cuda.synchronize()
                 end_time = time.time()
@@ -300,6 +308,30 @@ class EvalSpecbench(Decoding):
                 f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}",
                 2,
             )
+
+            # 与 humaneval 对齐：落盘解码 metrics 汇总（此前该入口不写任何
+            # _metrics.json，跑完只剩终端打印）
+            metrics_path = os.path.join(
+                self.args.exp_name, f"{self.args.eval_mode}_specbench_metrics.json"
+            )
+            os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+            summary = {
+                "speed_tokens_per_second": speed,
+                "speed_std": speed_std,
+                "num_samples": len(wall_times["time"]),
+            }
+            for key in (decoded_metrics[0] if decoded_metrics else {}):
+                values = [
+                    m[key]
+                    for m in decoded_metrics
+                    if isinstance(m.get(key), (int, float))
+                    and not isinstance(m.get(key), bool)
+                ]
+                if values:
+                    summary[f"mean_{key}"] = sum(values) / len(values)
+            with open(metrics_path, "w") as f:
+                json.dump(summary, f, indent=4)
+            self.color_print(f"Decoding metrics saved to {metrics_path}", 2)
 
         if self.accelerator.is_main_process:
             try:

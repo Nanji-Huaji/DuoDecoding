@@ -216,6 +216,9 @@ class EvalXSum(Baselines):
                 while self.seed in self.seed_set:
                     self.seed = random.randint(0, 1000000)
                 seed_everything(self.seed)
+                # B11：seed_set 此前从不 add，while 恒为假——-n K 时 K 份样本逐字相同。
+                # 对照 humaneval/specbench 的正确写法，入集保证跨样本唯一。
+                self.seed_set.add(self.seed)
 
                 prompt = self.preprocess(article)
                 if prompt is None:
