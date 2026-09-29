@@ -2374,7 +2374,10 @@ class Baselines(Decoding):
         comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
 
         _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
-
+        # D4/B20：RL 选出的草稿长度走方法局部变量——此前直接改写
+        # self.args.gamma1/gamma2，动作残留在全局 Namespace 上污染后续方法
+        gamma2 = int(self.args.gamma2)
+        gamma1 = int(self.args.gamma1)
         while prefix.shape[1] < max_tokens:
 
             # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
@@ -2395,7 +2398,7 @@ class Baselines(Decoding):
             x, little_rebuilt_probs, little_rebuilt_meta, q = self._generate_with_optional_rebuilt_proposal(
                 little_model_cache,
                 prefix.to(little_device),
-                self.args.gamma2,
+                gamma2,
                 current_proposal_top_k,
                 need_topk_metadata=True,
             )
@@ -2418,7 +2421,7 @@ class Baselines(Decoding):
                     task_name,
                     training=not getattr(self.args, "disable_rl_update", False),
                 )
-                self.args.gamma2 = next_k
+                gamma2 = int(next_k)
 
             actual_gamma2 = x.shape[1] - prefix_len
 
@@ -2532,7 +2535,7 @@ class Baselines(Decoding):
             x, draft_rebuilt_probs, _, q = self._generate_with_optional_rebuilt_proposal(
                 draft_model_cache,
                 prefix.to(draft_device),
-                self.args.gamma1,
+                gamma1,
                 current_proposal_top_k,
             )
 
@@ -2551,7 +2554,7 @@ class Baselines(Decoding):
                     task_name,
                     training=not getattr(self.args, "disable_rl_update", False),
                 )
-                self.args.gamma1 = next_k
+                gamma1 = int(next_k)
 
             actual_gamma1 = x.shape[1] - prefix.shape[1]
 

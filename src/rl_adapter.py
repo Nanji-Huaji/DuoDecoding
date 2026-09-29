@@ -159,7 +159,9 @@ class DDQNAgent:
         seq_len=8,
         hidden_dim=128,
         lr=1e-4,
-        gamma=0.99,
+        # D4：折扣因子改名 discount——与 draft γ（gamma_candidates）撞名
+        # 曾让人误读为草稿长度
+        discount=0.99,
         epsilon=1.0,
         epsilon_decay=0.9995,
         epsilon_min=0.01,
@@ -175,7 +177,7 @@ class DDQNAgent:
         self.feature_dim = feature_dim
         self.action_dim = action_dim
         self.seq_len = seq_len
-        self.gamma = gamma
+        self.discount = discount
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
@@ -250,7 +252,7 @@ class DDQNAgent:
             with torch.no_grad():
                 next_actions = self.policy_net(next_states).argmax(1, keepdim=True)
                 next_q_values = self.target_net(next_states).gather(1, next_actions)
-                target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+                target_q_values = rewards + (1 - dones) * self.discount * next_q_values
 
             current_q_values = self.policy_net(states).gather(1, actions)
             loss = self.loss_fn(current_q_values, target_q_values)
@@ -825,19 +827,10 @@ class RLNetworkAdapter:
         self.state_history.append(current_feat)
         state_seq = np.array(self.state_history)
 
-        if not self.frozen and (
-            self.last_state_seq is not None
-            and self.last_action is not None
-            and self.last_reward is not None
-        ):
-            self.agent.store_transition(
-                self.last_state_seq,
-                self.last_action,
-                self.last_reward,
-                state_seq,
-                done=False,
-            )
-            self.agent.update()
+        # D4：学习步与决策步分离——结算挂起转移并更新网络单点化为
+        # _flush_transition（select_config 的非终止转移与 save 的终止转移
+        # 共用；调用点与时序不变，buffer 内容逐条等价）
+        self._flush_transition(state_seq, done=False)
 
         action_idx = self.agent.select_action(
             state_seq, training=training and not self.frozen
@@ -1092,6 +1085,28 @@ class RLNetworkAdapter:
             print(f"[{self.agent.name}] {self.reward_log.format(components)}", flush=True)
         return reward
 
+    def _flush_transition(self, next_state_seq, done: bool) -> bool:
+        """D4：显式学习步——结算挂起的转移并更新网络。
+
+        从决策热路径分离出来的唯一学习入口；frozen 或握手不完整时
+        不做任何事。返回是否实际结算。
+        """
+        if self.frozen or not (
+            self.last_state_seq is not None
+            and self.last_action is not None
+            and self.last_reward is not None
+        ):
+            return False
+        self.agent.store_transition(
+            self.last_state_seq,
+            self.last_action,
+            self.last_reward,
+            next_state_seq,
+            done=done,
+        )
+        self.agent.update()
+        return True
+
     def step(self, reward: float):
         if self.frozen:
             return
@@ -1100,19 +1115,7 @@ class RLNetworkAdapter:
     def save(self, current_tps: float | None = None):
         if self.frozen:
             return
-        if (
-            self.last_state_seq is not None
-            and self.last_action is not None
-            and self.last_reward is not None
-        ):
-            self.agent.store_transition(
-                self.last_state_seq,
-                self.last_action,
-                self.last_reward,
-                self.last_state_seq,
-                done=True,
-            )
-            self.agent.update()
+        if self._flush_transition(self.last_state_seq, done=True):
             self.last_state_seq = None
             self.last_action = None
             self.last_reward = None

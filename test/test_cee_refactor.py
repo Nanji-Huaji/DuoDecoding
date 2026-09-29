@@ -244,6 +244,9 @@ class CeeRefactorTests(unittest.TestCase):
     def test_ceesd_without_arp_uses_stage_helper_twice(self):
         instance = self._make_instance("ceesd_without_arp")
         prefix = torch.tensor([[0]], dtype=torch.long)
+        # D4/B20：记录初始 γ，方法结束后验证不被 RL 动作污染
+        self._orig_gamma1 = getattr(instance.args, "gamma1", None)
+        self._orig_gamma2 = getattr(instance.args, "gamma2", None)
         stage_calls = []
 
         def fake_stage_verify(
@@ -283,6 +286,9 @@ class CeeRefactorTests(unittest.TestCase):
 
         self.assertEqual(stage_calls[0][:2], ("little", "draft"))
         self.assertEqual(stage_calls[1][:2], ("draft", "target"))
+        # D4/B20：RL 选出的草稿长度不得残留在全局 Namespace 上
+        self.assertEqual(instance.args.gamma1, self._orig_gamma1)
+        self.assertEqual(instance.args.gamma2, self._orig_gamma2)
 
     def test_cee_dssd_uses_stage_helper_twice(self):
         instance = self._make_instance("cee_dssd")
