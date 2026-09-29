@@ -20,6 +20,7 @@ from .communication import (
     CommunicationSimulator,
     PreciseCommunicationSimulator,
     PreciseCUHLM,
+    PROB_QUANT_PASS_THROUGH_BITS,
 )
 from .decoding_ops import (
     apply_rollback,
@@ -161,7 +162,12 @@ def _quantize_probs_logspace(probs: torch.Tensor, bits: int) -> torch.Tensor:
     · 重归一化保证和为 1 ✓（否则接受判据的比值会失真）
     · bits >= 16 时原样返回 ⇒ 默认路径与历史数字完全一致 ✓
     """
-    if bits is None or bits >= 16 or probs is None or probs.numel() == 0:
+    if (
+        bits is None
+        or bits >= PROB_QUANT_PASS_THROUGH_BITS
+        or probs is None
+        or probs.numel() == 0
+    ):
         return probs
     levels = float((1 << int(bits)) - 1)
     p32 = probs.to(torch.float32)
@@ -2080,7 +2086,7 @@ class Baselines(Decoding):
                 # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
                 # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
                 _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _prob_bits < 16:
+                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
                     draft_stage_probs = _quantize_probs_logspace(
                         draft_stage_probs, _prob_bits
                     )
@@ -2090,7 +2096,7 @@ class Baselines(Decoding):
                     prefix_len,
                     total_gamma,
                 )
-                if _prob_bits < 16:
+                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
                     comm_simulator.transfer(
                         draft_tokens_second, draft_probs_second, "edge_cloud",
                         prob_bits=_prob_bits,
@@ -3746,7 +3752,7 @@ class Baselines(Decoding):
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _pb < 16:                      # 概率载荷按位宽计费 ✓
+                if _pb < PROB_QUANT_PASS_THROUGH_BITS:  # 概率载荷按位宽计费 ✓（B16：与量化门同源）
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
                     prob_bytes = int(_n) * _pb / 8.0
@@ -3900,7 +3906,7 @@ class Baselines(Decoding):
                 # 概率载荷位宽动作（默认 16 = 不变 ⇒ 历史数字可复现 ✓）。
                 # 量化的是**验证路径看到的 q̂**，与"传输同一个 q̂"保持自洽 ✓
                 _prob_bits = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _prob_bits < 16:
+                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
                     draft_stage_probs = _quantize_probs_logspace(
                         draft_stage_probs, _prob_bits
                     )
@@ -3910,7 +3916,7 @@ class Baselines(Decoding):
                     prefix_len,
                     total_gamma,
                 )
-                if _prob_bits < 16:
+                if _prob_bits < PROB_QUANT_PASS_THROUGH_BITS:
                     comm_simulator.transfer(
                         draft_tokens_second, draft_probs_second, "edge_cloud",
                         prob_bits=_prob_bits,
@@ -4109,7 +4115,7 @@ class Baselines(Decoding):
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 _pb = int(getattr(self.args, "prob_payload_bits", 16) or 16)
-                if _pb < 16:                      # 概率载荷按位宽计费 ✓
+                if _pb < PROB_QUANT_PASS_THROUGH_BITS:  # 概率载荷按位宽计费 ✓（B16：与量化门同源）
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
                     prob_bytes = int(_n) * _pb / 8.0

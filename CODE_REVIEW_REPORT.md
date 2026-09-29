@@ -95,7 +95,7 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 |---|------|------------|
 | B14 | 【✅ 已修复：删条件重复调用（_trace_comm 内部已有门控）】`transfer()` 对每笔传输写**两条**相同 COMM_TRACE 记录（重构残留：658 无条件调 + 667 条件再调，`_trace_comm` 内部已有门控） | `communication.py:658-676` → 删除 667-676 |
 | B15 | `prob_payload_bits` 只在 tridecoding/adaptive_tridecoding 第二级上行生效（4 处接线：2062/3704/3858/4025），其余路径与第一级静默忽略 | 统一收敛进发送 helper，或 argparse 按模式校验报错 |
-| B16 | `prob_bits≥16` 时"不量化"与"按位计费"不一致：量化早退条件 `bits>=16`，计费条件 `bits < 8*element_size` → fp32 概率 + bits=16..31 时收 16bit 钱用 32bit 信息 | `baselines.py:161` 早退改为 `bits >= 8*probs.element_size()`；log 量化锚点 lo/hi 字节计入或声明忽略 |
+| B16 | 【✅ 已定性修正+关缝：**潜伏 API 语义缝隙，非活跃计费 bug**——经复核，全部调用点（量化 2 处、传参 2 处、手工计费 2 处）均以严格 `< 16` 门控，不一致窗口（fp32 + bits∈[16,32)）当前不可达；原描述"收 16bit 钱传 32bit 信息"写成了现在时，属过度陈述。已结构性关死：穿透阈值提为 `PROB_QUANT_PASS_THROUGH_BITS=16` 常量单源，计费条件镜像量化门（`min(16, 8*elem)`），全部行为零变化（含 argparse 默认值 16 恰在窗口左端点的贴边行为，3 项边界测试锁死）；不变量不再依赖散落调用点各自记得门控】量化早退 `bits>=16` 与计费 `bits < 8*element_size` 不一致 | 常量单源 + 计费条件镜像量化门 |
 | B17 | 下行回传计费口径分裂：旧方法 token 与位置索引分两次传输付 **2 次 NTT**（1107-1108、2019-2020、2482、4824），新方法合并付 1 次（4042-4050） | 抽 `send_downlink_token()` helper 全仓统一 |
 | B18 | `avg_top_k` 语义分叉：无 transfer_top_k 时 dist_spec 记 `args.top_k`（采样参数），dssd/tridecoding 记 0 | 统一为"只统计传输压缩 top-k，未压缩记 0" |
 | B19 | `--use_cuda_graph` 三档接线：tridecoding 完全漏接（`build_adaptive_tridecoding_caches` 无图参数），cee_\* 裸接（无验证图档位、无跨样本复用 → 每样本重捕获 ~534ms） | 全部改走 `_graph_mode_cache_kwargs` + 复用属性 |

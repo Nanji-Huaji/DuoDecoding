@@ -88,6 +88,14 @@ def _next_ntt_trace_value() -> float | None:
     return v
 
 
+# B16：概率载荷量化的"穿透阈值"——bits < 16 才真实量化（对数域），
+# >= 16 视为不量化、按原始 element_size 计费。计费条件必须与此门
+# 镜像（同一常量单源），否则会出现"收 bits 钱、传 element_size 数据"。
+# 调用方（baselines）的 `< 16` 门与 _quantize_probs_logspace 的
+# `>= 16 早退`均引用此语义。
+PROB_QUANT_PASS_THROUGH_BITS = 16
+
+
 class CommunicationSimulator:
     """
     用于模拟通信的类
@@ -610,10 +618,20 @@ class CommunicationSimulator:
             token_bytes = tokens.element_size() * tokens.numel()
 
         # 概率载荷位宽（默认 None ⇒ 用 element_size()，与历史口径一致 ✓）
+        # B16 缝隙关死：位宽计费只在真实量化的阈值内生效（<16 才量化，
+        # 见 baselines._quantize_probs_logspace 的同款门）。原条件
+        # `bits < 8*element_size` 对 fp32 存在 [16,32) 窗口——bits≥16 时
+        # 数据不量化却按 bits/8 计费。当前所有调用点都以 `< 16` 严格门控，
+        # 窗口不可达（潜伏缝隙而非活跃 bug）；此处镜像阈值后即使未来
+        # 调用点漏门控也不会张开。argparse 默认值 16 恰在窗口左端点，
+        # 此前全靠调用点的严格 < 挡住。
         prob_elem = None
         if prob is not None:
             prob_elem = prob.element_size()
-            if prob_bits is not None and 0 < int(prob_bits) < 8 * prob_elem:
+            if (
+                prob_bits is not None
+                and 0 < int(prob_bits) < min(PROB_QUANT_PASS_THROUGH_BITS, 8 * prob_elem)
+            ):
                 prob_elem = int(prob_bits) / 8.0
 
         # Probability history data size (float32 or float16)

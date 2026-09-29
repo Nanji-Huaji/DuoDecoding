@@ -10,6 +10,8 @@
 
 import math
 
+import pytest
+
 import torch
 
 from src.communication import (
@@ -280,3 +282,42 @@ class TestCuhlmCompressedVocab:
         )
         # k 曾与 batch 维（3）比较：k=5 >= 3 会原样返回；现在应真正压缩
         assert not torch.equal(compressed, probs)
+
+
+class TestProbBitsBillingWindow:
+    """B16：位宽计费窗口语义（缝隙已关死）。
+
+    计费条件与量化穿透阈值镜像后：bits >= 16 永远按 element_size
+    全宽计费（数据不量化）。argparse 默认值 16 恰在旧窗口左端点，
+    此处锁死其贴边行为。
+    """
+
+    def _sim(self):
+        # 8 MBps = 1 B/ms，传输时间毫秒数即字节数
+        return CommunicationSimulator(8, float("inf"), float("inf"), dimension="MBps")
+
+    def test_fp32_bits16_bills_full_width(self):
+        # 旧条件 `0 < 16 < 8*4=32` 会按 2B/项计费，数据却未量化
+        prob = torch.zeros(1, 1, 100, dtype=torch.float32)
+        sim = self._sim()
+        t16 = sim.transfer(None, prob, "edge_cloud", False, None, 16)
+        t32 = sim.transfer(None, prob, "edge_cloud", False, None, 32)
+        t8 = sim.transfer(None, prob, "edge_cloud", False, None, 8)
+        assert t16 == pytest.approx(t32)          # 400B：全宽
+        # 差值断言（扣除公共 NTT 底噪）：400B − 100B = 300B @ 8MB/s
+        assert t16 - t8 == pytest.approx(300 / 8e6, rel=1e-6)
+
+    def test_fp16_bits16_bills_full_width(self):
+        prob = torch.zeros(1, 1, 100, dtype=torch.float16)
+        sim = self._sim()
+        t16 = sim.transfer(None, prob, "edge_cloud", False, None, 16)
+        t12 = sim.transfer(None, prob, "edge_cloud", False, None, 12)
+        # fp16 全宽 2B/项=200B；bits=12 → 1.5B/项=150B（差值扣底噪）
+        assert t16 - t12 == pytest.approx(50 / 8e6, rel=1e-6)
+
+    def test_zero_or_negative_bits_ignored(self):
+        prob = torch.zeros(1, 1, 100, dtype=torch.float32)
+        sim = self._sim()
+        t0 = sim.transfer(None, prob, "edge_cloud", False, None, 0)
+        tnone = sim.transfer(None, prob, "edge_cloud", False, None, None)
+        assert t0 == pytest.approx(tnone)
