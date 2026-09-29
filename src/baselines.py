@@ -2560,15 +2560,6 @@ class Baselines(Decoding):
 
             queuing_time += batch_delay
             _ = target_model_cache.generate(x.to(target_device), 1)
-            assert target_model_cache.logits_history is not None, (
-                "Target model logits history is None"
-            )
-            target_stage_probs = norm_logits(
-                target_model_cache.logits_history[:, :, : self.vocab_size],
-                self.args.temp,
-                0,
-                0,
-            ).to(draft_device)
 
             draft_model_forward_times += actual_gamma1
             target_model_forward_times += 1

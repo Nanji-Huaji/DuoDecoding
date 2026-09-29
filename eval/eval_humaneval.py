@@ -15,6 +15,7 @@ from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines
+from src.metrics import accumulate_metrics
 from eval.model_ids import determine_model_id
 from src.metrics import get_empty_metrics
 from src.utils import parse_arguments, seed_everything
@@ -243,11 +244,8 @@ class EvalHumaneval(Baselines):
                 generate_ids = decoding(input_ids)
                 if isinstance(generate_ids, tuple):
                     generate_ids, metrics = generate_ids
-                    for key in decoding_metrics.keys():
-                        if key not in ["", "throughput"] and hasattr(
-                            decoding_metrics[key], "__add__"
-                        ):
-                            decoding_metrics[key] += metrics[key]
+                    # B30：单点化（原实现无键检查——metrics 缺键即 KeyError）
+                    accumulate_metrics(decoding_metrics, metrics)
                 t = 0
                 torch.cuda.synchronize()
                 end_time = time.time()

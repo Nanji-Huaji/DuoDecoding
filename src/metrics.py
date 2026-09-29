@@ -147,3 +147,35 @@ def get_empty_metrics() -> DecodingMetrics:
         little_accepted_transfer_topk_rank_history=[],
         draft_accepted_transfer_topk_rank_history=[],
     )
+
+
+def accumulate_metrics(target: DecodingMetrics, incoming: dict) -> None:
+    """B30：多样本 metrics 累加单点化。
+
+    取代原先散落在 5 个 eval 脚本里的合并循环——它们的排除表互相
+    矛盾（["throughput"] / ["", "throughput"] / [两个死键,
+    "throughput"] / [两个死键, "accuracy", "throughput"]），其中
+    little_acceptance_rate / draft_acceptance_rate 在 src 中从不
+    产出（死键），humaneval 的 "" 是幽灵键；三处实现在键缺失时
+    还会潜伏 KeyError（外层条件失败仍摸 metrics[key]）。
+
+    语义：
+    - "throughput" / "accuracy" 不累加：前者由样本末统一重算，
+      后者由各脚本按任务自行管理
+    - dict 值做子键合并（如 connect_times）；其余要求可加
+      （hasattr __add__），缺失键静默跳过
+    """
+    skip = ("throughput", "accuracy")
+    for key in list(target.keys()):
+        if key in skip or key not in incoming:
+            continue
+        value = incoming[key]
+        if isinstance(value, dict):
+            sub_target = target[key]
+            for sub_key, sub_value in value.items():
+                if sub_key in sub_target and hasattr(sub_value, "__add__"):
+                    sub_target[sub_key] = sub_target[sub_key] + sub_value
+                else:
+                    sub_target[sub_key] = sub_value
+        elif hasattr(value, "__add__"):
+            target[key] = target[key] + value

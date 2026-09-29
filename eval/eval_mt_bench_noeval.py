@@ -15,7 +15,8 @@ import tqdm
 from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
 
-from src.baselines import Baselines, get_empty_metrics
+from src.baselines import Baselines
+from src.metrics import accumulate_metrics, get_empty_metrics
 from eval.model_ids import determine_model_id
 from src.utils import parse_arguments, seed_everything
 from utils import select_eval_data
@@ -285,37 +286,9 @@ class EvalMTBench(Baselines):
                     output_ids = decoding(input_ids)
                     if isinstance(output_ids, tuple) and len(output_ids) == 2:
                         output_ids, metrics = output_ids
-                        for key in decoding_metrics.keys():
-                            if (
-                                key in metrics
-                                and key
-                                not in [
-                                    "little_acceptance_rate",
-                                    "draft_acceptance_rate",
-                                    "throughput",
-                                ]
-                                and hasattr(metrics[key], "__add__")
-                            ):
-                                decoding_metrics[key] += metrics[key]
-                                assert decoding_metrics[key] is not None, (
-                                    f"Metric {key} is None, please check your decoding function."
-                                )
-                            else:
-                                # 如果传入一个字典，尝试将字典的值进行累加
-                                if isinstance(metrics[key], dict):
-                                    try:
-                                        for sub_key in metrics[key]:
-                                            if sub_key in decoding_metrics[key]:
-                                                decoding_metrics[key][sub_key] += (
-                                                    metrics[key][sub_key]
-                                                )
-                                            else:
-                                                decoding_metrics[key][sub_key] = (
-                                                    metrics[key][sub_key]
-                                                )
-                                    except Exception as e:
-                                        print(f"Error updating metric {key}: {e}")
-
+                        # B30：单点化（原实现的死键排除表互相矛盾，
+                        # 且键缺失时 else 分支潜伏 KeyError）
+                        accumulate_metrics(decoding_metrics, metrics)
                     output_ids = cast(torch.Tensor, output_ids)
 
                     torch.cuda.synchronize()

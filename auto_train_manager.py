@@ -605,28 +605,25 @@ class TrainingManager:
         try:
             # 只针对当前模型系列相关的标记进行清理，避免干扰正在运行的其他模型训练
             # 我们通过匹配命令行中的模型参数来定位进程
-            patterns = []
-            if self.model_series_name == "llama":
-                patterns = ["llama-68m", "tiny-llama-1.1b", "Llama-2-13b"]
-            elif self.model_series_name == "llama-70b":
-                patterns = [
-                    "llama-68m",
-                    "Llama-2-7b-chat-hf",
-                    "Llama-2-70b-chat-hf",
-                ]
-            elif self.model_series_name == "vicuna":
-                patterns = ["vicuna-68m", "tiny-vicuna-1b", "vicuna-13b-v1.5"]
-            elif self.model_series_name == "qwen":
-                patterns = ["Qwen3-0.6B", "Qwen3-1.7B", "Qwen3-14B"]
-            elif self.model_series_name == "qwen-32b":
-                patterns = ["Qwen3-1.7B", "Qwen3-14B", "Qwen3-32B"]
-            elif self.model_series_name == "qwen15":
-                patterns = ["Qwen1.5-0.5B-Chat", "Qwen1.5-1.8B-Chat", "Qwen1.5-7B-Chat"]
-
+            # B37：模式由 self.models 生成（单一事实源）——此前 elif 链硬编码
+            # 且与 MODEL_SERIES 大小写分歧：llama 系 target 实为
+            # "llama-2-13b"，硬编码的 "Llama-2-13b" 永远匹配不到，残留
+            # 进程杀不掉；裸模型名子串误伤面也大。改为带 --*_model 前缀的
+            # 完整参数匹配 + list 形式 exec（不经 shell 拼接）。
+            if not self.models:
+                print(
+                    f"[{datetime.now()}] Unknown model series "
+                    f"{self.model_series_name!r}, skip process cleanup."
+                )
+                return
+            patterns = [
+                f"--{flag} {model}"
+                for model in self.models
+                for flag in ("little_model", "draft_model", "target_model")
+            ]
             for p in patterns:
-                # 使用 pkill -f 匹配包含特定模型路径的进程
-                # 这样可以精准杀掉当前系列的训练进程，而不会误杀其他系列的进程
-                subprocess.run(f"pkill -9 -f '{p}'", shell=True)
+                # 匹配包含完整 "--xxx_model <name>" 参数的进程命令行
+                subprocess.run(["pkill", "-9", "-f", p], check=False)
 
             # 同时也清理属于当前系列的评估脚本（如果有的话）
             # 虽然 eval_mixed 会随机采样，但它启动时参数里会有对应的模型名

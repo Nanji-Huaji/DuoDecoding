@@ -13,7 +13,8 @@ import tqdm
 from datasets import load_dataset
 from few_shot_examples import get_few_shot_prompt
 
-from src.baselines import Baselines, get_empty_metrics
+from src.baselines import Baselines
+from src.metrics import accumulate_metrics, get_empty_metrics
 from eval.model_ids import determine_model_id
 from src.utils import parse_arguments
 
@@ -222,14 +223,8 @@ class EvalGSM8K(Baselines):
                 output_ids = decoding(input_ids)
                 if isinstance(output_ids, tuple):
                     output_ids, metrics = output_ids
-                    # Merge metrics
-                    for key in decoding_metrics.keys():
-                        if (
-                            key in metrics
-                            and key != "throughput"
-                            and hasattr(metrics[key], "__add__")
-                        ):
-                            decoding_metrics[key] += metrics[key]
+                    # Merge metrics（B30：单点化）
+                    accumulate_metrics(decoding_metrics, metrics)
 
                 torch.cuda.synchronize()
                 end_time = time.time()

@@ -238,7 +238,10 @@ def seed_everything(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    # B28：deterministic 与 benchmark 互斥——benchmark=True 会为输入形状选
+    # "最快但不一定确定"的实现，上面的 deterministic 沦为伪保证。复现优先；
+    # 解码负载形状固定，benchmark 的加速收益本就有限。
+    torch.backends.cudnn.benchmark = False
 
 
 def parse_arguments():

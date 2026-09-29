@@ -21,9 +21,14 @@ def build_draft_probs_override(
 ) -> Optional[torch.Tensor]:
     if rebuilt_draft_probs is None:
         return None
+    if stage_start_len < 0:
+        # B44：负起点此前会静默切成 [:, :-1, :]（取到倒数第二位的整段前缀），
+        # 产出与调用意图完全无关的概率覆盖
+        raise ValueError(f"stage_start_len 必须 >= 0，收到 {stage_start_len}")
+    prefix_len = max(stage_start_len - 1, 0)
     return torch.cat(
         (
-            cache.prob_history[:, : stage_start_len - 1, :],
+            cache.prob_history[:, :prefix_len, :],
             rebuilt_draft_probs,
         ),
         dim=1,
