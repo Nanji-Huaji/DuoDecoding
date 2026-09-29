@@ -250,6 +250,20 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         self.assertEqual(metrics["avg_top_k"], 5)
         self.assertEqual(metrics["avg_draft_len"], 1)
 
+    def test_dsd_reports_zero_top_k_when_compression_disabled(self):
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        # B18：采样 top-k 与传输压缩无关。关压缩时 avg_top_k 必须是 0，
+        # 而不是回退成 self.args.top_k（此前 dsd 的实际行为）。
+        self.instance.args.top_k = 7
+
+        with ExitStack() as stack:
+            self._enter_common_patches(stack)
+            output, metrics = self.instance.dist_spec(prefix, transfer_top_k=0)
+
+        self.assertGreater(output.shape[1], prefix.shape[1])
+        self.assertEqual(metrics["avg_top_k"], 0)
+        self.assertEqual(metrics["avg_draft_len"], 1)
+
     def test_adaptive_decoding_reports_average_active_top_k(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
 

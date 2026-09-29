@@ -740,8 +740,12 @@ class Decoding(Register, ABC):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if self.args.eval_mode == "small":
             model = self.draft_model
+            # B39：small 模式实际跑的是 draft 模型，前向次数应记入
+            # draft_forward_times；此前统一写 target_forward_times，模型身份错标。
+            forward_times_key = "draft_forward_times"
         elif self.args.eval_mode == "large":
             model = self.target_model
+            forward_times_key = "target_forward_times"
         else:
             raise RuntimeError(
                 "Auto-Regressive Decoding can be used only in small / large eval mode!"
@@ -759,7 +763,7 @@ class Decoding(Register, ABC):
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
-        target_forward_times = 0
+        forward_times = 0
 
         start_event.record(stream=torch.cuda.current_stream())
         queuing_time = 0
@@ -767,7 +771,7 @@ class Decoding(Register, ABC):
         while x.shape[1] < max_tokens:
             queuing_time += batch_delay
             x = model.generate(x, 1)
-            target_forward_times += 1
+            forward_times += 1
 
             if use_early_stopping and self._check_stopping_criteria(
                 x, stop_sequences, prompt_len=prefix_len
@@ -782,7 +786,7 @@ class Decoding(Register, ABC):
         generated_tokens = x.shape[1] - prefix_len
 
         metrics = get_empty_metrics()
-        metrics["target_forward_times"] = target_forward_times
+        metrics[forward_times_key] = forward_times
         metrics["generated_tokens"] = generated_tokens
         metrics["queuing_time"] = queuing_time
         metrics["wall_time"] = elapsed_time + queuing_time

@@ -1335,10 +1335,14 @@ class Baselines(Decoding):
             # 累积追踪指标
             total_draft_steps += 1
             sum_draft_len += current_gamma
+            # B18：avg_top_k 只统计"传输压缩 top-k"，未压缩记 0（与 dssd/
+            # tridecoding/adaptive_decoding 同名列一致）。此前回退到
+            # self.args.top_k（采样 top-k），与传输/DRA 的选择无关，导致同一
+            # 指标列在 dsd 上是另一个量。
             sum_top_k += (
                 transfer_top_k
                 if transfer_top_k is not None and transfer_top_k > 0
-                else self.args.top_k
+                else 0
             )
 
             # 上行只计本轮新草稿（x = prefix + 本轮γ个新token）。KV/前缀留存云端，

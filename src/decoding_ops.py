@@ -495,7 +495,9 @@ def verify_draft_sequence(
             )
 
     if decoding_metrics is not None:
-        decoding_metrics["draft_generated_tokens"] += gamma
+        # B43：此前用请求 gamma，prob_history 被截短（actual_gamma < gamma）时
+        # 分母偏大。与 B12 同款，统一用 actual_gamma。
+        decoding_metrics["draft_generated_tokens"] += verification_inputs.actual_gamma
         decoding_metrics["draft_accepted_tokens"] += int(n - prefix_len + 1)
 
     return accepted_counts, int(n)
