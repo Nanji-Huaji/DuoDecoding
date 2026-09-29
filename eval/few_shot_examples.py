@@ -1,3 +1,5 @@
+import warnings
+
 # 官方 GSM8K CoT few-shot 示例（使用标准格式）
 GSM8K_FEW_SHOT_EXAMPLES = [
     {
@@ -82,6 +84,16 @@ TRANSLATION_FEW_SHOT_EXAMPLES = [
 
 def get_few_shot_prompt(task, num_shots):
     if num_shots <= 0:
+        return ""
+
+    # B33：不支持 few-shot 的 task 此前静默返回空串——--num_shots 无效且
+    # 无任何告警（mt_bench 实测复现）。显式列出支持集并高声告警。
+    supported = {"gsm8k", "cnndm", "xsum", "summarization", "humaneval", "translation"}
+    if task not in supported:
+        warnings.warn(
+            f"few-shot 不支持 task '{task}'（支持: {sorted(supported)}），"
+            f"--num_shots {num_shots} 被忽略（该基准为对话式，few-shot 不适用）"
+        )
         return ""
 
     prompt = ""

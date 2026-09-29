@@ -101,18 +101,18 @@ checkpoint 的 ε≈0.01 → 评估时约 1% 决策是纯随机动作，且 cees
 | B19 | `--use_cuda_graph` 三档接线：tridecoding 完全漏接（`build_adaptive_tridecoding_caches` 无图参数），cee_\* 裸接（无验证图档位、无跨样本复用 → 每样本重捕获 ~534ms） | 全部改走 `_graph_mode_cache_kwargs` + 复用属性 |
 | B20 | RL adapter 直接改写全局 `self.args.gamma1/gamma2`（2386、2514），跨样本/跨任务残留；对照 adaptive_tridecoding 已用实例属性 | 统一为实例级 `_next_gammaN` |
 | B21 | `ceesd_without_arp` 每轮对整条 logits 历史做 `norm_logits` 后**从未使用**（2523-2528，O(L×V) softmax + 跨设备拷贝） | 删除 |
-| B22 | `model_zoo` 的 `vocab_size` 查表在 zoo 映射**之后**（`utils.py:297-306`），键是别名、值是路径 → 字典对最常用别名全部 miss，每次 parse 都读 config.json 或走 `AutoConfig.from_pretrained(trust_remote_code=True)` 网络回退；dict 还有重复键 `"llama-2-70b"`（234/263） | 查表移到映射前，或删字典（engine 反正会重算） |
-| B23 | zoo 把未部署模型映射为 `"deepseek-1.3b还没部署"` 等占位符（268-279），垃圾路径静默传播 | 删键或映射时 raise |
-| B24 | 默认 `--draft_model codellama-7b` / `--target_model codellama-70b`（319-320）不可解析：zoo 无此键、本地无此目录、HF 无此仓库名 | 改为真实存在的对或 `default=None` 必填 |
+| B22 | 【✅ 已修复：vocab 查表移回映射前用原始别名命中；重复键去重】`model_zoo` 的 `vocab_size` 查表在 zoo 映射**之后**（`utils.py:297-306`），键是别名、值是路径 → 字典对最常用别名全部 miss，每次 parse 都读 config.json 或走 `AutoConfig.from_pretrained(trust_remote_code=True)` 网络回退；dict 还有重复键 `"llama-2-70b"`（234/263） | 查表移到映射前，或删字典（engine 反正会重算） |
+| B23 | 【✅ 已修复：未部署集合 + 解析阶段显式 ValueError】zoo 把未部署模型映射为 `"deepseek-1.3b还没部署"` 等占位符（268-279），垃圾路径静默传播 | 删键或映射时 raise |
+| B24 | 【✅ 已修复：default=None + parse 后置块开头 parser.error（先于 acc-head/RL 解析）】默认 `--draft_model codellama-7b` / `--target_model codellama-70b`（319-320）不可解析：zoo 无此键、本地无此目录、HF 无此仓库名 | 改为真实存在的对或 `default=None` 必填 |
 | B25 | 【✅ 已修复：显式 (draft, target, little) 固定优先级】legacy RL 回退路径用 **set 迭代**生成顺序（`rl_agent_registry.py:119` `for model_name in {little, draft, target}`），跨进程 hash 随机 → 多个 legacy checkpoint 并存时加载哪个纯凭运气，可能迁错模型对的 agent | 改显式列表按固定优先级排序 |
-| B26 | zoo 别名与 `CANONICAL_MODEL_ALIASES` 分歧：zoo 用 `qwen-3-0.6b`，registry 只认 `qwen3-0.6b`；`llama-2-chat-7b` vs `llama-2-7b-chat` 同病 → 合法别名静默错过已注册对，落到不存在的默认路径（实测复现） | zoo 映射后统一过 canonicalize，两表合并为单一事实源 |
+| B26 | 【✅ 已修复：分歧别名（qwen-3-*/llama-2-chat-7b）并入 CANONICAL_MODEL_ALIASES 统一归一】zoo 别名与 `CANONICAL_MODEL_ALIASES` 分歧：zoo 用 `qwen-3-0.6b`，registry 只认 `qwen3-0.6b`；`llama-2-chat-7b` vs `llama-2-7b-chat` 同病 → 合法别名静默错过已注册对，落到不存在的默认路径（实测复现） | zoo 映射后统一过 canonicalize，两表合并为单一事实源 |
 | B27 | `norm_numpy_logits` 的 top-k/top-p 过滤被注释禁用（`utils.py:1313`），接口名不副实；唯一调用方是死代码 model_cpu.py | 删函数或恢复过滤 |
 | B28 | `seed_everything` 同时设 `cudnn.deterministic=True` 与 `benchmark=True`（223-224）——后者选最快但不一定确定的算法，伪复现保证 | 二选一 |
 | B29 | warmup 计数一族 off-by-one 且各脚本不一致：mt_bench/noeval n=10 实际 9 次（break 在生成前），cnndm/xsum n=5 → 4 次，humaneval/specbench 恰好 10 次，gsm8k 0 次 | 抽公共 `warmup(n)`，统一"先检查后生成" |
 | B30 | metrics 合并循环 5 种分叉实现，排除列表互相矛盾且含死键（`little_acceptance_rate/draft_acceptance_rate` 全 src 不存在）；humaneval/mt_bench 两处在键缺失时潜伏 KeyError | `src/metrics.py` 提供单一 `merge_metrics()` |
 | B31 | cnndm/xsum 解码异常路径：吞异常 + 用 EOS 占位后 `num_tokens = 1 - prompt_len < 0` 混入均值，污染 tokens/s 与 ROUGE | 异常时 continue 或记 status 剔除，`max(0, ...)` 钳制 |
 | B32 | `eval_cnndm.py:166` 硬编码 `use_early_stopping=True` 覆盖 exp.py 传入值；`eval_mt_bench_noeval.py:141-148` partial 丢 `use_stochastic_comm` | 参数统一由 partial 装配函数生成 |
-| B33 | MT-bench few-shot 是静默 no-op：`get_few_shot_prompt("mt_bench", ...)` 无对应分支返回空串（`few_shot_examples.py:83-108`），`--num_shots 3` 无效无告警 | 未知 task raise，或删调用点 |
+| B33 | 【✅ 已修复：不支持的任务显式告警并返回空串】MT-bench few-shot 是静默 no-op：`get_few_shot_prompt("mt_bench", ...)` 无对应分支返回空串（`few_shot_examples.py:83-108`），`--num_shots 3` 无效无告警 | 未知 task raise，或删调用点 |
 | B34 | chat 模板后未关 `add_special_tokens`：`eval_mixed.py:300-302`、`eval_humaneval.py:119-125`（只豁免 Llama-3.1）→ Llama-3/3.2 系潜在双 BOS | 所有 chat 模板路径统一 `add_special_tokens=False` |
 | B35 | mt_bench/noeval 以 append 写 jsonl 却用全文件重算速度（185/497），重跑时速度混入旧数据、accuracy 只算本次 | 记录文件偏移或只统计本次写入行 |
 | B36 | 【✅ 已修复：告警 + 回退 -1.0】`best.pth` 缺 `best_tps` 键时回退 `+inf`（`rl_adapter.py:315-318`）→ `new_best` 恒 False，"best" 永不更新且无警告 | 告警并回退 -1.0，或迁移脚本补键 |
@@ -282,6 +282,14 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 6. R4/R5：summary JSON 原子写（exp.py + exp_threshold）；exp.py 子进程改 `start_new_session` + 异常 killpg；`torch.load` 加 `weights_only=True`（checkpoint/acc-head）；replay buffer 白名单 unpickler。
 7. R10 查证结论：`profile_cee_dsd.py` 的 `ProfiledBaselines` 与生产 `cee_dsd` 同名注册到类级共享 dict，但**全仓无任何 import 链**（纯休眠地雷）；建议后续把插桩改为上下文包裹式或改名注册，暂未动。
 8. 全量测试对照：HEAD 25 failed/89 passed → 本批后 **21 failed/97 passed**（少的 4 个 = B1 删除的 adaptive 测试文件；21 个失败全部为 temperature_sampling 等既有问题，`comm` 对照**零新增失败**）。
+
+**第四批修复（2026-03，模型解析链 B22/B23/B24/B26/B33）：**
+1. B24：`--draft_model/--target_model` 默认 codellama-7b/70b（不可解析）移除，改 default=None；必填检查放在 parse 后置块开头（parser.error，先于 acc-head/RL 解析——否则 None 会让 canonicalize 以 AttributeError 崩，实测发现的次生问题），model_zoo 内保留同款检查兜底直接调用方。
+2. B23：未部署模型（deepseek-1.3b/6.7b、vicuna-7b-v1.5/v1.3）从 zoo 占位符改为解析阶段显式 ValueError；zoo 表同步删除占位条目。
+3. B22：vocab_size 查表移回 zoo 映射之前用原始别名命中（此前映射后查表，别名全 miss，每次 parse 读 config.json 或走网络）；重复键 llama-2-70b 去重。
+4. B26：zoo 与 CANONICAL_MODEL_ALIASES 的分歧别名（qwen-3-0.6b/1.7b/14b、llama-2-chat-7b）并入 canonical 表统一归一——registry 在 zoo 映射前拿到原始别名（RL 解析先于 model_zoo），两种拼法此前指向不同 series、静默错过已注册对；canonicalize 另加空名防御。
+5. B33：few_shot 对不支持任务（mt_bench 等对话式基准）显式 UserWarning 并返回空串，--num_shots 失效不再静默。
+6. 测试：新增 test/test_model_resolution.py 9 项（canonical 归一/必填/未部署拒绝/vocab 别名命中+路径映射/few-shot 告警）；test_dsd_target_placement 与 test_opportunistic_rl_training 的 argv 按 B24 必填语义适配。全量对照：21 failed/106 passed，零回归。
 
 
 

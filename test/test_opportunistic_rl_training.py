@@ -72,6 +72,10 @@ def test_parse_arguments_exposes_rl_pilot_controls(
         "sys.argv",
         [
             "evaluate.py",
+            "--draft_model",
+            "llama-68m",
+            "--target_model",
+            "llama-2-13b",
             "--exp_name",
             "parser-test",
             "--acc_head_path",

@@ -89,7 +89,10 @@ def test_dsd_auto_shards_target_by_default():
 
 def test_keep_target_on_single_gpu_flag_defaults_to_false(monkeypatch):
     # Given: the normal evaluator CLI without the placement flag.
-    monkeypatch.setattr("sys.argv", ["prog"])
+    monkeypatch.setattr(
+            "sys.argv",
+            ["prog", "--draft_model", "llama-68m", "--target_model", "llama-2-13b"],
+        )
 
     # When: arguments are parsed without model resolution side effects.
     with patch("src.utils.model_zoo"):
@@ -101,7 +104,17 @@ def test_keep_target_on_single_gpu_flag_defaults_to_false(monkeypatch):
 
 def test_keep_target_on_single_gpu_flag_enables_single_gpu_target(monkeypatch):
     # Given: the normal evaluator CLI with the placement flag.
-    monkeypatch.setattr("sys.argv", ["prog", "--keep_target_on_single_gpu"])
+    monkeypatch.setattr(
+            "sys.argv",
+            [
+                "prog",
+                "--keep_target_on_single_gpu",
+                "--draft_model",
+                "llama-68m",
+                "--target_model",
+                "llama-2-13b",
+            ],
+        )
 
     # When: arguments are parsed without model resolution side effects.
     with patch("src.utils.model_zoo"):

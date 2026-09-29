@@ -225,6 +225,35 @@ def seed_everything(seed: int):
 
 
 def model_zoo(args):
+    # B24：显式必填。原默认 codellama-7b/codellama-70b 不可解析（zoo 无此
+    # 键、本地无此目录、HF 无此仓库名），依赖默认只会在模型加载阶段以难懂
+    # 的错误失败——提前到解析阶段给出明确报错。
+    if not args.draft_model or not args.target_model:
+        raise ValueError(
+            "--draft_model 与 --target_model 必须显式指定"
+            "（原默认 codellama-7b/codellama-70b 不可解析，已移除。"
+            "例: --draft_model tiny-llama-1.1b --target_model llama-2-13b）"
+        )
+
+    # B23：未部署模型显式拒绝。此前 zoo 把它们映射成 "xxx还没部署" 占位
+    # 路径静默传播，直到模型加载才以难懂的路径/HF 错误失败。
+    undeployed = {
+        "deepseek-1.3b",
+        "deepseek-6.7b",
+        "vicuna-7b-v1.5",
+        "vicuna-7b-v1.3",
+    }
+    for role, model in (
+        ("--draft_model", args.draft_model),
+        ("--target_model", args.target_model),
+        ("--little_model", getattr(args, "little_model", None)),
+    ):
+        if model in undeployed:
+            raise ValueError(
+                f"{role}={model} 对应模型未部署（zoo 占位符）。"
+                f"请先下载到本地并更新 zoo 映射，或改用已部署的别名"
+            )
+
     vocab_size = {
         "codellama-7b": 32000,
         "codellama-34b": 32000,
@@ -260,13 +289,11 @@ def model_zoo(args):
         "qwen-3-0.6b": 151936,
         "qwen-3-1.7b": 151936,
         "qwen-3-14b": 151936,
-        "llama-2-70b": 32000,
     }
+    # 注：原字典末尾有重复键 "llama-2-70b"（Python 静默取后者），已去重（B22）。
 
     zoo = {
         "llama-2-chat-7b": "meta-llama/Llama-2-7b-chat-hf",
-        "deepseek-1.3b": "deepseek-1.3b还没部署",
-        "deepseek-6.7b": "deepseek-6.7b还没部署",
         "llama-68m-q5-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q5_0.gguf",
         "llama-68m-q8-gguf": "llama/llama-68m-gguf-series/Llama-68M-Chat-v1-Q8_0.gguf",
         "llama-68m-fp16": "llama/llama-68m-gguf-series/llama-68m-chat-v1.fp16.gguf",
@@ -275,8 +302,6 @@ def model_zoo(args):
         "llama-160m": "llama/llama-160m",
         "vicuna-68m-q5-gguf": "vicuna/vicuna-68m.Q5_K_M-gguf/vicuna-68m.Q5_K_M.gguf",
         "vicuna-68m": "vicuna/vicuna-68m",
-        "vicuna-7b-v1.5": "vicuna-7b-v1.5还没部署",
-        "vicuna-7b-v1.3": "vicuna-7b-v1.3还没部署",
         "llama-2-7b-chat": "meta-llama/Llama-2-7b-chat-hf",
         "llama-68m-chat-q5-gguf": "llama/llama-68m-gguf-series/llama-68m-chat-v1.q5_k_m.gguf",
         "llama-3.2-1b": "llama/llama-3.2-1b",
@@ -294,6 +319,10 @@ def model_zoo(args):
         "Qwen/Qwen3-32B-FP8": "Qwen/Qwen3-32B-FP8",
         "llama-2-chat-70b": "meta-llama/Llama-2-70b-chat-hf",  # mapping to HuggingFace model
     }
+    # B22：vocab 查表必须在 zoo 映射前用原始别名命中。此前查表放在映射
+    # 之后，键是别名而值已变成本地路径/HF id，最常用别名全部 miss，每次
+    # parse 都落 get_vocab_size 读 config.json 或走网络回退。
+    draft_alias = args.draft_model
     args.draft_model = zoo.get(args.draft_model, args.draft_model)
     args.target_model = zoo.get(args.target_model, args.target_model)
     args.little_model = (
@@ -301,9 +330,10 @@ def model_zoo(args):
         if hasattr(args, "little_model")
         else args.draft_model
     )
-    if args.draft_model is None:
-        args.draft_model = ""
-    args.vocab_size = vocab_size.get(args.draft_model, get_vocab_size(args.draft_model))
+    args.vocab_size = vocab_size.get(
+        draft_alias,
+        vocab_size.get(args.draft_model, get_vocab_size(args.draft_model)),
+    )
 
 
 def parse_arguments():
@@ -316,8 +346,18 @@ def parse_arguments():
         default="data/",
     )
 
-    parser.add_argument("--draft_model", type=str, default="codellama-7b")
-    parser.add_argument("--target_model", type=str, default="codellama-70b")
+    parser.add_argument(
+        "--draft_model",
+        type=str,
+        default=None,
+        help="必填。原默认 codellama-7b 不可解析已移除（B24）",
+    )
+    parser.add_argument(
+        "--target_model",
+        type=str,
+        default=None,
+        help="必填。原默认 codellama-70b 不可解析已移除（B24）",
+    )
 
     parser.add_argument(
         "--exp_name",
@@ -1160,6 +1200,17 @@ def parse_arguments():
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+
+    # B24：必填检查必须先于 acc-head/RL 路径解析（它们在 model_zoo 之前
+    # 运行，draft_model=None 会让 canonicalize 以 AttributeError 崩）。
+    if not getattr(args, "draft_model", None) or not getattr(
+        args, "target_model", None
+    ):
+        parser.error(
+            "--draft_model 与 --target_model 必须显式指定"
+            "（原默认 codellama-7b/codellama-70b 不可解析，已移除。"
+            "例: --draft_model tiny-llama-1.1b --target_model llama-2-13b）"
+        )
 
     # L1 口径收敛：显式给出 --comm_accounting 时统一覆盖三个子开关。
     # 解决 Table V 对齐时发现的"口径不可辨"问题：以后每个 run 的口径都有唯一标签。

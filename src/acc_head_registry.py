@@ -46,10 +46,23 @@ CANONICAL_MODEL_ALIASES = {
     "qwen1.5-1.8b-chat": "qwen1.5-1.8b-chat",
     "qwen/qwen1.5-7b-chat": "qwen1.5-7b-chat",
     "qwen1.5-7b-chat": "qwen1.5-7b-chat",
+    # B26：与 utils.model_zoo 的分歧别名统一归一。registry 在 zoo 映射之前
+    # 拿到的是用户原始别名（parse_arguments 中 RL 解析先于 model_zoo），
+    # 此前两种拼法（qwen-3-0.6b vs qwen3-0.6b）指向不同 series，
+    # 合法别名静默错过已注册对、落到不存在的默认 checkpoint 路径
+    "qwen-3-0.6b": "qwen3-0.6b",
+    "qwen-3-1.7b": "qwen3-1.7b",
+    "qwen-3-14b": "qwen3-14b",
+    "llama-2-chat-7b": "llama-2-7b-chat",
 }
 
 
 def canonicalize_model_name(model_name: str) -> str:
+    if not model_name:
+        raise ValueError(
+            "model name 为空：--draft_model/--target_model 是否缺失？"
+            "（必填检查见 parse_arguments，此处为直接调用方的防御）"
+        )
     normalized = model_name.strip().rstrip("/")
     basename = os.path.basename(normalized)
     candidates = [
