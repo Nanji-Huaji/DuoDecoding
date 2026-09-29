@@ -283,6 +283,15 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 7. R10 查证结论：`profile_cee_dsd.py` 的 `ProfiledBaselines` 与生产 `cee_dsd` 同名注册到类级共享 dict，但**全仓无任何 import 链**（纯休眠地雷）；建议后续把插桩改为上下文包裹式或改名注册，暂未动。
 8. 全量测试对照：HEAD 25 failed/89 passed → 本批后 **21 failed/97 passed**（少的 4 个 = B1 删除的 adaptive 测试文件；21 个失败全部为 temperature_sampling 等既有问题，`comm` 对照**零新增失败**）。
 
+**结构性设计缺陷修复（2026-03，D1–D5 专批，按 D5→D2→D4→D3→D1 顺序独立提交，与 bug 修复严格分批）：**
+1. **D5（a561913）**：auto_train_manager 的 TPS 停滞收敛判定与课程学习（TPS 系统性下降）冲突——检测启动脚本中的 `--curriculum_{bw,ntt}_{start,end}` 激活课程、`--curriculum_total_steps` 定契约，课程未结束时 `check_convergence` 恒 False（一次性告警）；子进程 Step 日志实时跟踪进度，无契约时保守不干预。
+2. **D2（041960f）**：eval_mode 知识单点化——新增 `src/mode_features.py`（`ModeSpec(models/uses_main_rl/uses_little_rl/acc_head)` 全模式表），engine.load_model 五分支、baselines 的 RL 集合/acc_head 档位、utils 的 little-RL 路径门全部改查表；`test_mode_features.py` 10 项含四组字段与迁移前硬编码集合的**逐元素相等断言**（迁移等价性证明）。register.py 加固：异函数同名注册 raise（同函数多别名合法）、名字校验前移、删除 `hasattr` 反射兜底（`--eval_mode __init__` 类任意属性名不再被当解码方法）、`speculative_decoding_with_bandwidth` 补显式注册。
+3. **D4（1e8df4b）**：RL 决策/学习分离——学习步从 `select_config` 热路径抽出为 `_flush_transition`（与 `save` 的终止转移共用，buffer 序列逐条等价）；DDQN 折扣因子 `self.gamma`→`self.discount`（与 draft γ 撞名）；**吸收 B20**：ceesd_without_arp 的 RL 草稿长度改方法局部变量，不再残留全局 Namespace（test_cee_refactor 增污染回归断言）。act() 纯决策 + Action dataclass 需重设计三段握手并重跑 RL 验证，如实缓议。
+4. **D3（204f65e）**：utils 1615→1190 行、五种职责拆三种——`src/sampling.py`（8 个分布运算）、`src/trace_io.py`（轨迹 IO 去重：~30 行重复解析块下沉 `_parse_runs`，硬编码 5.0 提为 `BANDWIDTH_FLOOR_MBPS`，裸 except 收窄）、`src/model_zoo.py`；utils 再导出保兼容（既有 import 零改动）；RL 默认路径解析四份复制下沉 `resolve_rl_agent_paths()`。有意保留：parse_arguments 的 `os.makedirs`（迁移需逐一核点全部入口）；baselines 构造期 `getattr(...) or spec.latest_path` 防御（测试可达）。过程事故一次（脚本拼接截断 exp.py，py_compile 掩盖）——git 恢复 + 加完整性护栏重做，教训入档。
+5. **D1（5ad02b2，可安全范围）**：`eval/model_ids.py` 单表——9 处内联 model_id if-链（各 ~40 行）迁入规则表，**各数据集规则原样保留**（xsum 的 Llama-2 矛盾映射、mixed 的 base/chat 区分、eval/mt_bench* 的硬失败兜底 vs 其它静默 vicuna——分叉如实入表并注释，test_model_ids.py 8 项锁住差异）；communication.py 死码 `__call__`（零调用者、与 simulate_transfer 口径已漂移）删除。
+6. **D1 明确缓议**（结构统一会无声改变测量数字，不属可安全重构）：①10 方法解码骨架抽取（时序插桩点存在真实测量语义差异）；②simulator 构造工厂（10 处在 8 个维度漂移，工厂退化为 kwargs 转发）；③指标结算块统一（"重复"实为吞吐分母/token 计账的语义漂移，部分即已知未修 bug 领域）；④副本脚本改 import 主实现（标定数据对应旧动力学，需用户决策重标定）。
+7. 全量测试：D 系列五批各自独立验证 127→137→145 passed / 0 failed（累计新增 18 项回归测试）+ opportunistic 10 passed。
+
 **第五批修复（2026-03，测试套件复活：21 个既有失败 triage 全清）：**
 1. **B45（新发现，真生产 bug）**：`cee_cuhlm` 的精确仿真分支（baselines.py:4302）缺 `channel_gain`/`noise_power_watt` 必填参数——自 c3b51c6 引入参数起 `use_precise_comm_sim=True` 即 TypeError。因默认 False 而潜伏；6 个测试红了一路无人看。已对齐 1544 处完整调用修复。
 2. B19 部分：6 处 `args.use_cuda_graph` 直取改 `getattr(..., False)`（最小 Namespace/编程构造的 args 不再崩）。
