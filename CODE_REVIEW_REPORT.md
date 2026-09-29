@@ -324,3 +324,41 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 - `decoding_ops.py` 接受/回滚核心（cummin 连续接受、rejection_offset、top-k+均匀尾两域混合残差采样）逐步推导无误；课程采样边界（progress 两端、low≤high、几何插值单调）正确。
 - `nvml.py` init/shutdown 有 try/finally，句柄不泄漏；debug 探针全部环境变量门控，生产路径零开销。
 - README 声明的 best→latest→legacy→scratch 四步回退在 main agent 上与实现一致（little agent 的 opportunistic 例外是一个文档级偏差）。
+
+**第六批修复（2026-09-29，B 组 harness 五项 + B43；解码器零改动）：**
+1. B29：`eval_mt_bench.py`（n=10）、`eval_cnndm.py`/`eval_xsum.py`（n=5）的 warmup 由 `n -= 1; if n == 0: break`（在第 n 次生成前 break，少跑一次）改为计数器 `if warmup_count >= n: break`，实际热身次数等于声明 n。humaneval/specbench 本就恰好 10、gsm8k 本就 0，未动；**未跨脚本统一次数**。
+2. B31：`eval_cnndm.py`/`eval_xsum.py` 解码异常路径不再用单个 EOS 占位继续（该路径 `num_tokens = 1 - prompt_len` 为负、空预测还会以 ROUGE=0 计入），改为 `continue` 整样本剔除，不再污染 tokens/s 与 ROUGE。
+3. B32：`eval_cnndm.py` 的 `use_early_stopping` 由硬编码 True 改回 `self.args.use_early_stopping`（摘要 stop 序列在 postprocess 仍会剥离）；`eval_mt_bench_noeval.py` 的 partial 补上此前漏传的 `use_stochastic_comm`（默认扫描含该数据集且该开关为 True，此前被静默忽略）。
+4. B34：chat 模板路径统一关 `add_special_tokens`——`eval_humaneval.py` 弃用"draft/target 同时为 Llama-3.1"的脆判定，改按 `CHAT_TEMPLATE_MODEL_IDS`（模板自带 BOS）判定；`eval_mixed.py` 的 tokenize 同步按模板分支关闭 special tokens。非模板路径（vicuna/llama-2-chat/base）行为不变。
+5. B35：`eval_mt_bench.py`/`eval_mt_bench_noeval.py` 的 `read_results` 增 `skip_lines`，运行时先记录文件已有行数，速度只统计本次追加的行（accuracy 本就只算本次，口径对齐）。
+6. B43：`decoding_ops.verify_draft_sequence` 的指标分母由请求 `gamma` 改 `verification_inputs.actual_gamma`；按用户决定**不**接线 `decoding_metrics`（当前无调用点传入，行为零变化，纯防未来误用）。
+7. B18：`baselines.py` `dist_spec`（dsd）的 `avg_top_k` 在关压缩（`transfer_top_k` 为 None/0）时由回退 `self.args.top_k`（采样 top-k）改为记 `0`，与 dssd/tridecoding/adaptive_decoding 统一为"只统计传输压缩 top-k"。保留"未压缩记 0 且计入分母"的既有约定。用户已确认 `avg_top_k` 是 `DecodingMetrics` 指标字段（`src/metrics.py:83`，默认 0.0），语义为"DRA 所选择 top-k 的平均值"；对 DRA 方法由 `baselines.py:3070`（adapter 的 `next_topk` 写回 `transfer_top_k`）→ 下一步 `proposal_top_k()` 累加体现。**dsd 的该列数字会变（仅在同时 `--transfer_top_k 0` 且 `--top_k > 0` 时可见）**。
+8. 测试：新增 `test/test_eval_harness_fixes.py` 13 项（B35 skip 语义 ×2、B34 模板判定 ×11）+ `test_decoding_avg_topk_metrics.py` 增 dsd 关压缩回归 1 项；全量套件 **185 passed / 0 failed**（`pytest test/` 仍因既有 `test/test_eval_mixed_adaptive.py` 引用不存在的 `eval/eval_mixed_adaptive.py` 而收集中断，见下条）。
+9. 未做（按用户拍板）：B17 下行口径悬置（另含 dsd/adaptive_decoding 只记 index 4 字节、不记 token 字节的下行口径问题）；B43 的 serial 分支 `draft_token_indices[0]` 只计 batch 0（bs=1 下潜伏）；B27/B39/B19 与 R 系列留后续批次。
+10. 新发现（未修）：`test/test_eval_mixed_adaptive.py:8` `from eval.eval_mixed_adaptive import EvalMixedAdaptive`，但 `eval/eval_mixed_adaptive.py` 全仓不存在（`EvalMixedAdaptive` 亦无任何引用）⇒ `pytest test/` 在收集阶段直接报错退出，套件并非自然命令下的全绿。建议删除该陈旧测试（或加 `pytest.importorskip` 守卫）。
+
+**第七批修复（2026-09-29，零风险清理：B27/B39/R12 + 删陈旧测试）：**
+1. B27：删除死代码 `src/model_cpu.py`（全仓零引用）与被注释掉过滤的 `norm_numpy_logits`（D3 后位于 `src/sampling.py`）；`src/utils.py` 的再导出同步移除；`src/sampling.py` 的 `import numpy as np` 随之无用一并删除（`np` 仅该函数使用）。全仓已无 `norm_numpy_logits` / `model_cpu` 引用。
+2. B39：`src/engine.py` `autoregressive_sampling` 的前向计数键随实际执行的模型身份——small 模式写 `draft_forward_times`、large 写 `target_forward_times`，不再把 draft 前向记进 target 键。**small 基线的指标键变了**：读 `target_forward_times` 的分析脚本在 small 运行上会取到 0。新增 `test/test_engine_forward_times_key.py` 2 项。
+3. R12：删除 `auto_train_manager.py` 的 `--adaptive_decoding`（`type=bool` 使任何非空字符串都为 True，且解析结果从未被读取；全仓无调用方传该开关，`--help` 已确认移除）。
+4. 删除陈旧测试 `test/test_eval_mixed_adaptive.py`（引用不存在的 `eval/eval_mixed_adaptive.py`，令 `pytest test/` 收集中断）。
+5. 全量：`pytest test/`（自然命令，无需 `--ignore`）**187 passed / 0 failed**。
+
+**第八批修复（2026-09-29，B19 CUDA Graph 接线；解码算法不改，仅接线）：**
+1. 单一接线点：`graph_mode_cache_kwargs(args, cap)` 与 `acquire_graph_caches(holder, attr, graph_kw, builders)` 迁入 `src/graph_decode.py`（`baselines.py` 保留同名别名供既有 4 处调用）；`_build_cache` 支持 `**cache_kwargs`。漏接从此只需看一个函数。
+2. **tridecoding**：`build_adaptive_tridecoding_caches` 此前完全没透传 `use_cuda_graph`（命令行开图对它毫无效果），现经 `_acquire_three_layer_caches` 接图（little/draft/target 三个都开，cap=γ1+γ2+4）并跨样本复用（属性 `_tridecoding_caches`）。
+3. **ceesd_without_arp / cee_dssd / cee_dsd**：此前只给 little/draft 单步图、无验证档位、**target 完全没接线**、且每样本重捕获；现三个缓存都开图 + 复用（各自独立属性，避免不同 top-k 配置串用）。
+4. **engine `speculative_decoding` / `speculative_decoding_with_bandwidth`**：此前只透了 `use_cuda_graph`，没给 `verify_graph_sizes`/`graph_len_budget`、也没复用；现经 `_acquire_speculative_caches` 补齐（draft 开图、target 保持 eager，与 dsd/dssd 的取舍一致：target 每步只做单 token 前向）。
+5. **额外发现并修复**：`adaptive_decoding`（主 RL draft-target 方法，`exp.py` 扫描硬编码 `use_cuda_graph=True`）此前**完全没接线**，现经 `_acquire_draft_target_caches` 接图 + 复用（属性 `_adaptive_decoding_caches`）。其 DRA 逐步改 top-k 走 `generate_with_rebuilt_topk` 的逐调用路径，不依赖缓存 `_top_k`，故跨样本复用不改变语义。
+6. 测试：新增 `test/test_cuda_graph_wiring.py` 12 项（kwargs 语义 3、复用语义 2、三层入口 4、draft+target 入口 3）；全量 `pytest test/` = **199 passed / 0 failed**。
+7. **GPU 配对 A/B 尚未执行**（本机 `torch.cuda.is_available()=False`，无 NVIDIA 驱动）：需在 GPU 机器上对 tridecoding / ceesd_without_arp / cee_dssd / cee_dsd / adaptive_decoding / sd 各跑 `--use_cuda_graph` 开/关两遍，比对逐样本输出一致 + tokens/s。复用接线的金丝雀：`[cuda-graph] 已启用图回放` 应从"每样本 3 行"降为"每 run 3 行"。
+8. 仍未接（待用户确认，二者都是纯 AR 单步循环）：`target_only`（`baselines.py:2919`）与 engine `autoregressive_sampling`（`engine.py:756`）。图收益最直接，但它们是 baseline/对照，是否也开图属口径选择。其余 `KVCacheModel` 构造点均已确认接线或为有意 eager。
+
+**第九批修复（零成本清理与失败可见性；不改任何指标数值）：**
+1. 删除零引用死代码：`src/model_gpu_new.py`（187 行旧快照）、`src/tp.py`（162 行，import 不存在的 `gpt_fast_model`，本就不可导入）、`adaptiveexp.py`、`eval/eval.py`；`src/engine.py` 的 `_prepare_stop_tokens`/`_should_stop`（约 93 行）。删除前复查：全仓（含 `.md`/`.sh`/字符串）对这四项无任何引用；`stop_tokens_matrix` 只被这两个方法读写（`_check_stopping_criteria` 走 decode 文本路径、不依赖它），故 `__init__` 中的初始化行同步删除。`eval/eval.py` 的 `Eval` 类无人实例化，其存在还会在 `eval/` 抢先入 `sys.path` 时顶掉 `eval` 包（此前的收集中断根因之一）。
+2. `src/model/rest/datastore/get_datastore_chat.py` 的 `--large-datastore type=bool`（R12 同款陷阱：任何非空字符串都为真，`"False"` 亦然）改 `action="store_true"`；`datastore.sh` 同步去掉 `True` 字面量。已验证新语义：不带 flag → `False`、带 flag → `True`、旧写法 `--large-datastore True` → argparse 报错 exit 2（改 shell 正是为此，否则旧调用会从"静默为真"变成"直接失败"）。
+3. 失败可见性（**只加计数与提示，指标口径完全不变**）：
+   - `eval_mt_bench.py` 新增 `_MT_BENCH_GRADE_FAILURES`，把 judge **API/网络错误**与**判分输出无法解析**分开计数，`eval()` 结束时打印提示。此前两者都静默 `return 0` 并按 0 分进 accuracy —— judge 限流/超时会把基础设施故障伪装成"模型答得差"。
+   - `eval/eval_mixed.py` 单样本异常增加 `step_errors` 计数，结束时打印 `N/total 个样本被跳过`。此前只打印 traceback，长跑无法得知少跑了多少样本。
+4. 测试：`test/test_eval_harness_fixes.py` 增 4 项（判分失败参数化 2：不可解析 / API 抛错，各断言仍返回 0 且只落在对应计数器；判分成功不计数 1；未配置 API key 不计为失败 1）。全量 `pytest test/` = **203 passed / 0 failed**。
+5. 未做（需要口径决策，非零成本）：mt_bench 判分失败究竟该"剔除样本"/"重试"/"单列指标"而非记 0；`exp.py:830` 硬编码 `use_cuda_graph=True`/`use_early_stopping=False` 与 CLI 默认不一致；B19 剩余的 `target_only`/`autoregressive_sampling` 是否开图。
