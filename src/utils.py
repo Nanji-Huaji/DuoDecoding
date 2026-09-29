@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from src.mode_features import MODE_FEATURES
 from src.acc_head_registry import resolve_acc_head_path
 from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, get_rl_agent_spec
 
@@ -1267,7 +1268,10 @@ def parse_arguments():
 
     if (
         getattr(args, "little_model", None) is not None
-        and args.eval_mode != "adaptive_decoding"
+        and bool(
+            (_mf_spec := MODE_FEATURES.get(args.eval_mode)) is None
+            or _mf_spec.uses_little_rl
+        )
     ):
         if getattr(args, "little_rl_path", None) is None:
             little_spec = get_rl_agent_spec(

@@ -28,6 +28,7 @@ from .communication import (
 from .decoding_ops import finalize_verification, verify_draft_sequence
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .model_gpu import KVCacheModel
+from .mode_features import get_mode_spec
 from .proposal_utils import stage_topk_proposal_history
 from .model_loading import (
     build_sharded_target_device_map,
@@ -369,6 +370,8 @@ class Decoding(Register, ABC):
         return torch.cuda.device_count()
 
     def load_model(self):
+        spec = get_mode_spec(self.args.eval_mode)
+
         # * load models according to different evaluation methods.
         self.color_print(
             f"Loading models:\n{self.args.draft_model}\n{self.args.target_model}",
@@ -396,7 +399,7 @@ class Decoding(Register, ABC):
             trust_remote_code=True,
             torch_dtype=model_dtype,
         )
-        if self.args.eval_mode == "small":
+        if spec.models == "small":
             device_map = "cuda:0"
             self.color_print(f"Loading {self.args.draft_model} on {device_map}", 3)
             draft_quant = build_quant_config(
@@ -413,7 +416,7 @@ class Decoding(Register, ABC):
                 quant_config=draft_quant,
             )
 
-        elif self.args.eval_mode == "large":
+        elif spec.models == "large":
             device_map = "cuda:0"
             self.color_print(f"Loading {self.args.target_model} on {device_map}", 3)
             target_quant = build_quant_config(
@@ -430,17 +433,7 @@ class Decoding(Register, ABC):
                 quant_config=target_quant,
             )
 
-        elif self.args.eval_mode in [
-            "sd",
-            "dsd",
-            "dssd",
-            "dist_spec",
-            "dist_split_spec",
-            "uncertainty_decoding",
-            "cuhlm",
-            "speculative_decoding_with_bandwidth",
-            "speculative_decoding_with_bandwidth_full_prob",
-        ]:
+        elif spec.models == "dual" and not spec.uses_main_rl:
             draft_device, target_device = select_dual_model_devices(
                 self.args.draft_model,
                 self.args.target_model,
@@ -500,7 +493,7 @@ class Decoding(Register, ABC):
                 max_memory=target_max_memory,
             )
 
-        elif self.args.eval_mode == "adaptive_decoding":
+        elif spec.models == "dual" and spec.uses_main_rl:
             draft_device, target_device = select_dual_model_devices(
                 self.args.draft_model,
                 self.args.target_model,
@@ -561,20 +554,7 @@ class Decoding(Register, ABC):
                 max_memory=target_max_memory,
             )
 
-        elif self.args.eval_mode in [
-            "tridecoding",
-            "adaptive_tridecoding",
-            # target_only 只需要目标模型，但复用它这一支的三模型加载路径最省事，
-            # 也保证与三级流水线共用同一套量化/设备配置（对照才可比）。
-            "target_only",
-            "cee_sd",
-            "cee_sd_opportunistic",
-            "ceesd_without_arp",
-            "ceesd_w/o_arp",
-            "cee_cuhlm",
-            "cee_dsd",
-            "cee_dssd",
-        ]:
+        elif spec.models == "tri":
             output_hidden_states = self.args.eval_mode in [
                 "adaptive_tridecoding",
                 "cee_sd",
@@ -1027,6 +1007,7 @@ class Decoding(Register, ABC):
 
         return prefix, metrics
 
+    @Register.register_decoding("speculative_decoding_with_bandwidth")
     @torch.inference_mode()
     def speculative_decoding_with_bandwidth(
         self,

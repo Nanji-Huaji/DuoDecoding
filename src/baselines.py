@@ -38,6 +38,7 @@ from .decoding_ops import (
 from .engine import Decoding
 from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
+from .mode_features import MODE_FEATURES
 from .proposal_utils import (
     build_stage_prefix_topk_history,
     build_draft_probs_override,
@@ -445,26 +446,10 @@ class Baselines(Decoding):
             )
         # self.load_acc_head() # Moved to load_model
         eval_mode = getattr(args, "eval_mode", "")
-        uses_main_rl = eval_mode in {
-            "adaptive_decoding",
-            "adaptive_tridecoding",
-            "cee_sd",
-            "cee_sd_opportunistic",
-            "cee_cuhlm",
-            "cee_dsd",
-            "cee_dssd",
-            "ceesd_without_arp",
-            "ceesd_w/o_arp",
-        }
-        uses_little_rl = eval_mode in {
-            "adaptive_tridecoding",
-            "cee_sd",
-            "cee_sd_opportunistic",
-            "cee_dsd",
-            "cee_dssd",
-            "ceesd_without_arp",
-            "ceesd_w/o_arp",
-        }
+        # D2：模式能力查询单点化（原两处硬编码集合移入 mode_features）
+        _spec = MODE_FEATURES.get(eval_mode)
+        uses_main_rl = bool(_spec and _spec.uses_main_rl)
+        uses_little_rl = bool(_spec and _spec.uses_little_rl)
         if getattr(args, "use_rl_adapter", False):
             checkpoint_root = getattr(
                 args, "rl_checkpoint_root", "checkpoints/rl_agents"
@@ -648,7 +633,9 @@ class Baselines(Decoding):
     def load_acc_head(self):
         # Load acc head if adaptive method is used
         args = self.args
-        if self.args.eval_mode == "adaptive_decoding":
+        _spec = MODE_FEATURES.get(self.args.eval_mode)
+        _acc = _spec.acc_head if _spec else "none"
+        if _acc == "draft_target":
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.acc_head_path = args.acc_head_path
             self.acc_head = load_acceptance_prediction_head(
@@ -662,14 +649,7 @@ class Baselines(Decoding):
                 draft_target_threshold,
                 stop_mode=getattr(self.args, "arp_stop_mode", "cumulative"),
             )
-        elif self.args.eval_mode in [
-            "adaptive_tridecoding",
-            "cee_sd",
-            "cee_cuhlm",
-            "cee_dsd",
-            "cee_dssd",
-            "cee_sd_opportunistic",
-        ]:
+        elif _acc == "both":
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
