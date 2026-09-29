@@ -561,7 +561,7 @@ def parse_arguments():
     parser.add_argument(
         "--acc_head_path",
         type=str,
-        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
+        default=None,  # 后置解析：见 parse_arguments 末尾按实际模型对 resolve
         help="The path of the accuracy head model.",
     )
     parser.add_argument(
@@ -573,7 +573,7 @@ def parse_arguments():
     parser.add_argument(
         "--draft_target_acc_head_path",
         type=str,
-        default=resolve_acc_head_path("tiny-llama-1.1b", "llama-2-13b"),
+        default=None,  # 后置解析：见 parse_arguments 末尾按实际模型对 resolve
         help="The path of the draft-target accuracy head model.",
     )
     parser.add_argument(

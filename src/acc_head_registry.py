@@ -1,4 +1,5 @@
 import json
+import warnings
 import os
 import re
 import argparse
@@ -80,6 +81,15 @@ def canonicalize_model_name(model_name: str) -> str:
 
 
 def load_acc_head_registry() -> dict[tuple[str, str], dict[str, str]]:
+    # 注册表位于 src/SpecDec_pp 子模块内；fresh clone（未 submodule update）
+    # 时不存在。此时降级为空表（resolve 走纯默认路径）而不是在 argparse
+    # 默认值求值阶段裸崩——栈会指向 argparse 内部，极难定位。
+    if not _REGISTRY_PATH.exists():
+        warnings.warn(
+            f"acc-head 注册表不存在（子模块未初始化？）：{_REGISTRY_PATH}，"
+            "降级为默认 acc-head 路径"
+        )
+        return {}
     with _REGISTRY_PATH.open() as f:
         raw_entries = json.load(f)
 

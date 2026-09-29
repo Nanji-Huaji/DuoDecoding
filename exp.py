@@ -1,6 +1,8 @@
 import json
 import os
 import subprocess
+import signal
+import contextlib
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -281,14 +283,24 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
             f.write(f"执行命令: {cmd}\n")
             f.write("=" * 80 + "\n")
 
-            result = subprocess.run(
+            # start_new_session：子树独立进程组——父侧异常/Ctrl-C 时 killpg
+            # 能整棵收掉 accelerate 子树，防止孤儿进程继续占卡（R4）
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
-                check=True,
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
+            try:
+                returncode = proc.wait()
+            except BaseException:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                raise
+            if returncode != 0:
+                raise subprocess.CalledProcessError(returncode, cmd)
 
         # 读取结果文件
         result_file = get_file_path(config["exp_name"])
@@ -489,10 +501,13 @@ def run_experiments_parallel(
                 all_results.append(error_result)
                 print(f"实验异常: {config['exp_name']}, 错误: {exc}")
 
-            # 中途保存结果
+            # 中途保存结果（原子写：被中断也不会留下半个 JSON，
+            # 下游 calculate_consistency.py 直接 json.load 才不会炸）
             if summary_file:
-                with open(summary_file, "w", encoding="utf-8") as f:
+                tmp_summary = summary_file + ".tmp"
+                with open(tmp_summary, "w", encoding="utf-8") as f:
                     json.dump(all_results, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_summary, summary_file)
 
     return all_results
 

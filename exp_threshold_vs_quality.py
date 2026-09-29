@@ -4,6 +4,7 @@ Parallel cross-series threshold sweep with multi-GPU support.
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 import itertools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -150,8 +151,11 @@ if __name__ == "__main__":
         for f in as_completed(futures):
             result = f.result()
             all_results.append(result)
-            with open(summary_file, "w") as fh:
+            # 原子写：被中断不留半个 JSON（R4，同 exp.py）
+            tmp_summary = summary_file + ".tmp"
+            with open(tmp_summary, "w") as fh:
                 json.dump(all_results, fh, indent=2, ensure_ascii=False)
+            os.replace(tmp_summary, summary_file)
 
     print_summary(all_results)
     print(f"\nFull results: {summary_file}")
