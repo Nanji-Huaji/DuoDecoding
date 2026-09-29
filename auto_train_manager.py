@@ -52,8 +52,21 @@ class TrainingManager:
         self.check_interval = 10
         self.min_training_steps = 30  # More records before checking convergence
 
+        # D5：课程式训练与收敛判据冲突。课程生效时 TPS 随课程变难系统性
+        # 下行，0.5% 窗口停滞检验会在课程中段误判收敛、杀掉训练。此处从
+        # 启动脚本解析课程参数，课程未结束前拒绝收敛判定。
+        self.curriculum_active, self.curriculum_total_steps = self._detect_curriculum()
+        self.curriculum_kill_disabled_warned = False
+        self.last_train_step = 0
+        if self.curriculum_active:
+            print(
+                f"[{datetime.now()}] 检测到课程式训练配置，收敛判定将延迟到课程结束"
+                f"（total_steps={self.curriculum_total_steps or '未知'}）"
+            )
+
         # Patterns
         self.tps_pattern = re.compile(r"Average Generation Speed: ([\d\.]+) tokens/s")
+        self.step_pattern = re.compile(r"rl_adapter_main.*\] Step: (\d+)")
         # 支持区分 main 和 little agent，增加对路径形式名称的兼容性
         self.loss_pattern_main = re.compile(
             r"\[.*rl_adapter_main.*\] Step: \d+, Loss: ([\d\.]+)"
@@ -486,8 +499,86 @@ class TrainingManager:
                 except:
                     pass
 
+    def _detect_curriculum(self):
+        """从启动脚本解析课程配置（D5）。
+
+        课程旗标格式与 parse_arguments 一致：`--curriculum_bw_start 20,50`
+        （"low,high" 串）。任一维度 start != end 即课程生效。缺省旗标按
+        argparse 默认值处理（默认 start==end，课程关闭）。
+
+        返回 (curriculum_active, curriculum_total_steps)。
+        curriculum_total_steps 来自脚本中可选的 --curriculum_total_steps N
+        （课程进度契约：progress = step / max(1, total-1)，与
+        sample_curriculum_condition 的定义一致）；缺省为 None。
+        """
+        try:
+            with open(self.start_script, "r") as f:
+                script_text = f.read()
+        except OSError as e:
+            print(
+                f"[{datetime.now()}] 警告: 无法读取启动脚本 {self.start_script}"
+                f"（{e}），按无课程配置处理"
+            )
+            return False, None
+
+        def _pair(flag: str):
+            m = re.search(rf"--{flag}\s+(\S+)", script_text)
+            if not m:
+                return None
+            try:
+                lo, hi = m.group(1).split(",")
+                return (float(lo), float(hi))
+            except ValueError:
+                print(
+                    f"[{datetime.now()}] 警告: {flag}={m.group(1)} 格式非法"
+                    f"（应为 low,high），该项按默认处理"
+                )
+                return None
+
+        # 与 argparse 默认一致
+        bw_s = _pair("curriculum_bw_start") or (20.0, 50.0)
+        bw_e = _pair("curriculum_bw_end") or (20.0, 50.0)
+        nt_s = _pair("curriculum_ntt_start") or (0.0, 5.0)
+        nt_e = _pair("curriculum_ntt_end") or (0.0, 5.0)
+
+        m_total = re.search(r"--curriculum_total_steps\s+(\d+)", script_text)
+        total_steps = int(m_total.group(1)) if m_total else None
+
+        active = (bw_s != bw_e) or (nt_s != nt_e)
+        if active:
+            print(
+                f"[{datetime.now()}] 课程配置: bw {bw_s}→{bw_e}, "
+                f"ntt {nt_s}→{nt_e}, total_steps={total_steps}"
+            )
+        return active, total_steps
+
+    def _curriculum_finished(self) -> bool:
+        """课程阶段是否已结束。
+
+        有 total_steps 合约时：观测步数达到即结束。没有合约时无法判定
+        结束点，保守返回 False（宁可多训，不可误杀）。
+        """
+        if not self.curriculum_active:
+            return True
+        if self.curriculum_total_steps is None:
+            return False
+        return self.last_train_step >= self.curriculum_total_steps - 1
+
     def check_convergence(self):
         """Checks convergence based on TPS."""
+        # D5：课程未结束时 TPS 非平稳是设计使然，不作收敛判定
+        if self.curriculum_active and not self._curriculum_finished():
+            if (
+                not self.curriculum_kill_disabled_warned
+                and len(self.tps_history) >= self.min_training_steps
+            ):
+                self.curriculum_kill_disabled_warned = True
+                print(
+                    f"[{datetime.now()}] [Monitor] 课程阶段进行中"
+                    f"（step={self.last_train_step}），TPS 停滞检验暂停——"
+                    f"课程引起的下行不是收敛"
+                )
+            return False
         if len(self.tps_history) < self.min_training_steps:
             return False
 
@@ -571,6 +662,12 @@ class TrainingManager:
                         loss_little = self.loss_pattern_little.findall(new_data)
                         reward_main = self.reward_pattern_main.findall(new_data)
                         reward_little = self.reward_pattern_little.findall(new_data)
+
+                        # D5：跟踪训练步数（课程结束判定的输入）
+                        for step_val in self.step_pattern.findall(new_data):
+                            self.last_train_step = max(
+                                self.last_train_step, int(step_val)
+                            )
 
                         for val in loss_main:
                             self.loss_history_main.append(float(val))
