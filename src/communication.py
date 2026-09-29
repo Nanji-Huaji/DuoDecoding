@@ -691,43 +691,6 @@ class CommunicationSimulator:
     ) -> None:
         self.simulate_transfer(6, linktype)
 
-    def __call__(
-        self,
-        tokens: torch.Tensor,
-        prob_history: Optional[torch.Tensor] = None,
-        link_type: Literal["edge_cloud", "edge_end", "cloud_end"] = "edge_cloud",
-        prob_history_dtype=torch.float16,
-        is_compressed: bool = False,
-        compressed_k: Optional[int] = 300,
-        prob_bits: Optional[int] = None,
-        description="",
-    ) -> Tuple[float, str]:
-        if link_type not in ["edge_cloud", "edge_end", "cloud_end"]:
-            raise ValueError(f"Unknown link type: {link_type}")
-
-        token_bytes = 0
-        prob_bytes = 0
-        total_bytes = 0
-
-        if tokens is not None and tokens.numel() > 0:
-            token_bytes = tokens.element_size() * tokens.numel()
-            total_bytes += token_bytes
-
-        if prob_history is not None and prob_history.numel() > 0:
-            if prob_history_dtype is not None:
-                prob_history = prob_history.to(prob_history_dtype)
-            if prob_bits is not None and 0 < int(prob_bits) < 8 * prob_history.element_size():
-                # 概率载荷按位宽计费：b bits/项（b<16 时即真实量化后的表示，
-                # 4bit 视为 2 项/字节）。默认 None ⇒ 沿用 element_size() 历史口径 ✓
-                prob_bytes = prob_history.numel() * int(prob_bits) / 8.0
-            else:
-                prob_bytes = prob_history.element_size() * prob_history.numel()
-            total_bytes += prob_bytes
-
-        transfer_time = self.simulate_transfer(total_bytes, link_type)
-
-        return transfer_time, link_type
-
     @property
     def total_comm_energy(self) -> float:
         """

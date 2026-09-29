@@ -13,6 +13,7 @@ from fastchat.model import get_conversation_template
 from few_shot_examples import get_few_shot_prompt
 
 from src.engine import Decoding
+from eval.model_ids import determine_model_id
 from src.utils import parse_arguments, seed_everything
 from utils import select_eval_data
 
@@ -27,42 +28,10 @@ class EvalSpecbench(Decoding):
 
         self.task = "specbench"
 
-        if "Llama-2" in str(self.args.draft_model) and "Llama-2" in str(
-            self.args.target_model
-        ):
-            self.model_id = "llama-2-chat"
-        elif "Llama-2" in str(self.args.target_model):
-            self.model_id = "vicuna"
-        elif "vicuna" in str(self.args.draft_model) and "vicuna" in str(
-            self.args.target_model
-        ):
-            self.model_id = "vicuna"
-        elif "Llama-3.2" in str(self.args.target_model) or "Llama-3.2" in str(
-            self.args.draft_model
-        ):
-            self.model_id = "llama-3.2"
-        elif "Llama-3.1" in str(self.args.draft_model) and "Llama-3.1" in str(
-            self.args.target_model
-        ):
-            self.model_id = "llama-3.1"
-        elif "Llama-3" in str(self.args.target_model) or "Llama-3" in str(
-            self.args.draft_model
-        ):
-            self.model_id = "llama-3"
-        elif "llama" in str(self.args.draft_model) or "llama" in str(
-            self.args.target_model
-        ):
-            self.model_id = "vicuna"
-        elif "Qwen" in str(self.args.target_model) or "qwen" in str(
-            self.args.target_model
-        ):
-            self.model_id = "qwen"
-        elif "gemma" in str(self.args.target_model) or "gemma" in str(
-            self.args.draft_model
-        ):
-            self.model_id = "gemma"
-        else:
-            self.model_id = "vicuna"
+        # D1：model_id 判定单点化（原内联链规则原样入表，task=specbench）
+        self.model_id = determine_model_id(
+            "specbench", self.args.draft_model, self.args.target_model
+        )
 
         self.load_data()
 

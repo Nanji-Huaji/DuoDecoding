@@ -16,6 +16,7 @@ from functools import partial
 from few_shot_examples import get_few_shot_prompt
 
 from src.baselines import Baselines
+from eval.model_ids import determine_model_id_mixed
 from src.utils import (
     parse_arguments,
     parse_range_spec,
@@ -83,24 +84,11 @@ class EvalMixed(Baselines):
         return input_ids
 
     def _determine_model_id(self):
-        target = str(self.args.target_model).lower()
-        draft = str(self.args.draft_model).lower()
-
-        if "llama-3" in target:
-            return "llama-3.1"
-        if "qwen" in target:
-            return "qwen"
-        if "gemma" in target:
-            return "gemma"
-        if "llama-2" in target:
-            # 只有真正的 chat/instruct 变体才套对话模板。`llama-2-13b` 在本项目里
-            # 映射到 base 权重（llama/Llama-2-13b-hf），套上 [INST] 会让 base 模型
-            # **复读提示词**——训练/评测协议就与论文的 eval_gsm8k 路径（纯文本续写）
-            # 不一致了，RL 会在一个没有可学结构的退化分布上训练。
-            if "chat" in target or "instruct" in target:
-                return "llama-2-chat"
-            return "base"
-        return "vicuna"
+        # D1：判定逻辑单点化到 eval.model_ids（mixed 链规则原样保留，
+        # base/chat 区分的理由见该函数内注释）
+        return determine_model_id_mixed(
+            self.args.draft_model, self.args.target_model
+        )
 
     def load_data(self):
         """实现抽象方法：一次性加载所有任务的数据集"""
