@@ -21,9 +21,9 @@ venv_docker/
 
 # Temporary local files
 ._____temp/
-.omo/
 *.log
 *.tmp
+*.corrupt
 
 # Build artifacts
 build/
