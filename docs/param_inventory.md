@@ -3,8 +3,9 @@
 > 生成方式：AST 解析 `src/utils.py` 的 `add_argument`，再按精确模式
 > `args.<dest>` / `getattr(args, "<dest>")` 扫描全仓（排除 `SpecDec_pp/` 与
 > vendored 的 `src/model/rest/`），最后按消费文件归类。
-> **103 = 日常出表 16 + 条件开关 68 + 训练专用 19。**（2026-09-29 删除 15 个
-> 死参数前为 118。）
+> **103 = 日常出表 16 + 条件开关 68 + 训练专用 19。**换算路径：117
+> （`492488c`）— `7b8c9f0` 删 12 个死参数并新增 `--protocol` → 106 —
+> `5b5d3ee` 删 3 个 + 17 处 call site → **103**。
 >
 > 已知盲区：若代码用 `_pair("name")` 或变量形式读取（如 `auto_train_manager.py`
 > 的 `_pair("curriculum_bw_start")`），本扫描会漏报，所以"仅训练消费"是下界。
