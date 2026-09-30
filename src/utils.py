@@ -10,6 +10,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from src.protocols import (
+    PROTOCOLS,
+    apply_protocol,
+    emit_effective_report,
+)
 from src.mode_features import MODE_FEATURES
 from src.model_zoo import get_vocab_size, model_zoo  # noqa: F401 D3 拆分后再导出
 from src.sampling import (  # noqa: F401 D3 拆分后再导出
@@ -243,6 +248,15 @@ def seed_everything(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
+def _dest_to_flags(parser: argparse.ArgumentParser) -> dict[str, list[str]]:
+    """dest → 该选项的全部 CLI 拼写，用于判定"是否被命令行显式设置"。"""
+    out: dict[str, list[str]] = {}
+    for action in parser._actions:
+        if action.dest and action.option_strings:
+            out.setdefault(action.dest, []).extend(action.option_strings)
+    return out
+
+
 def parse_arguments():
     """Specified arguments for running scripts."""
     parser = argparse.ArgumentParser(description="args for this file")
@@ -310,7 +324,7 @@ def parse_arguments():
         help=(
             "把定长 decode 前向捕获成 CUDA Graph 回放，绕开 per-op 启动开销："
             "单步草稿走 (1,1) 单步图，验证/resync 的多 token 合成前向走 "
-            "(1,K) 定长 padding 验证图（主体收益：13B/1.1B 验证前向 84~92% "
+            "(1,K) 定长 padding 验证图（主体收益：13B/1.1B 验证前向 84~92%% "
             "是逐算子调度开销）。图与 KV 缓存跨样本复用（StaticCache 原地 "
             "reset，不重捕获）。默认关闭以保证与历史实验逐位可复现；图模式会"
             "按 prompt+max_tokens+余量 预分配 KV 缓存。"
@@ -376,42 +390,20 @@ def parse_arguments():
         help="Task name for RL adapter context (e.g., mt_bench, humaneval).",
     )
 
-    # for lookahead decoding
-    parser.add_argument(
-        "--level",
-        type=int,
-        default=3,
-    )
+    # for lookahead decoding（--level/--guess 已删除：全仓无消费者）
     parser.add_argument(
         "--window",
         type=int,
         default=10,
     )
-    parser.add_argument(
-        "--guess",
-        type=int,
-        default=10,
-    )
     # end for lookahead decoding
 
-    # for rest
-    parser.add_argument(
-        "--max-token-span",
-        type=int,
-        default=16,
-        help="The maximum length of suffix for retrieval.",
-    )
+    # for rest（--max-token-span/--num-draft 已删除：全仓无消费者）
     parser.add_argument(
         "--datastore-path",
         type=str,
         default="datastore/",
         help="The path of the datastore for retrival.",
-    )
-    parser.add_argument(
-        "--num-draft",
-        type=int,
-        default=64,
-        help="The maximum number of draft tokens.",
     )
     # end for rest
     parser.add_argument(
@@ -468,13 +460,6 @@ def parse_arguments():
         type=float,
         default=100.0,
         help="The bandwidth between cloud and end device in Mbps.",
-    )
-    parser.add_argument(
-        "--dtype_comm",
-        type=str,
-        choices=["float16", "bfloat16", "float32", "int8"],
-        default="float16",
-        help="The data type for communication.",
     )
     parser.add_argument(
         "--uncertainty_threshold",
@@ -572,6 +557,17 @@ def parse_arguments():
             "- 1)^+)，带宽跌到 trace 均值一半时 RTT 翻倍（排队延迟），带宽充足时保持基值。"
             "默认关闭（历史数字逐位可复现）；开启后 RL 的网络状态输入才有时延维度的变化。"
             "edge-end 链路（LAN）保持固定 NTT。"
+        ),
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=["none", *PROTOCOLS],
+        default="none",
+        help=(
+            "命名口径（唯一真源: src/protocols.py；定义见 docs/protocol.md）。"
+            "none（默认）= 不写入任何参数，数字与历史完全一致。给出协议名时只填"
+            "命令行未显式设置的项；被命令行覆盖的项会在启动自述里告警，该 run "
+            "据此不再属于该协议。"
         ),
     )
     parser.add_argument(
@@ -680,7 +676,7 @@ def parse_arguments():
         action="store_true",
         help=(
             "Reward 修复：把每轮排队时延（batch_delay）计入 lagrangian reward 的 "
-            "T。t5a 轮预算里排队占 27%，与 NTT 一样被长草稿摊薄——不计价会让策略"
+            "T。t5a 轮预算里排队占 27%%，与 NTT 一样被长草稿摊薄——不计价会让策略"
             "系统性偏好短草稿（v2 重训 3.58 vs 钉死0.4 的 4.43 的主因之一）。"
             "默认关闭保持历史 reward 逐位可复现。"
         ),
@@ -1061,52 +1057,18 @@ def parse_arguments():
         default="auto",
         help="Quantization mode for the little model.",
     )
-    parser.add_argument(
-        "--adaptive_debug_log",
-        type=str,
-        default=None,
-        help="Optional JSONL path for adaptive_decoding debug traces.",
-    )
-    parser.add_argument(
-        "--controlled_eval_task",
-        type=str,
-        default="gsm8k",
-        choices=["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"],
-        help="Task used by the standalone controlled CEE-SD top-k experiment.",
-    )
-    parser.add_argument(
-        "--controlled_topk_values",
-        type=str,
-        default="16,64,256,1024",
-        help="Comma-separated top-k values or presets such as 'powers2_to_vocab' / 'full' for the controlled CEE-SD experiment.",
-    )
-    parser.add_argument(
-        "--controlled_topk_step",
-        type=int,
-        default=0,
-        help="Optional linear step used when controlled_topk_values requests a dense scan to vocab size.",
-    )
-    parser.add_argument(
-        "--controlled_entropy_quantile",
-        type=float,
-        default=0.8,
-        help="Quantile used to define high-entropy states for the controlled CEE-SD experiment.",
-    )
-    parser.add_argument(
-        "--controlled_entropy_threshold",
-        type=float,
-        default=None,
-        help="Optional fixed high-entropy threshold. If omitted, it is derived from the observation pass quantile.",
-    )
-    parser.add_argument(
-        "--controlled_max_high_entropy_states",
-        type=int,
-        default=50,
-        help="Maximum number of high-entropy states to replay in the controlled CEE-SD experiment.",
-    )
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+
+    # 口径协议：只填命令行未显式设置的项（默认 none ⇒ 不改变任何数字）。
+    # 放在校验/后处理之前，让后续逻辑（如 --comm_accounting）看到协议值。
+    _protocol_app = apply_protocol(
+        args,
+        getattr(args, "protocol", "none"),
+        cli_args,
+        _dest_to_flags(parser),
+    )
 
     # B24：必填检查必须先于 acc-head/RL 路径解析（它们在 model_zoo 之前
     # 运行，draft_model=None 会让 canonicalize 以 AttributeError 崩）。
@@ -1202,5 +1164,8 @@ def parse_arguments():
 
     args.exp_name = os.path.join(os.getcwd(), "exp", args.exp_name)
     os.makedirs(args.exp_name, exist_ok=True)
+    # 生效口径自述：此处后处理（协议 / comm_accounting / 路径解析）均已生效。
+    emit_effective_report(args, _protocol_app)
+
     model_zoo(args)
     return args

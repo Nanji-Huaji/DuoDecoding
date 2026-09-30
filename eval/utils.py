@@ -133,6 +133,24 @@ class ExpPrint:
         eval_result["charge_residual_payload"] = charge
         eval_result["comm_round_trip_mode"] = mode
         eval_result["transfer_top_k_cap"] = cap
+        # 机制层：记录**实际消费**而非仅标称值。计费开关只被 adaptive_tridecoding
+        # 系读取（cee_sd / cee_sd_opportunistic 委托给它），其余模式的实际字节与
+        # 往返由其内联实现决定。旧版只记标称值，口径标签可能与真实行为不一致
+        # （见 docs/param_ledger.md §2）。
+        eval_result["protocol"] = str(getattr(self.args, "protocol", "none"))
+        eval_result["protocol_deviations"] = list(
+            getattr(self.args, "protocol_deviations", ())
+        )
+        try:
+            from src.protocols import mode_consumption
+
+            _cons = mode_consumption(str(self.args.eval_mode))
+        except Exception:  # pragma: no cover - 诊断信息不应影响评测主流程
+            _cons = None
+        if _cons is not None:
+            eval_result["comm_accounting_consumed"] = _cons.consumes_accounting
+            eval_result["depth_keys"] = list(_cons.depth_keys)
+            eval_result["consumption_source"] = _cons.source
         eval_result["stochastic_ntt"] = bool(
             getattr(self.args, "stochastic_ntt", False)
         )
