@@ -261,64 +261,103 @@ def parse_arguments():
     """Specified arguments for running scripts."""
     parser = argparse.ArgumentParser(description="args for this file")
 
-    parser.add_argument(
+    # ---- 参数分组：只改变 --help 的排版，不改动任何默认值或行为 ----
+    # 分层依据见 docs/param_inventory.md；L0 通信/计费口径见 docs/protocol.md。
+    g_daily = parser.add_argument_group(
+        "① 日常出表（改这些就够）（16）",
+        "跑任何一次评测都要定的：模型、模式、深度、生成长度、与命名协议。",
+    )
+    g_sample = parser.add_argument_group(
+        "② 数据集与采样（7）",
+        "选数据集、定样本数与随机采样。",
+    )
+    g_comm = parser.add_argument_group(
+        "③ 通信数值与计费口径（17）",
+        "L0：比较不同方法时必须逐项一致（冻结值见 docs/protocol.md）。",
+    )
+    g_trace = parser.add_argument_group(
+        "④ trace 回放（4）",
+        "用实测 trace 取代解析式带宽/时延模型。",
+    )
+    g_method = parser.add_argument_group(
+        "⑤ 解码方法与准确率头（9）",
+        "投机深度之外的方法参数：早停、阈值、准确率头路径。",
+    )
+    g_rl = parser.add_argument_group(
+        "⑥ RL adapter（35）",
+        "挂载点、权重路径与 reward 整形；其中一批只在训练里被读取。",
+    )
+    g_deploy = parser.add_argument_group(
+        "⑦ 部署、精度与显存（6）",
+        "dtype、量化、多卡与验证图档位。",
+    )
+    g_curr = parser.add_argument_group(
+        "⑧ curriculum（5）",
+        "训练用的网络条件课程；评测侧仅 eval_mixed 读取。",
+    )
+    g_out = parser.add_argument_group(
+        "⑨ 输出与裁判（4）",
+        "结果落盘与 MT-Bench 裁判。",
+    )
+
+    g_sample.add_argument(
         "--data_path",
         type=str,
         default="data/",
     )
 
-    parser.add_argument(
+    g_daily.add_argument(
         "--draft_model",
         type=str,
         default=None,
         help="必填。原默认 codellama-7b 不可解析已移除（B24）",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--target_model",
         type=str,
         default=None,
         help="必填。原默认 codellama-70b 不可解析已移除（B24）",
     )
 
-    parser.add_argument(
+    g_daily.add_argument(
         "--exp_name",
         "-e",
         type=str,
         default="test",
         help="folder name for storing results.",
     )
-    parser.add_argument("--eval_mode", type=str, default="small", help="eval mode.")
-    parser.add_argument(
+    g_daily.add_argument("--eval_mode", type=str, default="small", help="eval mode.")
+    g_sample.add_argument(
         "--num_samples_per_task",
         "-n",
         type=int,
         default=1,
         help="num_samples for a task (prompt) in humaneval dataset.",
     )
-    parser.add_argument(
+    g_sample.add_argument(
         "--seed",
         "-s",
         type=int,
         default=1234,
         help="set a random seed, which can makes the result reproducible",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--max_tokens", type=int, default=1024, help="max token number generated."
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--temp", type=float, default=0.2, help="temperature for generating new tokens."
     )
-    parser.add_argument(
+    g_sample.add_argument(
         "--top_k", type=int, default=0, help="top_k for ungreedy sampling strategy."
     )
-    parser.add_argument(
+    g_sample.add_argument(
         "--top_p",
         type=float,
         default=0.95,
         help="top_p for ungreedy sampling strategy.",
     )
-    parser.add_argument("--gamma", type=int, default=4, help="guess time.")
-    parser.add_argument(
+    g_daily.add_argument("--gamma", type=int, default=4, help="guess time.")
+    g_daily.add_argument(
         "--use_cuda_graph",
         action="store_true",
         help=(
@@ -330,7 +369,7 @@ def parse_arguments():
             "按 prompt+max_tokens+余量 预分配 KV 缓存。"
         ),
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--graph_verify_sizes",
         type=str,
         default="",
@@ -340,35 +379,35 @@ def parse_arguments():
             "回放时选 ≥k 的最小档位 padding，pad 行 KV 随回滚作废。"
         ),
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--eval_data_num",
         type=int,
         default=80,
         help="number of samples to evaluate.",
     )
-    parser.add_argument(
+    g_sample.add_argument(
         "--run_full_dataset",
         action="store_true",
         help="Evaluate the full dataset instead of truncating to eval_data_num.",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--random_sample",
         action="store_true",
         help="Randomly sample eval_data_num examples instead of taking the first examples.",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--sample_seed",
         type=int,
         default=1234,
         help="Random seed used when --random_sample is enabled.",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--num_shots",
         type=int,
         default=0,
         help="number of shots for few-shot evaluation.",
     )
-    parser.add_argument(
+    g_sample.add_argument(
         "--sub_domain",
         type=str,
         default="math_reasoning",
@@ -389,133 +428,133 @@ def parse_arguments():
     # 有误导性：exp.py 每条命令都推导并传入、15 个脚本也传，但无人读取；
     # RL adapter 的 task one-hot 实际由各评测类硬编码 self.task 提供
     # （src/baselines.py:578 + eval/eval_*.py）。
-    parser.add_argument(
+    g_out.add_argument(
         "--openai_api_key",
         type=str,
         default=os.environ.get("OPENAI_API_KEY"),
         help="OpenAI API Key for MT-Bench Judge",
     )
-    parser.add_argument(
+    g_out.add_argument(
         "--openai_api_base",
         type=str,
         default=os.environ.get("OPENAI_BASE_URL"),
         help="OpenAI API Base for MT-Bench Judge",
     )
-    parser.add_argument(
+    g_out.add_argument(
         "--judge_model",
         type=str,
         default=os.environ.get("JUDGE_MODEL", "deepseek-v3.1"),
         help="Judge model for MT-Bench",
     )
 
-    parser.add_argument(
+    g_daily.add_argument(
         "--little_model",
         type=str,
         default="vicuna-68m",
         help="The little model for decoding.",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--gamma1",
         type=int,
         default=4,
         help="The number of guesses for the first draft model.",
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--gamma2",
         type=int,
         default=4,
         help="The number of guesses for the second draft model.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--edge_cloud_bandwidth",
         type=float,
         default=20.0,
         help="The bandwidth between edge and cloud in Mbps.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--edge_end_bandwidth",
         type=float,
         default=100.0,
         help="The bandwidth between edge and end device in Mbps.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--cloud_end_bandwidth",
         type=float,
         default=100.0,
         help="The bandwidth between cloud and end device in Mbps.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--uncertainty_threshold",
         type=float,
         default=0.8,
         help="The uncertainty threshold for uncertainty-based decoding.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--transfer_top_k",
         type=int,
         default=300,
         help="The top k probs to transfer during communication.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--use_precise",
         action="store_true",
         help="Use the physics level to simulate the communication.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--ntt_ms_edge_end",
         type=float,
         default=20.0,
         help="The network time delay between edge and end device in ms.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--ntt_ms_edge_cloud",
         type=float,
         default=200.0,
         help="The network time delay between edge and cloud in ms.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--acc_head_path",
         type=str,
         default=None,  # 后置解析：见 parse_arguments 末尾按实际模型对 resolve
         help="The path of the accuracy head model.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--small_draft_acc_head_path",
         type=str,
         default=resolve_acc_head_path("llama-68m", "tiny-llama-1.1b"),
         help="The path of the small draft accuracy head model.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--draft_target_acc_head_path",
         type=str,
         default=None,  # 后置解析：见 parse_arguments 末尾按实际模型对 resolve
         help="The path of the draft-target accuracy head model.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--small_draft_threshold",
         type=float,
         default=0.8,
         help="The threshold for the small draft model for adaptive tri-decoding. Default is 0.8.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--draft_target_threshold",
         type=float,
         default=0.8,
         help="The threshold for the draft-target model for adaptive decoding. Default is 0.8.",
     )
-    parser.add_argument(
+    g_trace.add_argument(
         "--comm_trace_mode",
         choices=["static", "driving", "walking"],
         default="static",
         help=("随机通信 trace 的移动模式（配合 --use_stochastic_comm）："
               "driving=5G mmWave 车载轨迹，波动最剧烈；static=静止场景（历史默认）。"),
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--use_stochastic_comm",
         action="store_true",
         help="Whether to use stochastic communication simulator.",
     )
-    parser.add_argument(
+    g_trace.add_argument(
         "--ntt_trace_file",
         type=str,
         default="",
@@ -525,13 +564,13 @@ def parse_arguments():
             "拥塞模型与固定基值）；与带宽 trace 独立推进。空 = 不回放。"
         ),
     )
-    parser.add_argument(
+    g_trace.add_argument(
         "--ntt_trace_scale",
         type=float,
         default=1.0,
         help="RTT trace 回放缩放（1.0=原样；ping 数据为往返毫秒值）。",
     )
-    parser.add_argument(
+    g_trace.add_argument(
         "--stochastic_ntt",
         action="store_true",
         help=(
@@ -542,7 +581,7 @@ def parse_arguments():
             "edge-end 链路（LAN）保持固定 NTT。"
         ),
     )
-    parser.add_argument(
+    g_daily.add_argument(
         "--protocol",
         choices=["none", *PROTOCOLS],
         default="none",
@@ -553,7 +592,7 @@ def parse_arguments():
             "据此不再属于该协议。"
         ),
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--comm_accounting",
         choices=["honest", "legacy"],
         default=None,
@@ -564,7 +603,7 @@ def parse_arguments():
             "三个子开关并在日志回显；不给出时子开关独立生效。metrics json 会记录实际口径。"
         ),
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--min_bandwidth_mbps",
         type=float,
         default=5.0,
@@ -574,7 +613,7 @@ def parse_arguments():
             "disable the floor (e.g. to study links weaker than 5 Mbps)."
         ),
     )
-    parser.add_argument(
+    g_curr.add_argument(
         "--curriculum_bw_start",
         type=str,
         default="20,50",
@@ -584,13 +623,13 @@ def parse_arguments():
             "--curriculum_bw_end as training progresses."
         ),
     )
-    parser.add_argument(
+    g_curr.add_argument(
         "--curriculum_bw_end",
         type=str,
         default="20,50",
         help="Curriculum bandwidth range (Mbps) at the end of RL training, format 'low,high'.",
     )
-    parser.add_argument(
+    g_curr.add_argument(
         "--curriculum_ntt_start",
         type=str,
         default="0,5",
@@ -599,13 +638,13 @@ def parse_arguments():
             "training, format 'low,high'."
         ),
     )
-    parser.add_argument(
+    g_curr.add_argument(
         "--curriculum_ntt_end",
         type=str,
         default="0,5",
         help="Curriculum edge-cloud latency range (ms) at the end of RL training, format 'low,high'.",
     )
-    parser.add_argument(
+    g_curr.add_argument(
         "--curriculum_sampling",
         type=str,
         choices=["uniform", "loguniform"],
@@ -616,7 +655,7 @@ def parse_arguments():
             "perception is roughly logarithmic)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--state_bw_scaling",
         type=str,
         choices=["linear", "log"],
@@ -629,7 +668,7 @@ def parse_arguments():
             "(log10(bw+1)/log10(1000+1), spreads it over [0.0, 0.57])."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--state_latency_scaling",
         type=str,
         choices=["linear", "centi", "log"],
@@ -640,7 +679,7 @@ def parse_arguments():
             "(ntt/100, uses the full range) or 'log'."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_mode",
         type=str,
         choices=["legacy", "linear", "lagrangian", "slo", "energy"],
@@ -654,7 +693,7 @@ def parse_arguments():
             "'slo' = deadline-aware variant, 'energy' = adds a comm-energy term."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_charge_queue",
         action="store_true",
         help=(
@@ -664,7 +703,7 @@ def parse_arguments():
             "默认关闭保持历史 reward 逐位可复现。"
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_lambda",
         type=float,
         default=0.0,
@@ -675,25 +714,25 @@ def parse_arguments():
             "ablations (e.g. the pilot run's mean throughput)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_deadline_ms",
         type=float,
         default=0.0,
         help="Per-decision deadline (ms) for --rl_reward_mode slo.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_deadline_penalty",
         type=float,
         default=1.0,
         help="Penalty per second of deadline overrun for --rl_reward_mode slo.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_energy_weight",
         type=float,
         default=0.0,
         help="Weight mu of the communication-energy term for --rl_reward_mode energy.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_force_threshold_little",
         type=float,
         default=None,
@@ -705,7 +744,7 @@ def parse_arguments():
             "threshold ablation."
         ),
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--model_dtype",
         type=str,
         default="bf16",
@@ -718,7 +757,7 @@ def parse_arguments():
             "(~0.2%% relative), fp16 10, fp32 24."
         ),
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--disable_eos_stop",
         action="store_true",
         help=(
@@ -729,7 +768,7 @@ def parse_arguments():
             "changes all throughput/latency numbers, so baselines must be re-run."
         ),
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--comm_round_trip_mode",
         choices=["per_transfer", "per_round"],
         default="per_round",
@@ -737,27 +776,27 @@ def parse_arguments():
               "真实情形；默认=论文协议 ours_full）；per_transfer=每次消息各付一次"
               " NTT（遗留口径，复现 2026-09-24 前的历史数字时用）。"),
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--transfer_top_k_cap",
         type=int,
         default=16,
         help="给（含 RL 选出的）transfer_top_k 设上限，压低拒绝载荷字节"
              "（默认 16=论文协议）；0 = 不设上限（遗留口径）。",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--force_full_vocab_transfer",
         action="store_true",
         help="强制传输完整词表分布（不做 top-k 稀疏化）。用于构造"
              "标准投机采样的通信基线；默认关闭，保证历史数字可复现。",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--prob_payload_bits",
         type=int,
         default=16,
         help="传输概率载荷的位宽（16=与历史一致；8=int8 量化；4=上界数据点）。"
              "量化在对数域进行并重归一化、保持序关系；作用于验证路径与计费。",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--charge_residual_payload",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -769,7 +808,7 @@ def parse_arguments():
             "前的历史数字，即 ours_hist）。"
         ),
     )
-    parser.add_argument(
+    g_out.add_argument(
         "--dump_outputs",
         type=str,
         default=None,
@@ -780,7 +819,7 @@ def parse_arguments():
             "token-identical to target_only) and for offline task-quality scoring."
         ),
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--arp_stop_mode",
         type=str,
         choices=["cumulative", "per_token"],
@@ -792,7 +831,7 @@ def parse_arguments():
             "stops when 1 - p_last > threshold, which is monotone in the threshold."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_force_topk",
         type=int,
         default=None,
@@ -803,7 +842,7 @@ def parse_arguments():
             "overrides --transfer_top_k, making ladder rungs identical."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_force_threshold",
         type=float,
         default=None,
@@ -814,7 +853,7 @@ def parse_arguments():
             "that actually controls how long the draft runs."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_byte_price",
         type=float,
         default=0.0,
@@ -828,7 +867,7 @@ def parse_arguments():
             "larger values to emulate metered or more expensive links."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_compute_time_mode",
         type=str,
         choices=["wall", "model"],
@@ -840,7 +879,7 @@ def parse_arguments():
             "making the reward independent of host load)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_compute_cost_json",
         type=str,
         default=None,
@@ -850,12 +889,12 @@ def parse_arguments():
             "scripts/calibrate_compute_model.py."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_no_alpha2",
         action="store_true",
         help="Drop the (N_acc/gamma)^2 factor from the legacy reward (ablation).",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_action_space",
         type=str,
         choices=["topk_thr", "topk_thr_gamma"],
@@ -870,13 +909,13 @@ def parse_arguments():
             "-11.9%% compute and +22.1%% throughput at 0.5 Mbps)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_gamma_candidates",
         type=str,
         default="2,4,8,16",
         help="Comma-separated draft lengths for --rl_action_space topk_thr_gamma.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_force_gamma",
         type=int,
         default=None,
@@ -888,7 +927,7 @@ def parse_arguments():
             "top-k' cannot be ruled out)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_factored_q",
         action="store_true",
         help=(
@@ -901,18 +940,18 @@ def parse_arguments():
             "larger gamma is worth +0.83 reward per decision)."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_include_gamma_in_state",
         action="store_true",
         help="Append the last chosen draft length to the RL state vector.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_buffer_size",
         type=int,
         default=5000,
         help="Replay-buffer size of the DDQN agents (larger for bigger action spaces).",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_team_reward",
         action="store_true",
         help=(
@@ -922,118 +961,118 @@ def parse_arguments():
             "(one-step delay), which is the standard cooperative-MARL treatment."
         ),
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_log_window",
         type=int,
         default=200,
         help="Window of the adapter's windowed reward log.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--use_rl_adapter",
         action="store_true",
         help="Whether to use RL adapter for dynamic k selection.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--main_rl_path",
         type=str,
         default=None,
         help="The path of the main RL adapter model.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--main_rl_best_path",
         type=str,
         default=None,
         help="The path of the best main RL adapter model.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--little_rl_path",
         type=str,
         default=None,
         help="The path of the little RL adapter model.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--little_rl_best_path",
         type=str,
         default=None,
         help="The path of the best little RL adapter model.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_checkpoint_root",
         type=str,
         default="checkpoints/rl_agents",
         help="Root directory used to resolve pair-specific RL checkpoints.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_init_seed",
         type=int,
         default=None,
         help="Seed used for deterministic RL network initialization and exploration.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_init_strategy",
         choices=["fresh", "resume"],
         default="resume",
         help="Initialize new RL agents or resume existing dedicated checkpoints.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_epsilon_decay",
         type=float,
         default=None,
         help="Override the mode-specific RL epsilon decay default.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_reward_scale",
         type=float,
         default=None,
         help="Override the mode-specific RL reward scale default.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--rl_batch_size",
         type=int,
         default=None,
         help="Override the mode-specific RL batch size default.",
     )
-    parser.add_argument(
+    g_rl.add_argument(
         "--disable_rl_update",
         action="store_true",
         help="Whether to disable RL adapter update (training).",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--batch_delay",
         type=float,
         default=50e-3,  # 50 ms
         help="The delay time added to each batch in seconds.",
     )
-    parser.add_argument(
+    g_method.add_argument(
         "--use_early_stopping",
         action="store_true",
         help="Whether to use early stopping during decoding.",
     )
-    parser.add_argument(
+    g_comm.add_argument(
         "--dump_network_stats",
         action="store_true",
         help="Whether to dump network statistics during decoding.",
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--draft_quantization",
         type=str,
         choices=["auto", "4bit", "none"],
         default="auto",
         help="Quantization mode for the draft model.",
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--target_quantization",
         type=str,
         choices=["auto", "4bit", "none"],
         default="auto",
         help="Quantization mode for the target model.",
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--keep_target_on_single_gpu",
         action="store_true",
         help="Keep the DSD target model on its selected GPU instead of auto-sharding.",
     )
-    parser.add_argument(
+    g_deploy.add_argument(
         "--little_quantization",
         type=str,
         choices=["auto", "4bit", "none"],

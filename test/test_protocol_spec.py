@@ -13,7 +13,11 @@
 """
 
 import ast
+import contextlib
+import io
 import re
+import shutil
+import sys
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -452,6 +456,145 @@ class TestCliSurface(unittest.TestCase):
                 if isinstance(text, str) and re.search(r"(?<!%)%(?!%)", text):
                     offenders.append((node.lineno, text[:48]))
         self.assertFalse(offenders, f"help 字符串含未转义的 %: {offenders}")
+
+
+#: `--help` 的第 ① 组 = 出一次表真正要动的全部参数
+DAILY_ARGS = frozenset(
+    {
+        "draft_model",
+        "target_model",
+        "little_model",
+        "eval_mode",
+        "exp_name",
+        "protocol",
+        "gamma",
+        "gamma1",
+        "gamma2",
+        "max_tokens",
+        "temp",
+        "eval_data_num",
+        "num_shots",
+        "random_sample",
+        "sample_seed",
+        "use_cuda_graph",
+    }
+)
+
+
+def _argument_groups() -> dict[str, list[str]]:
+    """从 `src/utils.py` 提取 {分组变量名: [dest, ...]}；未归类的记在 `_ungrouped`。"""
+    tree = ast.parse(UTILS_PY.read_text(encoding="utf-8"))
+    groups: dict[str, list[str]] = {}
+    ungrouped: list[str] = []
+    group_names: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr == "add_argument_group":
+            group_names.add(ast.unparse(node.func.value))
+        elif node.func.attr == "add_argument":
+            target = ast.unparse(node.func.value)
+            dest = ast.unparse(node.args[0]).strip("\"'").lstrip("-").replace("-", "_")
+            if target == "parser":
+                ungrouped.append(dest)
+            else:
+                groups.setdefault(target, []).append(dest)
+    assert group_names or groups, "未找到分组定义"
+    groups["_ungrouped"] = ungrouped
+    return groups
+
+
+class TestHelpGrouping(unittest.TestCase):
+    """`--help` 分组：103 个参数全部归类，① 组恰好是那 16 个。"""
+
+    def test_every_argument_is_grouped(self):
+        g = _argument_groups()
+        self.assertEqual(
+            g["_ungrouped"],
+            [],
+            f"这些参数还挂在扁平 parser 上，未进任何分组: {g['_ungrouped']}",
+        )
+        total = sum(len(v) for k, v in g.items() if k != "_ungrouped")
+        self.assertEqual(total, 103)
+
+    def test_no_argument_is_in_two_groups(self):
+        seen: dict[str, str] = {}
+        for name, dests in _argument_groups().items():
+            if name == "_ungrouped":
+                continue
+            for d in dests:
+                self.assertNotIn(d, seen, f"{d} 同时出现在 {seen.get(d)} 与 {name}")
+                seen[d] = name
+
+    def test_daily_group_is_the_documented_sixteen(self):
+        """第 ① 组必须就是文档承诺的 16 个，不多不少。
+
+        它是"参数太多"这个问题的答案：出一次表只改这一组。若有人往里塞参数或挪走，
+        这个测试会失败，迫使显式更新文档（docs/param_inventory.md §1）。
+        """
+        g = _argument_groups()
+        daily = g.get("g_daily")
+        self.assertIsNotNone(daily, f"未找到 g_daily 分组: {sorted(g)}")
+        self.assertEqual(set(daily), DAILY_ARGS)
+        self.assertEqual(len(daily), 16)
+
+    def test_help_renders_groups(self):
+        """真跑一次 --help，确认渲染出分组而不是一张扁平清单。"""
+        import contextlib
+        import io
+
+        from src.utils import parse_arguments
+
+        buf = io.StringIO()
+        argv = sys.argv
+        sys.argv = ["prog", "--help"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                parse_arguments()
+        except SystemExit as exc:  # --help 本就以 SystemExit 结束
+            self.assertEqual(exc.code, 0)
+        finally:
+            sys.argv = argv
+        text = buf.getvalue()
+        self.assertIn("① 日常出表", text)
+        self.assertIn("⑥ RL adapter", text)
+        self.assertIn("--protocol {none,paper_table5,honest,legacy,smoke}", text)
+
+    def test_parse_still_works_after_grouping(self):
+        """分组只改排版：真实命令行仍须解析出全部 103 个 dest。"""
+        import src.utils as u
+
+        argv = sys.argv
+        sys.argv = [
+            "prog",
+            "--draft_model",
+            "tiny-llama-1.1b",
+            "--target_model",
+            "llama-2-13b",
+            "--little_model",
+            "llama-68m",
+            "--eval_mode",
+            "dsd",
+            "--exp_name",
+            "_grouping_check",
+        ]
+        saved = u.model_zoo
+        u.model_zoo = lambda a: None
+        args = Namespace(exp_name="exp/_grouping_check")
+        try:
+            args = u.parse_arguments()
+        finally:
+            sys.argv = argv
+            u.model_zoo = saved
+            # parse_arguments 会顺带创建结果目录，测试不留痕
+            shutil.rmtree(Path(args.exp_name), ignore_errors=True)
+        self.assertEqual(args.eval_mode, "dsd")
+        self.assertEqual(args.protocol, "none")
+        self.assertTrue(args.exp_name.endswith("_grouping_check"), args.exp_name)
+        # 分组只改排版：AST 里那些 dest 必须全部真实存在于解析结果上
+        parsed = vars(args)
+        missing = [d for d, _, _ in _arg_records() if d not in parsed]
+        self.assertEqual(missing, [], f"这些 dest 在真实解析结果里缺失: {missing}")
 
 
 if __name__ == "__main__":
