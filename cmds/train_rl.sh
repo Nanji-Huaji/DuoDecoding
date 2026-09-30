@@ -73,7 +73,6 @@ run_training() {
         --temp 0.0 \
         --use_rl_adapter \
         --use_stochastic_comm \
-        --task_name "${TASK}" \
         --edge_cloud_bandwidth $BW \
         --edge_end_bandwidth $END_BW \
         --ntt_ms_edge_cloud $LATENCY \

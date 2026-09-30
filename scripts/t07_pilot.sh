@@ -16,7 +16,7 @@ COMMON=(--data_path data --num_shots 3 --max_tokens 128 --eval_data_num 40
   --comm_round_trip_mode per_round --no-charge_residual_payload --transfer_top_k_cap 0
   --transfer_top_k 300 --small_draft_threshold 0.6 --draft_target_threshold 0.7
   --uncertainty_threshold 0.8 --use_stochastic_comm
-  --use_rl_adapter --disable_rl_update --use_cuda_graph --task_name gsm8k
+  --use_rl_adapter --disable_rl_update --use_cuda_graph
   --small_draft_acc_head_path "$ACC/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3"
   --draft_target_acc_head_path "$ACC/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"
   --main_rl_path checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth

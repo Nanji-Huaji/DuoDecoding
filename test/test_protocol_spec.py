@@ -8,7 +8,8 @@
 1. 消费表的快照与**运行时内省**一致（防止手维护的表漂移）；
 2. 注册表里每个解码方法都在快照中登记（新方法必须显式登记消费情况）；
 3. 协议应用只填命令行未显式设置的项，命令行覆盖会被记成"偏离"；
-4. `--protocol none`（默认）不写入任何参数，且 12 个无消费者参数已从 CLI 删除。
+4. `--protocol none`（默认）不写入任何参数，且 15 个无消费者参数已从 CLI 删除
+   （其中 `--task_name` 有 17 处 call site，须一并清掉）。
 """
 
 import ast
@@ -37,10 +38,13 @@ UTILS_PY = ROOT / "src" / "utils.py"
 REMOVED_ARGS = (
     "level",
     "guess",
+    "window",
     "max_token_span",
     "num_draft",
     "dtype_comm",
     "adaptive_debug_log",
+    "datastore_path",
+    "task_name",
     "controlled_eval_task",
     "controlled_topk_values",
     "controlled_topk_step",
@@ -48,6 +52,64 @@ REMOVED_ARGS = (
     "controlled_entropy_threshold",
     "controlled_max_high_entropy_states",
 )
+
+#: 上一组里**曾被 exp.py / scripts/ / cmds/ 调用**的那些。删掉定义后，遗留的
+#: call site 会变成 argparse 的 "unrecognized arguments" 当场报错，所以必须一并
+#: 清掉；而脚本只有在真正跑批时才暴露，代价高——这里静态锁死。
+REMOVED_ARGS_WITH_CALL_SITES = ("task_name",)
+
+#: 自带独立 parser 的 vendored 包：其中的同名 flag 与本项目的 CLI 无关
+_VENDORED = ("SpecDec_pp/", "src/model/rest/")
+
+
+def _python_docstring_lines(path: Path) -> set[int]:
+    """该 .py 里所有 docstring 覆盖的行号（1-based）。
+
+    docstring 是字符串而非注释，静态扫描会把它当代码——本测试自己的说明文字
+    就提到过 `--task_name`，所以必须显式排除，否则测试自伤。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", None) or []
+        if not body:
+            continue
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    return lines
+
+
+def _tracked_files() -> list[str]:
+    """受版本控制的 .py/.sh（排除 vendored 包），供全仓静态扫描用。
+
+    不用 `os.walk`：仓库里有 `data/`、`.venv/`、`SpecDec_pp/.venv`，遍历会慢到超时。
+    """
+    files = _git_ls_files()
+    return [
+        f
+        for f in files
+        if f.endswith((".py", ".sh")) and not f.startswith(_VENDORED)
+    ]
+
+
+def _git_ls_files() -> list[str]:
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "ls-files", "*.py", "*.sh"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in proc.stdout.split("\n") if line]
 
 
 def _arg_records() -> list[tuple[str, tuple[str, ...], int]]:
@@ -281,6 +343,35 @@ class TestCliSurface(unittest.TestCase):
         for name in REMOVED_ARGS:
             with self.subTest(arg=name):
                 self.assertNotIn(name, dests, f"--{name} 应已删除（全仓无消费者）")
+
+    def test_removed_args_have_no_call_sites(self):
+        """被传过的死参数：call site 必须一起清掉，否则脚本当场报错。
+
+        `--task_name` 曾被 `exp.py`（每条扫描命令）和 12 个 `scripts/*.sh`、
+        `cmds/train_rl.sh` 传着——删掉定义后这些命令会 argparse 报错。这里按
+        "非注释行里出现该 flag" 扫描，钉死清理结果。
+        """
+        tracked = _tracked_files()
+        self.assertGreater(len(tracked), 50, "扫描面太小，git ls-files 可能失败了")
+        offenders: list[str] = []
+        for rel in tracked:
+            path = ROOT / rel
+            skip = _python_docstring_lines(path) if rel.endswith(".py") else set()
+            for i, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                if i in skip or line.lstrip().startswith("#"):
+                    continue  # 注释/docstring 里提到参数名是允许的
+                for name in REMOVED_ARGS_WITH_CALL_SITES:
+                    if re.search(rf"--{name.replace('_', '[-_]')}\b", line) or re.search(
+                        rf"add_args\([^)]*[\"']{name}[\"']", line
+                    ):
+                        offenders.append(f"{rel}:{i}: {line.strip()[:70]}")
+        self.assertFalse(
+            offenders,
+            "仍有 call site 传递已删除的参数（运行时会 unrecognized arguments）:\n"
+            + "\n".join(offenders),
+        )
 
     def test_protocol_option_exists_with_all_protocols(self):
         records = {dest: opts for dest, opts, _ in _arg_records()}

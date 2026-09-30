@@ -17,7 +17,7 @@ COMMON=(--data_path data --num_shots 3 --max_tokens 128
   --comm_round_trip_mode per_round --no-charge_residual_payload --transfer_top_k_cap 0
   --transfer_top_k 300 --small_draft_threshold 0.6 --draft_target_threshold 0.7
   --uncertainty_threshold 0.8 --use_stochastic_comm
-  --use_rl_adapter --disable_rl_update --use_cuda_graph --task_name gsm8k
+  --use_rl_adapter --disable_rl_update --use_cuda_graph
   --arp_stop_mode per_token
   --small_draft_acc_head_path "$ACC/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3"
   --draft_target_acc_head_path "$ACC/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"
@@ -47,7 +47,7 @@ run e2_ceesd adaptive_tridecoding "" --temp 0.7 --eval_data_num 40 \
 run e2_target target_only "" --temp 0.7 --eval_data_num 80 \
   --data_path data --num_shots 3 --max_tokens 128 --sample_seed 1234 --random_sample \
   --num_samples_per_task 1 --draft_model tiny-llama-1.1b --target_model llama-2-13b \
-  --little_model llama-68m --use_cuda_graph --task_name gsm8k
+  --little_model llama-68m --use_cuda_graph
 
 # E3) remap A/B: raw θ0.2(旧最优) vs 校准 θ0.6/0.8 (temp0.7, γ16)
 run e3_raw02 adaptive_tridecoding "" --temp 0.7 --eval_data_num 40 \

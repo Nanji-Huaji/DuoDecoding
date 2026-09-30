@@ -106,17 +106,30 @@
 "CEE-SD" 实际是 `adaptive_tridecoding`（`run ceesd_g5 adaptive_tridecoding 5 5`），
 所以那两行才真正吃到了 per_round/无残差/cap0；三个基线行依旧 per_transfer。
 
-## 4. 完全没有消费者的参数（12 个）
+## 4. 完全没有消费者的参数（15 个，已全部删除）
 
-`--level`、`--guess`、`--max-token-span`、`--num-draft`、`--dtype_comm`、
-`--adaptive_debug_log`，以及整簇废弃的 `--controlled_*`：
-`--controlled_eval_task`、`--controlled_topk_values`、`--controlled_topk_step`、
-`--controlled_entropy_quantile`、`--controlled_entropy_threshold`、
-`--controlled_max_high_entropy_states`。
-另有 `--task_name` 只在 `src/utils.py` 内部被读（用于命名/日志）。
+**第一批（12 个）**：`--level`、`--guess`、`--max-token-span`、`--num-draft`、
+`--dtype_comm`、`--adaptive_debug_log`，以及整簇废弃的 `--controlled_*`
+（6 个）。这一批从来没人传。
 
-设置它们不会有任何效果，也不会报错。**已于 2026-09-29 删除**（12 个；CLI 现有
-110 个选项）。
+**第二批（3 个）**：`--window`、`--datastore-path`、`--task_name`。
+
+`--task_name` 值得单说，因为它此前被**误判为"保留"**：它被 `exp.py`（每条扫描
+命令都推导并传入）、12 个 `scripts/*.sh`、`cmds/train_rl.sh` 共 17 处传着，看起来
+很"在用"。但全仓没有任何 `args.task_name` 读取——真正给 RL adapter 提供 task
+one-hot 的是 `self.task`，由各评测类硬编码（`src/baselines.py:578` +
+`eval/eval_gsm8k.py:80` 等）。**即：一个 17 处传参、零处读取的空操作。**
+
+这也暴露了我先前扫描方法的漏洞：用模糊的 `\btask_name\b` 匹配时，`eval/eval_mixed.py`
+的局部变量、`src/rl_adapter.py` 的函数形参都会被误当成消费者。改用精确的
+`args.<dest>` / `getattr(args, "<dest>")` 模式后才查实（复现脚本见
+`docs/param_inventory.md` 开头的生成方式）。
+
+设置它们不会有任何效果，也不会报错。15 个全部删除；CLI 现有 **103** 个参数。
+删除时一并清掉了 `--task_name` 的 17 处 call site——否则那些命令会直接
+argparse 报错（`scripts/batch3.sh` 等每个都是）。回归测试：
+`test/test_protocol_spec.py::TestCliSurface::test_removed_args_have_no_call_sites`，
+已用变异测试验证它会失败。
 
 ### 4b. 顺带发现：`--help` 之前是崩的
 
@@ -155,6 +168,7 @@ GPU=0 bash scripts/align_paper_t5_gsm8k.sh
    基准即 `adaptive_tridecoding` 的实现；这要求把 §2 的四个开关接线到所有方法。
 3. **投机深度 γ**：**待讨论**。过渡期规则：γ 一律显式传、run 启动时打印实际 γ 并标注
    "规则未定"（详见 `docs/protocol.md` §4）。
-4. **12 个死参数**：删除（`docs/protocol.md` §6 有清单）；`--task_name` 保留。
+4. **15 个死参数**：全部删除，含曾被 17 处传参却无人读取的 `--task_name`
+   （见 §4；`docs/protocol.md` §6 有清单）。
 
 最终口径的冻结值、落地状态与强制机制见 **`docs/protocol.md`**。

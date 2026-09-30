@@ -105,12 +105,19 @@ DSD 的 R_acce 从论文 32.11% 变成 60.6%，而前向数在 γ=3 时本来就
 
 ## 6. 死参数（L3）
 
-以下 12 个没有任何消费者（设了无效、也不报错），删除：
-`--level`、`--guess`、`--max-token-span`、`--num-draft`、`--dtype_comm`、
-`--adaptive_debug_log`、`--controlled_eval_task`、`--controlled_topk_values`、
-`--controlled_topk_step`、`--controlled_entropy_quantile`、
-`--controlled_entropy_threshold`、`--controlled_max_high_entropy_states`。
-`--task_name` 仅被 `src/utils.py` 内部使用（命名/日志），保留。
+**15 个已于 2026-09-29 删除**（设了无效、也不报错）：
+
+- 从未被传过的 12 个：`--level`、`--guess`、`--max-token-span`、`--num-draft`、
+  `--dtype_comm`、`--adaptive_debug_log`、`--controlled_eval_task`、
+  `--controlled_topk_values`、`--controlled_topk_step`、
+  `--controlled_entropy_quantile`、`--controlled_entropy_threshold`、
+  `--controlled_max_high_entropy_states`；
+- 被传但无人读的 3 个：`--window`、`--datastore-path`、`--task_name`。
+  `--task_name` 有 17 处 call site（`exp.py` + 12 个 `scripts/*.sh` +
+  `cmds/train_rl.sh`）却零处读取，全部一并清掉——留着定义而清 call site，
+  或清定义而留 call site，都会让跑批当场报错或继续误导。
+
+CLI 现有 103 个参数。参数按"谁消费它"的分层清单见 `docs/param_inventory.md`。
 
 ## 7. 现在就能用的命令（已符合 §2 的第 1-5、9、11、13 条）
 
@@ -125,7 +132,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/accelerate launch --num_processes 1 \
   --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 \
   --comm_accounting honest --transfer_top_k 300 \
   --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 \
-  --use_stochastic_comm --use_cuda_graph --task_name gsm8k
+  --use_stochastic_comm --use_cuda_graph
 ```
 
 注意：在 §3 实施完成前，`--comm_accounting honest` 只对 `adaptive_tridecoding` 生效，

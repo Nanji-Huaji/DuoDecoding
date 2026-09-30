@@ -383,29 +383,12 @@ def parse_arguments():
         ],
     )
 
-    parser.add_argument(
-        "--task_name",
-        type=str,
-        default="unknown",
-        help="Task name for RL adapter context (e.g., mt_bench, humaneval).",
-    )
-
-    # for lookahead decoding（--level/--guess 已删除：全仓无消费者）
-    parser.add_argument(
-        "--window",
-        type=int,
-        default=10,
-    )
-    # end for lookahead decoding
-
-    # for rest（--max-token-span/--num-draft 已删除：全仓无消费者）
-    parser.add_argument(
-        "--datastore-path",
-        type=str,
-        default="datastore/",
-        help="The path of the datastore for retrival.",
-    )
-    # end for rest
+    # for lookahead / for rest 段已整段删除：--level --guess --window
+    # --max-token-span --num-draft --datastore-path --task_name 全仓无
+    # `args.<name>` 消费者（见 docs/param_inventory.md §2）。--task_name 尤其
+    # 有误导性：exp.py 每条命令都推导并传入、15 个脚本也传，但无人读取；
+    # RL adapter 的 task one-hot 实际由各评测类硬编码 self.task 提供
+    # （src/baselines.py:578 + eval/eval_*.py）。
     parser.add_argument(
         "--openai_api_key",
         type=str,

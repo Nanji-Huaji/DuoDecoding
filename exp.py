@@ -258,25 +258,8 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         # 绕开逐算子 ~70µs 的 launch 开销；KV 缓存跨样本复用（见 graph_decode.py）
         cmd = add_args(cmd, "use_cuda_graph")
 
-    # Derive task_name based on eval_dataset or manually
-    script_path = str(config.get("eval_dataset", ""))
-    task_name = "unknown"
-    if "mt_bench" in script_path:
-        task_name = "mt_bench"
-    elif "humaneval" in script_path:
-        task_name = "humaneval"
-    elif "cnndm" in script_path:
-        task_name = "cnndm"
-    elif "xsum" in script_path:
-        task_name = "xsum"
-    elif "gsm8k" in script_path:
-        task_name = "gsm8k"
-    elif "specbench" in script_path:
-        task_name = "specbench"
-    elif "mixed" in script_path:
-        task_name = "mixed"
-
-    cmd = add_args(cmd, "task_name", task_name)
+    # --task_name 已删除（无消费者，见 docs/param_inventory.md §2）：
+    # RL adapter 的 task one-hot 由各评测类硬编码 self.task 提供。
 
     print(f"开始实验: {config['exp_name']}, GPU: {config['CUDA_VISIBLE_DEVICES']}")
     print(f"日志文件: {log_file}")

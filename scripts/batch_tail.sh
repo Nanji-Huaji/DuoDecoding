@@ -10,7 +10,7 @@ snap() { nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheade
 BASE=(--data_path data --num_shots 3 --max_tokens 128
   --sample_seed 1234 --random_sample --num_samples_per_task 1
   --draft_model tiny-llama-1.1b --target_model llama-2-13b --little_model llama-68m
-  --use_cuda_graph --task_name gsm8k)
+  --use_cuda_graph)
 
 # 1) target 锚: 无通信/无ARP/无RL
 if ! ls exp/t072_target/*_metrics.json >/dev/null 2>&1; then
