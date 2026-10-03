@@ -57,7 +57,12 @@ MODE_FEATURES = {
             "uncertainty_decoding",
             "cuhlm",
             "speculative_decoding_with_bandwidth",
-            "speculative_decoding_with_bandwidth_full_prob",
+            # 已删除 "speculative_decoding_with_bandwidth_full_prob"（幽灵模式）：
+            # 该名字从未有任何解码实现注册，能通过能力表校验却会在
+            # get_decoding_method() 抛 NotImplementedError。它想表达的
+            # "强制传完整词表概率" 是 CLI 开关 --force_full_vocab_transfer
+            # 的职责，不该再复制成一个 eval_mode 名字；该开关的覆盖范围见
+            # docs/protocol.md（当前只有部分方法消费它）。
         )
     },
     # 双模型 + 主 RL + 单验收头

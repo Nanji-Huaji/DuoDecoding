@@ -15,7 +15,10 @@ from src.proposal_utils import proposal_top_k, build_draft_probs_override
 
 
 class ProfiledBaselines(Baselines):
-    @Register.register_decoding("cee_dsd")
+    # 注册名与生产实现 "cee_dsd" 区分：本文件只是临时插桩副本，
+    # 若同名注册会顶掉 src.baselines 的生产解码方法（注册表因此报重复名）。
+    # 这里用 "profiled_" 前缀仅作为命名空间标注，默认路径不会取用它。
+    @Register.register_decoding("profiled_cee_dsd")
     @torch.no_grad()
     def cee_dsd(
         self,

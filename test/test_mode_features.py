@@ -19,7 +19,6 @@ OLD_DUAL = {
     "sd", "dsd", "dssd", "dist_spec", "dist_split_spec",
     "uncertainty_decoding", "cuhlm",
     "speculative_decoding_with_bandwidth",
-    "speculative_decoding_with_bandwidth_full_prob",
 }
 OLD_TRI = {
     "tridecoding", "adaptive_tridecoding", "target_only",
@@ -46,16 +45,20 @@ class TestModeFeaturesTable:
         missing = set(Register._DECODING_REGISTRY) - set(MODE_FEATURES)
         assert not missing, f"注册了但能力表缺条目: {missing}"
 
-    def test_every_spec_mode_is_registered_or_phantom(self):
-        import src.baselines  # noqa: F401
+    def test_every_spec_mode_is_registered(self):
+        import src.baselines  # noqa: F401 触发装饰器注册
         import src.engine  # noqa: F401
 
-        # 幽灵模式：load_model 认识但方法不存在（历史遗留，保留加载知识）
-        phantom = {"speculative_decoding_with_bandwidth_full_prob"}
-        unregistered = (
-            set(MODE_FEATURES) - set(Register._DECODING_REGISTRY) - phantom
-        )
+        # 幽灵模式 speculative_decoding_with_bandwidth_full_prob 已删除：
+        # 无实现注册；该能力属 --force_full_vocab_transfer 开关，不是 eval_mode。
+        unregistered = set(MODE_FEATURES) - set(Register._DECODING_REGISTRY)
         assert not unregistered, f"能力表有但未注册: {unregistered}"
+
+    def test_ghost_full_prob_mode_removed(self):
+        # 幽灵模式已从能力表删除，防止未来被误加回
+        assert (
+            "speculative_decoding_with_bandwidth_full_prob" not in MODE_FEATURES
+        )
 
     def test_model_topology_matches_old_branches(self):
         dual = {m for m, s in MODE_FEATURES.items() if s.models == "dual"}

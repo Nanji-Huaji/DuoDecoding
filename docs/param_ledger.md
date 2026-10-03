@@ -139,11 +139,13 @@ help 做 `%`-格式化，于是 `--help` 直接 `ValueError: unsupported format 
 这大概是"参数太多又看不清"的一个隐藏原因。已修复，并加了回归测试
 （`test/test_protocol_spec.py::test_help_strings_escape_percent`）。
 
-### 4c. 幽灵模式
+### 4c. 幽灵模式（已删除）
 
-`MODE_FEATURES` 里有 `speculative_decoding_with_bandwidth_full_prob`，但**没有任何
+`MODE_FEATURES` 曾有 `speculative_decoding_with_bandwidth_full_prob`，但**没有任何
 解码实现注册**它（21 个注册方法里没有，全仓无引用）。它通过能力表校验却会在
-`get_decoding_method()` 抛 `NotImplementedError`。两者留一：要么删条目，要么补实现。
+`get_decoding_method()` 抛 `NotImplementedError`。它想表达的"强制传完整词表概率"已经
+由 CLI 开关 `--force_full_vocab_transfer` 在任何模式上提供，故已删除该条目；
+回归测试见 `test/test_mode_features_registry.py`。
 
 ## 5. 三种口径怎么跑
 

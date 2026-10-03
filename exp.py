@@ -1,8 +1,10 @@
 import json
 import os
+import shutil
 import subprocess
 import signal
 import contextlib
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -98,9 +100,30 @@ class ExpConfig(TypedDict):
 NTT_MS_EDGE_CLOUD = 76.3
 NTT_MS_EDGE_END = 0.317
 
+
+def resolve_accelerate() -> str:
+    """从当前解释器推导 accelerate 可执行文件，避免绑死某个绝对路径。
+
+    优先取与 ``sys.executable`` 同目录下的 ``accelerate``（保证用与环境
+    自洽的那一个）；不存在时回退到 ``PATH`` 查找；两者都失败则显式报错，
+    而不是让 shell 报一句含义不明的 "accelerate: not found"。
+    """
+    interpreter_accelerate = Path(sys.executable).parent / "accelerate"
+    if interpreter_accelerate.exists():
+        return str(interpreter_accelerate)
+    path_accelerate = shutil.which("accelerate")
+    if path_accelerate is not None:
+        return path_accelerate
+    raise RuntimeError(
+        f"未找到 accelerate：{interpreter_accelerate} 不存在，"
+        f"PATH 中也没有 accelerate 可执行文件。"
+        f"请安装 accelerate 或激活对应的虚拟环境。"
+    )
+
+
 cmd_temp = """
 echo "Running experiment: {eval_mode}"
-CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} /home/tiantianyi/code/DuoDecoding/.venv/bin/accelerate launch \\
+CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} {accelerate} launch \\
     --num_processes 1 \
     --main_process_port 29051 \
     {eval_dataset} \
@@ -194,7 +217,7 @@ def run_exp(config: ExpConfig, log_dir: str = "logs") -> dict:
         log_dir, f"{config['exp_name'].replace('/', '_')}_{timestamp}.log"
     )
 
-    cmd = cmd_temp.format(**config)
+    cmd = cmd_temp.format(accelerate=resolve_accelerate(), **config)
     if config.get("use_precise", False):
         cmd = add_args(cmd, "use_precise")
     if config.get("use_stochastic_comm", False):
