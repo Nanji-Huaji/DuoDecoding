@@ -74,6 +74,20 @@ class _FakeCommSimulator:
     def _apply_top_k_compression(self, probs, k):
         return probs
 
+    def simulate_transfer(self, data_size_bytes, link_type="edge_cloud", **kwargs):
+        # 与 transfer 同样记录一次调用：B17 统一后下行走 _send_downlink_token，
+        # 它经 simulate_transfer 计费（token 字节 + INT_SIZE）。
+        self.transfer_calls.append(
+            {
+                "tokens": None,
+                "probs": None,
+                "link_type": link_type,
+                "kwargs": dict(kwargs),
+                "data_size_bytes": int(data_size_bytes),
+            }
+        )
+        return 0.0
+
     def send_accept_message(self, linktype):
         self.accept_messages += 1
 

@@ -1512,10 +1512,10 @@ class Baselines(Decoding):
             ):
                 break
 
-            # dist_spec downlink only accounts for the final token/index signal here;
-            # the draft sequence, probability window, and reject signal are tracked
-            # through the protocol-specific transfers above.
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+            # dist_spec 下行：采样的 token 与其位置索引合并成一次往返
+            #（B17 统一口径；此前只付了 INT_SIZE，token 本体没计）。
+            # 草稿序列、概率窗口与拒绝信号仍走上面的协议专属传输。
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
@@ -1832,7 +1832,9 @@ class Baselines(Decoding):
                 rollback_plan,
             )
 
-            comm_simulator.transfer(t, None, link_type="edge_cloud")
+            # B17 统一口径：下行是 token + 位置索引一次往返。
+            # 此前这里只计 token，少计了 INT_SIZE。
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
             prefix = torch.cat((prefix, t), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
@@ -3297,8 +3299,9 @@ class Baselines(Decoding):
             ):
                 break
 
-            # 传输新生成的 token id
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+            # 传输新生成的 token id 与其位置索引（B17：合并为一次往返；
+            # 此前只付了 INT_SIZE，token 本体没计）
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
