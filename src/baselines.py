@@ -4145,6 +4145,67 @@ class Baselines(Decoding):
                         _fh.write("\n".join(_rows_calib) + "\n")
                 except Exception:
                     pass
+            # TOPK_TRACE: 逐位 dump 草稿分布形状（排序质量/熵/目标token秩）——
+            # top-k 集中度诊断用。与 ARP_CALIB_TRACE 同点位同索引, 独立 env 门控。
+            _topk_path = os.environ.get("TOPK_TRACE")
+            if _topk_path and _acc_probs_calib:
+                try:
+                    _kg = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+                    _rows_tk = []
+                    for _i in range(len(_acc_probs_calib)):
+                        _tok = int(x[0, prefix_len + _i].item())
+                        # 优先取真实分布（logits→softmax）；prob_history 在该
+                        # 路径可能已被重建/截断对象覆盖（传输侧视图），降级时标记。
+                        _lh_tk = draft_model_cache.logits_history
+                        if _lh_tk is not None:
+                            _rd = torch.softmax(
+                                _lh_tk[0, prefix_len - 1 + _i, : self.vocab_size]
+                                .float(),
+                                dim=-1,
+                            )
+                            _obj_tk = "true"
+                        else:
+                            _rd = draft_model_cache.prob_history[
+                                0, prefix_len - 1 + _i
+                            ]
+                            _obj_tk = "rebuilt"
+                        _rt = target_model_cache.prob_history[
+                            0, prefix_len - 1 + _i
+                        ]
+                        _srt, _ord = _rd.sort(descending=True)
+                        _cum = torch.cumsum(_srt, 0)[
+                            [k - 1 for k in _kg if k <= _srt.numel()]
+                        ]
+                        _tok_rank = int((_rd > _rd[_tok]).sum().item()) + 1
+                        _tam = int(_rt.argmax().item())
+                        _tam_rank = int((_rd > _rd[_tam]).sum().item()) + 1
+                        _ent = float(
+                            -(_rd[_rd > 0] * _rd[_rd > 0].log()).sum().item()
+                        )
+                        _rows_tk.append(
+                            json.dumps(
+                                {
+                                    "k_grid": _kg[: len(_cum)],
+                                    "cum_mass": [round(float(v), 5) for v in _cum],
+                                    "tok": _tok,
+                                    "tok_rank": _tok_rank,
+                                    "tok_pd": float(_rd[_tok]),
+                                    "t_argmax": _tam,
+                                    "t_argmax_rank": _tam_rank,
+                                    "gmatch": int(_tam == _tok),
+                                    "acc": int(_i < draft_accepted_this_iter),
+                                    "obj": _obj_tk,
+                                    "entropy": round(_ent, 4),
+                                    "top20": [
+                                        round(float(v), 5) for v in _srt[:20]
+                                    ],
+                                }
+                            )
+                        )
+                    with open(_topk_path, "a") as _fh:
+                        _fh.write("\n".join(_rows_tk) + "\n")
+                except Exception:
+                    pass
             total_draft_model_accepted_tokens += draft_accepted_this_iter
             draft_accept_rate_history.append(
                 draft_accepted_this_iter / total_gamma if total_gamma > 0 else 0.0
