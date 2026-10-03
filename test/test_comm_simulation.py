@@ -14,6 +14,8 @@ import pytest
 
 import torch
 
+from src.metrics import INT_SIZE
+
 from src.communication import (
     CommunicationSimulator,
     CUHLM,
@@ -386,3 +388,42 @@ class TestNttTraceCursorIsolation:
         fresh = self._sim()
         assert fresh._next_ntt_trace_value() == 7.0
         assert fresh._next_ntt_trace_value() == 8.0
+
+
+class TestDownlinkMergeIsByteNeutral:
+    """B17：把"token 一次 + 位置索引一次"合并成一次传输，只改往返次数。
+
+    旧写法（本仓库 10 处）把下行拆成两次 simulate/transfer 调用，而
+    `_charge_transfer` 每调用一次就加一遍 NTT + connect_times，于是同一次
+    WAN 往返被计费两次。合并后字节数应当逐位不变，只少一次 NTT。
+    """
+
+    @staticmethod
+    def _sim():
+        return CommunicationSimulator(
+            1651.0,
+            float("inf"),
+            float("inf"),
+            dimension="Mbps",
+            ntt_ms_edge_cloud=200.0,
+            use_stochastic=False,
+        )
+
+    def test_merge_saves_one_ntt_and_changes_no_bytes(self):
+        t = torch.randint(0, 1000, (1, 1))
+        token_bytes = t.element_size() * t.numel()
+
+        legacy = self._sim()
+        legacy.transfer(t, None, "edge_cloud")  # 旧：第一步
+        legacy.simulate_transfer(INT_SIZE, "edge_cloud")  # 旧：第二步
+
+        merged = self._sim()
+        merged.simulate_transfer(INT_SIZE + token_bytes, "edge_cloud")  # 新：一次
+
+        legacy_bytes = sum(u["data_size_bytes"] for u in legacy.stats["edge_cloud"])
+        merged_bytes = sum(u["data_size_bytes"] for u in merged.stats["edge_cloud"])
+        assert merged_bytes == legacy_bytes, "合并必须字节中立"
+
+        # 恰好省下 ntt_ms_edge_cloud（200 ms）
+        saved = legacy.edge_cloud_comm_time - merged.edge_cloud_comm_time
+        assert saved == pytest.approx(0.2)

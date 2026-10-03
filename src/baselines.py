@@ -84,6 +84,24 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
+def _send_downlink_token(comm_simulator, token: torch.Tensor, link_type: str) -> None:
+    """下行回传一个采样 token 及其位置索引，**合并为一次传输**。
+
+    B17：旧写法把它拆成两次调用
+    （``transfer(t, None, link)`` 与 ``simulate_transfer(INT_SIZE, link)``），而
+    ``CommunicationSimulator._charge_transfer`` 每被调用一次就累加一次 NTT 与
+    ``connect_times`` —— 同一次 WAN 往返被计费两次。
+
+    ``transfer`` 本身只是"tensor → 字节"的编码转发（communication.py 里它只
+    调用 ``simulate_transfer`` 一次），且全仓没有任何调用点给
+    ``protocol_overhead_bytes`` 传过值（默认 0），所以合并前后**数据字节数逐位
+    相同**，只有往返次数（以及由它派生的 comm_time/connect_times）会变。
+    """
+    comm_simulator.simulate_transfer(
+        INT_SIZE + token.element_size() * token.numel(), link_type
+    )
+
+
 def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead:
     path = Path(model_path)
     try:
@@ -1149,8 +1167,7 @@ class Baselines(Decoding):
                 break
 
             # Downlink returns the final continuation token and its position index.
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
 
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
@@ -2123,8 +2140,7 @@ class Baselines(Decoding):
                 )
 
             # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             prefix = torch.cat((prefix, t), dim=1)
             new_generated_token = prefix[:, prefix_len:]
@@ -2281,10 +2297,8 @@ class Baselines(Decoding):
 
             prefix = torch.cat((prefix, t), dim=1)
             # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
+            _send_downlink_token(comm_simulator, t, "edge_end")
             # 同步
 
             if use_early_stopping and self._check_stopping_criteria(
@@ -2605,8 +2619,7 @@ class Baselines(Decoding):
                 )
 
             # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             prefix = torch.cat((prefix, t), dim=1)
             new_generated_token = prefix[:, prefix_len:]
@@ -2745,10 +2758,8 @@ class Baselines(Decoding):
 
             prefix = torch.cat((prefix, t), dim=1)
             # 传输索引
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -5046,8 +5057,7 @@ class Baselines(Decoding):
                 )
 
             # Transfer sampled token index back
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             prefix = torch.cat((prefix, t), dim=1)
 
@@ -5175,10 +5185,8 @@ class Baselines(Decoding):
             prefix = torch.cat((prefix, t), dim=1)
 
             # Transfer index back
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-            comm_simulator.transfer(t, None, "edge_cloud")
-            comm_simulator.simulate_transfer(INT_SIZE, "edge_end")
-            comm_simulator.transfer(t, None, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
