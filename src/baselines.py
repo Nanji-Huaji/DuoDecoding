@@ -2916,6 +2916,14 @@ class Baselines(Decoding):
                 "use_precise_comm_sim/use_stochastic_comm are not applicable."
             )
 
+        # CUDA Graph **故意不接**（有据的口径决定，不是漏接）：
+        # target_only 是两个不可替代作用的载体（见上面 docstring）——尤其是
+        # "temp=0 下逐 token 复现目标模型"的无损性基准。图回放与 eager 有约 1%
+        # 的 bf16 logits 漂移，实测会变成 40 样本里 1 个不同（docs/
+        # graph_integration_status.md 旧 A/B）；且 13B 的图回放实测只快 1.03×
+        # （13B 是 kernel/带宽瓶颈，不是 launch 瓶颈——同文件"对原调查结论的
+        # 重要修正"）。用 1.03× 换掉基准的逐位可复现性不划算。
+        # 因此 `--use_cuda_graph` 对本模式是**无操作**，这是设计而非遗漏。
         target_model_cache = KVCacheModel(
             self.target_model,
             self.args.temp,
