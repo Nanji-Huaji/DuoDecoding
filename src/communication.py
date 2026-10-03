@@ -65,27 +65,20 @@ def _trace_comm(kind: str, link: str, nbytes: float, **extra) -> None:
 
 # ---------------------------------------------------------------------------
 # 真实 RTT trace 回放（sigcomm ping/ 实测数据，与 throughput/ 同 Campaign）
-# 模块级状态：避免在 11 个构造点逐一穿参；由 baselines 初始化处一次性配置。
+# 模块级只存**配置**（采样值/缩放/来源），不含游标：由 baselines 初始化处
+# 一次性配置，10 个构造点无需逐一穿参。
+# 游标必须按实例隔离（R7）：见 CommunicationSimulator._ntt_trace_index。
 # 优先级: ping trace 回放 > 拥塞模型(L1) > 固定基值
 # ---------------------------------------------------------------------------
-_NTT_TRACE_STATE: dict = {"data": [], "index": 0, "scale": 1.0, "src": ""}
+_NTT_TRACE_STATE: dict = {"data": [], "scale": 1.0, "src": ""}
 
 
 def configure_ntt_trace(values: list, scale: float = 1.0, src: str = "") -> None:
-    _NTT_TRACE_STATE.update(data=list(values), index=0, scale=float(scale), src=src)
+    _NTT_TRACE_STATE.update(data=list(values), scale=float(scale), src=src)
 
 
 def _ntt_trace_active() -> bool:
     return len(_NTT_TRACE_STATE["data"]) > 0
-
-
-def _next_ntt_trace_value() -> float | None:
-    if not _ntt_trace_active():
-        return None
-    st = _NTT_TRACE_STATE
-    v = st["data"][st["index"]] * st["scale"]
-    st["index"] = (st["index"] + 1) % len(st["data"])
-    return v
 
 
 # B16：概率载荷量化的"穿透阈值"——bits < 16 才真实量化（对数域），
@@ -159,6 +152,13 @@ class CommunicationSimulator:
         self.ntt_edge_cloud_base = self.ntt_edge_cloud
         self.trace_mean_bw = 0.0  # trace 加载后计算（字节/秒）
         self.ntt_edge_cloud_history = []  # 每次计费观察到的 edge-cloud NTT（毫秒）
+
+        # R7：RTT trace 回放的游标必须是**实例级**的。
+        # 旧实现把游标放在模块级 `_NTT_TRACE_STATE["index"]`，同一进程里出现
+        # 第二个模拟器时（测试即如此：8 个测试文件各建实例；同进程复用、
+        # 标定脚本同理）两者会交替推进同一个游标，各自只拿到真实 trace 的
+        # 隔一个采样。带宽 trace 的游标 `self.trace_index` 一向是实例级的。
+        self._ntt_trace_index = 0
 
         # 按轮合并（block / 每次往返一次）：
         # 真实实现里一轮只需每条链路一次 WAN 往返；把同一轮内多条消息累积到
@@ -253,6 +253,20 @@ class CommunicationSimulator:
             # 动态 NTT（L1）用：trace 均值（与 trace_data 同单位，dimension 口径）
             if self.trace_data:
                 self.trace_mean_bw = sum(self.trace_data) / len(self.trace_data)
+
+    def _next_ntt_trace_value(self) -> Optional[float]:
+        """回放下一个 RTT trace 采样（毫秒）；无 trace 时返回 None。
+
+        R7：游标是**实例级**的（`self._ntt_trace_index`），与带宽 trace 的
+        `self.trace_index` 一致。不得改回模块级共享，否则同一进程里两个实例
+        会交替推进同一个游标。
+        """
+        data = _NTT_TRACE_STATE["data"]
+        if not data:
+            return None
+        value = float(data[self._ntt_trace_index]) * float(_NTT_TRACE_STATE["scale"])
+        self._ntt_trace_index = (self._ntt_trace_index + 1) % len(data)
+        return value
 
     @property
     def edge_cloud_comm_time(self):
@@ -415,7 +429,7 @@ class CommunicationSimulator:
             # trace 回放与带宽 trace 独立推进（同 Campaign 配对，非严格时间对齐）。
             # 注意: trace 值为毫秒，本字段为秒（历史记录×1000 回毫秒）。
             if _ntt_trace_active():
-                self.ntt_edge_cloud = float(_next_ntt_trace_value()) / 1000.0
+                self.ntt_edge_cloud = float(self._next_ntt_trace_value()) / 1000.0
             elif self.stochastic_ntt and self.trace_mean_bw > 0:
                 congestion = max(
                     0.0, self.trace_mean_bw / max(current_bw, 1e-9) - 1.0
@@ -426,7 +440,7 @@ class CommunicationSimulator:
             self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
         elif link_type == "edge_cloud" and _ntt_trace_active():
             # 无带宽 trace 时仍可单独回放 RTT trace（毫秒→秒）
-            self.ntt_edge_cloud = float(_next_ntt_trace_value()) / 1000.0
+            self.ntt_edge_cloud = float(self._next_ntt_trace_value()) / 1000.0
             self.ntt_edge_cloud_history.append(self.ntt_edge_cloud * 1000)
 
         if link_type == "edge_cloud":

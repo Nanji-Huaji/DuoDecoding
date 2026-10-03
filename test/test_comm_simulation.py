@@ -321,3 +321,68 @@ class TestProbBitsBillingWindow:
         t0 = sim.transfer(None, prob, "edge_cloud", False, None, 0)
         tnone = sim.transfer(None, prob, "edge_cloud", False, None, None)
         assert t0 == pytest.approx(tnone)
+
+
+class TestNttTraceCursorIsolation:
+    """R7: RTT trace 回放游标必须按模拟器实例隔离。
+
+    旧实现把它放在模块级 `_NTT_TRACE_STATE["index"]`，于是同一进程里出现第二个
+    实例（本测试文件就是——每个测试各建实例；将来同进程复用/标定脚本同理）时，
+    两者交替推进同一个游标，各自只拿到真实 trace 的隔一个采样。
+    `Baselines.__init__` 每次都会 `configure_ntt_trace(...)` 重置游标，所以这条
+    在单实例的 eval 路径上与旧行为逐位一致；差别只在多实例。
+    """
+
+    @staticmethod
+    def _reset():
+        from src.communication import configure_ntt_trace
+
+        configure_ntt_trace([])
+
+    @pytest.fixture(autouse=True)
+    def _clean_trace_state(self):
+        self._reset()
+        yield
+        self._reset()
+
+    @staticmethod
+    def _sim():
+        return CommunicationSimulator(1.0, 1.0, 1.0, dimension="Mbps")
+
+    def test_two_instances_do_not_share_the_cursor(self):
+        from src.communication import configure_ntt_trace
+
+        configure_ntt_trace([10.0, 20.0, 30.0, 40.0])
+        a, b = self._sim(), self._sim()
+        # 旧实现：a=10, b=20, a=30（共享游标）；现在两者各自从 10 开始
+        assert a._next_ntt_trace_value() == 10.0
+        assert b._next_ntt_trace_value() == 10.0
+        assert a._next_ntt_trace_value() == 20.0
+        assert b._next_ntt_trace_value() == 20.0
+
+    def test_cursor_wraps_and_applies_scale(self):
+        from src.communication import configure_ntt_trace
+
+        configure_ntt_trace([10.0, 20.0], scale=2.0)
+        sim = self._sim()
+        assert [sim._next_ntt_trace_value() for _ in range(3)] == [20.0, 40.0, 20.0]
+
+    def test_no_trace_returns_none(self):
+        self._reset()
+        assert self._sim()._next_ntt_trace_value() is None
+        assert self._sim()._next_ntt_trace_value() is None
+
+    def test_reconfigure_then_build_starts_from_zero(self):
+        """真实生命周期：configure 在前、建模拟器在后（Baselines.__init__）。
+
+        所以"每次重新配置都从 trace 头开始"这一点仍然成立——靠的是新实例的游标
+        初始为 0，而不是靠 configure 去重置别人的游标（旧实现是后者）。
+        """
+        from src.communication import configure_ntt_trace
+
+        configure_ntt_trace([1.0, 2.0])
+        assert self._sim()._next_ntt_trace_value() == 1.0
+        configure_ntt_trace([7.0, 8.0])
+        fresh = self._sim()
+        assert fresh._next_ntt_trace_value() == 7.0
+        assert fresh._next_ntt_trace_value() == 8.0
