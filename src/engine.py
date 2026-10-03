@@ -7,8 +7,6 @@ import torch
 import torch.distributed as dist
 import transformers
 
-transformers.utils.logging.set_verbosity(40)
-warnings.filterwarnings("ignore")
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast, Protocol
 
@@ -74,6 +72,19 @@ from functools import partial
 
 flash_attn_available = "flash_attn" in globals()
 logger = logging.getLogger(__name__)
+
+
+def configure_verbosity() -> None:
+    """跑真实评测前统一降噪（原先在 import 时无条件执行）。
+
+    以前这两句写在模块顶部 ⇒ 任何人 `import src.engine` 都会全局关闭警告，
+    连与评测无关的真实告警（依赖告警、transformers 的 skip/重试提示）也一并
+    被掩盖。改为显式函数，只在真正加载模型跑评测时（load_model）调用一次：
+    评测路径的日志与历史行为一致，而单纯 import 不再有全局副作用。
+    """
+    transformers.utils.logging.set_verbosity(40)
+    warnings.filterwarnings("ignore")
+
 
 attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 
@@ -276,6 +287,9 @@ class Decoding(Register, ABC):
         return torch.cuda.device_count()
 
     def load_model(self):
+        # 真正跑评测的入口：统一降噪（原先在 import 时全局执行，见
+        # configure_verbosity 的说明）。
+        configure_verbosity()
         spec = get_mode_spec(self.args.eval_mode)
 
         # * load models according to different evaluation methods.
@@ -634,6 +648,37 @@ class Decoding(Register, ABC):
     def postprocess(self, input_text, output_text):
         pass
 
+    def _acquire_autoregressive_cache(
+        self, attr: str, graph_kw: dict, model
+    ) -> KVCacheModel:
+        """AR 单步循环的缓存入口：草稿模型开单步图，target 保持 eager。
+
+        **跨样本复用缓存的理由**：本方法逐样本调用（每个数据集样本一次），而图
+        捕获是绑在缓存实例上的 —— 每次重建 KVCacheModel 都要重捕获一次图
+        （实测约 534 ms/样本，见 docs/graph_integration_status.md），单步图的
+        收益会被捕获开销整个吃掉。这与 tridecoding / speculative_decoding 的既有
+        接法一致：图开启时复用同一缓存对象，样本之间只做原地
+        `reset_for_new_sample()`（StaticCache `zero_()`，地址不变 ⇒ 不重捕获）。
+
+        只在 small 路径传非空 graph_kw（缓存的是草稿模型）；large 路径的缓存是
+        target，按既有取舍保持 eager ⇒ graph_kw 为空，`acquire_graph_caches`
+        每次重建且不挂属性，与接线前逐字节一致。
+        """
+        return acquire_graph_caches(
+            self,
+            attr,
+            graph_kw,
+            {
+                "model": lambda: KVCacheModel(
+                    model,
+                    self.args.temp,
+                    self.args.top_k,
+                    self.args.top_p,
+                    **graph_kw,
+                )
+            },
+        )["model"]
+
     @Register.register_decoding("large")
     @Register.register_decoding("small")
     @torch.inference_mode()
@@ -649,16 +694,28 @@ class Decoding(Register, ABC):
             # B39：small 模式实际跑的是 draft 模型，前向次数应记入
             # draft_forward_times；此前统一写 target_forward_times，模型身份错标。
             forward_times_key = "draft_forward_times"
+            # CUDA Graph：AR 循环是定长 (1,1) 单步前向（无多 token 验证
+            # 前向，cap 按 γ=1 + 4 与其它方法的 γ+4 写法对齐）—— 正是单
+            # 步图的收益点；且该循环逐样本调用，不复用就会每样本重捕获一次
+            # （~534ms，见 docs/graph_integration_status.md），收益全被吃
+            # 掉。跨样本复用同一缓存对象的理由写在
+            # _acquire_autoregressive_cache 里。
+            graph_kw = graph_mode_cache_kwargs(self.args, cap=1 + 4)
         elif self.args.eval_mode == "large":
             model = self.target_model
             forward_times_key = "target_forward_times"
+            # target 保持 eager（与 speculative_decoding 的 draft/target 取舍一致）：
+            # graph_kw 为空 ⇒ 构造 KVCacheModel 的调用与接线前逐字节相同。
+            graph_kw = {}
         else:
             raise RuntimeError(
                 "Auto-Regressive Decoding can be used only in small / large eval mode!"
             )
         self.validate_input_ids(prefix, "autoregressive_sampling.prefix")
         prefix = prefix.to(model.device)
-        model = KVCacheModel(model, self.args.temp, self.args.top_k, self.args.top_p)
+        model = self._acquire_autoregressive_cache(
+            "_autoregressive_sampling_caches", graph_kw, model
+        )
         model.vocab_size = self.vocab_size
 
         prefix_len = prefix.shape[1]

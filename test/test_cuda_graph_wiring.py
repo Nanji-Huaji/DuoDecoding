@@ -8,12 +8,22 @@
 1. `graph_mode_cache_kwargs` 的开关语义、档位阶梯与桶长公式；
 2. `acquire_graph_caches` 的复用/重建语义；
 3. 三层缓存入口（tridecoding 与三个 CEE 方法共用）确实透传图参数并复用；
-4. 投机解码入口（engine 两个方法共用）draft 开图、target 保持 eager 并复用。
+4. 投机解码入口（engine 两个方法共用）draft 开图、target 保持 eager 并复用；
+5. AR 入口（engine `autoregressive_sampling`）small/草稿开图并跨样本复用、
+   large/target 保持 eager（kwargs 与接线前逐字节一致）；
+6. `import src.engine` 不再有全局降噪副作用，而 `configure_verbosity()`
+   仍同时压制 transformers 日志与 warnings。
 """
 
+import subprocess
+import sys
+import textwrap
 import unittest
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import patch
+
+import torch
 
 from src.baselines import Baselines
 from src.engine import Decoding
@@ -291,6 +301,143 @@ class DraftTargetCacheWiringTests(unittest.TestCase):
         self.assertEqual(draft.top_k, 7)
         self.assertEqual(target.top_k, 0)
         self.assertEqual(target.top_p, 0.0)
+
+
+class _FakeEmbedding:
+    def __init__(self, vocab_size):
+        self.weight = torch.zeros((vocab_size, 4))
+
+
+class _FakeModel:
+    """AR 接线测试所需的最小模型接口（device + 词嵌入）。"""
+
+    device = "cpu"
+
+    def __init__(self, vocab_size=32):
+        self._embeddings = _FakeEmbedding(vocab_size)
+
+    def get_input_embeddings(self):
+        return self._embeddings
+
+
+class _FakeCudaEvent:
+    """CPU 上替代 torch.cuda.Event（测试只关心 cache 怎么被构造）。"""
+
+    def __init__(self, enable_timing=False):
+        self.enable_timing = enable_timing
+
+    def record(self, stream=None):
+        return None
+
+    def elapsed_time(self, end):
+        return 0.0
+
+
+class AutoregressiveCacheWiringTests(unittest.TestCase):
+    """engine 的 autoregressive_sampling：草稿开单步图并复用，target 保持 eager。"""
+
+    def _instance(self, eval_mode, use_cuda_graph):
+        instance = object.__new__(_TestDecoding)
+        instance.args = Namespace(
+            eval_mode=eval_mode,
+            temp=1.0,
+            top_k=3,
+            top_p=0.5,
+            max_tokens=0,
+            use_cuda_graph=use_cuda_graph,
+            graph_verify_sizes=None,
+        )
+        instance.draft_model = _FakeModel()
+        instance.target_model = _FakeModel()
+        instance.vocab_size = 32
+        return instance
+
+    def _run(self, instance, prefix):
+        with (
+            patch("src.engine.KVCacheModel", _FakeCache),
+            patch("src.engine.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.engine.torch.cuda.current_stream"),
+            patch("src.engine.torch.cuda.synchronize"),
+        ):
+            return instance.autoregressive_sampling(prefix)
+
+    def test_small_mode_graphed_and_reused_across_samples(self):
+        instance = self._instance("small", True)
+        prefix = torch.tensor([[0, 1, 2]])
+        _FakeCache.created = []
+        first, metrics = self._run(instance, prefix)
+        second, metrics_again = self._run(instance, prefix)
+
+        self.assertEqual(len(_FakeCache.created), 1)  # 第二次复用，不重捕获
+        cache = _FakeCache.created[0]
+        self.assertIs(first, second)
+        self.assertEqual(cache.resets, 1)
+        self.assertTrue(cache.kwargs["use_cuda_graph"])
+        self.assertEqual(cache.kwargs["graph_len_budget"], 256)
+        self.assertGreaterEqual(cache.kwargs["verify_graph_sizes"][-1], 5)
+        # small 模式的前向次数键仍是 draft（B39）
+        self.assertEqual(metrics["draft_forward_times"], 0)
+        self.assertEqual(metrics_again["draft_forward_times"], 0)
+
+    def test_large_mode_keeps_target_eager(self):
+        instance = self._instance("large", True)
+        _FakeCache.created = []
+        self._run(instance, torch.tensor([[0, 1, 2]]))
+
+        cache = _FakeCache.created[0]
+        # target 保持 eager：kwargs 里绝不能出现图参数
+        self.assertNotIn("use_cuda_graph", cache.kwargs)
+        self.assertEqual(cache.top_k, 3)
+        self.assertEqual(cache.top_p, 0.5)
+
+    def test_graph_disabled_matches_legacy_construction(self):
+        instance = self._instance("small", False)
+        _FakeCache.created = []
+        self._run(instance, torch.tensor([[0, 1, 2]]))
+        self._run(instance, torch.tensor([[0, 1, 2]]))
+
+        # 关图红线：每次重建，且传给 KVCacheModel 的 kwargs 为空
+        self.assertEqual(len(_FakeCache.created), 2)
+        self.assertEqual(_FakeCache.created[0].kwargs, {})
+
+
+class VerbosityTests(unittest.TestCase):
+    """问题 1：import 不再全局降噪，configure_verbosity() 仍执行原两句。"""
+
+    def test_import_quietly_defers_to_configure_verbosity(self):
+        script = textwrap.dedent(
+            """
+            import importlib
+            import warnings
+
+            import transformers
+
+            import src.engine as engine
+
+            calls = []
+            transformers.utils.logging.set_verbosity = (
+                lambda *a, **k: calls.append("verbosity")
+            )
+            warnings.filterwarnings = lambda *a, **k: calls.append("filter")
+
+            importlib.reload(engine)
+            print(",".join(calls), end="|")
+
+            del calls[:]
+            engine.configure_verbosity()
+            print(",".join(sorted(set(calls))))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        on_import, on_configure = result.stdout.strip().split("|")
+        self.assertEqual(on_import, "")
+        self.assertEqual(on_configure, "filter,verbosity")
 
 
 if __name__ == "__main__":
