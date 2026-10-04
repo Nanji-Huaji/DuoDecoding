@@ -76,8 +76,8 @@ if rows:
     ax.set_title("(b) Uplink cost vs top-$k$")
     ax.grid(alpha=0.3, which="both")
 fig.tight_layout()
-fig.savefig("exp/figs/topk_acceptance.png", dpi=160)
-print("图1 → exp/figs/topk_acceptance.png")
+fig.savefig("figures/topk_acceptance.png", dpi=160)
+print("图1 → figures/topk_acceptance.png")
 
 # ---- 图2: 分布集中度 ----
 if tr:
@@ -116,8 +116,8 @@ if tr:
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig("exp/figs/dist_concentration.png", dpi=160)
-    print("图2 → exp/figs/dist_concentration.png")
+    fig.savefig("figures/dist_concentration.png", dpi=160)
+    print("图2 → figures/dist_concentration.png")
     # 文字摘要
     for k in (8, 32, 256):
         idx = [i for i, kk in enumerate(tr[0]["k_grid"]) if kk == k][0]
