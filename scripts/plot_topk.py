@@ -61,7 +61,8 @@ if rows:
     ax.set_title("(a) Acceptance vs uplink top-$k$ (CEE-SD, temp 0.7)")
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, loc="lower right", fontsize=8)
+    # 曲线分布: 覆盖率占上带, R_acce/tok-per-fwd 占下带, 中部空 → 图例置中左
+    ax.legend(h1 + h2, l1 + l2, loc="center left", fontsize=8)
     ax.grid(alpha=0.3)
 
 ax = axes[1]
