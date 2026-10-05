@@ -89,6 +89,27 @@
 好消息：`--prob_payload_bits < 16` 对不支持它的 mode 是显式 `parser.error`
 （`src/utils.py:1125-1134`）。同样做法可以直接套到上面四个开关。
 
+### 2b. B17 下行合并（bc73a34/fdf369f）后的 metrics 变化面与未竟项
+
+**状态**：下行"采样 token + 位置索引"已全仓合并为一次往返（`_send_downlink_token`，
+字节数逐位不变）；**accept/reject 路径未合并**——19 处 `send_accept_message`/
+`send_reject_message` 仍是独立的 `simulate_transfer(6, …)`，每轮各自多付一次 NTT。
+正确解法是 Step 2 把 `coalesce_rounds`/`set_round`/`flush_round` 接到所有方法，
+而非逐点修改。**在 Step 2 完成前，accept/reject 的往返计费仍是旧口径，引用当前
+数字时需注意 B17 并未关闭。**
+
+**bc73a34 提交信息漏报的变化列**：除已声明的 `*_comm_time` / `connect_times` 及其
+派生外，四个 per-transfer history 序列也变了——每次 edge_cloud 下行从 2 次计费变
+1 次，`edge_cloud_bandwidth_history` / `edge_cloud_topk_history` /
+`edge_cloud_draft_len_history` / `ntt_edge_cloud_history` 各少一条记录；且下行
+的 `draft_len` 从 `transfer()` 一刀切记的 `t.numel()`（=1）变为 0（直接
+`simulate_transfer` 的默认值）。按索引对齐这些序列的下游分析会静默错位。
+语义上记 0 反而更诚实：该序列本义是"草稿提议长度"，下行回传并非草稿提议。
+
+**本节 §2 的行号与"每轮 2-3 次"描述是 B17 合并前的快照**（如 tridecoding、
+ceesd_without_arp、cee_dssd 的下行已各并成 1 次）；覆盖范围结论（四个开关只被
+`adaptive_tridecoding` 读取）不受影响。
+
 ## 3. 论文表格对齐脚本 vs 默认扫描：两套参数并存
 
 | 项 | `python exp.py` 默认扫描 | `scripts/align_paper_t5_gsm8k.sh` |
