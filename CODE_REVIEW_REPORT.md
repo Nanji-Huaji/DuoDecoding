@@ -353,6 +353,7 @@ manager 对 TPS 序列做 0.5% 窗口停滞检验即杀训练（`auto_train_mana
 6. 测试：新增 `test/test_cuda_graph_wiring.py` 12 项（kwargs 语义 3、复用语义 2、三层入口 4、draft+target 入口 3）；全量 `pytest test/` = **199 passed / 0 failed**。
 7. **GPU 配对 A/B 尚未执行**（本机 `torch.cuda.is_available()=False`，无 NVIDIA 驱动）：需在 GPU 机器上对 tridecoding / ceesd_without_arp / cee_dssd / cee_dsd / adaptive_decoding / sd 各跑 `--use_cuda_graph` 开/关两遍，比对逐样本输出一致 + tokens/s。复用接线的金丝雀：`[cuda-graph] 已启用图回放` 应从"每样本 3 行"降为"每 run 3 行"。
 8. 仍未接（待用户确认，二者都是纯 AR 单步循环）：`target_only`（`baselines.py:2919`）与 engine `autoregressive_sampling`（`engine.py:756`）。图收益最直接，但它们是 baseline/对照，是否也开图属口径选择。其余 `KVCacheModel` 构造点均已确认接线或为有意 eager。
+9. **用户拍板（2026-10-03，复审后确认）**：① 上图接线口径——`target_only` 保持 eager（无损基准，依据见 1a85222 的代码注释），AR small 路径开图（815a5e6，默认关闭不改数字），**确认**；② fcd084b 对 vendored 基线（eagle/eagle2/hydra/medusa/space/sps 等）的删除**确认保留**——恢复路径已写入 `docs/regime_and_roadmap.md` §5 C 组（`git checkout fcd084b^ -- src/model/medusa`）。此项超出本报告第 5 行的 vendored 排除范围，经用户显式批准。
 
 **第九批修复（零成本清理与失败可见性；不改任何指标数值）：**
 1. 删除零引用死代码：`src/model_gpu_new.py`（187 行旧快照）、`src/tp.py`（162 行，import 不存在的 `gpt_fast_model`，本就不可导入）、`adaptiveexp.py`、`eval/eval.py`；`src/engine.py` 的 `_prepare_stop_tokens`/`_should_stop`（约 93 行）。删除前复查：全仓（含 `.md`/`.sh`/字符串）对这四项无任何引用；`stop_tokens_matrix` 只被这两个方法读写（`_check_stopping_criteria` 走 decode 文本路径、不依赖它），故 `__init__` 中的初始化行同步删除。`eval/eval.py` 的 `Eval` 类无人实例化，其存在还会在 `eval/` 抢先入 `sys.path` 时顶掉 `eval` 包（此前的收集中断根因之一）。
