@@ -33,8 +33,8 @@ for K in 1 2 4 8 16 32 64 128 256 512 1024; do
   mkdir -p "exp/$TAG"
   # k=256 跑挂 TOPK_TRACE（分布形状与 k 无关, 一份就够）
   if [ "$K" = "256" ]; then
-    rm -f exp/topk_trace.jsonl
-    export TOPK_TRACE="$PWD/exp/topk_trace.jsonl"
+    rm -f exp/topk_trace_true.jsonl
+    export TOPK_TRACE="$PWD/exp/topk_trace_true.jsonl"
   else
     unset TOPK_TRACE
   fi
