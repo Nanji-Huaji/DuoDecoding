@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import torch
 
-from src.decoding_ops import resolve_stage_verification, verify_draft_sequence
+from src.decoding_ops import (
+    resolve_stage_verification,
+    verify_draft_sequence,
+    verify_draft_sequence_result,
+)
 from src.decoding_types import AcceptanceResult, VerificationInputs
 
 
@@ -118,6 +122,19 @@ class VerifyDraftSequenceBatchGuardTests(unittest.TestCase):
     def test_batch_size_above_one_fails_loudly(self):
         with self.assertRaisesRegex(AssertionError, "batch_size=1"):
             verify_draft_sequence(
+                draft_model_cache=SimpleNamespace(device=torch.device("cpu")),
+                target_model_cache=SimpleNamespace(device=torch.device("cpu")),
+                x=torch.zeros((2, 8), dtype=torch.long),
+                prefix_len=4,
+                gamma=2,
+            )
+
+    def test_result_variant_also_rejects_batch_size_above_one(self):
+        # 同一条 B43 假设的另一入口（resolve_stage_verification 的上游）：
+        # 守卫必须两条路径都有，否则 cee_dsd/adaptive_tridecoding 的
+        # 分层验证在 bs>1 下仍会静默错计。
+        with self.assertRaisesRegex(AssertionError, "batch_size=1"):
+            verify_draft_sequence_result(
                 draft_model_cache=SimpleNamespace(device=torch.device("cpu")),
                 target_model_cache=SimpleNamespace(device=torch.device("cpu")),
                 x=torch.zeros((2, 8), dtype=torch.long),

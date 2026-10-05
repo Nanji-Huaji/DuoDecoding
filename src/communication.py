@@ -386,7 +386,11 @@ class CommunicationSimulator:
             bucket = self._pending_bytes.setdefault(
                 link_type, {"bytes": 0.0, "topk": 0, "draft_len": 0}
             )
-            bucket["bytes"] += float(data_size_bytes)
+            # add_to_stats=False 的字节不进桶（语义=不计入数据统计）。
+            # 当前全仓无此调用点；这是为 Step 2 把 coalesce 接到所有方法后
+            # 防潜伏错计的守卫——否则 flush 会把本该排除的字节计入。
+            if add_to_stats:
+                bucket["bytes"] += float(data_size_bytes)
             bucket["topk"] = max(int(bucket["topk"]), int(topk))
             bucket["draft_len"] += int(draft_len)
             return 0.0

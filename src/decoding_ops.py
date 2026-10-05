@@ -522,6 +522,12 @@ def verify_draft_sequence_result(
     draft_topk_history: Optional[TopKProposalHistory] = None,
     r: Optional[torch.Tensor] = None,
 ) -> Tuple[VerificationInputs, AcceptanceResult]:
+    # 与 verify_draft_sequence 同款 B43 守卫：下游 materialize_acceptance
+    # 只取 batch 0 的 accepted_count，整条链 bs=1 形状；入口响亮失败。
+    assert x.shape[0] == 1, (
+        "verify_draft_sequence_result 仅支持 batch_size=1（accepted_count "
+        "只取 batch 0，见 B43）；bs>1 需先逐 batch 化"
+    )
     verification_inputs = prepare_verification_inputs(
         draft_model_cache=draft_model_cache,
         target_model_cache=target_model_cache,
