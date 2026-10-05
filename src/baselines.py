@@ -4315,7 +4315,7 @@ class Baselines(Decoding):
                 total_bytes, "edge_cloud", topk=transfer_top_k, draft_len=total_gamma
             )
 
-            comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             # 同步
 
@@ -4853,7 +4853,7 @@ class Baselines(Decoding):
                 topk=cast(int, draft_transfer_top_k),
                 draft_len=effective_gamma,
             )
-            comm_simulator.simulate_transfer(INT_SIZE + token_size, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -5523,7 +5523,7 @@ class Baselines(Decoding):
             prefix_len_tracker = n1_plus1
 
             # Transfer sampled token index + token back (merged)
-            comm_simulator.simulate_transfer(INT_SIZE + t.element_size() * t.numel(), "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             prefix_buffer[:, prefix_len_tracker : prefix_len_tracker + t.shape[1]] = t
             prefix_len_tracker += t.shape[1]
@@ -5656,9 +5656,8 @@ class Baselines(Decoding):
             prefix = prefix_buffer[:, :prefix_len_tracker]
 
             # Transfer index + token back to both links (merged)
-            _t_bytes = INT_SIZE + t.element_size() * t.numel()
-            comm_simulator.simulate_transfer(_t_bytes, "edge_cloud")
-            comm_simulator.simulate_transfer(_t_bytes, "edge_end")
+            _send_downlink_token(comm_simulator, t, "edge_cloud")
+            _send_downlink_token(comm_simulator, t, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
