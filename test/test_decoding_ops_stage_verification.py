@@ -1,9 +1,10 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
 
-from src.decoding_ops import resolve_stage_verification
+from src.decoding_ops import resolve_stage_verification, verify_draft_sequence
 from src.decoding_types import AcceptanceResult, VerificationInputs
 
 
@@ -108,6 +109,21 @@ class ResolveStageVerificationTests(unittest.TestCase):
         )
         self.assertEqual(proposer.rollback_calls, [1])
         self.assertEqual(verifier.rollback_calls, [1])
+
+
+class VerifyDraftSequenceBatchGuardTests(unittest.TestCase):
+    """B43：整条 verify_draft_sequence 路径是 bs=1 形状（accepted_count 与
+    serial 下行计费都只取 batch 0）。bs>1 必须在入口响亮失败。"""
+
+    def test_batch_size_above_one_fails_loudly(self):
+        with self.assertRaisesRegex(AssertionError, "batch_size=1"):
+            verify_draft_sequence(
+                draft_model_cache=SimpleNamespace(device=torch.device("cpu")),
+                target_model_cache=SimpleNamespace(device=torch.device("cpu")),
+                x=torch.zeros((2, 8), dtype=torch.long),
+                prefix_len=4,
+                gamma=2,
+            )
 
 
 if __name__ == "__main__":

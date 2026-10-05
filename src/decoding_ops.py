@@ -407,6 +407,13 @@ def verify_draft_sequence(
     draft_topk_history: Optional[TopKProposalHistory] = None,
     decoding_metrics: Optional[DecodingMetrics] = None,
 ) -> Tuple[int, int]:
+    # B43：本条路径整体是 bs=1 形状——materialize_acceptance 只取 batch 0 的
+    # accepted_count（:275），serial 下行计费也只取 batch 0 的 token（:485+）。
+    # 此前 bs>1 会静默少计/错计；入口显式声明，响亮失败而非潜伏。
+    assert x.shape[0] == 1, (
+        "verify_draft_sequence 仅支持 batch_size=1（accepted_count 与 serial "
+        "下行计费都只取 batch 0，见 B43）；bs>1 需先逐 batch 化"
+    )
     draft_device = draft_model_cache.device
     _log_sd_alignment_snapshot(
         "verify_enter",
