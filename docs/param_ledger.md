@@ -18,6 +18,9 @@
    `random_sample` 都是 `store_true`（默认 False），所以恰好一致；一旦谁把某个 CLI
    默认改成 True，扫描配置里的 `False` 会被静默忽略。
 2. `cmd_temp` 里的字面量：`--temp 0.0`（CLI 默认 0.2）、`-e llama`。
+3. `exp.py:834-835` 硬编码 `use_early_stopping=False` / `use_cuda_graph=True`，
+   与 CLI 默认（early_stopping 开、cuda_graph 关）不一致——**用户已确认是
+   有意的扫描配置**（2026-10-03），不是疏漏。
 
 ## 1. 默认扫描（`python exp.py`）的真实取值
 
