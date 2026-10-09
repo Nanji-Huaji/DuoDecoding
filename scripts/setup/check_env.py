@@ -44,6 +44,14 @@ _bootstrap_interpreter()
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = json.loads((ROOT / "scripts/setup/assets.json").read_text(encoding="utf-8"))
 
+# 直接执行本脚本时 sys.path[0] 是 scripts/setup，仓库根不在里面。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from src.acc_head_registry import (  # noqa: E402 - 需先修好 sys.path
+    anchor_repo_path,
+    resolve_acc_head_path,
+)
+
 OK, BAD, WARN = "✓", "✗", "!"
 
 
@@ -174,13 +182,31 @@ def check_assets(rep: Report, model_set: str) -> None:
             hint = "需 HF_TOKEN + 接受许可" if spec.get("gated") else "可脚本下载"
             rep.add(BAD, f"模型 {name}", f"缺失 {spec['local']}（{hint}）")
 
+    # 用与运行时同一个解析器判存在性：acc head 可能落在规范布局，也可能落在
+    # prepare_acc_head.py 的早期输出布局（checkpoints/<模型目录>/<run>）。
+    # 这里若自己拼规范路径，会把「解析器其实能找到」的 head 误报成缺失。
+    registry = load_registry()
     for key in ASSETS["acc_head_required"]:
-        local = ROOT / "src/SpecDec_pp/checkpoints/acc_head" / key
+        pair, _, _run_name = key.partition("/")
+        source_alias, _, target_alias = pair.partition("--to--")
+        if pair not in registry:
+            rep.add(BAD, f"acc_head {pair}",
+                    "清单里的这对不在 acc_head_registry.json 里 —— download_assets.py "
+                    "会静默跳过（它按注册表条目配对过滤）")
+            continue
+        try:
+            resolved = resolve_acc_head_path(source_alias, target_alias)
+        except Exception as exc:  # noqa: BLE001 - 自检不该因解析异常整体失败
+            rep.add(BAD, f"acc_head {pair}", f"解析失败 {type(exc).__name__}: {exc}")
+            continue
+        local = anchor_repo_path(resolved)
         if has_weights(local):
-            rep.add(OK, f"acc_head {key.split('/')[0]}", "已就位")
+            canonical = ROOT / "src/SpecDec_pp/checkpoints/acc_head" / key
+            where = "规范布局" if local == canonical else f"回退布局 {resolved}"
+            rep.add(OK, f"acc_head {pair}", f"已就位（{where}）")
         else:
-            rep.add(BAD, f"acc_head {key.split('/')[0]}",
-                    "缺失（不在 git 里！用 download_assets.py 从 HF 拉")
+            rep.add(BAD, f"acc_head {pair}",
+                    "缺失（不在 git 里！用 download_assets.py 从 HF 拉）")
 
     for spec in ASSETS["datasets"]:
         name = spec["name"]

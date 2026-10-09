@@ -66,31 +66,66 @@ def probe(host: str, port: int, timeout: float = 0.6) -> bool:
         return False
 
 
+#: 所有会被 requests / huggingface_hub 读到的代理变量。ALL_PROXY 容易被忽略：
+#: 它常被指向一个没装 PySocks 的 socks 端口，此时 requests 直接抛
+#: `InvalidSchema: Missing dependencies for SOCKS support`，而日志却写着"代理已禁用"
+#: 或"直连"——排查方向会被完全带偏。
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
+
+
 def setup_network(args) -> None:
     """配置 HF 端点与代理（在 import huggingface_hub 之前设置才生效）。"""
     if args.hf_endpoint:
         os.environ["HF_ENDPOINT"] = args.hf_endpoint
         log(f"HF 端点: {args.hf_endpoint}")
     if args.proxy == "none":
-        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        for k in _PROXY_ENV_KEYS:
             os.environ.pop(k, None)
         log("代理: 已禁用")
+        return
+
+    url = None
+    if args.proxy == "auto":
+        # 本机常见的 clash 端口；探测到才启用，避免把直连也拖进代理
+        for port in (7890, 7891, 7897):
+            if probe("127.0.0.1", port):
+                url = f"http://127.0.0.1:{port}"
+                break
     else:
-        url = None
-        if args.proxy == "auto":
-            # 本机常见的 clash 端口；探测到才启用，避免把直连也拖进代理
-            for port in (7890, 7891, 7897):
-                if probe("127.0.0.1", port):
-                    url = f"http://127.0.0.1:{port}"
-                    break
-        else:
-            url = args.proxy
-        if url:
-            for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-                os.environ[k] = url
-            log(f"代理: {url}")
-        else:
-            log("代理: 未探测到本地代理，将直连")
+        url = args.proxy
+
+    if url:
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[k] = url
+        # 已经显式指定 http 代理，就不要把 ALL_PROXY 留给 requests：
+        # requests 在有 scheme 专用代理时会优先用它，但留着只会让日志与实际
+        # 生效的口径不一致（下次又开始怀疑 socks）。
+        for k in ("ALL_PROXY", "all_proxy"):
+            os.environ.pop(k, None)
+        log(f"代理: {url}")
+        return
+
+    env_proxy = os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")
+    if env_proxy:
+        log(f"代理: 未探测到本地 clash，沿用环境变量 ALL_PROXY={env_proxy}")
+        if env_proxy.startswith("socks"):
+            try:
+                import socks  # noqa: F401
+            except ImportError:
+                log(
+                    "  ⚠ ALL_PROXY 是 socks 但当前环境没有 PySocks，requests 会报 "
+                    "InvalidSchema；用 `--proxy http://127.0.0.1:7890` 指到 http 代理，"
+                    "或 `pip install pysocks`"
+                )
+    else:
+        log("代理: 未探测到本地代理，将直连")
 
 
 def model_complete(local: Path) -> bool:

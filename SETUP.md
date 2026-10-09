@@ -42,8 +42,19 @@ bash scripts/setup/setup_env.sh --check-only
 | HF 数据集缓存 | `~/.cache/huggingface/` | ✗ | `download_assets.py` 预热 |
 
 > ⚠️ **acc_head 是最容易漏的一项**：它是方法的核心组件，缺失时**代码能 import、能跑完，
-> 但结果全错**。`acc_head_registry.json` 里有 12 对，论文必需的是
-> `llama-68m--to--tiny-llama-1.1b` 与 `tiny-llama-1.1b--to--llama-2-13b`。
+> 但结果全错**（或者直接崩——见下）。`acc_head_registry.json` 里有 12 对，
+> `assets.json` 的 `acc_head_required` 列的是**论文主表实际要用的 6 对**：
+> llama 族 `llama-68m--to--tiny-llama-1.1b`、`tiny-llama-1.1b--to--llama-2-13b`；
+> Qwen1.5 族 `qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat`、`qwen1.5-1.8b-chat--to--qwen1.5-7b-chat`；
+> Qwen3 族 `qwen3-0.6b--to--qwen3-1.7b`、`qwen3-1.7b--to--qwen3-14b`。
+> 因为 `exp.py` 的主表矩阵是三族模型 × 三数据集，少任何一族，该族的 CEE-SD run 都会
+> 在 `load_acc_head()` 阶段直接失败（缺目录时 huggingface_hub 会把本地路径当 repo id，
+> 报 `HFValidationError`，看起来像模型名写错，其实只是权重没下）。
+>
+> 路径解析已与 CWD 解耦：注册表/`assets.json` 里的仓库相对路径统一锚定到仓库根，所以
+> 项目整体搬家后仍然有效；规范布局 `src/SpecDec_pp/checkpoints/acc_head/<pair>/<run>/`
+> 优先，其次是 `prepare_acc_head.py` 的早期输出布局
+> `src/SpecDec_pp/checkpoints/<模型目录>/<run>/`。
 
 ## 脚本说明
 
@@ -96,6 +107,19 @@ curl -s -o /dev/null -w "HTTP=%{http_code}\n" -x http://127.0.0.1:7890 https://g
 ```
 
 `check_env.py` 用的是**真正完成一次 TLS 握手**的判据，所以能立刻暴露这类"假通"。
+
+还有一个更隐蔽的坑：环境里的 `ALL_PROXY` 可能指向一个**没装 PySocks 的 socks 端口**
+（本机默认就是 `ALL_PROXY=socks5h://127.0.0.1:1055`，而 1055 其实是死的，能用的 http
+代理在 7890/7891）。此时 requests 会抛 `InvalidSchema: Missing dependencies for SOCKS
+support`，看起来像代码缺依赖，实际只是代理指错了。`download_assets.py` 已处理：`--proxy
+auto` 会探测 7890/7891/7897 并**清掉 `ALL_PROXY`**，`--proxy none` 也会一并清干净
+（以前只清 `HTTP(S)_PROXY`，所以"已禁用"其实没禁用）。手工排查时：
+
+```bash
+for p in 1055 7890 7891; do
+  curl -s -o /dev/null -w "$p HTTP=%{http_code}\n" -x http://127.0.0.1:$p https://huggingface.co/
+done   # 000 = 这个端口不通
+```
 
 ### 节点失效后必须重载配置
 

@@ -74,8 +74,13 @@
     {"name": "cnn_dailymail", "config": "3.0.0", "split": "test", "used_by": "摘要任务"}
   ],
   "acc_head_registry": "src/SpecDec_pp/checkpoints/acc_head_registry.json",
+  "_comment_acc_head_required": "论文主表（exp.py 的 paper_table5 矩阵）是三族模型 x 三数据集，所以三族 acc head 都是必需的：llama 2 对 + Qwen1.5 2 对 + Qwen3 2 对。只下 llama 两对时，CEE-SD 的 Qwen run 会在 load_acc_head() 就崩——acc head 目录不存在，huggingface_hub 会把本地路径当 repo id 抛 HFValidationError。",
   "acc_head_required": [
     "llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3",
-    "tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3"
+    "tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3",
+    "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3",
+    "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3",
+    "qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3",
+    "qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3"
   ]
 }
