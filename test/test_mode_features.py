@@ -15,9 +15,12 @@ from src.mode_features import MODE_FEATURES, get_mode_spec
 from src.register import Register
 
 # ---- 迁移前的硬编码集合（迁移等价性的ground truth，勿随手改）----
+# 2026-10 追加 tk_slt/tkslt（TK-SLT 基线，WCSP'25 Zheng & Yang）：双模型
+# 拓扑（68M 草稿 + 大模型验证，同 dsd/cuhlm），并入 dual ground truth。
 OLD_DUAL = {
     "sd", "dsd", "dssd", "dist_spec", "dist_split_spec",
     "uncertainty_decoding", "cuhlm",
+    "tk_slt", "tkslt",
     "speculative_decoding_with_bandwidth",
 }
 OLD_TRI = {

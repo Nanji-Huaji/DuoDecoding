@@ -56,6 +56,10 @@ MODE_FEATURES = {
             "dist_split_spec",
             "uncertainty_decoding",
             "cuhlm",
+            # TK-SLT（WCSP'25, Zheng & Yang）：DSD + top-K 稀疏 logits 上行。
+            # 论文用 68M 草稿 + 7B 验证（端侧小模型当草稿，同 dsd/cuhlm 拓扑）。
+            "tk_slt",
+            "tkslt",
             "speculative_decoding_with_bandwidth",
             # 已删除 "speculative_decoding_with_bandwidth_full_prob"（幽灵模式）：
             # 该名字从未有任何解码实现注册，能通过能力表校验却会在

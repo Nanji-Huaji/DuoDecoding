@@ -48,6 +48,7 @@ output_ids, metrics = decoding(input_ids)
 | `dssd`, `dist_split_spec` | 2 | `dist_split_spec` | DSSD：uplink 仅传 `token id + q(x)` 标量；reject 时下发整行 `P(x)` 并在端侧按 `max(P-Q,0)` 重采样 |
 | `dsd`, `dist_spec` | 2 | `dist_spec` | DSD：传 draft token 序列 +（可 top-k）draft 概率窗口，批量验证 accept/reject |
 | `cuhlm`, `uncertainty_decoding` | 2 | `uncertainty_decoding` | CUHLM：按不确定度机会传输/压缩传输概率分布（当前实现阈值固定 0.8） |
+| `tk_slt`, `tkslt` | 2 | `tk_slt` | TK-SLT（WCSP'25）：top-K 稀疏 logits 上行（FP16），按论文自身口径计费；可选 ODLD/AS² 自适应 γ |
 | `tridecoding` | 3 | `tridecoding` | 三级：Little→Draft→Target，两层投机验证与通信（edge-end + edge-cloud） |
 | `ceesd_w/o_arp`, `ceesd_without_arp` | 3 | `ceesd_without_arp` | CEE-SD 去 ARP head 的消融：可启用 RL 仅调 top-k（不依赖 ARP） |
 | `adaptive_decoding` | 2 | `adaptive_decoding` | 2 模型 + ARP head：草稿侧每步可提前 stop（自适应 draft 长度） |
@@ -152,7 +153,26 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 
 - 每步生成 1 个 draft token，并计算该步不确定度 `uncertainty`
 - 若不确定度高：传输（压缩的）概率分布用于验证/采样；否则倾向于“机会接受”
-- 当前 baselines 实现中 `uncertainty_threshold` 固定为 `0.8`（未从 `args.uncertainty_threshold` 读取）
+- `uncertainty_threshold` 从 `args.uncertainty_threshold` 读取（默认 0.8，即论文 risk-prone 工作点 0.8117 的取整）
+- **F-CUHLM 口径（2026-10-05 起）**：skip 分支零通信、零排队（被跳过 token 缓存端侧，下次触发随上行捎带，即论文 III-B Step 5 的重同步）；触发分支 = 一次合并上行（重同步+draft token+top-k 分布，一次 NTT）+ 一次下行 = 2 RTT/触发；`batch_delay` 只在触发时计（与其他方法的 `target_forward_times × batch_delay` 口径一致）；reject 重采样用压缩重构分布 x̂（论文式 17）。run 工件在 `protocol_deviations` 中带 `cuhlm_fair_accounting` 标记，与旧口径结果不可直接混排。旧口径为：每 token 即时上行 + accept 消息（2 RTT/token，含 skip）、每草稿步收 batch_delay、reject 用全量分布重采样
+
+### 3b) `tk_slt` / `tkslt`（TK-SLT，2 模型）
+
+签名要点同上（`tk_slt`；`transfer_top_k` 即论文的 K）。
+
+行为要点：
+
+- 草稿分布 = softmax 只作用于 top-K logits（草稿缓存以 `top_k=K` 构造，
+  `prob_history` 行即稀疏分布），采样自该稀疏分布
+- 上行 = 每草稿位置 K 个概率值（真实 FP16 量化 + 重归一化，验证判据与
+  计费看到同一个 q̂），γ·K·2 字节/轮；草稿 token 索引与下行响应
+  （结果 token + 位置 j）按论文 §II-B negligible ⇒ 0 字节报文（保留 NTT）
+- K≤0/None ⇒ 全量 softmax 提议 + 整词表载荷（vanilla DSD 基线）
+- 拒绝重采样在验证方、基于稀疏 FP16 Q̂：`norm(max(0, P−Q̂))`
+- `--tk_slt_odld`（默认关）：在线估计 α̂/b̂/ĉ，按 Theorem 2 的
+  Lambert-W 闭式逐轮取 γ*；S*≤1 的轮次退回 standalone LLM
+  （target 直出、无上行分布）。run 工件在 `protocol_deviations` 中带
+  `tk_slt_paper_accounting` 标记。口径细节见 docs/protocol.md §3.3
 
 ### 4) `tridecoding`（3 模型）
 
