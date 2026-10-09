@@ -5,6 +5,7 @@ from unittest.mock import patch
 import torch
 
 from src.baselines import Baselines
+from src.communication import cuhlm_uplink_payload_bytes
 
 
 class _TestBaselines(Baselines):
@@ -34,6 +35,15 @@ class _FakeCudaEvent:
 
 class _FakeCommSimulator:
     instances = []
+
+    # 统一往返口径（2026-10-09）：默认 per_transfer；flush/set_round 为 no-op
+    coalesce_rounds = False
+
+    def flush_round(self):
+        """per_round 合并模式的轮末结算；fake 不做字节合并。"""
+
+    def set_round(self, round_idx):
+        """per_round 合并模式的轮界标记；fake 不结算。"""
 
     def __init__(self, *args, **kwargs):
         self.edge_cloud_comm_time = 0.0
@@ -74,9 +84,16 @@ class _FakeCommSimulator:
     def _apply_top_k_compression(self, probs, k):
         return probs
 
+    def compress_rebuild_probs(self, probs, k):
+        # F-CUHLM：reject 重采样改用压缩重构分布 x̂。镜像真实实现的
+        # 三维约束（communication.py:584），防止调用方再退回二维输入。
+        if probs.dim() != 3:
+            raise ValueError(f"probs维度应为3，实际为{probs.dim()}")
+        return probs
+
     def simulate_transfer(self, data_size_bytes, link_type="edge_cloud", **kwargs):
-        # 与 transfer 同样记录一次调用：B17 统一后下行走 _send_downlink_token，
-        # 它经 simulate_transfer 计费（token 字节 + INT_SIZE）。
+        # 与 transfer 同样记录一次调用：F-CUHLM 论文口径下，触发上行
+        # （式 (5) 字节）与 0 字节下行都经 simulate_transfer 计费。
         self.transfer_calls.append(
             {
                 "tokens": None,
@@ -197,8 +214,29 @@ class UncertaintyDecodingTests(unittest.TestCase):
         self.assertEqual(len(target_cache.generate_calls), 1)
 
         comm_simulator = _FakeCommSimulator.instances[0]
-        self.assertEqual(comm_simulator.reject_messages, 1)
+        # F-CUHLM 论文口径：不再有独立的 accept/reject 消息——跳过分支零通信，
+        # 触发分支 = 一次上行（论文式 (5) 字节）+ 一次 0 字节下行。
+        self.assertEqual(comm_simulator.reject_messages, 0)
         self.assertEqual(comm_simulator.accept_messages, 0)
+
+        transfer_calls = comm_simulator.transfer_calls
+        self.assertEqual(len(transfer_calls), 3)
+        # 1) loop_idx==1 的初始上下文上行
+        self.assertIsNone(transfer_calls[0]["probs"])
+        self.assertFalse(transfer_calls[0]["kwargs"].get("is_compressed", False))
+        # 2) 触发时的上行：载荷 = k(t)·(b_prob+b_index) bits（论文式 (5)：
+        #    b_prob=8、b_index=⌈log₂V⌉）；draft/重同步 token 索引 negligible
+        #    不计字节；topk/draft_len 仍进历史记录（avg_top_k = 自适应 k(t)）
+        uplink = transfer_calls[1]
+        self.assertIn("data_size_bytes", uplink)
+        self.assertEqual(
+            uplink["data_size_bytes"],
+            int(cuhlm_uplink_payload_bytes(2, self.instance.vocab_size)),
+        )
+        self.assertEqual(uplink["kwargs"].get("topk"), 2)
+        self.assertGreaterEqual(uplink["kwargs"].get("draft_len", 0), 1)
+        # 3) 下行最终 token：索引 negligible（论文 §II-B）→ 0 字节报文
+        self.assertEqual(transfer_calls[2]["data_size_bytes"], 0)
 
 
 if __name__ == "__main__":

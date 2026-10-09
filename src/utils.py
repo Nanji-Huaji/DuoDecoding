@@ -489,6 +489,18 @@ def parse_arguments():
         default=0.8,
         help="The uncertainty threshold for uncertainty-based decoding.",
     )
+    g_method.add_argument(
+        "--tk_slt_odld",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "TK-SLT（--eval_mode tk_slt）启用论文 §V 的 ODLD/AS²：在线估计 "
+            "α/b/c（接受率、T_V/T_LLM、T_SLM/T_LLM 的运行均值），按 Theorem 2 "
+            "的 Lambert-W 闭式逐轮选最优草稿长度 γ*；S*<=1 的轮次退回 "
+            "standalone LLM（AS²）。默认关闭 = 固定 γ（与其它基线同口径可比）。"
+            "首轮无估计，用 --gamma 兜底。"
+        ),
+    )
     g_comm.add_argument(
         "--transfer_top_k",
         type=int,
@@ -611,6 +623,19 @@ def parse_arguments():
             "Minimum bandwidth floor (Mbps) applied inside the communication "
             "simulator; bandwidth below this value is clamped. Set to 0 to "
             "disable the floor (e.g. to study links weaker than 5 Mbps)."
+        ),
+    )
+    g_comm.add_argument(
+        "--comm_bw_model",
+        type=str,
+        choices=["instant", "fluid"],
+        default="instant",
+        help=(
+            "载荷发射时长的计算模型（docs/protocol.md §3.4）。instant=历史"
+            "口径：整条载荷按起始时刻的瞬时 trace 采样计费（逐位可复现）；"
+            "fluid=流体排水：排空期间逐 trace 间隔积分，正确处理低带宽下"
+            "横跨多个采样间隔的长载荷，消除 E[S/B]>S/E[B] 的系统性多扣。"
+            "paper_table5 协议冻结为 fluid。"
         ),
     )
     g_curr.add_argument(
@@ -779,9 +804,11 @@ def parse_arguments():
     g_comm.add_argument(
         "--transfer_top_k_cap",
         type=int,
-        default=16,
-        help="给（含 RL 选出的）transfer_top_k 设上限，压低拒绝载荷字节"
-             "（默认 16=论文协议）；0 = 不设上限（遗留口径）。",
+        default=0,
+        help="给（含 RL 选出的）transfer_top_k 设上限，压低拒绝载荷字节。"
+             "默认 0 = 不钳位（2026-04 决策：cap=16 原是 ours 的方法设计，"
+             "不再作为全表口径；各方法用自身配置的 transfer_top_k）。"
+             "设 >0 可恢复 ours 历史行为（top-k 收敛到该上限）。",
     )
     g_comm.add_argument(
         "--force_full_vocab_transfer",
@@ -1119,11 +1146,15 @@ def parse_arguments():
 
     # L1 口径收敛：显式给出 --comm_accounting 时统一覆盖三个子开关。
     # 解决 Table V 对齐时发现的"口径不可辨"问题：以后每个 run 的口径都有唯一标签。
+    # 2026-04 全表解钳：honest 不再把 top-k 钳到 16——cap=16 原是 ours 的
+    # 方法设计（压低自家拒绝载荷），升格为全表开关会改掉基线的提议分布
+    # （dist_spec/dssd 的 proposal 走 top-k 重构）。口径只管"怎么计费"
+    # （per_round + 残差），top-k 取多少是各方法自己的超参。
     if getattr(args, "comm_accounting", None):
         if args.comm_accounting == "honest":
             args.charge_residual_payload = True
             args.comm_round_trip_mode = "per_round"
-            args.transfer_top_k_cap = 16
+            args.transfer_top_k_cap = 0
         else:  # legacy
             args.charge_residual_payload = False
             args.comm_round_trip_mode = "per_transfer"

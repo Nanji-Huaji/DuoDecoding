@@ -96,6 +96,9 @@ class DecodingMetrics(TypedDict):
     draft_accepted_in_transfer_topk_history: List[bool]
     little_accepted_transfer_topk_rank_history: List[int]
     draft_accepted_transfer_topk_rank_history: List[int]
+    # 逐消息记账记录 [字节, 轮号]（离线重放 rebill 的输入；多样本拼接，
+    # 轮号每样本重置——rebill 按"轮号不递增即样本边界"切组）
+    comm_trace_edge_cloud: List[list]
 
 
 def get_empty_metrics() -> DecodingMetrics:
@@ -146,6 +149,7 @@ def get_empty_metrics() -> DecodingMetrics:
         draft_accepted_in_transfer_topk_history=[],
         little_accepted_transfer_topk_rank_history=[],
         draft_accepted_transfer_topk_rank_history=[],
+        comm_trace_edge_cloud=[],
     )
 
 

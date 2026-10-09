@@ -56,6 +56,47 @@ def collect_verification_payload(
     return draft_tokens, draft_token_probs
 
 
+def reject_residual_payload_bytes(
+    stage_probs_row: Optional[torch.Tensor],
+    top_k: Optional[int],
+) -> float:
+    """拒绝位置残差的**总**载荷（字节）——统一口径 ``k*(4+元素)+元素``。
+
+    用于拒绝位置此前**未计任何概率字节**的方法（dsd / dssd / cee_dsd /
+    engine 的 speculative_decoding_with_bandwidth）：top-k 表示含
+    ``k`` 个概率值（各``元素大小``字节）+ ``k`` 个 int32 索引（各 4 字节）
+    + 1 个尾部标量；无有效 top-k 压缩时残差只能整行回传 ``V×元素``。
+    已用压缩行 ``k×(4+元素)`` 计过费的方法（tri 系 / adaptive_decoding /
+    cee_dssd）请改用 :func:`reject_tail_scalar_bytes` 只补尾部标量。
+    """
+    if stage_probs_row is None or stage_probs_row.numel() == 0:
+        return 0.0
+    vocab = int(stage_probs_row.shape[-1])
+    element = int(stage_probs_row.element_size())
+    if top_k is not None and 0 < int(top_k) < vocab:
+        return float(int(top_k)) * (4 + element) + element
+    return float(vocab * element)
+
+
+def reject_tail_scalar_bytes(
+    stage_probs_row: Optional[torch.Tensor],
+    top_k: Optional[int],
+) -> float:
+    """压缩拒绝行的**尾部标量**（字节）——统一口径的最后一块。
+
+    压缩行 ``k×(4+元素)``（概率+索引）已由既有的 ``transfer(..., is_compressed=
+    True, top_k)`` 计费；与统一口径 ``k*(4+元素)+元素`` 相比只差尾部标量。
+    无有效 top-k 压缩时整行 ``V×元素`` 已完整，返回 0（与
+    ``Baselines._residual_payload_bytes`` 的口径一致）。
+    """
+    if stage_probs_row is None or stage_probs_row.numel() == 0:
+        return 0.0
+    vocab = int(stage_probs_row.shape[-1])
+    if top_k is not None and 0 < int(top_k) < vocab:
+        return float(stage_probs_row.element_size())
+    return 0.0
+
+
 def prepare_verification_inputs(
     draft_model_cache: KVCacheModel,
     target_model_cache: KVCacheModel,

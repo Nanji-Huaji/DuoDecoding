@@ -69,3 +69,50 @@ top-k 行为。DSSD 60.6 vs 58.97 本来就吻合。
 3. **Fwd=1504 无法复现**（差 1.58×），需要作者自己确认当时的计数口径或配置；
 4. 后续可选: 用同协议跑 MTBench/HumanEval 两列（脚本已支持 `GPU=x bash
    scripts/align_paper_t5_gsm8k.sh` 改 dataset）、Qwen1.5/Qwen3 系列对齐。
+
+## 5. CU-HLM 口径修订（F-CUHLM，2026-10-05）
+
+对照 CU-HLM 论文（Oh et al., "Communication-Efficient Hybrid Language Model via
+Uncertainty-Aware Opportunistic and Compressed Transmission"）逐条复核后，确认
+`uncertainty_decoding` 的**机制**实现忠实（不确定度估计式 (8)(9)、线性映射
+a=0.815/b=−0.066、阈值 0.8≈论文 risk-prone 0.8117、式 (16) 重构、式 (26)(27)
+在线 k\*、min(1,y_d/x_d) 接受规则），但**通信/时延口径**与论文 Algorithm 1
+系统性偏离：
+
+| 项 | 论文 | 旧实现 | F-CUHLM（现实现） |
+|---|---|---|---|
+| skip 分支 | 零通信零 LLM（时延=τ_SLM；重同步声明为 negligible） | 上行 token + accept 消息 = 2 RTT + batch_delay | 零通信零排队；token 端侧缓存，下次触发随上行捎带（字节照付） |
+| 触发分支 | 上行 top-k+draft token，下行最终 token | 上行 token +（仅 reject 时）压缩包 + 下行 = 2~4 条消息 | 一次合并上行（重同步+draft+top-k，1 NTT）+ 一次下行（1 NTT） |
+| batch_delay | 无此概念 | 每草稿步都计（20388×50ms=1019s） | 仅触发时计（与其他方法 target_fwd×50ms 同口径） |
+| reject 重采样 | (y−x̂)⁺，x̂=压缩重构分布 | (y−x)⁺ 全量分布（压缩包只计费不上场，偏向该基线） | (y−x̂)⁺（论文式 17） |
+
+旧口径影响（20261005_125853 MTBench 行）：wall 3125.8s = comm 2067.8（41346 条
+消息×50ms NTT）+ queue 1019.4（20388 步×50ms）+ compute 38.6s，GPU 计算仅占
+1.24%；2.02 RTT/token（CEE-SD 0.24 / DSSD 0.80 / DSD 1.38），时延排名即
+RTT/token 排名的倒数。新口径下同一 run 投影：comm≈30s（299 触发×2×50ms）、
+queue≈15s、wall≈84s ≈ 240 tok/s——但 GSM8K 精度仍为 0（68m SLM 跳过 98.5%
+的必然结果，论文 SLM=TinyLlama-1.1B 时 SLM-only 已达 LLM 89% 精度，该前提在
+llama-68m 配置下不成立）。
+
+run 工件在 `protocol_deviations` 中带 `cuhlm_fair_accounting` 标记；新旧口径结果
+不可直接混排。
+
+**扫描结果**（`scripts/fcuhlm_threshold_sweep.sh`，2026-10-05，复刻主表配置，
+u_th ∈ {0.08, 0.3, 0.5, 0.8}，其中 0.08≈论文 Theorem 1 risk-averse 阈值 0.0810、
+0.8≈risk-prone 阈值 0.8117，两档均为论文自身推导值）：
+
+| u_th | GSM8K acc | GSM8K thr | MTBench thr | 触发率 (G/M) |
+|---|---|---|---|---|
+| 0.08 | **0.2500** | 7.81 | 8.85 | 95.1% / 92.4% |
+| 0.3 | 0.1375 | 8.95 | 11.43 | 73.2% / 60.3% |
+| 0.5 | 0.0375 | 18.88 | 23.48 | 27.0% / 23.1% |
+| 0.8 | 0.0000 | 131.11 | 223.95 | 2.6% / 1.5% |
+
+参照（GSM8K）：CEE-SD (0.2375, 21.41)、DSD (0.25, 7.74)、DSSD (0.25, 11.59)。
+**CEE-SD Pareto 支配 CU-HLM 整条前沿**：精度对齐档（0.08）慢 2.7×；吞吐接近档
+（0.5，18.88 vs 21.41）精度差 6.3×；每档均无例外。结构原因：CU-HLM 每轮只产
+1 个 token（γ=1），验证模式下每 token 付 2 RTT + 1 排队（~150ms），无法像
+γ>1 的投机方法那样摊薄 WAN 时延。主表工作点取 **u_th=0.08**（精度优先、对
+CU-HLM 最有利），前沿数据见
+`experiment_results/experiment_summary_fcuhlm_frontier_*.json`，主表合并文件见
+`experiment_results/experiment_summary_fcuhlm_main_*.json`。

@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import shutil
@@ -40,6 +41,8 @@ class EvalMode(str, Enum):
     dssd = "dist_split_spec"
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
+    # TK-SLT [WCSP'25 Zheng & Yang]：DSD + top-K 稀疏 logits 上行（基线）
+    tk_slt = "tk_slt"
     # tridecoding = "tridecoding"  # ablation of adaptive tridecoding
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
@@ -49,12 +52,18 @@ class EvalMode(str, Enum):
     adaptive_decoding = "adaptive_decoding"
 
 
+#: eval_mode 的值 → 枚举名（如 "dist_spec" → "dsd"），供 --only-modes 接受两种写法
+_MODE_NAME_BY_VALUE = {member.value: member.name for member in EvalMode}
+
+
 class ExpConfig(TypedDict):
     CUDA_VISIBLE_DEVICES: str | int
     eval_mode: str | EvalMode
     edge_end_bandwidth: int | float
     edge_cloud_bandwidth: int | float
     cloud_end_bandwidth: int | float
+    min_bandwidth_mbps: float
+    comm_bw_model: str
     transfer_top_k: int
     num_shots: int
     num_samples_per_task: int
@@ -95,9 +104,11 @@ class ExpConfig(TypedDict):
 
 # Global Constants
 
-# NTT_MS_EDGE_CLOUD = 10
-# NTT_MS_EDGE_END = 0
-NTT_MS_EDGE_CLOUD = 76.3
+# 论文主实验（Table V）的通信口径，冻结值见 docs/protocol.md §2：
+# edge-cloud 取论文 §IV-A 建模的 50 ms 固定系统开销，edge-end 为 0.317 ms。
+# Table II 的 76.36 ms / 941 Mbps 是实测值，按仓库决策只用于敏感性分析，
+# 不再作为主表口径（docs/param_ledger.md §6 决策 1）。
+NTT_MS_EDGE_CLOUD = 50
 NTT_MS_EDGE_END = 0.317
 
 
@@ -128,7 +139,8 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} {accelerate} launch \\
     --main_process_port 29051 \
     {eval_dataset} \
     --eval_mode {eval_mode} \
-    -e llama \
+    --protocol paper_table5 \
+    --comm_accounting honest \
     --draft_model {draft_model} \
     --target_model {target_model} \
     --little_model {little_model} \
@@ -140,6 +152,8 @@ CUDA_VISIBLE_DEVICES={CUDA_VISIBLE_DEVICES} {accelerate} launch \\
     --edge_end_bandwidth {edge_end_bandwidth} \
     --edge_cloud_bandwidth {edge_cloud_bandwidth} \
     --cloud_end_bandwidth {cloud_end_bandwidth} \
+    --min_bandwidth_mbps {min_bandwidth_mbps} \
+    --comm_bw_model {comm_bw_model} \
     --transfer_top_k {transfer_top_k} \
     --num_samples_per_task {num_samples_per_task} \
     --eval_data_num {eval_data_num} \
@@ -541,6 +555,8 @@ def create_config(
     edge_end_bandwidth: int | float = 100,
     edge_cloud_bandwidth: int | float = 100,
     cloud_end_bandwidth: int | float = 100,
+    min_bandwidth_mbps: float = 5.0,
+    comm_bw_model: str = "instant",
     small_draft_threshold: float = 0.3,
     draft_target_threshold: float = 0.9,
     uncertainty_threshold: float = 0.8,
@@ -657,6 +673,8 @@ def create_config(
         edge_end_bandwidth=edge_end_bandwidth,
         edge_cloud_bandwidth=edge_cloud_bandwidth,
         cloud_end_bandwidth=cloud_end_bandwidth,
+        min_bandwidth_mbps=min_bandwidth_mbps,
+        comm_bw_model=comm_bw_model,
         transfer_top_k=transfer_top_k,
         gamma=gamma,
         gamma1=gamma1,
@@ -671,7 +689,8 @@ def create_config(
         exp_name=(
             f"{eval_mode_value}/{eval_dataset_name}/"
             f"{eval_mode_value}_{num_shots}shot_g1{gamma1}_g2{gamma2}_batchdelay{batch_delay_ms}ms"
-            f"{'_cudagraph' if use_cuda_graph else ''}_{timestamp}"
+            f"{'_cudagraph' if use_cuda_graph else ''}"
+            f"_bw{edge_cloud_bandwidth:g}_{timestamp}"
         ),
         use_precise=use_precise,
         use_stochastic_comm=use_stochastic_comm,
@@ -744,104 +763,381 @@ specified_pairs_qwen = [
     ("qwen/Qwen3-1.7B", "qwen/Qwen3-14B"),
 ]
 
-edge_cloud_bandwidth = [
-    # 5.2,  # 弱 4G / 强 3G 边缘
-    # 7.8,  # 8M 宽带的典型实测值
-    # 10.0,  # 标准 10M 宽带
-    # 12.4,  # 繁忙时段的 4G LTE
-    # 15.5,  # ADSL2+ 的理论极限附近
-    # 18.2,  # 20M 宽带的各种损耗后速度
-    # 20.0,  # 标准 20M 宽带
-    # 23.6,  # 信号良好的 4G 平均值
-    # 25.0,  # FCC 定义的宽带及格线
-    # 28.9,  # 30M 宽带的一般表现
-    # 32.4,  # Wi-Fi 穿墙后的衰减值
-    # 38.7,  # 4G+ (载波聚合) 波动值
-    # 42.1,  # 50M 宽带在高峰期的表现
-    # 45.5,  # 50M 宽带 Wi-Fi 传输损耗
-    46.0,
-    # 48.8,  # 50M 宽带非常接近满速的值
-    # 50.0,  # 标准 50M 宽带满速
-]
+# 主表 WAN 条件改为阶梯：46 Mbps（Table II 实测 46.9/46.0，协议统一取 46，
+# 见 docs/protocol.md §2 #4）+ 两个带宽受限点 10/5 Mbps。
+# 动机：46 下 NTT(50ms/轮) 主导通信，载荷是二阶量（tk_slt K=320 仅
+# ~1.2ms/轮），压缩类方法的机制差异几乎不可见；10/5 Mbps 把载荷权重
+# 提到一阶（实测外推：@10 Mbps 时 dsd(全词表) −45%、dssd(拒绝行) −16%、
+# tk_slt −2%、cuhlm −1%）。5/10 也在论文 Fig.4 的 5–25 Mbps 鲁棒性
+# 扫描范围内，属同一故事的延伸而非新设定。
+# 注意：①带宽进 exp_name（_bw46/_bw10/_bw5）与 RUN_IDENTITY_FIELDS，
+# 阶梯点互不冲突、resume/merge 安全；②低于 5 会被 min_bandwidth_mbps=5
+# 钳位（cmd_temp 不透传该参数），如需更低先透传；③低带宽下 dsd/dssd
+# 的最优 γ 会下移（载荷 ∝ 草稿数/拒绝行数），各带宽的 γ 需用
+# scripts/gamma_sweep.py --bandwidth 重扫后再定。
+edge_cloud_bandwidth = [46.0, 10.0, 5.0]
 
+# 论文 §IV-A：每次云请求 50 ms 固定系统开销
 batch_delay_values = [50e-3]
-gamma1_values = [3]  # 扫描最优值：draft→target 推测窗口
-gamma2_values = [3]  # 扫描最优值：little→draft 推测窗口
 
-for little_model, draft_model, target_model in (
+# 投机深度 γ：协议不冻结该项（docs/protocol.md §4，唯一待定项），因此一律显式传，
+# 不允许靠 create_config 的签名默认值兜底。取值沿用仓库 Table V 对齐时的选择：
+# 基线 γ=3（前向数与论文吻合，DSD 4113 vs 3980）、CEE-SD 取消融 static 的 γ1=γ2=5。
+GAMMA_SINGLE = 3  # 单-γ 方法：dsd / dssd / cuhlm 读 --gamma
+GAMMA1_CEESD = 5  # 三级方法 Draft→Target 推测窗口
+GAMMA2_CEESD = 5  # 三级方法 Little→Draft 推测窗口
+
+# top-k 压缩：**只有 CEE-SD 自己的设计里有**（DRA 选 top-k，上行传 top-k 压缩 logits）。
+# 此前把 transfer_top_k=300 一律套在所有方法头上，等于把"压缩传输"这项本该被验证的
+# 贡献免费送给了基线：
+#   · DSSD 原文（§3 / 式 8）：拒绝时下行是**整词表分布** P_j(x)，即 |V|·bprob；
+#   · DSD  原文：上行是 γ 个整词表分布（DSSD 论文 Alg.1 / 式 4）。
+# 现在按各自原文计费。令 transfer_top_k=0 即可在不改基线代码的前提下切到整行载荷：
+#   · CommunicationSimulator.transfer 的 is_compressed = (k is not None and k > 0)
+#     ⇒ False，按 prob.numel()*element_size 计整行；
+#   · reject_residual_payload_bytes(row, 0) 的 `0 < k < vocab` 不成立 ⇒ 返回
+#     vocab*element，也是整行。
+# 附带效果（是对齐而非副作用）：proposal_top_k(0) 返回 None，使
+# rebuild_topk_uniform_probs 原样返回 —— "top-k + 均匀尾部" 的重建本身就是压缩机制的
+# 一环，原文没有。temp=0 下草稿 token 取 argmax，top-300 与全量分布给出同一个 token，
+# 所以生成的 token 序列不变。
+TRANSFER_TOP_K_OURS = 300  # CEE-SD：自身设计，保留
+TRANSFER_TOP_K_PAPER = 0  # dsd / dssd：原文无 top-k 压缩 ⇒ 整词表载荷
+# TK-SLT：K 是该方法自己的超参（top-K 稀疏 logits 上行）。取 320 =
+# 论文 §VI-B Fig 4 的最优工作点（T=0 与 T=1 两个温度下最大加速比都在
+# K=320 取得，此时上行载荷 ≈ 1% 词表）；K=0 可退回其 vanilla DSD 基线。
+TRANSFER_TOP_K_TKSLT = 320  # tk_slt：论文实测最优 K
+
+# CUHLM 的不确定度阈值（越大越少上云、越快越差）。
+#
+# 0.8 是 create_config/argparse 的默认值，但它把 CUHLM 放在一个退化的工作点上：
+# Llama/GSM8K 上 thr=0.8 的准确率是 0.0，而 CEE-SD 0.2375、DSD/DSSD 0.25 ——
+# 也就是说 CUHLM 之所以"快 5.9 倍"，是靠几乎不调用云模型换来的。这也与论文
+# Table V 自己标注的"baselines ≈target"矛盾。
+#
+# 取 0.08 的依据（仓库实测的阈值前沿，Llama-2-13b/GSM8K）：
+#   thr 0.08 → acc 0.25（= target 水平，与 DSD/DSSD 相同、略高于 CEE-SD 0.2375）
+#   thr 0.30 → acc 0.1375
+#   thr 0.50 → acc 0.0375
+#   thr 0.80 → acc 0.0
+# 即 0.08 是"等准确率"工作点：让 CUHLM 在可比质量下参与吞吐比较，而不是拿
+# 低质量换速度。Qwen1.5/Qwen3 两个系列还没有阈值前沿，0.08 是按同一判据外推的，
+# 需在重跑后核对准确率是否与其他方法同量级。
+UNCERTAINTY_THRESHOLD_CUHLM = 0.08
+UNCERTAINTY_THRESHOLD_DEFAULT = 0.8  # 其余方法（主表里只有 CUHLM 消费该参数）
+
+# 论文主实验（Table V）实验矩阵 = 三族模型 × 三个数据集 × 四个方法。
+#
+# 论文 §IV-A 明示的三族（little / draft / target）：
+#   Llama   : llama-68m / tiny-llama-1.1b / llama-2-13b
+#   Qwen1.5 : Qwen1.5-0.5B-Chat / Qwen1.5-1.8B-Chat / Qwen1.5-7B-Chat
+#   Qwen3   : Qwen3-0.6B / Qwen3-1.7B / Qwen3-14B
+paper_table5_series = (
     llama_series,
-    # llama_chat_series,
-    # vicuna_series,
-    # qwen_series,
-    # # qwen_series_fp8,
-    # gemma_3_it_series,
-    # # qwen_series_large,
-    # # llama_3_series,
-    # qwen_1_5_series,
-):
-    for dataset in (
-        EvalDataset.mt_bench_noeval,
-        EvalDataset.gsm8k,
-        EvalDataset.humaneval
-        # EvalDataset.cnndm,
-    ):
-        for mode in (
-            EvalMode.dsd,
-            EvalMode.dssd,
-            EvalMode.cuhlm,
-            EvalMode.cee_cuhlm,
-            EvalMode.ceesd,
-        ):
+    qwen_1_5_series,
+    qwen_series,
+)
+
+# Table V 的三个数据集；CNN/DM 只用于 Table VII 的精度评测，不属于吞吐主表。
+paper_table5_datasets = (
+    EvalDataset.mt_bench_noeval,
+    EvalDataset.gsm8k,
+    EvalDataset.humaneval,
+)
+
+# Table V 的方法列：四个基线 + 本方法。Table VI 的 CEE+ 变体与
+# Table VIII 的 Static 消融都是独立实验，不进入主表矩阵。
+paper_table5_modes = (
+    EvalMode.dsd,  # DSD [7]
+    EvalMode.dssd,  # DSSD [8]
+    EvalMode.cuhlm,  # CUHLM [9]
+    EvalMode.tk_slt,  # TK-SLT [10]：DSD + top-K 稀疏 logits 上行
+    EvalMode.ceesd,  # CEE-SD（本文方法，= adaptive_tridecoding）
+)
+
+for little_model, draft_model, target_model in paper_table5_series:
+    for dataset in paper_table5_datasets:
+        for mode in paper_table5_modes:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
-                    for gamma1 in gamma1_values:
-                        for gamma2 in gamma2_values:
-                            config = create_config(
-                                eval_mode=mode,
-                                ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                                ntt_ms_edge_end=NTT_MS_EDGE_END,
-                                batch_delay=batch_delay,
-                                use_precise=False,
-                                use_stochastic_comm=True,
-                                # edge_end_bandwidth=563,
-                                edge_end_bandwidth=941,
-                                edge_cloud_bandwidth=edge_cloud_bw,
-                                cloud_end_bandwidth=edge_cloud_bw,
-                                small_draft_threshold=0.6,
-                                draft_target_threshold=0.7,
-                                transfer_top_k=300,
-                                gamma1=gamma1 if mode != EvalMode.cee_cuhlm else 1,
-                                gamma2=gamma2 if mode != EvalMode.cee_cuhlm else 1,
-                                max_tokens=128,
-                                num_shots=3,
-                                eval_dataset=dataset,
-                                draft_model=(
-                                    draft_model
-                                    if mode
-                                    in [
-                                        EvalMode.ceesd,
-                                        EvalMode.cee_cuhlm,
-                                        EvalMode.cee_dsd,
-                                        EvalMode.cee_dssd,
-                                        EvalMode.dssd,
-                                        EvalMode.adaptive_decoding,
-                                    ]
-                                    else little_model
-                                ),
-                                target_model=target_model,
-                                little_model=little_model,
-                                use_rl_adapter=True,
-                                disable_rl_update=True,
-                                use_early_stopping=False,
-                                use_cuda_graph=True,
-                                eval_data_num=80,
-                                run_full_dataset=False,
-                                random_sample=True,
-                                sample_seed=1234,
+                    is_ceesd = mode == EvalMode.ceesd
+                    config = create_config(
+                        eval_mode=mode,
+                        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+                        ntt_ms_edge_end=NTT_MS_EDGE_END,
+                        batch_delay=batch_delay,
+                        use_precise=False,
+                        use_stochastic_comm=True,
+                        # 论文 §IV-A 的 edge-end 保守有效带宽 563 Mbps
+                        edge_end_bandwidth=563,
+                        edge_cloud_bandwidth=edge_cloud_bw,
+                        cloud_end_bandwidth=edge_cloud_bw,
+                        # 带宽下限随阶梯缩放：目标均值的 1/10（下限 0.5）。
+                        # 固定 5 会在 5 Mbps 档把 trace 削成近似常数、
+                        # 10 Mbps 档削掉下半段（重缩放后深衰采样密集），
+                        # 阶梯三档的 trace 动态形状才可比。
+                        min_bandwidth_mbps=max(0.5, edge_cloud_bw / 10),
+                        # 载荷发射时长走流体模型（2026-10-09 决策，
+                        # docs/protocol.md §3.4）
+                        comm_bw_model="fluid",
+                        small_draft_threshold=0.6,
+                        draft_target_threshold=0.7,
+                        # 不确定度阈值：主表里只有 CUHLM 消费（CEE-SD 只在
+                        # cee_sd_opportunistic 变体里读，见 baselines.py:3781 的
+                        # _opportunistic_first_stage 分支）。0.8 会让 CUHLM 退化到
+                        # 0 准确率，故改用等准确率工作点 0.08。
+                        uncertainty_threshold=(
+                            UNCERTAINTY_THRESHOLD_CUHLM
+                            if mode == EvalMode.cuhlm
+                            else UNCERTAINTY_THRESHOLD_DEFAULT
+                        ),
+                        transfer_top_k=(
+                            TRANSFER_TOP_K_OURS
+                            if mode in (EvalMode.ceesd, EvalMode.cuhlm)
+                            else (
+                                TRANSFER_TOP_K_TKSLT
+                                if mode == EvalMode.tk_slt
+                                else TRANSFER_TOP_K_PAPER
                             )
-                            config_to_run.append(config)
+                        ),
+                        gamma=GAMMA_SINGLE,
+                        gamma1=GAMMA1_CEESD if is_ceesd else GAMMA_SINGLE,
+                        gamma2=GAMMA2_CEESD if is_ceesd else GAMMA_SINGLE,
+                        max_tokens=128,
+                        num_shots=3,
+                        eval_dataset=dataset,
+                        # DSSD 与 CEE 族用中间模型当草稿（与论文 Table V 的
+                        # 接受率吻合）；DSD / CUHLM / TK-SLT 用端侧小模型
+                        # （TK-SLT 原文 §VI-B：68M 草稿 + 7B 验证）。
+                        draft_model=(
+                            draft_model
+                            if mode
+                            in [
+                                EvalMode.ceesd,
+                                EvalMode.cee_cuhlm,
+                                EvalMode.cee_dsd,
+                                EvalMode.cee_dssd,
+                                EvalMode.dssd,
+                                EvalMode.adaptive_decoding,
+                            ]
+                            else little_model
+                        ),
+                        target_model=target_model,
+                        little_model=little_model,
+                        # 协议 §2 #12：RL adapter 只作用于 CEE-SD（tri 族），
+                        # 不作用于基线，否则会改变基线的 top-k 行为。
+                        use_rl_adapter=is_ceesd,
+                        disable_rl_update=is_ceesd,
+                        use_early_stopping=False,
+                        use_cuda_graph=True,
+                        eval_data_num=80,
+                        run_full_dataset=False,
+                        random_sample=True,
+                        sample_seed=1234,
+                    )
+                    config_to_run.append(config)
+
+
+# ---------------------------------------------------------------------------
+# 断点续跑与结果合并
+#
+# exp_name 里带运行时间戳（..._20261005_125853_876008），同一个实验重跑一次就会得到
+# 不同的 exp_name，所以**不能拿 exp_name 当合并键**。合并与续跑的键是「这次到底跑的
+# 是什么」那组语义字段：数据集 + 方法 + 三档模型 + 通信口径 + 投机深度 + 采样设置。
+# CUDA_VISIBLE_DEVICES 与 exp_name 这类每次运行都会变的字段必须排除在外。
+RUN_IDENTITY_FIELDS = (
+    "eval_dataset",
+    "eval_mode",
+    "little_model",
+    "draft_model",
+    "target_model",
+    "edge_cloud_bandwidth",
+    "min_bandwidth_mbps",
+    "comm_bw_model",
+    "edge_end_bandwidth",
+    "cloud_end_bandwidth",
+    "batch_delay",
+    "gamma",
+    "gamma1",
+    "gamma2",
+    "max_tokens",
+    "num_shots",
+    "eval_data_num",
+    "num_samples_per_task",
+    "sample_seed",
+    "random_sample",
+)
+
+
+def _identity_value(value):
+    """把枚举取成字符串、浮点归一，避免同一实验因类型不同算出两个键。"""
+    if isinstance(value, Enum):
+        value = value.value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return round(value, 9)
+    return value
+
+
+def run_identity(config: dict) -> tuple:
+    """把一个 config 压成与时间戳无关的语义键。"""
+    return tuple(
+        (field, _identity_value(config[field]))
+        for field in RUN_IDENTITY_FIELDS
+        if field in config
+    )
+
+
+def load_summary(path: str | Path) -> List[dict]:
+    """读一份实验汇总（list[dict]）。"""
+    resolved = Path(path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"找不到汇总文件: {resolved}")
+    with resolved.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"汇总文件顶层不是 list: {resolved}")
+    return data
+
+
+def _summary_sort_key(entry: dict) -> tuple:
+    config = entry.get("config") or {}
+    return (
+        str(config.get("eval_dataset", "")),
+        str(config.get("eval_mode", "")),
+        str(config.get("target_model", "")),
+        str(entry.get("exp_name", "")),
+    )
+
+
+def merge_summaries(*summaries: List[dict]) -> List[dict]:
+    """按语义键合并多份汇总，**后面的覆盖前面的**（新结果优先）。
+
+    同一次实验在旧汇总里可能是 status=failed（result 里只有 error），
+    新汇总里是 success，合并后保留 success 那条。
+    """
+    merged: dict = {}
+    for summary in summaries:
+        for entry in summary:
+            config = entry.get("config") or {}
+            if config:
+                key = run_identity(config)
+            else:
+                # 没有 config 的条目（早期异常）无法定位语义，用 exp_name 兜底保留
+                key = ("__exp_name__", str(entry.get("exp_name", "")))
+            merged[key] = entry
+    return sorted(merged.values(), key=_summary_sort_key)
+
+
+def _mode_aliases(mode) -> set:
+    """一个 eval_mode 的可写形式：枚举名（dsd）与枚举值（dist_spec）都接受。
+
+    config 里存的是枚举的**值**（create_config 已转成字符串），所以名字要回查
+    EvalMode 表，而不是从 config 元素本身取。
+    """
+    value = str(getattr(mode, "value", mode))
+    names = {value}
+    if isinstance(mode, EvalMode):
+        names.add(mode.name)
+    known = _MODE_NAME_BY_VALUE.get(value)
+    if known:
+        names.add(known)
+    return names
+
+
+def filter_configs_by_mode(
+    configs: List[ExpConfig], only_modes: str | None = None
+) -> List[ExpConfig]:
+    """只保留指定方法（``--only-modes dsd,dssd``）。
+
+    用于口径变更后只重跑受影响的方法，而不是整表 36 个。
+    """
+    if not only_modes:
+        return list(configs)
+    wanted = {token.strip() for token in only_modes.split(",") if token.strip()}
+    available = {alias for c in configs for alias in _mode_aliases(c["eval_mode"])}
+    unknown = wanted - available
+    if unknown:
+        raise ValueError(
+            f"--only-modes 里有未知方法 {sorted(unknown)}；可用: {sorted(available)}"
+        )
+    return [
+        config
+        for config in configs
+        if _mode_aliases(config["eval_mode"]) & wanted
+    ]
+
+
+def filter_configs_for_resume(
+    configs: List[ExpConfig], resume_from: str | Path | None = None
+) -> List[ExpConfig]:
+    """挑出还没成功跑过的 config：已在汇总里 success 的不再重跑。"""
+    if not resume_from:
+        return list(configs)
+    done = {
+        run_identity(entry["config"])
+        for entry in load_summary(resume_from)
+        if entry.get("status") == "success" and entry.get("config")
+    }
+    return [config for config in configs if run_identity(config) not in done]
+
+
+def describe_config(config: dict) -> str:
+    dataset = Path(str(config.get("eval_dataset", "?"))).stem.replace("eval_", "")
+    return (
+        f"{str(config.get('eval_mode', '?')):22s} {dataset:16s} "
+        f"{str(config.get('target_model', '?'))}"
+    )
+
+
+def parse_exp_args(argv: List[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="论文 Table V 实验矩阵（三族模型 × 三数据集 × 四方法）"
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        metavar="SUMMARY.json",
+        help="断点续跑：该汇总里 status=success 的实验不再重跑",
+    )
+    parser.add_argument(
+        "--merge-from",
+        action="append",
+        default=None,
+        metavar="SUMMARY.json",
+        help="把本次结果合并进这份汇总（可重复传）；同语义键以本次结果为准",
+    )
+    parser.add_argument(
+        "--only-modes",
+        default=None,
+        metavar="MODE[,MODE...]",
+        help="只跑这些方法（枚举名或枚举值，如 dsd,dssd 或 dist_spec,dist_split_spec）",
+    )
+    parser.add_argument(
+        "--merged-output",
+        default=None,
+        metavar="PATH",
+        help="合并结果输出路径（默认在 experiment_results/ 下新建 merged 文件）",
+    )
+    parser.add_argument(
+        "--summary-file",
+        default=None,
+        metavar="PATH",
+        help="本次运行的汇总输出路径（默认按时间戳新建）",
+    )
+    parser.add_argument("--max-workers", type=int, default=4)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只打印待跑清单，不真正运行",
+    )
+    return parser.parse_args(argv)
+
 
 if __name__ == "__main__":
+    args = parse_exp_args()
+
     # 创建日志目录
     log_dir = "exp_logs"
     Path(log_dir).mkdir(exist_ok=True)
@@ -849,15 +1145,40 @@ if __name__ == "__main__":
     results_dir = Path("experiment_results")
     results_dir.mkdir(exist_ok=True)
 
-    # 提前确定汇总结果文件名
-    summary_file = str(
-        results_dir
-        / f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    # 先按方法筛选（口径变更后只重跑受影响的方法），再按成功记录跳过
+    selected = filter_configs_by_mode(config_to_run, args.only_modes)
+    if args.only_modes:
+        print(
+            f"--only-modes {args.only_modes} ⇒ "
+            f"从 {len(config_to_run)} 个中筛出 {len(selected)} 个"
+        )
+    pending = filter_configs_for_resume(selected, args.resume_from)
+    skipped = len(selected) - len(pending)
+    print(f"本次待跑 {len(pending)} 个")
+    if skipped:
+        print(f"（按 {args.resume_from} 的成功记录跳过 {skipped} 个）")
+    for config in pending:
+        print(f"  - {describe_config(config)}")
+
+    if args.dry_run:
+        print("\n[dry-run] 未执行任何实验。")
+        sys.exit(0)
+    if not pending:
+        print("\n没有待跑的实验，无需运行。")
+        sys.exit(0)
+
+    # 本次运行的汇总文件；run_stamp 同时用于合并输出，让两份产物成对可辨
+    run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_file = args.summary_file or str(
+        results_dir / f"experiment_summary_{run_stamp}.json"
     )
 
     # 并行运行实验
     all_results = run_experiments_parallel(
-        config_to_run, max_workers=4, log_dir=log_dir, summary_file=summary_file
+        pending,
+        max_workers=args.max_workers,
+        log_dir=log_dir,
+        summary_file=summary_file,
     )
 
     # 打印汇总报告
@@ -875,10 +1196,53 @@ if __name__ == "__main__":
     print(f"失败: {failed}")
     print(f"无结果: {no_result}")
     print(f"异常: {exception}")
-    print(f"\n汇总结果已保存到: {summary_file}")
+    print(f"\n本次汇总已保存到: {summary_file}")
 
     for result in all_results:
         print(f"\n实验: {result['exp_name']}")
         print(f"状态: {result['status']}")
         if result.get("log_file"):
             print(f"日志: {result['log_file']}")
+
+    # 合并：旧汇总在前、本次结果在后，同语义键以本次为准
+    merge_inputs = list(args.merge_from or [])
+    if merge_inputs:
+        print("\n" + "=" * 80)
+        print("合并结果:")
+        print("=" * 80)
+        bases = [load_summary(path) for path in merge_inputs]
+
+        # 合并前的状态，用来报「哪些实验从失败/缺失变成了成功」
+        old_status: dict = {}
+        for base in bases:
+            for entry in base:
+                if entry.get("config"):
+                    old_status[run_identity(entry["config"])] = entry.get("status")
+
+        merged = merge_summaries(*bases, all_results)
+
+        resolved = sum(
+            1
+            for entry in merged
+            if entry.get("config")
+            and entry.get("status") == "success"
+            and old_status.get(run_identity(entry["config"])) != "success"
+        )
+
+        merged_output = args.merged_output or str(
+            results_dir / f"experiment_summary_merged_{run_stamp}.json"
+        )
+        tmp_path = merged_output + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, merged_output)
+
+        merged_success = sum(1 for e in merged if e.get("status") == "success")
+        merged_failed = len(merged) - merged_success
+        print(f"合并自: {', '.join(merge_inputs)}")
+        print(
+            f"合并后条目数: {len(merged)}"
+            f"（success {merged_success} / 非 success {merged_failed}）"
+        )
+        print(f"本次新转为 success: {resolved}")
+        print(f"合并结果已保存到: {merged_output}")

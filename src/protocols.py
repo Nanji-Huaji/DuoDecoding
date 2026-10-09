@@ -4,10 +4,15 @@
 ----
 参数一度有三个来源（CLI 默认 / `exp.py` 扫描配置 / `cmd_temp` 里的字面量），
 且部分开关只被个别方法消费：`comm_round_trip_mode`、`charge_residual_payload`、
-`transfer_top_k_cap`、`force_full_vocab_transfer` 只有 `adaptive_tridecoding`
+`transfer_top_k_cap`、`force_full_vocab_transfer` 曾长期只有 `adaptive_tridecoding`
 （及其委托者 `cee_sd` / `cee_sd_opportunistic`）读取，而 `eval/utils.py` 又会把
 **标称口径**无条件写进 metrics —— run 的标签因此可能与真实行为不一致。
-分析见 `docs/param_ledger.md`，最终口径见 `docs/protocol.md`。
+2026-04 统一口径落地后（docs/protocol.md §3）基线族已接入同一套开关；
+2026-10-09 起往返口径进一步统一（§3.4）：CUHLM 系与 TK-SLT 系的
+**载荷字节**仍按各自论文计费（`cuhlm_uplink_payload_bytes` /
+`tk_slt_uplink_payload_bytes`），但**往返次数**接入 `comm_round_trip_mode`
+（主表 per_round = 每次云端交互 1×NTT）。分析见 `docs/param_ledger.md`，
+最终口径见 `docs/protocol.md`。
 
 本模块提供三件事：
 
@@ -42,10 +47,69 @@ ACCOUNTING_SWITCHES: tuple[str, ...] = (
 #: 投机深度键：单-γ 方法与三级方法读的不是同一组
 DEPTH_KEYS: tuple[str, ...] = ("gamma", "gamma1", "gamma2")
 
-#: 消费通信计费开关的注册名（运行时内省的快照，测试保证不漂移）
-_ACCOUNTING_CONSUMERS: frozenset[str] = frozenset(
-    {"adaptive_tridecoding", "cee_sd", "cee_sd_opportunistic"}
+#: 基线族消费的计费开关（比 adaptive 族少 force_full_vocab_transfer：
+#: 基线的上行压缩由 transfer_top_k 直接表达，没有"强制全词表"旁路）
+_BASELINE_ACCOUNTING: tuple[str, ...] = (
+    "comm_round_trip_mode",
+    "charge_residual_payload",
+    "transfer_top_k_cap",
 )
+
+#: 各模式消费的通信计费开关快照（运行时内省的离线替身，测试保证不漂移）。
+#: 2026-04 统一口径落地（docs/protocol.md §3）：基线族接入与 ours 同一套
+#: 计费开关；CUHLM 系（uncertainty_decoding/cuhlm/cee_cuhlm）不接统一
+#: 开关，改按 CU-HLM 论文自身的计费口径计费（见 _CUHLM_MODES）。
+_STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
+    # adaptive 族：全 4 开关（含 force_full_vocab_transfer 旁路）
+    "adaptive_tridecoding": ACCOUNTING_SWITCHES,
+    "cee_sd": ACCOUNTING_SWITCHES,
+    "cee_sd_opportunistic": ACCOUNTING_SWITCHES,
+    # 基线族（docs/protocol.md §3 已接线）
+    "dsd": _BASELINE_ACCOUNTING,
+    "dist_spec": _BASELINE_ACCOUNTING,
+    "dssd": _BASELINE_ACCOUNTING,
+    "dist_split_spec": _BASELINE_ACCOUNTING,
+    "tridecoding": _BASELINE_ACCOUNTING,
+    "ceesd_without_arp": _BASELINE_ACCOUNTING,
+    "ceesd_w/o_arp": _BASELINE_ACCOUNTING,
+    "adaptive_decoding": _BASELINE_ACCOUNTING,
+    "cee_dssd": _BASELINE_ACCOUNTING,
+    "cee_dsd": _BASELINE_ACCOUNTING,
+    "speculative_decoding_with_bandwidth": _BASELINE_ACCOUNTING,
+    # CUHLM / TK-SLT 系：2026-10-09 统一往返决策（docs/protocol.md §3.4）——
+    # 载荷字节仍按各自论文的口径计费（cuhlm_uplink_payload_bytes /
+    # tk_slt_uplink_payload_bytes），但**往返次数**接入统一开关
+    # comm_round_trip_mode（per_round = 每次云端交互付 1×NTT）。
+    # 此前它们逐报文付 NTT（每轮 2×50ms），同一主表内比 dsd/dssd/ours
+    # 每轮多付 50ms 纯记账差异（tk_slt 合并后实测 +31% 吞吐）。
+    # cee_cuhlm（三级变体，不在主矩阵）暂未接线，保持逐报文口径。
+    "cuhlm": ("comm_round_trip_mode",),
+    "uncertainty_decoding": ("comm_round_trip_mode",),
+    "tk_slt": ("comm_round_trip_mode",),
+    "tkslt": ("comm_round_trip_mode",),
+}
+
+#: 消费至少一个计费开关的注册名（由 _STATIC_ACCOUNTING 派生；报表文案用）
+_ACCOUNTING_CONSUMERS: frozenset[str] = frozenset(_STATIC_ACCOUNTING)
+
+#: 无通信阶段的模式（纯本地解码）：计费口径标签对它们无意义
+_NO_COMM_MODES: frozenset[str] = frozenset({"small", "large", "target_only", "sd"})
+
+#: CUHLM 系：载荷字节按 CU-HLM 论文自身的口径计费（式 (5)：上行
+#: k·(b_prob+b_index) bits，b_prob=8、b_index=⌈log₂V⌉；token 索引/重同步
+#: negligible；跳过 = 零通信。见 docs/protocol.md §3 的 CUHLM 小节与
+#: src/communication.cuhlm_uplink_payload_bytes）。2026-10-09 起往返口径
+#: 接入统一开关（§3.4）：per_round = 每次云端交互 1×NTT。
+_CUHLM_MODES: frozenset[str] = frozenset(
+    {"cuhlm", "uncertainty_decoding", "cee_cuhlm"}
+)
+
+#: TK-SLT 系：载荷字节同样按论文自身口径计费（WCSP'25 Zheng & Yang）——
+#: 上行 γ·K·b_prob bits（b_prob=16，FP16；索引 negligible，论文 Table II
+#: 的 L 值与该式逐位吻合），拒绝重采样在验证方基于稀疏 FP16 分布。见
+#: src/communication.tk_slt_uplink_payload_bytes 与 docs/protocol.md §3.3。
+#: 2026-10-09 起往返口径接入统一开关（§3.4）。
+_TK_SLT_MODES: frozenset[str] = frozenset({"tk_slt", "tkslt"})
 
 #: eval_mode → 投机深度读取键（运行时内省的快照，测试保证不漂移）
 _STATIC_DEPTH_KEYS: dict[str, tuple[str, ...]] = {
@@ -62,6 +126,8 @@ _STATIC_DEPTH_KEYS: dict[str, tuple[str, ...]] = {
     "dist_split_spec": ("gamma",),
     "uncertainty_decoding": ("gamma",),
     "cuhlm": ("gamma",),
+    "tk_slt": ("gamma",),
+    "tkslt": ("gamma",),
     "speculative_decoding_with_bandwidth": ("gamma",),
     # 三级族：只读 gamma1/gamma2
     "tridecoding": ("gamma1", "gamma2"),
@@ -146,11 +212,7 @@ def mode_consumption(mode: str) -> ModeConsumption:
     if mode in _STATIC_DEPTH_KEYS:
         return ModeConsumption(
             mode=mode,
-            accounting=tuple(
-                sorted(set(ACCOUNTING_SWITCHES))
-                if mode in _ACCOUNTING_CONSUMERS
-                else ()
-            ),
+            accounting=tuple(sorted(_STATIC_ACCOUNTING.get(mode, ()))),
             depth_keys=_STATIC_DEPTH_KEYS[mode],
             source="snapshot",
         )
@@ -177,12 +239,14 @@ class ProtocolSpec:
     for_tables: bool = True
 
 
-#: honest / legacy 三个子开关的取值（与 src/utils.py 的 --comm_accounting 一致）
+#: honest / legacy 三个子开关的取值（与 src/utils.py 的 --comm_accounting 一致）。
+#: 2026-04 全表解钳：两档口径的 transfer_top_k_cap 均为 0（不钳位）——
+#: cap=16 原是 ours 的方法设计，钳位会改基线的提议分布，不属于计费口径。
 _COMM_ACCOUNTING_PRESETS: dict[str, dict[str, Any]] = {
     "honest": {
         "charge_residual_payload": True,
         "comm_round_trip_mode": "per_round",
-        "transfer_top_k_cap": 16,
+        "transfer_top_k_cap": 0,
     },
     "legacy": {
         "charge_residual_payload": False,
@@ -204,9 +268,22 @@ PROTOCOLS: dict[str, ProtocolSpec] = {
             "ntt_ms_edge_cloud": 50,
             "ntt_ms_edge_end": 0.317,
             "batch_delay": 0.05,
+            # 载荷发射时长：流体排水（2026-10-09 决策，docs/protocol.md §3.4）。
+            # 低带宽档（5/10 Mbps）长载荷横跨多个 trace 间隔，instant 的
+            # 单采样冻结既失真又系统性多扣（E[S/B] > S/E[B]）。
+            "comm_bw_model": "fluid",
             # 计费口径（全表同一套；基准是 adaptive_tridecoding 的实现）
             **_COMM_ACCOUNTING_PRESETS["honest"],
-            "transfer_top_k": 300,
+            # transfer_top_k 故意**不冻结**：它必须按方法区分，单个全局值表达不了。
+            #   · CEE-SD = 300：top-k 压缩是它自身的设计
+            #     （DRA 选 top-k，上行传压缩 logits）；
+            #   · dsd / dssd = 0：这两篇原文都没有 top-k 压缩（DSSD 拒绝时下行是整词表
+            #     分布 |V|·bprob，DSD 上行是 γ 个整词表分布），此前统一套 300 等于把
+            #     "压缩传输"这项待验证的贡献免费送给基线。
+            # 取 0 时 transfer() 的 is_compressed=False、reject_residual_payload_bytes
+            # 走 vocab*element 分支，即整行载荷。由 exp.py 按方法显式传（见
+            # TRANSFER_TOP_K_OURS / TRANSFER_TOP_K_PAPER）；argparse 默认仍是 300，
+            # 供只跑 ours 的旧脚本沿用。决策记录见 docs/protocol.md §2 #8。
             # 推理设置
             "temp": 0.0,
             "max_tokens": 128,
@@ -218,7 +295,11 @@ PROTOCOLS: dict[str, ProtocolSpec] = {
             # 阈值
             "small_draft_threshold": 0.6,
             "draft_target_threshold": 0.7,
-            "uncertainty_threshold": 0.8,
+            # uncertainty_threshold 故意**不冻结**：它是 CUHLM 的工作点（越小越
+            # 常上云、越准越慢），不是一个全表共享的 L0。0.8 会让 CUHLM 在
+            # Llama/GSM8K 上退化到 0 准确率，与论文 Table V 自称的
+            # "baselines ≈target" 矛盾；主表取值见 exp.py 的
+            # UNCERTAINTY_THRESHOLD_CUHLM（0.08 = 实测的等准确率前沿点）。
             # 统计口径
             "use_early_stopping": False,
             "use_stochastic_comm": True,
@@ -232,11 +313,11 @@ PROTOCOLS: dict[str, ProtocolSpec] = {
         ),
     ),
     "honest": ProtocolSpec(
-        summary="只收敛通信计费口径（残差计费 + per_round + top-k 上限 16）",
+        summary="只收敛通信计费口径（残差计费 + per_round；top-k 不钳位）",
         values=dict(_COMM_ACCOUNTING_PRESETS["honest"]),
     ),
     "legacy": ProtocolSpec(
-        summary="复现 2026-09-24 前的历史数字（不收残差 + per_transfer + 无上限）",
+        summary="复现 2026-09-24 前的历史数字（不收残差 + per_transfer）",
         values=dict(_COMM_ACCOUNTING_PRESETS["legacy"]),
     ),
     "smoke": ProtocolSpec(
@@ -375,11 +456,28 @@ def render_effective_report(
         else:
             lines.append(f"    ⚠ eval_mode={mode!r} 不在能力表内，消费情况未知")
     elif not consumption.consumes_accounting:
-        lines.append(
-            f"    ⚠ 当前 eval_mode={mode!r} [不消费] 上述计费开关："
-            f"它们只被 {', '.join(accounting_consumers())} 读取，"
-            f"本 run 的实际字节/往返由该方法内联实现决定"
-        )
+        if mode in _NO_COMM_MODES:
+            lines.append(
+                f"    · eval_mode={mode!r} 无通信阶段，计费开关与标签不适用"
+            )
+        elif mode in _CUHLM_MODES:
+            lines.append(
+                f"    · eval_mode={mode!r} [不消费] 上述开关：按 CU-HLM 论文"
+                "自身口径计费（式 (5)：上行 k·(b_prob+b_index) bits，"
+                "b_prob=8、b_index=⌈log₂V⌉；token 索引/重同步 negligible；"
+                "跳过=零通信——docs/protocol.md §3.1）"
+            )
+        elif mode in _TK_SLT_MODES:
+            lines.append(
+                f"    · eval_mode={mode!r} [不消费] 上述开关：按 TK-SLT 论文"
+                "自身口径计费（上行 γ·K·b_prob bits，b_prob=16/FP16，"
+                "索引 negligible；下行=0 字节报文——docs/protocol.md §3.3）"
+            )
+        else:
+            lines.append(
+                f"    ⚠ 当前 eval_mode={mode!r} [不消费] 上述计费开关，"
+                "本 run 的实际字节/往返由该方法内联实现决定"
+            )
 
     # 投机深度
     depth = consumption.depth_keys

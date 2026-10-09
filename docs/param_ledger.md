@@ -63,10 +63,22 @@
 
 ## 2. 通信计费口径：四个开关的论文协议默认 vs 实际覆盖 ★
 
-| 参数 | CLI 默认 | 语义 | 唯读取点 |
+> **2026-04 更新：统一口径已落地**（docs/protocol.md §3）。下表"唯读取点"一列
+> 已过期——`comm_round_trip_mode` / `charge_residual_payload` / `transfer_top_k_cap`
+> 现在由全部基线族方法读取（dsd/dssd/tridecoding/ceesd_without_arp/
+> adaptive_decoding/cee_dssd/cee_dsd + engine `speculative_decoding_with_bandwidth`），
+> `force_full_vocab_transfer` 仍只属于 adaptive 族（基线上行压缩由 `transfer_top_k`
+> 直接表达，无旁路语义）。**CUHLM 系（uncertainty_decoding/cuhlm/cee_cuhlm）不接
+> 仓库统一开关，改按 CU-HLM 论文自身的计费口径计费**（式 (5)：上行
+> k·(b_prob+b_index) bits，b_prob=8、b_index=⌈log₂V⌉；token 索引/重同步
+> negligible；跳过=零通信——docs/protocol.md §3.1）。消费面由 `src/protocols.py`
+> 的 `_STATIC_ACCOUNTING` 快照 + 运行时内省双保险锁定（`test_protocol_spec.py`
+> 断言两者一致）。历史分析（落地前的口径）保留如下，供追溯。
+
+| 参数 | CLI 默认 | 语义 | 落地前唯读取点 |
 |---|---|---|---|
 | `--comm_round_trip_mode` | `per_round` | 每轮每链路合并成一次往返 | `baselines.py:3507` |
-| `--transfer_top_k_cap` | 16 | 给传输 top-k 设上限 | `baselines.py:3510` |
+| `--transfer_top_k_cap` | 0（2026-04 全表解钳） | 给传输 top-k 设上限；16 只作为 ours 历史行为的显式复现开关 | `baselines.py:3510` |
 | `--charge_residual_payload` | True | 拒绝位置残差载荷计费 | `baselines.py:3386` |
 | `--force_full_vocab_transfer` | False | 强制全词表传输 | `baselines.py:3366/3511` |
 | `--comm_accounting` | None | 一次设前三项（honest/legacy） | `src/utils.py:1133-1151` |

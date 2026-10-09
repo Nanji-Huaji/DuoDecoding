@@ -213,36 +213,78 @@ class TestConsumptionTruth(unittest.TestCase):
                 self.assertEqual(live.depth_keys, snap.depth_keys)
                 self.assertEqual(snap.source, "runtime")
 
-    def test_accounting_consumers_are_exactly_the_adaptive_family(self):
+    def test_accounting_consumers_are_exactly_the_wired_families(self):
+        """统一口径（docs/protocol.md §3）落地后的消费面。
+
+        adaptive 族消费全部 4 个开关（含 force_full_vocab_transfer 旁路）；
+        基线族消费 3 个（无旁路开关）；CUHLM 系按决策暂不接。
+        """
         consumers = {
             m for m in _STATIC_DEPTH_KEYS if mode_consumption(m).consumes_accounting
         }
         self.assertEqual(consumers, set(_ACCOUNTING_CONSUMERS))
-        for mode in ("adaptive_tridecoding", "cee_sd", "cee_sd_opportunistic"):
-            self.assertTrue(mode_consumption(mode).consumes_accounting, mode)
-
-    def test_baselines_do_not_consume_accounting(self):
         for mode in (
+            "adaptive_tridecoding",
+            "cee_sd",
+            "cee_sd_opportunistic",
+            # 基线族（2026-04 统一口径接线）
             "dsd",
             "dssd",
-            "cuhlm",
             "dist_spec",
             "dist_split_spec",
-            "uncertainty_decoding",
+            "tridecoding",
             "ceesd_without_arp",
+            "adaptive_decoding",
             "cee_dsd",
             "cee_dssd",
-            "cee_cuhlm",
-            "adaptive_decoding",
-            "tridecoding",
+            "speculative_decoding_with_bandwidth",
         ):
-            with self.subTest(mode=mode):
-                self.assertFalse(mode_consumption(mode).consumes_accounting)
+            self.assertTrue(mode_consumption(mode).consumes_accounting, mode)
+
+    def test_baseline_accounting_is_three_switches_without_full_vocab_bypass(self):
+        from src.protocols import ACCOUNTING_SWITCHES
+
+        for mode in ("dsd", "tridecoding", "cee_dsd", "speculative_decoding_with_bandwidth"):
+            self.assertEqual(
+                mode_consumption(mode).accounting,
+                tuple(
+                    sorted(
+                        s
+                        for s in ACCOUNTING_SWITCHES
+                        if s != "force_full_vocab_transfer"
+                    )
+                ),
+                mode,
+            )
+
+    def test_only_cuhlm_family_and_local_modes_do_not_consume(self):
+        """不消费计费开关的通信方法：纯本地系 + cee_cuhlm（三级变体，
+        不在主矩阵，暂未接线统一往返，docs/protocol.md §3.4）。
+        CUHLM/TK-SLT 系 2026-10-09 起消费 comm_round_trip_mode（载荷字节
+        仍按各自论文口径），别无遗漏。"""
+        from src.protocols import _NO_COMM_MODES
+
+        non_consumers = {
+            m
+            for m in _STATIC_DEPTH_KEYS
+            if not mode_consumption(m).consumes_accounting
+        }
+        self.assertEqual(non_consumers, _NO_COMM_MODES | {"cee_cuhlm"})
+
+    def test_cuhlm_tk_slt_consume_round_trip_switch_only(self):
+        """统一往返（§3.4）：两系只消费 comm_round_trip_mode，不消费
+        残差计费/top-k 钳位（载荷字节按各自论文口径）。"""
+        for mode in ("cuhlm", "uncertainty_decoding", "tk_slt", "tkslt"):
+            self.assertEqual(
+                mode_consumption(mode).accounting, ("comm_round_trip_mode",),
+                f"{mode} 应只消费 comm_round_trip_mode",
+            )
 
     def test_depth_keys_split_between_single_and_tri(self):
         self.assertEqual(mode_consumption("dsd").depth_keys, ("gamma",))
         self.assertEqual(mode_consumption("dssd").depth_keys, ("gamma",))
         self.assertEqual(mode_consumption("cuhlm").depth_keys, ("gamma",))
+        self.assertEqual(mode_consumption("tk_slt").depth_keys, ("gamma",))
         self.assertEqual(
             mode_consumption("ceesd_without_arp").depth_keys, ("gamma1", "gamma2")
         )
@@ -311,10 +353,25 @@ class TestEffectiveReport(unittest.TestCase):
         app = apply_protocol(args, name, list(cli), _dest_to_flags())
         return render_effective_report(args, app)
 
-    def test_baseline_mode_is_flagged_as_not_consuming(self):
-        report = self._report("dsd")
+    def test_cuhlm_mode_is_flagged_as_not_consuming(self):
+        """cee_cuhlm（三级变体）按决策暂未接入统一往返口径，报表必须显式
+        告警；uncertainty_decoding 本体 2026-10-09 起已消费不再告警。"""
+        report = self._report("cee_cuhlm")
         self.assertIn("不消费", report)
+        report_cuhlm = self._report("cuhlm")
+        self.assertNotIn("不消费", report_cuhlm)
+        self.assertIn("读取键=gamma", report_cuhlm)
+
+    def test_wired_baseline_mode_is_not_flagged(self):
+        """统一口径落地后，基线消费计费开关，不再触发[不消费]告警。"""
+        report = self._report("dsd")
+        self.assertNotIn("不消费", report)
         self.assertIn("读取键=gamma", report)
+
+    def test_local_mode_reports_no_comm(self):
+        """无通信模式（纯本地解码）应标注"无通信阶段"而非[不消费]。"""
+        report = self._report("target_only")
+        self.assertIn("无通信阶段", report)
 
     def test_adaptive_mode_is_not_flagged(self):
         report = self._report("adaptive_tridecoding")
@@ -505,7 +562,10 @@ def _argument_groups() -> dict[str, list[str]]:
 
 
 class TestHelpGrouping(unittest.TestCase):
-    """`--help` 分组：103 个参数全部归类，① 组恰好是那 16 个。"""
+    """`--help` 分组：105 个参数全部归类，① 组恰好是那 16 个。
+
+    参数总数历史：103 → 104（--tk_slt_odld，g_method）→ 105
+    （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）。"""
 
     def test_every_argument_is_grouped(self):
         g = _argument_groups()
@@ -515,7 +575,7 @@ class TestHelpGrouping(unittest.TestCase):
             f"这些参数还挂在扁平 parser 上，未进任何分组: {g['_ungrouped']}",
         )
         total = sum(len(v) for k, v in g.items() if k != "_ungrouped")
-        self.assertEqual(total, 103)
+        self.assertEqual(total, 105)
 
     def test_no_argument_is_in_two_groups(self):
         seen: dict[str, str] = {}
@@ -561,7 +621,7 @@ class TestHelpGrouping(unittest.TestCase):
         self.assertIn("--protocol {none,paper_table5,honest,legacy,smoke}", text)
 
     def test_parse_still_works_after_grouping(self):
-        """分组只改排版：真实命令行仍须解析出全部 103 个 dest。"""
+        """分组只改排版：真实命令行仍须解析出全部 104 个 dest。"""
         import src.utils as u
 
         argv = sys.argv

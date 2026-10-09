@@ -6,6 +6,7 @@ from unittest.mock import patch
 import torch
 
 from src.baselines import Baselines, _finalize_cuhlm_verification
+from src.communication import cuhlm_uplink_payload_bytes
 from src.utils import rebuild_topk_uniform_probs, sample
 
 
@@ -35,6 +36,8 @@ class _FakeCudaEvent:
 
 
 class _FakeCommSimulator:
+    instances = []
+
     def __init__(self, *args, **kwargs):
         self.edge_cloud_comm_time = 0.0
         self.edge_end_comm_time = 0.0
@@ -51,6 +54,9 @@ class _FakeCommSimulator:
         self.ntt_edge_cloud = 0
         self.ntt_edge_end = 0
         self.uncertainty_threshold = 0.8
+        # F-CUHLM 论文口径回归：记录每次计费调用 (kind, link, size)
+        self.calls = []
+        _FakeCommSimulator.instances.append(self)
 
     def set_round(self, round_idx):
         # 对齐通信仿真器 per-round 协议（coalesce 计费）；fake 无累积状态
@@ -61,9 +67,13 @@ class _FakeCommSimulator:
         pass
 
     def transfer(self, tokens, probs, link_type="edge_cloud", *args, **kwargs):
+        self.calls.append(
+            ("transfer", link_type, None if tokens is None else tokens.numel())
+        )
         return 0.0
 
     def simulate_transfer(self, size, link_type="edge_cloud", **kwargs):
+        self.calls.append(("simulate", link_type, float(size)))
         return 0.0
 
     def send_reject_message(self, link_type):
@@ -401,6 +411,48 @@ class CeeRefactorTests(unittest.TestCase):
         self.assertGreater(metrics["little_accepted_tokens"], 0)
         # 统一概率 fake 下 draft 阶段 token 同样被接受计数（同上，旧断言已过时）
         self.assertGreater(metrics["draft_accepted_tokens"], 0)
+
+    def test_cee_cuhlm_bills_cuhlm_paper_payload(self):
+        """F-CUHLM 论文口径（docs/protocol.md §3 CUHLM 小节）：
+
+        - 触发上行 = 论文式 (5)：k(t)·(b_prob+b_index) bits
+          （b_prob=8、b_index=⌈log₂V⌉；V=4 ⇒ b_index=2）；
+        - token 索引（响应/重同步）negligible ⇒ 0 字节报文；
+        - 跳过 = 零通信；无独立 accept/reject 消息。
+        """
+        instance = self._make_instance("cee_cuhlm")
+        prefix = torch.tensor([[0]], dtype=torch.long)
+        _FakeCommSimulator.instances = []
+
+        with (
+            patch("src.baselines.KVCacheModel", _FakeCache),
+            patch("src.baselines.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+        ):
+            # use_precise_comm_sim 默认 True 会绕过被 patch 的 CUHLM 名字
+            # （PreciseCUHLM 未被 patch）——显式关掉，让带记录的 fake 生效。
+            instance.cee_cuhlm(prefix, use_precise_comm_sim=False)
+
+        sim = _FakeCommSimulator.instances[0]
+        edge_cloud = [
+            size for kind, link, size in sim.calls
+            if kind == "simulate" and link == "edge_cloud"
+        ]
+        edge_end = [
+            size for kind, link, size in sim.calls
+            if kind == "simulate" and link == "edge_end"
+        ]
+
+        # Stage-2（CUHLM 门控，fake 恒触发 k(t)=2）：一次触发上行
+        # （2×(8+2)/8 = 2.5 B）+ 一次 0 字节云端响应。
+        self.assertEqual(edge_cloud, [cuhlm_uplink_payload_bytes(2, 4), 0.0])
+        # Stage-1（起草分布上行）：gamma2=1 个位置 × k₁（transfer_top_k=300
+        # 超过 V=4 钳到全词表 ⇒ 4×(8+2)/8 = 5.0 B）+ 轮末设备下行 0 字节 ×2。
+        self.assertEqual(
+            edge_end, [cuhlm_uplink_payload_bytes(300, 4), 0.0, 0.0]
+        )
 
     def test_cee_cuhlm_ignores_rl_adapter_hooks(self):
         instance = self._make_instance("cee_cuhlm")

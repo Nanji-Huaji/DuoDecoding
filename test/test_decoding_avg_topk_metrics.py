@@ -61,6 +61,13 @@ class _FakeCommSimulator:
     def simulate_transfer(self, size, link_type="edge_cloud", **kwargs):
         return 0.0
 
+    def set_round(self, round_idx):
+        # 统一口径（docs/protocol.md §3）：per_round 合并的轮界标记。
+        return None
+
+    def flush_round(self):
+        return None
+
     def send_reject_message(self, link_type):
         return None
 

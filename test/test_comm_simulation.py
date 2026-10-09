@@ -427,3 +427,255 @@ class TestDownlinkMergeIsByteNeutral:
         # 恰好省下 ntt_ms_edge_cloud（200 ms）
         saved = legacy.edge_cloud_comm_time - merged.edge_cloud_comm_time
         assert saved == pytest.approx(0.2)
+
+
+class TestFluidBwModel:
+    """载荷发射时长的流体模型（2026-10-09 统一口径 §3.4，bw_model="fluid"）。
+
+    instant（历史口径）：整条载荷按起始时刻的瞬时 trace 采样计费；
+    fluid：排空期间逐 trace 间隔积分——低带宽下长载荷横跨多个间隔时，
+    instant 既失真（冻结在起始采样）又系统性多扣（E[S/B] > S/E[B]）。
+    """
+
+    BW_MBPS = [10.0, 30.0]  # 注入的确定性 trace（Mbps）
+    INTERVAL = 0.2
+
+    def _sim(self, bw_model: str) -> CommunicationSimulator:
+        sim = CommunicationSimulator(
+            46.0,
+            float("inf"),
+            float("inf"),
+            dimension="Mbps",
+            ntt_ms_edge_cloud=50.0,
+            ntt_ms_edge_end=0.0,
+            use_stochastic=True,
+            min_bandwidth_mbps=5.0,
+            bw_model=bw_model,
+        )
+        # 注入确定性 trace（跳过 data/ 依赖），并显式对齐采样间隔
+        sim.trace_data = list(self.BW_MBPS)
+        sim.trace_interval_s = self.INTERVAL
+        sim.trace_index = 0
+        return sim
+
+    def test_small_payload_stays_in_first_interval(self):
+        """0.125 MB @10 Mbps = 0.1s < 0.2s 间隔 ⇒ 单采样内完成，与 instant 同值。"""
+        sim = self._sim("fluid")
+        t = sim.simulate_transfer(0.125 * 1e6, "edge_cloud")
+        # tx = 0.125MB / 1.25MB/s = 0.1s；NTT = 0.05s
+        assert t == pytest.approx(0.1 + 0.05)
+        assert sim.trace_index == 0  # 未越过当前采样
+
+    def test_long_payload_integrates_across_intervals(self):
+        """0.5 MB：间隔 0（10 Mbps）送 0.25MB 用满 0.2s，余 0.25MB 落到
+        间隔 1（30 Mbps）⇒ tx = 0.2 + 0.25/3.75 ≈ 0.2667s，而非 instant 的
+        0.5/1.25 = 0.4s（起始采样冻结的失真）。"""
+        sim = self._sim("fluid")
+        t = sim.simulate_transfer(0.5 * 1e6, "edge_cloud")
+        assert t == pytest.approx(0.2 + 0.25 / 3.75 + 0.05)
+        assert sim.trace_index == 1  # 排空落在采样 1；NTT 0.05s 不足一个间隔
+
+    def test_instant_model_bit_compatible_with_history(self):
+        """instant：整条载荷按起始采样计费，游标按 round(总时长/间隔) 跳。"""
+        sim = self._sim("instant")
+        t = sim.simulate_transfer(0.5 * 1e6, "edge_cloud")
+        assert t == pytest.approx(0.5 / 1.25 + 0.05)
+        # total = 0.45s ⇒ round(0.45/0.2) = 2 ⇒ max(1,2) = 2 ⇒ (0+2)%2 = 0
+        assert sim.trace_index == 0
+
+    def test_declining_trace_makes_fluid_slower_than_instant_start(self):
+        """后采样更低时 fluid 反而更慢——积分是双向修正，不是单向优惠。"""
+        sim = self._sim("fluid")
+        sim.trace_data = [30.0, 10.0]
+        t_fluid = sim.simulate_transfer(0.5 * 1e6, "edge_cloud")
+        sim2 = self._sim("instant")
+        sim2.trace_data = [30.0, 10.0]
+        t_instant = sim2.simulate_transfer(0.5 * 1e6, "edge_cloud")
+        # instant：0.5MB/3.75MB/s ≈ 0.133s（全冻结在 30 Mbps 采样）
+        # fluid：0.2s 内送 0.75MB 上限 ⇒ 0.5MB < 0.75MB ⇒ 单间隔完成，同值
+        assert t_fluid == pytest.approx(t_instant)
+        # 再大一点跨过间隔边界：0.8MB ⇒ fluid = 0.2 + 0.05/1.25 = 0.24s
+        # （连续时钟须一并归零——游标只是它的整数化投影）
+        sim.trace_index = 0
+        sim._trace_time_s = 0.0
+        t_big = sim.simulate_transfer(0.8 * 1e6, "edge_cloud")
+        assert t_big == pytest.approx(0.2 + 0.05 / 1.25 + 0.05)
+
+    def test_zero_byte_payload_has_zero_tx(self):
+        sim = self._sim("fluid")
+        t = sim.simulate_transfer(0, "edge_cloud")
+        assert t == pytest.approx(0.05)  # 只有 NTT
+
+    def test_floor_applied_per_sample(self):
+        """trace 采样低于 min_bandwidth_mbps 时逐采样钳位。"""
+        sim = self._sim("fluid")
+        sim.trace_data = [0.1, 30.0]  # 采样 0 被钳到 5 Mbps
+        # 0.3 MB：间隔 0 只能送 5Mbps×0.2s = 0.125MB，余 0.175MB 落到采样 1
+        t = sim.simulate_transfer(0.3 * 1e6, "edge_cloud")
+        assert t == pytest.approx(0.2 + 0.175 / 3.75 + 0.05)
+
+    def test_non_stochastic_falls_back_to_instant(self):
+        """无 trace 时 fluid 与 instant 同值（恒定带宽下两者本就等价）。"""
+        sim = CommunicationSimulator(
+            46.0,
+            float("inf"),
+            float("inf"),
+            dimension="Mbps",
+            ntt_ms_edge_cloud=0.0,
+            ntt_ms_edge_end=0.0,
+            use_stochastic=False,
+            bw_model="fluid",
+        )
+        t = sim.simulate_transfer(5.75 * 1e6, "edge_cloud")
+        assert t == pytest.approx(1.0)
+
+    def test_effective_rate_recorded_in_history(self):
+        """stats 的带宽历史记有效排水速率 S/tx（ODLD 等估计器的口径）。"""
+        sim = self._sim("fluid")
+        sim.simulate_transfer(0.5 * 1e6, "edge_cloud")
+        tx = sim.stats["edge_cloud"][-1]["tx_time"]
+        assert tx == pytest.approx(0.2 + 0.25 / 3.75)
+        eff_mbps = 0.5e6 / tx * 8 / 1e6
+        assert sim.edge_cloud_bandwidth_history[-1] == pytest.approx(eff_mbps)
+
+    def test_repeated_small_payloads_advance_clock(self):
+        """冻结 bug 回归（2026-10-09 预实验实测）：小载荷虽在单个间隔内
+        排空，连续时钟仍按 tx+NTT 推进，反复计费会跨过间隔边界——
+        trace 不冻结在起始采样，有效速率随时间切换到后续采样。"""
+        sim = self._sim("fluid")
+        sim.trace_data = [30.0, 10.0]
+        rates = []
+        for _ in range(10):
+            sim.simulate_transfer(0.1 * 1e6, "edge_cloud")  # 0.1MB
+            rates.append(round(sim.edge_cloud_bandwidth_history[-1], 1))
+        # 第一条按采样 0（30 Mbps）排空；时钟累计越过 0.2s 后后续消息
+        # 会看到采样 1（10 Mbps）——出现至少两档有效速率即"未冻结"
+        assert rates[0] == pytest.approx(30.0)
+        assert len(set(rates)) >= 2, f"trace 冻结了: {rates}"
+
+    def test_float_boundary_clock_does_not_stall(self):
+        """浮点边界回归（2026-10-09 预实验实测）：时钟累加贴近间隔边界时
+        t % interval 返回 ≈interval 而非 0，旧实现得到 frac≈1e-16 的零容量
+        且采样索引不前进——排水原地空转直到 max_intervals 兜底按 1B/s
+        计费（dsd 通信时间虚高百万秒）。贴边必须按下一间隔完整容量排水。"""
+        sim = self._sim("fluid")
+        sim.trace_data = [30.0, 30.0]
+        # 4.999999999999999 % 0.2 = 0.19999...（≈interval）而非 0
+        sim._trace_time_s = 4.999999999999999
+        t = sim.simulate_transfer(192 * 1024, "edge_cloud")
+        # 192KB @30Mbps(3.75MB/s) ≈ 0.051s + NTT 0.05s；绝不能是 1B/s 兜底
+        assert t == pytest.approx(192 * 1024 / (3.75 * 1e6) + 0.05, rel=0.01)
+
+    def test_long_run_small_payloads_no_explosion(self):
+        """60 轮 192KB 上行（dsd 的真实载荷形状）：任何一轮的 tx 都必须
+        在物理量级（<1s），总通信时间 <30s——冻结/兜底 bug 的端到端签名。"""
+        sim = CommunicationSimulator(
+            46.0,
+            float("inf"),
+            float("inf"),
+            dimension="Mbps",
+            ntt_ms_edge_cloud=50.0,
+            ntt_ms_edge_end=0.317,
+            use_stochastic=True,
+            min_bandwidth_mbps=4.6,
+            bw_model="fluid",
+        )
+        for _ in range(60):
+            sim.simulate_transfer(192 * 1024, "edge_cloud")
+            sim.simulate_transfer(0, "edge_cloud")
+        assert max(u["tx_time"] for u in sim.stats["edge_cloud"]) < 1.0
+        assert sim.edge_cloud_comm_time < 30.0
+
+
+class TestCommTraceReplay:
+    """逐消息记账记录（comm_trace）与离线重放的语义锁定。
+
+    rebill 的前提：同一条 [字节, 轮号] 记录在任意网络配置下重放，
+    结果 == 以该配置直接记账（A/B 预实验证明解码与网络无关）。
+    """
+
+    def _mk(self, **kw):
+        return CommunicationSimulator(
+            46.0, float("inf"), float("inf"), dimension="Mbps",
+            ntt_ms_edge_cloud=50.0, ntt_ms_edge_end=0.317,
+            use_stochastic=True, min_bandwidth_mbps=4.6,
+            **kw,
+        )
+
+    def test_round_idx_stamped_both_modes(self):
+        """per_transfer 也标注轮号（set_round 不再提前 return）。"""
+        for coalesce in (True, False):
+            sim = self._mk(bw_model="fluid")
+            sim.coalesce_rounds = coalesce
+            sim.set_round(7)
+            sim.simulate_transfer(1024, "edge_cloud")
+            sim.flush_round()
+            u = sim.stats["edge_cloud"][-1]
+            assert u["round_idx"] == 7, f"coalesce={coalesce}: {u['round_idx']}"
+
+    def test_trace_replay_equals_direct(self):
+        """记录在配置 X 采集、配置 Y 重放 == 直接以 Y 记账。"""
+        import itertools
+
+        seq = [(r, b) for r in range(1, 6) for b in (264 * 1024, 0)]
+        for y in (
+            dict(bw=5.0, floor=0.5, model="fluid", rt="per_round"),
+            dict(bw=10.0, floor=1.0, model="instant", rt="per_transfer"),
+        ):
+            def mk():
+                sim = CommunicationSimulator(
+                    y["bw"], float("inf"), float("inf"), dimension="Mbps",
+                    ntt_ms_edge_cloud=50.0, ntt_ms_edge_end=0.317,
+                    use_stochastic=True, min_bandwidth_mbps=y["floor"],
+                    bw_model=y["model"],
+                )
+                sim.coalesce_rounds = y["rt"] == "per_round"
+                return sim
+
+            direct, replay = mk(), mk()
+            trace = []
+            for rid, group in itertools.groupby(seq, key=lambda u: u[0]):
+                for sim in (direct, replay):
+                    sim.set_round(rid)
+                for _, nbytes in group:
+                    direct.simulate_transfer(nbytes, "edge_cloud")
+                    trace.append([nbytes, rid])
+                direct.flush_round()
+            for rid, group in itertools.groupby(trace, key=lambda u: u[1]):
+                replay.set_round(rid)
+                for item in group:
+                    replay.simulate_transfer(item[0], "edge_cloud")
+                replay.flush_round()
+            replay.flush_round()
+            assert replay.edge_cloud_comm_time == pytest.approx(
+                direct.edge_cloud_comm_time, abs=1e-9
+            ), f"y={y}"
+            assert replay.edge_cloud_data == direct.edge_cloud_data
+
+
+class TestCommTraceReplaySamples:
+    """多样本重放：样本边界 = 轮号回退，且模拟器随样本归零（连续时钟
+    不跨样本延续）——不归零会让后续样本的排水相位系统性偏移。"""
+
+    def test_two_samples_reset_clock(self):
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        from rebill import replay_comm
+
+        # 两个样本：轮号各从 1 起（样本 1: 1..3, 样本 2: 1..2）
+        one = [[200 * 1024, r] for r in (1, 2, 3)]
+        two = [[200 * 1024, r] for r in (1, 2)]
+        cfg = {"bandwidth": 5.0, "floor": 0.5, "bw_model": "fluid",
+               "round_trip": "per_round", "ntt_ms": 50.0}
+        # ① 拼接重放
+        joined = replay_comm(one + two, cfg)
+        # ② 两个样本独立重放（= 真实实验的逐样本调用形状）
+        sep = replay_comm(one, cfg)
+        sep2 = replay_comm(two, cfg)
+        want = sep.edge_cloud_comm_time + sep2.edge_cloud_comm_time
+        assert joined.edge_cloud_comm_time == pytest.approx(want, abs=1e-9), (
+            "拼接重放必须按样本归零时钟："
+            f"{joined.edge_cloud_comm_time:.6f} != {want:.6f}"
+        )
+        assert joined.edge_cloud_data == 5 * 200 * 1024

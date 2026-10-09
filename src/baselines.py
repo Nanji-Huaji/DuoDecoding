@@ -3,7 +3,6 @@ import os
 import math
 import time
 import warnings
-from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, cast
 
 import torch
@@ -21,6 +20,8 @@ from .communication import (
     PreciseCommunicationSimulator,
     PreciseCUHLM,
     PROB_QUANT_PASS_THROUGH_BITS,
+    cuhlm_uplink_payload_bytes,
+    tk_slt_uplink_payload_bytes,
 )
 from .decoding_ops import (
     apply_rollback,
@@ -30,12 +31,15 @@ from .decoding_ops import (
     compute_residual_distribution,
     materialize_acceptance,
     prepare_verification_inputs,
+    reject_residual_payload_bytes,
+    reject_tail_scalar_bytes,
     resolve_stage_verification,
     sample_accept_token,
     sample_reject_token,
     sample_reject_token_from_topk_proposal,
     verify_draft_sequence_result,
 )
+from .acc_head_registry import anchor_repo_path, is_usable_acc_head_dir
 from .engine import Decoding
 from .graph_decode import (  # B19：CUDA Graph 接线的单一入口
     acquire_graph_caches,
@@ -45,6 +49,7 @@ from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
 from .model_gpu import KVCacheModel
 from .mode_features import MODE_FEATURES
 from .proposal_utils import (
+    apply_transfer_top_k_cap,
     build_stage_prefix_topk_history,
     build_draft_probs_override,
     build_topk_proposal_history_step,
@@ -102,10 +107,35 @@ def _send_downlink_token(comm_simulator, token: torch.Tensor, link_type: str) ->
     )
 
 
+def _send_downlink_index_only(comm_simulator, link_type: str) -> None:
+    """CUHLM 论文口径的下行：响应 token 索引 **negligible**（§II-B）。
+
+    论文的成本分析只计上行词表分布（式 (5)），token 索引一律不计字节——
+    所以这里按 **0 字节报文**计。报文物理上仍发生（设备必须拿到响应
+    token），repo 链路模型的 per-message NTT 照付；论文的 Shannon 时延
+    模型（式 (6)）没有 per-message 固定成本，这一项是**链路模型差异**
+    而非字节口径差异——docs/protocol.md §3 的 CUHLM 小节有完整说明。
+    """
+    comm_simulator.simulate_transfer(0, link_type)
+
+
 def load_acceptance_prediction_head(model_path: str) -> AcceptancePredictionHead:
-    path = Path(model_path)
+    # 先把仓库相对路径锚定到仓库根（与 CWD 无关），并在调用 HF 之前确认目录里
+    # 真的有一个 head。否则路径无效时 huggingface_hub 会把它当成 repo id 校验，
+    # 抛出与真实原因无关的 HFValidationError（acc head 没下载被误读成模型名写错）。
+    if not is_usable_acc_head_dir(model_path):
+        raise FileNotFoundError(
+            f"acc head 不可用：{model_path}"
+            f"（锚定仓库根后为 {anchor_repo_path(model_path)}）"
+            "——目录不存在或缺少 config.json。"
+            "权重不在 git 里，请先跑 `python scripts/setup/download_assets.py` 下载；"
+            "或确认该模型的 local_path"
+            "（src/SpecDec_pp/checkpoints/acc_head_registry.json）"
+            "与 src/SpecDec_pp/checkpoints/ 下的实际布局是否一致。"
+        )
+    path = anchor_repo_path(model_path)
     try:
-        return AcceptancePredictionHead.from_pretrained(model_path)
+        return AcceptancePredictionHead.from_pretrained(str(path))
     except FileNotFoundError:
         config_path = path / "config.json"
         bin_path = path / "pytorch_model.bin"
@@ -225,6 +255,139 @@ def _simulate_topk_prob_transfer(
         topk=effective_topk,
         draft_len=draft_len,
     )
+
+
+#: TK-SLT ODLD（--tk_slt_odld）的 γ* 上限：估计噪声下防病态值；
+#: 论文 Table I 的最大 γ* 是 14（α=0.8、L=0.01），64 只在极端估计下触及。
+_TK_SLT_ODLD_GAMMA_CAP = 64
+
+
+def _last_edge_cloud_tx_seconds(comm_simulator) -> Optional[float]:
+    """最近一次 edge-cloud 传输的纯发射时长（秒，不含 NTT）——ODLD 的 b̂ 用。
+
+    链路模型的 TransferUnit.tx_time 只计发射时长，与论文 T_V = D_V/R_up
+    的口径一致（式 (2)/(3) 无 per-message 固定成本）。读不到（如测试里的
+    FakeCommSimulator 没有 stats）时返回 None，该轮不更新估计。
+    """
+    try:
+        units = comm_simulator.stats["edge_cloud"]
+        if units:
+            return float(units[-1]["tx_time"])
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _quantize_probs_fp16(probs: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    """TK-SLT 上行载荷的**真实** FP16 量化（论文 §VI-B：half precision 传输）。
+
+    论文的通信模式把传输的概率值量化到 FP16；这里让验证判据与计费看到
+    **同一个** q̂（B15/B16 的"计费与数据一致"原则）：
+
+    · fp16 roundtrip 后按行重归一化（softmax over top-K 本来和为 1，
+      量化误差 ~1e-3，重归一化后仍是合法分布，接受判据 p/q 不失真）✓
+    · 0 值（top-K 之外）量化后仍是 0，稀疏支撑不变 ✓
+    · 值为 0/1 的行（temp=0 的 one-hot）逐位不变 ⇒ 协议 temp=0 下
+      与未量化路径完全一致 ✓
+    """
+    if probs is None or probs.numel() == 0:
+        return probs
+    out = probs.to(torch.float16).to(probs.dtype)
+    row_sum = out.sum(dim=-1, keepdim=True)
+    tiny = torch.finfo(out.dtype).tiny
+    return out / row_sum.clamp_min(tiny)
+
+
+def _lambert_w_minus_one(z: float) -> float:
+    """Lambert W 的 −1 分支：解 w·e^w = z，z ∈ (−1/e, 0)，返回 w ≤ −1。
+
+    论文 Theorem 2 式 (21) 需要 W_{−1}。g(w)=w·e^w 在 (−∞,−1] 上从 0⁻
+    单调降到 −1/e，故对给定 z ∈ (−1/e, 0) 解唯一，二分法无依赖、确定
+    可测（100 次二分到 ~1e-28 绝对精度，对 γ 的影响 < 1e-26）。
+    """
+    if not (-1.0 / math.e < z < 0.0):
+        raise ValueError(f"W_{{-1}} 的定义域是 (−1/e, 0)，收到 z={z!r}")
+    lo, hi = -200.0, -1.0  # g(lo)≈0⁻ > z > g(hi)=−1/e
+    for _ in range(100):
+        mid = (lo + hi) / 2.0
+        if mid * math.exp(mid) > z:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def tk_slt_speedup_ratio(gamma: int, alpha: float, L: float) -> float:
+    """TK-SLT 论文式 (11)：S_inf(γ) = (1−α^{γ+1}) / ((1−α)(1+γL))。
+
+    α=1 时取极限 (γ+1)/(1+γL)（式 (12) 的期望 token 数除以式 (7) 的
+    归一化时延）；α=0 时为 1/(1+γL)。
+    """
+    gamma = int(gamma)
+    if alpha >= 1.0:
+        return (gamma + 1) / (1.0 + gamma * L)
+    if alpha <= 0.0:
+        return 1.0 / (1.0 + gamma * L)
+    return (1.0 - alpha ** (gamma + 1)) / ((1.0 - alpha) * (1.0 + gamma * L))
+
+
+def tk_slt_optimal_draft_length(
+    alpha: float,
+    b: float,
+    c: float,
+    gamma_cap: int = 64,
+) -> Tuple[int, float]:
+    """论文 Algorithm 1（ODLD）：闭式最优草稿长度 γ*（Theorem 2 式 (21)）。
+
+        γ0 = (1/ln α)·(W_{−1}(−(1/e)·α^{1/L−1}) + 1) − 1/L，L = b + c
+
+    γ0 < 1 ⇒ γ* = 1；否则在 {⌊γ0⌋, ⌈γ0⌉} 里取 S_inf 更大者（平局取
+    ⌈γ0⌉，与论文 Algorithm 1 的 ≤ 分支一致）。返回 (γ*, S_inf(γ*))。
+
+    论文约束外的退化输入（估计噪声 early rounds 常见）按保守方向处理：
+    · α ≥ 1 / L ≤ 0：接受率饱和或相对开销为零 ⇒ 加大 γ 只赚不亏，
+      取上限 gamma_cap（防噪声下的病态值）；
+    · α ≤ 0：全拒 ⇒ γ* = 1（AS² 随后会选择 standalone LLM）；
+    · L ≥ 1：论文式 (19) 要求 L < 1，此时 z 越界无解；取 γ* = 1，
+      S_inf(1) = (1+α)/(1+L) < 1 恒成立 ⇒ AS² 会退回 standalone LLM。
+    """
+    L = float(b) + float(c)
+    gamma_cap = max(1, int(gamma_cap))
+    if L <= 0.0 or alpha >= 1.0:
+        return gamma_cap, tk_slt_speedup_ratio(gamma_cap, alpha, L)
+    if alpha <= 0.0 or L >= 1.0:
+        return 1, tk_slt_speedup_ratio(1, alpha, L)
+
+    z = -(1.0 / math.e) * alpha ** (1.0 / L - 1.0)
+    w = _lambert_w_minus_one(z)
+    gamma0 = (w + 1.0) / math.log(alpha) - 1.0 / L
+    if gamma0 < 1.0:
+        return 1, tk_slt_speedup_ratio(1, alpha, L)
+
+    floor_g, ceil_g = math.floor(gamma0), math.ceil(gamma0)
+    s_floor = tk_slt_speedup_ratio(floor_g, alpha, L)
+    s_ceil = tk_slt_speedup_ratio(ceil_g, alpha, L)
+    if s_floor <= s_ceil:
+        gamma_star = ceil_g
+    else:
+        gamma_star = floor_g
+    gamma_star = max(1, min(gamma_star, gamma_cap))
+    return gamma_star, tk_slt_speedup_ratio(gamma_star, alpha, L)
+
+
+def tk_slt_select_speculative(
+    alpha: float,
+    b: float,
+    c: float,
+    gamma_cap: int = 64,
+) -> Tuple[bool, int, float]:
+    """论文 Algorithm 2（AS²）：S_inf(γ*) > 1 才用 DSD，否则 standalone LLM。
+
+    返回 (use_dsd, γ*, S*)。与 ODLD 一样吃 (α, b, c)——在线使用时由
+    运行估计喂入（接受率、T_V/T_LLM、T_SLM/T_LLM）。
+    """
+    gamma_star, s_star = tk_slt_optimal_draft_length(alpha, b, c, gamma_cap)
+    return s_star > 1.0, gamma_star, s_star
 
 
 def _validate_token_range(
@@ -896,6 +1059,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -906,6 +1070,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -915,6 +1080,17 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -967,8 +1143,7 @@ class Baselines(Decoding):
         sum_draft_len = 0.0
         sum_top_k = 0.0
 
-        # 原始 prompt 长度：_stop_at_eos 需要（与 adaptive_tridecoding 一致；
-        # 此前漏定义导致 NameError —— dssd 长期不在实验矩阵里未暴露）
+        # 原始 prompt 长度：_stop_at_eos 需要（与 adaptive_tridecoding 一致）
         _tri_prompt_len = prefix.shape[1]
 
         start_event = torch.cuda.Event(enable_timing=True)
@@ -991,6 +1166,7 @@ class Baselines(Decoding):
             )
 
             idx += 1
+            comm_simulator.set_round(idx)
 
             # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
@@ -1119,8 +1295,16 @@ class Baselines(Decoding):
                 target_prob_row = verification_inputs.target_probs_batch[
                     :, rejection_offset, :
                 ]
-                comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
-                comm_simulator.transfer(None, target_prob_row, "edge_cloud")
+                if charge_residual:
+                    # 统一口径（§3.4）：残差按 top-k 表示计 k*(4+元素)+元素，
+                    # 不再按整行 V×元素（legacy 路径保持原样以复现历史数字）。
+                    comm_simulator.simulate_transfer(
+                        reject_residual_payload_bytes(target_prob_row, transfer_top_k),
+                        "edge_cloud",
+                    )
+                else:
+                    comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
+                    comm_simulator.transfer(None, target_prob_row, "edge_cloud")
 
                 residual_probs = compute_residual_distribution(
                     target_prob_row,
@@ -1169,6 +1353,7 @@ class Baselines(Decoding):
             # Downlink returns the final continuation token and its position index.
             _send_downlink_token(comm_simulator, t, "edge_cloud")
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -1225,6 +1410,12 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -1253,6 +1444,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1263,6 +1455,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -1272,6 +1465,17 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -1336,6 +1540,7 @@ class Baselines(Decoding):
             if _eos_hit:
                 break
             idx += 1
+            comm_simulator.set_round(idx)
 
             prefix_len = prefix.shape[1]
 
@@ -1483,6 +1688,13 @@ class Baselines(Decoding):
                 target_prob_row = verification_inputs.target_probs_batch[
                     :, rejection_offset, :
                 ]
+                if charge_residual:
+                    # 统一口径（§3.4）：legacy 的 dsd 拒绝位置零计费（残差被
+                    # 无声地省掉）；honest 补 k*(4+元素)+元素。
+                    comm_simulator.simulate_transfer(
+                        reject_residual_payload_bytes(target_prob_row, transfer_top_k),
+                        "edge_cloud",
+                    )
 
                 t = sample_reject_token(
                     target_prob_row,
@@ -1517,6 +1729,7 @@ class Baselines(Decoding):
             # 草稿序列、概率窗口与拒绝信号仍走上面的协议专属传输。
             _send_downlink_token(comm_simulator, t, "edge_cloud")
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -1570,6 +1783,12 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -1607,6 +1826,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CUHLM = PreciseCUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1621,6 +1841,7 @@ class Baselines(Decoding):
             threshold = getattr(self.args, "uncertainty_threshold", 0.8)
             comm_simulator = CUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 uncertainty_threshold=threshold,
                 dimension="Mbps",
@@ -1629,6 +1850,26 @@ class Baselines(Decoding):
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
             )
+
+        # F-CUHLM 口径自述：随 metrics 落盘（eval/utils.py get_save_dict
+        # 读取 args.protocol_deviations），保证新口径跑出的工件可辨识、
+        # 不与 2026-10-05 前的旧口径结果混排。
+        # 2026-10-09 统一往返（docs/protocol.md §3.4）：per_round 下每次
+        # 触发的上行+下行合并成一次云请求往返（1×NTT）。载荷字节仍是
+        # 论文式 (5) 口径（cuhlm_uplink_payload_bytes）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        _dev = (
+            "cuhlm_fair_accounting: skip=0RTT(buffered resync), "
+            "trigger=1 uplink(resync+draft+topk)+1 downlink, "
+            "queue=per-trigger, reject-resample=x_hat; "
+            "round_trip=unified(1xNTT/trigger since 2026-10-09)"
+        )
+        _devs = list(getattr(self.args, "protocol_deviations", ()) or ())
+        if _dev not in _devs:
+            self.args.protocol_deviations = tuple(_devs + [_dev])
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
 
@@ -1697,6 +1938,27 @@ class Baselines(Decoding):
 
         _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
 
+        # F-CUHLM 口径（2026-10-05 对齐论文 Algorithm 1 的通信模式；
+        # 2026-04 起字节按论文式 (5) 计，见 docs/protocol.md §3 CUHLM 小节）：
+        # - 跳过分支：零通信、零排队。被跳过的 token 缓存在端侧
+        #   （_pending_resync 计数），下次触发时随上行消息捎带——论文 III-B
+        #   Step 5 "lightweight index-based resynchronization...negligible and
+        #   therefore omitted from the cost analysis"：索引不计字节、不单独
+        #   付出 RTT。
+        # - 触发分支：一次上行（一次 NTT），载荷 = 论文式 (5) 的压缩形式
+        #   k(t)·(b_prob+b_index) bits（b_prob=8、b_index=⌈log₂V⌉，即
+        #   cuhlm_uplink_payload_bytes）；draft token 索引 negligible 不计
+        #   字节。旧口径：token 按 element_size、概率按 fp32+int32（k×8B），
+        #   比论文口径高约 2.8×。
+        #   + 一次 0 字节下行（一次 NTT，_send_downlink_index_only）。
+        #   batch_delay 只在触发时计（与 DSD/DSSD/CEE-SD 的排队口径一致，
+        #   它们均为 target_forward_times × batch_delay）。
+        # - reject 重采样改用压缩重构分布 x̂（论文式 17）；旧实现用全量分布，
+        #   压缩包只计费不上场（精度口径偏向该基线）。reject 在服务器端
+        #   基于已持有的分布重采样（论文式 17），不产生额外传输——这与
+        #   统一口径的 reject 残差计费不同，是论文自身的协议设计。
+        _pending_resync = 0
+
         while prefix.shape[1] < max_tokens:
 
             # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
@@ -1706,6 +1968,9 @@ class Baselines(Decoding):
                 break
             loop_idx += 1
             prefix_len = prefix.shape[1]
+            # 统一往返（§3.4）：标记新一轮，上一轮累积的字节在此结算
+            # （per_round = 每次云端交互 1×NTT；per_transfer 下是 no-op）
+            comm_simulator.set_round(loop_idx)
 
             if loop_idx == 1:
                 comm_simulator.transfer(prefix, None, link_type="edge_cloud")
@@ -1714,13 +1979,6 @@ class Baselines(Decoding):
             t0 = time.time()
             x = approx_model_cache.generate(prefix.to(draft_device), 1)
             draft_comp_time += time.time() - t0
-            queuing_time += batch_delay
-
-            # 同 dist_spec：只计本轮新起草的 1 个 token（初始上下文已在上面
-            # loop_idx==1 时计费一次）。旧实现按全长 x 计费 ⇒ O(L²)。
-            comm_simulator.transfer(
-                x[:, prefix.shape[1] :], None, link_type="edge_cloud"
-            )
             if approx_model_cache.logits_history is not None:
                 current_logit = approx_model_cache.logits_history[
                     :, -1, : self.vocab_size
@@ -1755,7 +2013,9 @@ class Baselines(Decoding):
                     (prefix.to(accepted_token.device), accepted_token), dim=1
                 )
 
-                comm_simulator.send_accept_message(linktype="edge_cloud")
+                # F-CUHLM：跳过即零通信——不发 accept 消息、不即时上行；
+                # token 计入待同步缓冲，下次触发时随上行捎带（见循环上方口径说明）。
+                _pending_resync += 1
 
                 # No bonus token from target (target was not called)
                 # No KVCache rollback needed (target cache was not advanced)
@@ -1768,6 +2028,23 @@ class Baselines(Decoding):
                 continue
 
             # High uncertainty: run target model for verification
+            # F-CUHLM：排队只在真正发起云端调用时计（对齐 DSD/DSSD/CEE-SD）。
+            queuing_time += batch_delay
+
+            # F-CUHLM：触发 = 一次合并上行（一次 NTT）。载荷按论文式 (5) 的
+            # 压缩形式计：k(t)·(b_prob+b_index) bits（b_prob=8、b_index=
+            # ⌈log₂V⌉）。捎带的重同步 token 与当前 draft token 的索引按论文
+            # §II-B/III-B Step 5 的 negligible 假设**不计字节**（旧口径按
+            # element_size 逐 token 计）；topk/draft_len 仍进历史记录，
+            # avg_top_k 反映的是自适应 k(t)。
+            comm_simulator.simulate_transfer(
+                cuhlm_uplink_payload_bytes(int(vocab_size), self.vocab_size),
+                "edge_cloud",
+                topk=int(vocab_size),
+                draft_len=_pending_resync + 1,
+            )
+            _pending_resync = 0
+
             t0 = time.time()
             _ = target_model_cache.generate(x.to(target_device), 1)
             target_comp_time += time.time() - t0
@@ -1792,16 +2069,9 @@ class Baselines(Decoding):
                 f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
             )
 
-            if accepted_count < verification_inputs.actual_gamma:
-                comm_simulator.send_reject_message(linktype="edge_cloud")
-                comm_simulator.transfer(
-                    None,
-                    approx_model_cache.prob_history[:, -1, : self.vocab_size],
-                    link_type="edge_cloud",
-                    is_compressed=True,
-                    compressed_k=vocab_size,
-                )
-
+            # F-CUHLM：压缩分布已在触发时的合并上行中计费（每次触发必传，
+            # 与论文一致）；reject 不再有独立的 reject 消息与二次压缩包传输，
+            # 下行只回传最终 token（见下方 _send_downlink_token）。
             total_accepted_tokens += accepted_count
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
@@ -1815,9 +2085,18 @@ class Baselines(Decoding):
 
             if not rollback_plan.all_accepted:
                 target_prob_row = verification_inputs.target_probs_batch[:, 0, :]
+                # F-CUHLM：重采样基于服务器实际持有的压缩重构分布 x̂
+                # （论文式 (17)，top-k 保留 + 残差均匀）。旧实现用端侧全量
+                # 分布，压缩失真对输出零影响——精度口径曾偏向该基线。
+                # compress_rebuild_probs 严格要求 (batch, seq, vocab) 三维，
+                # 取单行后切回 (1, vocab) 喂 sample_reject_token。
+                _draft_row_hat = comm_simulator.compress_rebuild_probs(
+                    approx_model_cache.prob_history[:, n : n + 1, : self.vocab_size],
+                    int(vocab_size),
+                )[:, 0, :]
                 t = sample_reject_token(
                     target_prob_row,
-                    approx_model_cache.prob_history[:, n, : self.vocab_size],
+                    _draft_row_hat,
                     output_device=prefix.device,
                 )
             else:
@@ -1832,9 +2111,10 @@ class Baselines(Decoding):
                 rollback_plan,
             )
 
-            # B17 统一口径：下行是 token + 位置索引一次往返。
-            # 此前这里只计 token，少计了 INT_SIZE。
-            _send_downlink_token(comm_simulator, t, "edge_cloud")
+            # F-CUHLM（论文口径）：响应 token 索引 negligible（§II-B）——
+            # 0 字节下行报文，保留一次 NTT（见 _send_downlink_index_only）。
+            # 旧口径（B17）：INT_SIZE + token 字节。
+            _send_downlink_index_only(comm_simulator, "edge_cloud")
             prefix = torch.cat((prefix, t), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
@@ -1842,6 +2122,9 @@ class Baselines(Decoding):
             ):
                 break
 
+        # 最后一轮（或中途 break 时）的字节可能仍在合并桶里，结算必须在
+        # wall_time/communication_time 读数之前。
+        comm_simulator.flush_round()
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -1886,6 +2169,548 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
+        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
+        metrics["edge_cloud_topk_history"] = (
+            comm_simulator.edge_cloud_topk_history.copy()
+        )
+        metrics["edge_cloud_draft_len_history"] = (
+            comm_simulator.edge_cloud_draft_len_history.copy()
+        )
+
+        return prefix, metrics
+
+    @Register.register_decoding("tk_slt")
+    @Register.register_decoding("tkslt")
+    @torch.no_grad()
+    def tk_slt(
+        self,
+        prefix,
+        transfer_top_k: Optional[int] = 300,
+        use_precise_comm_sim: bool = False,
+        use_stochastic_comm: bool = False,
+        ntt_ms_edge_cloud: float = 200,
+        ntt_ms_edge_end: float = 20,
+        use_early_stopping: bool = False,
+        stop_sequences: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """Top-K Sparse Logits Transmission（TK-SLT）基线。
+
+        论文 "Communication-Efficient Collaborative LLM Inference via
+        Distributed Speculative Decoding"（WCSP'25, Zheng & Yang）：DSD 框架
+        下，端侧 SLM 只对 top-K logits 做 softmax——草稿分布 Y_i 的支撑集
+        就是 top-K（§III Solution 1），采样自该稀疏分布；上行每个草稿位置
+        只传 K 个概率值 + 词表索引，BS 用重建的稀疏 Q 做标准投机验证，
+        拒绝时从 norm(max(0, P−Q)) 重采样（稀疏 Q ⇒ 非 top-K 位置拿到
+        完整的 P，正是论文的残差定义）。
+
+        通信口径 = 论文自身（与 CUHLM 系同一处理方式，见 docs/protocol.md
+        §3.1/§3.3），不接仓库统一计费开关：
+        - 上行：γ·K·b_prob bits，b_prob=16（FP16，§VI-B）。概率值**真实**
+          量化到 fp16 再按行重归一化——验证判据与计费看到同一个 q̂
+          （B15/B16 的"计费与数据一致"原则）；
+        - 草稿 token 索引、下行响应（结果 token + 位置 j）按 §II-B 判为
+          negligible：0 字节报文，链路模型仍按报文计一次 NTT；
+        - K<=0/None ⇒ 整词表载荷 + 全量 softmax 提议（vanilla DSD，
+          该论文自己的不压缩基线）。
+
+        可选 --tk_slt_odld：按论文 §V Algorithm 1/2（ODLD/AS²）在线估计
+        (α, b, c)（接受率、T_V/T_LLM、T_SLM/T_LLM 的运行均值）并逐轮选
+        γ*；S*<=1 的轮次退回 standalone LLM（target 直出、无上行分布）。
+        默认关闭（固定 γ，与 dsd/dssd/cuhlm 同口径可比）；首轮无估计，
+        用 --gamma 兜底。
+        """
+        if use_precise_comm_sim:
+            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                bandwidth_hz=1e7,
+                channel_gain=1e-8,
+                send_power_watt=0.5,
+                noise_power_watt=1e-10,
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+            )
+        else:
+            comm_simulator = CommunicationSimulator(
+                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                bandwidth_edge_end=float("inf"),
+                bandwidth_cloud_end=float("inf"),
+                dimension="Mbps",
+                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+                ntt_ms_edge_end=ntt_ms_edge_end,
+                use_stochastic=use_stochastic_comm,
+                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+            )
+        comm_simulator.transfer_top_k = transfer_top_k
+        self.color_print(f"TK-SLT using top-K: {transfer_top_k}", 2)
+        # 统一往返口径（2026-10-09，docs/protocol.md §3.4）：per_round 下
+        # 一轮的上行载荷与 0B 下行合并成一次云请求往返（1×NTT）。
+        # 此前逐报文各付 50ms（每轮 2×NTT），比 dsd/dssd/ours 每轮多付
+        # 50ms 纯记账差异。载荷字节仍是论文口径（tk_slt_uplink_payload_bytes）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+
+        # 口径自述随 metrics 落盘（F-CUHLM 同款），保证论文口径跑出的工件
+        # 可辨识、不与仓库统一口径的结果混排。
+        _dev = (
+            "tk_slt_paper_accounting: uplink=gamma*K*b_prob(FP16 16b, "
+            "real-quantized), indices negligible, "
+            "reject-resample=server-side sparse fp16 Q; "
+            "round_trip=unified(1xNTT/round since 2026-10-09)"
+        )
+        _devs = list(getattr(self.args, "protocol_deviations", ()) or ())
+        if _dev not in _devs:
+            self.args.protocol_deviations = tuple(_devs + [_dev])
+
+        max_tokens = prefix.shape[1] + self.args.max_tokens
+
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
+
+        # K 同时定义采样稀疏性（softmax 只作用于 top-K logits）与传输载荷。
+        # K<=0/None ⇒ 不压缩：全量 softmax 提议 + 整词表载荷（vanilla DSD）。
+        topk_enabled = transfer_top_k is not None and int(transfer_top_k) > 0
+        draft_sampling_top_k = int(transfer_top_k) if topk_enabled else 0
+        topk_history_val = int(transfer_top_k) if topk_enabled else 0
+
+        odld_enabled = bool(getattr(self.args, "tk_slt_odld", False))
+
+        # CUDA Graph：草稿缓存走 γ 步循环是图收益点；target 整段前向不图化
+        # （与 dist_spec 同一取舍）。ODLD 开启时 γ* 可超过 --gamma，cap 按
+        # ODLD 上限取，保证验证图档位覆盖。
+        default_gamma_cap = int(getattr(self.args, "gamma", 5))
+        _odld_cap = _TK_SLT_ODLD_GAMMA_CAP if odld_enabled else default_gamma_cap
+        _graph_kw = _graph_mode_cache_kwargs(self.args, cap=_odld_cap + 4)
+        _reused = getattr(self, "_tk_slt_caches", None) if _graph_kw else None
+        if _reused is not None:
+            approx_model_cache, target_model_cache = _reused
+            approx_model_cache.reset_for_new_sample()
+            target_model_cache.reset_for_new_sample()
+        else:
+            approx_model_cache = KVCacheModel(
+                self.draft_model,
+                self.args.temp,
+                draft_sampling_top_k,
+                self.args.top_p,
+                **_graph_kw,
+            )
+            target_model_cache = KVCacheModel(
+                self.target_model,
+                self.args.temp,
+                0,
+                0,  # 目标模型不压缩
+            )
+            if _graph_kw:
+                self._tk_slt_caches = (approx_model_cache, target_model_cache)
+        approx_model_cache.vocab_size = self.vocab_size
+        target_model_cache.vocab_size = self.vocab_size
+
+        draft_forward_times = 0
+        target_forward_times = 0
+        total_accepted_tokens = 0
+        total_drafted_tokens = 0
+        queuing_time = 0
+        batch_delay = getattr(self.args, "batch_delay", 0)
+
+        # 追踪 top-k 和 draft length（B18：avg_top_k 只统计传输压缩 top-k，
+        # 未压缩记 0，与 dsd/dssd/tridecoding 同名列口径一致）
+        total_draft_steps = 0
+        sum_draft_len = 0.0
+        sum_top_k = 0.0
+
+        # ODLD/AS² 的在线估计（论文式 (5)：b=T_V/T_LLM、c=T_SLM/T_LLM；
+        # α=期望接受率）。运行均值跨轮更新；standalone 轮不产生新估计
+        # （无草稿/验证），只有 DSD 轮喂入。
+        alpha_num = 0.0  # Σ 接受 token 数
+        alpha_den = 0.0  # Σ 草稿 token 数
+        t_slm_seconds = 0.0  # Σ 草稿前向耗时
+        t_slm_tokens = 0
+        t_llm_seconds = 0.0  # Σ 验证前向耗时
+        t_llm_runs = 0
+        t_v_seconds = 0.0  # Σ 上行纯发射耗时（不含 NTT，同论文 T_V 口径）
+        t_v_dists = 0  # Σ 已传分布数
+        standalone_rounds = 0
+        last_gamma_star = 0
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        current_tokens = prefix.clone()
+
+        start_event.record(stream=torch.cuda.current_stream())
+
+        idx: int = 0
+
+        draft_comp_time = 0.0
+        target_comp_time = 0.0
+
+        _tri_prompt_len = prefix.shape[1]  # EOS 早停的生成段起点（B10）
+
+        while prefix.shape[1] < max_tokens:
+            # 循环内 EOS 早停（B10）：计算与通信在 EOS 后立即停，
+            # 时延口径与 dsd/dssd/adaptive_* 对齐
+            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
+            if _eos_hit:
+                break
+            idx += 1
+            prefix_len = prefix.shape[1]
+            # 轮号标注（离线重放的分组依据；per_round 下轮首 bucket 已空，
+            # set_round 的防御性 flush 是 no-op，不影响轮末结算语义）
+            comm_simulator.set_round(idx)
+            prefix = _ensure_token_shape(prefix, label="tk_slt.prefix")
+            _validate_token_range(
+                prefix, vocab_size=self.vocab_size, label="tk_slt.prefix"
+            )
+
+            remaining_tokens = max_tokens - prefix_len
+            if remaining_tokens <= 0:
+                break
+
+            if idx == 1:
+                # 初始上下文上传（全仓一次性约定：论文不建模 prompt）
+                comm_simulator.transfer(prefix, None, "edge_cloud")
+
+            # AS²（论文 Algorithm 2）：有估计后才启用；S*<=1 的轮次退回
+            # standalone LLM。首轮（无估计）用 --gamma。
+            base_gamma = int(self.args.gamma)
+            if odld_enabled and t_llm_runs >= 1 and alpha_den > 0:
+                alpha_hat = alpha_num / alpha_den
+                llm_per_run = t_llm_seconds / t_llm_runs
+                b_hat = (
+                    (t_v_seconds / t_v_dists) / llm_per_run if t_v_dists > 0 else 0.0
+                )
+                c_hat = (
+                    (t_slm_seconds / t_slm_tokens) / llm_per_run
+                    if t_slm_tokens > 0
+                    else 0.0
+                )
+                use_dsd, gamma_star, _s_star = tk_slt_select_speculative(
+                    alpha_hat, b_hat, c_hat, _TK_SLT_ODLD_GAMMA_CAP
+                )
+                last_gamma_star = gamma_star
+                self.color_print(
+                    f"ODLD: alpha={alpha_hat:.3f} b={b_hat:.3f} c={c_hat:.3f} "
+                    f"-> gamma*={gamma_star} S*={_s_star:.3f}",
+                    3,
+                )
+                if not use_dsd:
+                    # standalone LLM 轮（AS² 分支）：target 直出 1 token。
+                    # 无草稿、无上行分布；下行响应 negligible（0 字节报文）。
+                    # 1-token 前向 ≠ 验证前向，不进 T_LLM 估计。
+                    standalone_rounds += 1
+                    queuing_time += batch_delay
+                    t0 = time.time()
+                    _ = target_model_cache.generate(
+                        _move_token_tensor(prefix, target_device), 1
+                    )
+                    target_comp_time += time.time() - t0
+                    target_forward_times += 1
+                    if self.accelerator.is_main_process:
+                        self.target_forward_times += 1
+
+                    t = _sample_token_from_probs(
+                        target_model_cache.prob_history[:, -1, : self.vocab_size],
+                        output_device=prefix.device,
+                        vocab_size=self.vocab_size,
+                        label="tk_slt.standalone_t",
+                    )
+                    prefix = torch.cat((prefix, t), dim=1)
+                    self.num_acc_tokens.append(1)
+
+                    if use_early_stopping and self._check_stopping_criteria(
+                        prefix, stop_sequences
+                    ):
+                        break
+                    _send_downlink_index_only(comm_simulator, "edge_cloud")
+                    continue
+                base_gamma = gamma_star
+
+            # 调整 gamma 以不超过剩余的 token 数（减 1 留给最后的采样 token）
+            current_gamma = min(base_gamma, remaining_tokens - 1)
+            if current_gamma <= 0:
+                # 只剩 1 个 token：target 直出（与 dist_spec 的边界分支同口径，
+                # 不计通信）
+                queuing_time += batch_delay
+                t0 = time.time()
+                _ = target_model_cache.generate(
+                    _move_token_tensor(prefix, target_device), 1
+                )
+                target_comp_time += time.time() - t0
+                target_forward_times += 1
+                if self.accelerator.is_main_process:
+                    self.target_forward_times += 1
+
+                t = _sample_token_from_probs(
+                    target_model_cache.prob_history[:, -1, : self.vocab_size],
+                    output_device=prefix.device,
+                    vocab_size=self.vocab_size,
+                    label="tk_slt.fallback_t",
+                )
+                prefix = torch.cat((prefix, t), dim=1)
+                self.num_acc_tokens.append(1)
+                break
+
+            # ---- Draft：top-K 稀疏采样（softmax 只作用于 top-K logits）----
+            t0 = time.time()
+            x = approx_model_cache.generate(
+                _move_token_tensor(prefix, draft_device), current_gamma
+            )
+            draft_comp_time += time.time() - t0
+            x = _ensure_token_shape(x, label="tk_slt.generated_x")
+            _validate_token_range(
+                x, vocab_size=self.vocab_size, label="tk_slt.generated_x"
+            )
+            draft_forward_times += current_gamma
+            total_drafted_tokens += current_gamma
+            t_slm_seconds += time.time() - t0
+            t_slm_tokens += current_gamma
+
+            total_draft_steps += 1
+            sum_draft_len += current_gamma
+            sum_top_k += topk_history_val
+
+            # ---- 上行：K 个概率/草稿位置，FP16 量化后传输 ----
+            # prob_history 行 = 稀疏分布（temp>0 时非零项 ≤ K；temp=0 时
+            # one-hot）。窗口按"本轮输入前缀之后"切片，与计费的 γ 一致。
+            window_end = min(
+                prefix_len + current_gamma - 1, approx_model_cache.prob_history.shape[1]
+            )
+            draft_prob_window = approx_model_cache.prob_history[
+                :, prefix_len - 1 : window_end, :
+            ]
+            window_rows = int(draft_prob_window.shape[1])
+            quantized_window = _quantize_probs_fp16(draft_prob_window)
+
+            comm_simulator.simulate_transfer(
+                tk_slt_uplink_payload_bytes(
+                    transfer_top_k, window_rows, self.vocab_size
+                ),
+                "edge_cloud",
+                topk=topk_history_val,
+                draft_len=current_gamma,
+            )
+            # ODLD 的 b̂ 估计读"本轮上行"的纯发射时长（TransferUnit.tx_time）。
+            # per_transfer（直充）模式下上行报文此刻已在 stats 里；per_round
+            # 合并模式下字节推迟到轮末 flush 才落账，改在 flush 后读。
+            if not comm_simulator.coalesce_rounds:
+                _tx_seconds = _last_edge_cloud_tx_seconds(comm_simulator)
+                if _tx_seconds is not None:
+                    t_v_seconds += _tx_seconds
+                    t_v_dists += window_rows
+
+            # ---- Verify：BS 用收到的稀疏 FP16 分布做标准投机验证 ----
+            queuing_time += batch_delay
+            t0 = time.time()
+            _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
+            target_comp_time += time.time() - t0
+            t_llm_seconds += time.time() - t0
+            t_llm_runs += 1
+
+            target_forward_times += 1
+            if self.accelerator.is_main_process:
+                self.draft_forward_times += current_gamma
+                self.target_forward_times += 1
+
+            verification_inputs = prepare_verification_inputs(
+                draft_model_cache=approx_model_cache,
+                target_model_cache=target_model_cache,
+                x=x,
+                prefix_len=prefix_len,
+                gamma=current_gamma,
+                draft_probs_override=build_draft_probs_override(
+                    approx_model_cache,
+                    prefix_len,
+                    quantized_window,
+                ),
+            )
+            acceptance_result = compute_acceptance_result(verification_inputs)
+            (
+                this_step_accepted_tokens,
+                n,
+                _,
+            ) = materialize_acceptance(verification_inputs, acceptance_result)
+            total_accepted_tokens += this_step_accepted_tokens
+            alpha_num += this_step_accepted_tokens
+            alpha_den += verification_inputs.actual_gamma
+
+            self.num_acc_tokens.append(this_step_accepted_tokens)
+
+            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+            prefix = x[:, : n + 1]
+            rollback_plan = build_rollback_plan(
+                prefix_len,
+                verification_inputs.actual_gamma,
+                n,
+            )
+
+            # 检查是否还有空间添加一个 token
+            if prefix.shape[1] >= max_tokens:
+                apply_rollback(
+                    approx_model_cache,
+                    target_model_cache,
+                    rollback_plan,
+                )
+                break
+
+            if not rollback_plan.all_accepted:
+                # 拒绝路径：BS 基于已持有的稀疏 FP16 分布 Q̂ 从
+                # norm(max(0, P−Q̂)) 重采样（论文 §II-A 3b；稀疏 Q ⇒
+                # 非 top-K 位置拿到完整的 P）。无额外传输。
+                rejection_offset = n - (prefix_len - 1)
+                t = sample_reject_token(
+                    verification_inputs.target_probs_batch[
+                        :, rejection_offset, : self.vocab_size
+                    ],
+                    verification_inputs.draft_probs_batch[
+                        :, rejection_offset, : self.vocab_size
+                    ],
+                    output_device=prefix.device,
+                )
+            else:
+                # 全接受路径：从 P_{γ+1} 采样 bonus token
+                t = sample_accept_token(
+                    target_model_cache.prob_history[:, -1, : self.vocab_size],
+                    output_device=prefix.device,
+                )
+            t = _ensure_token_shape(t, label="tk_slt.sampled_t")
+            _validate_token_range(
+                t, vocab_size=self.vocab_size, label="tk_slt.sampled_t"
+            )
+
+            apply_rollback(
+                approx_model_cache,
+                target_model_cache,
+                rollback_plan,
+            )
+
+            if prefix.shape[1] < max_tokens:
+                prefix = torch.cat((prefix, t), dim=1)
+                prefix = _ensure_token_shape(prefix, label="tk_slt.prefix_after_concat")
+                _validate_token_range(
+                    prefix,
+                    vocab_size=self.vocab_size,
+                    label="tk_slt.prefix_after_concat",
+                )
+
+            if use_early_stopping and self._check_stopping_criteria(
+                prefix, stop_sequences
+            ):
+                break
+
+            # ---- 下行：结果 token + 位置 j（§II-B negligible ⇒ 0 字节报文）----
+            _send_downlink_index_only(comm_simulator, "edge_cloud")
+
+            # ---- 轮末结算：per_round 下本轮字节在此落账（1×NTT/轮）----
+            # per_transfer 模式下 flush_round 是 no-op（直充已落账）。
+            comm_simulator.flush_round()
+            if comm_simulator.coalesce_rounds:
+                _tx_seconds = _last_edge_cloud_tx_seconds(comm_simulator)
+                if _tx_seconds is not None:
+                    t_v_seconds += _tx_seconds
+                    t_v_dists += window_rows
+
+        # 中途 break（max_tokens/EOS/fallback）时最后一轮字节可能仍在合并桶里，
+        # 结算必须在 wall_time/communication_time 读数之前。
+        comm_simulator.flush_round()
+        end_event.record(stream=torch.cuda.current_stream())
+        torch.cuda.synchronize()
+        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+
+        # 遵守 max_tokens（整块追加可能越界）+ EOS 截断必须在 metrics 结算前
+        # （B9：被截掉的 token 不计入吞吐；最后一轮越过 EOS 的情况由这里兜底）
+        if prefix.shape[1] > max_tokens:
+            prefix = prefix[:, :max_tokens]
+        prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
+
+        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        throughput = (
+            generated_tokens / (elapsed_time + comm_simulator.edge_cloud_comm_time)
+            if (elapsed_time + comm_simulator.edge_cloud_comm_time) > 0
+            else 0
+        )
+
+        metrics = get_empty_metrics()
+        metrics["avg_top_k"] = (
+            sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+        )
+        metrics["avg_draft_len"] = (
+            sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
+        )
+        metrics["draft_forward_times"] = draft_forward_times
+        metrics["target_forward_times"] = target_forward_times
+        metrics["draft_computation_time"] = draft_comp_time
+        metrics["target_computation_time"] = target_comp_time
+        metrics["generated_tokens"] = generated_tokens
+        metrics["draft_generated_tokens"] = total_drafted_tokens
+        metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["wall_time"] = elapsed_time + comm_simulator.edge_cloud_comm_time
+        metrics["throughput"] = throughput
+        metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
+        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
+        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
+        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
+        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
+
+        metrics["comm_energy"] = comm_simulator.total_comm_energy
+        metrics["connect_times"] = comm_simulator.connect_times
+
+        metrics["queuing_time"] = queuing_time
+        metrics["wall_time"] = (
+            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
+        )
+        if metrics["wall_time"] > 0:
+            metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
+
+        _add_per_model_wall_time(
+            metrics,
+            elapsed_time=elapsed_time,
+            comm_time=comm_simulator.edge_cloud_comm_time,
+            queuing_time=queuing_time,
+            draft_comp_time=draft_comp_time,
+            target_comp_time=target_comp_time,
+        )
+
+        # ODLD 观测：落盘最终估计与 standalone 轮数（分析用）
+        metrics["tk_slt_odld"] = odld_enabled
+        metrics["tk_slt_standalone_rounds"] = standalone_rounds
+        if odld_enabled:
+            metrics["tk_slt_alpha_hat"] = (
+                alpha_num / alpha_den if alpha_den > 0 else 0.0
+            )
+            llm_per_run = t_llm_seconds / t_llm_runs if t_llm_runs > 0 else 0.0
+            metrics["tk_slt_b_hat"] = (
+                (t_v_seconds / t_v_dists) / llm_per_run
+                if t_v_dists > 0 and llm_per_run > 0
+                else 0.0
+            )
+            metrics["tk_slt_c_hat"] = (
+                (t_slm_seconds / t_slm_tokens) / llm_per_run
+                if t_slm_tokens > 0 and llm_per_run > 0
+                else 0.0
+            )
+            metrics["tk_slt_gamma_star_final"] = last_gamma_star
+
+        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+        metrics["edge_cloud_bandwidth_history"] = (
+            comm_simulator.edge_cloud_bandwidth_history.copy()
+        )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -1923,6 +2748,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1933,6 +2759,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -1943,6 +2770,18 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -1979,6 +2818,7 @@ class Baselines(Decoding):
             if _eos_hit:
                 break
             idx += 1
+            comm_simulator.set_round(idx)
 
             prefix_len = prefix.shape[1]
 
@@ -2106,6 +2946,13 @@ class Baselines(Decoding):
                     transfer_top_k,
                     prob_bits=_rej_bits,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)（索引在内），
+                    # 与统一式 k*(4+元素)+元素 相比只差尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(_rej_probs, transfer_top_k),
+                        "edge_end",
+                    )
 
                 rejection_offset = n1 - (prefix_len - 1)
                 if little_rebuilt_meta is not None:
@@ -2261,6 +3108,12 @@ class Baselines(Decoding):
                     transfer_top_k,
                     prob_bits=_rej_bits2,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：同阶段一，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(_rej_probs2, transfer_top_k),
+                        "edge_cloud",
+                    )
                 rejection_offset = n2 - (prefix_len - 1)
                 if draft_rebuilt_meta is not None:
                     t = sample_reject_token_from_topk_proposal(
@@ -2308,6 +3161,7 @@ class Baselines(Decoding):
             ):
                 break
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -2372,6 +3226,12 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -2430,6 +3290,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2440,6 +3301,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -2450,6 +3312,18 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -2490,6 +3364,7 @@ class Baselines(Decoding):
             if _eos_hit:
                 break
             idx += 1
+            comm_simulator.set_round(idx)
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             little_stage_probs: Optional[torch.Tensor] = None
@@ -2619,6 +3494,15 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            little_stage_probs[:, n1, : self.vocab_size],
+                            transfer_top_k,
+                        ),
+                        "edge_end",
+                    )
 
             # 传输索引
             _send_downlink_token(comm_simulator, t, "edge_end")
@@ -2754,6 +3638,15 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：同阶段一，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            draft_stage_probs[:, n2, : self.vocab_size],
+                            transfer_top_k,
+                        ),
+                        "edge_cloud",
+                    )
                 new_generated_token = prefix[:, prefix_len:]
             else:
                 new_generated_token = prefix[:, prefix_len:]
@@ -2768,6 +3661,7 @@ class Baselines(Decoding):
             ):
                 break
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -2821,6 +3715,12 @@ class Baselines(Decoding):
         metrics["connect_times"] = comm_simulator.connect_times
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
+        )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
         )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
@@ -2995,6 +3895,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3005,6 +3906,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
@@ -3015,6 +3917,18 @@ class Baselines(Decoding):
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
+
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
 
         batch_delay = self.args.batch_delay
         queuing_time = 0.0
@@ -3069,6 +3983,7 @@ class Baselines(Decoding):
             prefix_len = prefix.shape[1]
 
             idx += 1
+            comm_simulator.set_round(idx)
 
             step_start_time = time.time()
             step_comm_time_start = comm_simulator.edge_cloud_comm_time
@@ -3129,6 +4044,10 @@ class Baselines(Decoding):
 
                 # 更新 top-k 压缩参数和 ARP 阈值
                 transfer_top_k = next_topk
+                # 统一口径：RL 选出的 top-k 同样受 cap 约束
+                #（与 adaptive_tridecoding 阶段二的写法一致）
+                if _topk_cap > 0 and transfer_top_k is not None:
+                    transfer_top_k = min(int(transfer_top_k), _topk_cap)
                 self.adapter.threshold = next_threshold
 
             actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
@@ -3241,6 +4160,14 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            stage_probs[:, n, : self.vocab_size], transfer_top_k
+                        ),
+                        "edge_cloud",
+                    )
 
                 t = sample(
                     max_fn(
@@ -3303,6 +4230,7 @@ class Baselines(Decoding):
             # 此前只付了 INT_SIZE，token 本体没计）
             _send_downlink_token(comm_simulator, t, "edge_cloud")
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -3350,6 +4278,12 @@ class Baselines(Decoding):
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
+        )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
         )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
@@ -3500,6 +4434,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3510,6 +4445,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -3586,6 +4522,7 @@ class Baselines(Decoding):
             )
             cuhlm_uncertainty_sim = CUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -4390,6 +5327,12 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -4462,6 +5405,7 @@ class Baselines(Decoding):
             # uncertainty_decoding 的完整调用）
             comm_simulator: CUHLM = PreciseCUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -4473,6 +5417,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CUHLM(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -4607,17 +5552,29 @@ class Baselines(Decoding):
             n1: int = prefix_len + actual_gamma2 - 1
             little_accepted_this_iter = 0
             little_all_accepted = True
-            prob_bytes = 0.0
-            reject_overhead = 0.0
 
             if actual_gamma2 > 0:
                 little_stage_probs = stage_prob_history(
                     little_model_cache, prefix_len, little_rebuilt_probs,
                 )
-                draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs, x, prefix_len, actual_gamma2,
+                # F-CUHLM（论文口径）：Stage-1 上行 = 论文式 (5) 的逐位置
+                # 压缩分布——每个起草位置 k₁·(b_prob+b_index) bits
+                # （b_prob=8、b_index=⌈log₂V⌉）；k₁ 未配置时按全词表计
+                # （论文 vanilla HLM 的上行）。token 索引 negligible
+                # （§II-B）。旧口径：gamma2 × V×4B 整行 fp32 + token 字节。
+                comm_simulator.simulate_transfer(
+                    actual_gamma2
+                    * cuhlm_uplink_payload_bytes(
+                        current_proposal_top_k, self.vocab_size
+                    ),
+                    "edge_end",
+                    topk=(
+                        int(current_proposal_top_k)
+                        if current_proposal_top_k
+                        else 0
+                    ),
+                    draft_len=int(actual_gamma2),
                 )
-                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
 
                 # Standard rejection sampling: Draft verifies Little's tokens
                 verification_inputs = prepare_verification_inputs(
@@ -4631,21 +5588,13 @@ class Baselines(Decoding):
                     verification_inputs, acceptance_result
                 )
 
-                # Communication simulation (matching per-token granularity)
-                for i in range(little_accepted_this_iter):
-                    comm_simulator.simulate_transfer(8, "edge_end")
-                    comm_simulator.send_accept_message("edge_end")
+                # F-CUHLM（论文口径）：accept/reject 判定不单独计费——验证
+                # 结论随轮末响应回传（索引 negligible）；reject 在验证方
+                # 基于已持有的分布重采样（论文式 17），无额外上行。
+                # 旧口径：每接受 token 8B + accept 消息（6B+NTT）；reject
+                # 再 8B + 二次计费的概率行 + reject 消息（6B+NTT）。
                 if not little_all_accepted:
                     reject_pos = little_accepted_this_iter
-                    prob_data = verification_inputs.draft_probs_batch[
-                        :, reject_pos, : self.vocab_size
-                    ]
-                    prob_bytes = prob_data.element_size() * prob_data.numel()
-                    if little_transfer_top_k is not None and little_transfer_top_k > 0:
-                        prob_bytes = little_transfer_top_k * prob_data.element_size()
-                    reject_overhead = 6.0
-                    comm_simulator.simulate_transfer(8 + prob_bytes, "edge_end")
-                    comm_simulator.send_reject_message("edge_end")
 
                 # Rollback and sample bonus/replacement token
                 rollback_plan = build_rollback_plan(
@@ -4675,10 +5624,11 @@ class Baselines(Decoding):
             assert n1 >= prefix_len - 1
             prefix = x[:, : n1 + 1]
 
-            total_bytes = (
-                INT_SIZE + t.element_size() * t.numel() + prob_bytes + reject_overhead
-            )
-            comm_simulator.simulate_transfer(total_bytes, "edge_end")
+            # F-CUHLM（论文口径）：Stage-1 轮末响应（edge→device）的 token
+            # 索引 negligible（§II-B）——0 字节报文，保留一次 NTT。
+            # 旧口径：INT_SIZE + token 字节 +（reject 时）二次计费的
+            # prob_bytes + 魔数 reject_overhead=6B。
+            _send_downlink_index_only(comm_simulator, "edge_end")
 
             prefix = torch.cat((prefix, t), dim=1)
             new_generated_token = prefix[:, prefix_len:]
@@ -4692,10 +5642,12 @@ class Baselines(Decoding):
                 )
             )
 
+            # F-CUHLM（论文口径）：首轮 prompt 上传保留（全仓一次性约定，
+            # 论文不建模 prompt）；此后逐轮的 token 同步**不再单独上行**——
+            # 新 token 索引随触发轮的上行捎带（negligible，§II-B），全跳过
+            # 轮对云端零通信（旧口径：每轮一次 token 上行 = 每轮一个 NTT）。
             if idx == 1:
                 comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
 
             t0 = time.time()
             x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
@@ -4758,19 +5710,23 @@ class Baselines(Decoding):
                 )
 
                 if should_transfer:
-                    prob_size = vocab_size * 4
-                    token_size = 8
-                    total_bytes_transfer = token_size + prob_size
+                    # F-CUHLM（论文口径）：触发 = 一次上行，载荷 k(t)·(b_prob+
+                    # b_index) bits（cuhlm_uplink_payload_bytes）；draft token
+                    # 索引 negligible。旧口径：vocab_size×4+8 字节 + 独立
+                    # reject 消息（6B + 一次 NTT）。
                     comm_simulator.simulate_transfer(
-                        total_bytes_transfer, "edge_cloud", topk=vocab_size, draft_len=1
+                        cuhlm_uplink_payload_bytes(int(vocab_size), self.vocab_size),
+                        "edge_cloud",
+                        topk=int(vocab_size),
+                        draft_len=1,
                     )
                     reject_offset = i
                     n2 = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
                     break
                 else:
-                    comm_simulator.simulate_transfer(8, "edge_cloud")
-                    comm_simulator.send_accept_message("edge_cloud")
+                    # F-CUHLM（论文口径）：跳过 = 零通信（旧口径：8B 上行 +
+                    # accept 消息 6B+NTT，把论文的"跳过=免费"变成 2 RTT/token，
+                    # 在 NTT 主导场景下系统性压死该基线）。
                     draft_accepted_this_iter += 1
             comm_simulator.uncertainty_threshold = original_threshold
 
@@ -4778,9 +5734,6 @@ class Baselines(Decoding):
 
             assert n2 >= prefix_len - 1
             prefix = x[:, : n2 + 1]
-
-            prob_bytes = 0.0
-            reject_overhead = 0.0
 
             if reject_offset is not None:
                 # High uncertainty: run target model for verification
@@ -4801,14 +5754,9 @@ class Baselines(Decoding):
                     draft_probs_override=draft_stage_probs,
                 )
 
-                prob_data = verification_inputs.draft_probs_batch[
-                    :, reject_offset, : self.vocab_size
-                ]
-                prob_bytes = prob_data.element_size() * prob_data.numel()
-                if draft_transfer_top_k is not None and draft_transfer_top_k > 0:
-                    prob_bytes = draft_transfer_top_k * prob_data.element_size()
-
-                reject_overhead = 6.0
+                # F-CUHLM（论文口径）：触发分布已在上面的一次上行里计费
+                # （k(t)·(b_prob+b_index)），这里不再二次计费。旧口径：
+                # prob_bytes 按全行/压缩行再计一次 + reject_overhead 魔数 6B。
                 new_generated_token = prefix[:, prefix_len:]
 
                 n2, t, _ = _finalize_cuhlm_verification(
@@ -4844,16 +5792,15 @@ class Baselines(Decoding):
                 label="cee_cuhlm.edge_cloud.prefix_after_concat",
             )
 
-            # Transfer the final sampled token t
-            token_size = t.element_size() * t.numel()
-            total_bytes = INT_SIZE + token_size + prob_bytes + reject_overhead
-            comm_simulator.simulate_transfer(
-                total_bytes,
-                "edge_cloud",
-                topk=cast(int, draft_transfer_top_k),
-                draft_len=effective_gamma,
-            )
-            _send_downlink_token(comm_simulator, t, "edge_end")
+            if reject_offset is not None:
+                # F-CUHLM（论文口径）：触发轮的云端响应（cloud→edge）是
+                # negligible 的 token 索引——0 字节报文，保留一次 NTT。
+                # 全跳过轮对云端零通信（旧口径：无条件 INT_SIZE+token+
+                # 二次计费的 prob_bytes + 魔数 6B，且每轮一次 NTT）。
+                _send_downlink_index_only(comm_simulator, "edge_cloud")
+            # 轮末响应回传设备（edge→end）：token 索引 negligible（§II-B），
+            # 0 字节报文，保留一次 NTT（旧口径：INT_SIZE + token 字节）。
+            _send_downlink_index_only(comm_simulator, "edge_end")
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -4927,6 +5874,12 @@ class Baselines(Decoding):
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
         )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
+        )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
             comm_simulator.edge_cloud_topk_history.copy()
@@ -4985,6 +5938,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -4995,6 +5949,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -5005,6 +5960,18 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -5039,6 +6006,7 @@ class Baselines(Decoding):
             if _eos_hit:
                 break
             idx += 1
+            comm_simulator.set_round(idx)
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
             little_stage_probs: Optional[torch.Tensor] = None
@@ -5119,6 +6087,17 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            cast(torch.Tensor, little_stage_probs)[
+                                :, n1, : self.vocab_size
+                            ],
+                            transfer_top_k,
+                        ),
+                        "edge_end",
+                    )
 
             # Transfer sampled token index back
             _send_downlink_token(comm_simulator, t, "edge_end")
@@ -5245,6 +6224,17 @@ class Baselines(Decoding):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：同阶段一，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            cast(torch.Tensor, draft_stage_probs)[
+                                :, n2, : self.vocab_size
+                            ],
+                            transfer_top_k,
+                        ),
+                        "edge_cloud",
+                    )
 
             prefix = torch.cat((prefix, t), dim=1)
 
@@ -5257,6 +6247,7 @@ class Baselines(Decoding):
             ):
                 break
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -5312,6 +6303,12 @@ class Baselines(Decoding):
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
+        )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
         )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (
@@ -5370,6 +6367,7 @@ class Baselines(Decoding):
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -5380,6 +6378,7 @@ class Baselines(Decoding):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=self.args.edge_end_bandwidth,
                 bandwidth_cloud_end=self.args.cloud_end_bandwidth,
@@ -5390,6 +6389,18 @@ class Baselines(Decoding):
                 use_stochastic=use_stochastic_comm,
                 stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
             )
+
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
         little_model_forward_times = 0
@@ -5434,6 +6445,7 @@ class Baselines(Decoding):
             if _eos_hit:
                 break
             idx += 1
+            comm_simulator.set_round(idx)
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
 
@@ -5508,6 +6520,19 @@ class Baselines(Decoding):
                     ) = resolve_stage_verification(**little_stage_kwargs)
                     if not little_all_accepted:
                         comm_simulator.send_reject_message("edge_end")
+                        if charge_residual:
+                            # 统一口径（§3.4）：legacy 只发 6B 拒绝信号，拒绝
+                            # 位置的残差分布被无声省掉；honest 补
+                            # k*(4+元素)+元素（行取验证方 draft 在 n1 的分布）。
+                            comm_simulator.simulate_transfer(
+                                reject_residual_payload_bytes(
+                                    draft_model_cache.prob_history[
+                                        :, n1, : self.vocab_size
+                                    ],
+                                    transfer_top_k,
+                                ),
+                                "edge_end",
+                            )
             else:
                 t = sample_accept_token(
                     draft_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -5635,6 +6660,18 @@ class Baselines(Decoding):
                     ) = resolve_stage_verification(**draft_stage_kwargs)
                     if not draft_all_accepted:
                         comm_simulator.send_reject_message("edge_cloud")
+                        if charge_residual:
+                            # 统一口径（§3.4）：同阶段一，残差取验证方 target
+                            # 在 n2 的分布。
+                            comm_simulator.simulate_transfer(
+                                reject_residual_payload_bytes(
+                                    target_model_cache.prob_history[
+                                        :, n2, : self.vocab_size
+                                    ],
+                                    transfer_top_k,
+                                ),
+                                "edge_cloud",
+                            )
             else:
                 t = sample_accept_token(
                     target_model_cache.prob_history[:, -1, : self.vocab_size],
@@ -5664,6 +6701,7 @@ class Baselines(Decoding):
             ):
                 break
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
@@ -5719,6 +6757,12 @@ class Baselines(Decoding):
         # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
         metrics["edge_cloud_bandwidth_history"] = (
             comm_simulator.edge_cloud_bandwidth_history.copy()
+        )
+        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+        # getattr 兜底：测试替身可能只实现聚合口径。
+        metrics["comm_trace_edge_cloud"] = getattr(
+            comm_simulator, "edge_cloud_trace", []
         )
         _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
         metrics["edge_cloud_topk_history"] = (

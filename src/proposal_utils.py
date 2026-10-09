@@ -14,6 +14,24 @@ def proposal_top_k(transfer_top_k: Optional[int]) -> Optional[int]:
     return transfer_top_k
 
 
+def apply_transfer_top_k_cap(
+    transfer_top_k: Optional[int], cap: int
+) -> Optional[int]:
+    """``--transfer_top_k_cap`` 的统一构造期规则（基准：adaptive_tridecoding）。
+
+    ``cap<=0`` 时原样返回（legacy 口径逐位不变）；``cap>0`` 时未设/非法
+    （``None``、``<=0``）或超过上限的取值一律收敛到 ``cap``。
+    每个消费该开关的方法必须在自己代码里 ``getattr`` 读一次开关名
+    （``src/protocols.py`` 的运行时内省只数方法自身代码对象里的名字），
+    再交给本函数做纯计算。
+    """
+    if cap <= 0:
+        return transfer_top_k
+    if transfer_top_k is None or int(transfer_top_k) <= 0 or int(transfer_top_k) > cap:
+        return cap
+    return transfer_top_k
+
+
 def build_draft_probs_override(
     cache: "KVCacheModel",
     stage_start_len: int,

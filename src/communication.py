@@ -17,6 +17,8 @@ class TransferUnit(TypedDict):
     # 纯发射时间（不含传播延迟 NTT），用于能耗计算：
     # 传播时延期间无线电并不发射，能耗只应按发射时长计。
     tx_time: float
+    # 记账轮号（set_round 标注；离线重放 rebill 按它重组 per_round 合并）
+    round_idx: Optional[int]
 
 
 class Statistics(TypedDict):
@@ -116,11 +118,26 @@ class CommunicationSimulator:
         mode: Literal["driving", "static", "walking"] = "static",
         min_bandwidth_mbps: float = 5.0,
         trace_interval_s: float = 0.2,
+        bw_model: Literal["instant", "fluid"] = "instant",
     ):
         # 带宽下限（Mbps）：低于该值的带宽会被钳制。设为 0 可禁用下限。
         # 注意：mmWave 等无线链路深衰时吞吐会跌到接近 0，5 Mbps 的默认
         # 下限会削平这些最有价值的低带宽时段，需要研究弱链路时请调低。
         self.min_bandwidth_mbps = min_bandwidth_mbps
+        # 载荷发射时长的计算模型（2026-10-09 决策，docs/protocol.md §3.4）：
+        #  · instant（历史默认，逐位可复现）：整条载荷用**起始时刻的瞬时
+        #    trace 采样**计费，tx = S/B_t0。46 Mbps 下载荷普遍 <50ms（≪0.2s
+        #    采样间隔）时近似成立；低带宽下长载荷（如 5 Mbps 时全词表窗口
+        #    ~600ms，横跨 3+ 个间隔）会失真，且 E[S/B] > S/E[B]（Jensen）
+        #    系统性多扣。
+        #  · fluid（主表口径）：流体排水——载荷排空期间逐个 trace 间隔用
+        #    各自的带宽积分，正确处理跨间隔长载荷，消除单采样冻结偏差。
+        self.bw_model = bw_model
+        # 流体模型的连续仿真时钟（秒，模 trace 全周期）：小载荷虽在单个
+        # 间隔内排空，时钟仍按 tx+NTT 推进——反复计费最终会跨过间隔
+        # 边界，trace 不会冻结在起始采样上（预实验实测过冻结会让 dsd
+        # 的通信时间虚高 +140%）。
+        self._trace_time_s: float = 0.0
         # 随机带宽 trace 的采样间隔（秒）。trace 是时间序列，必须按仿真
         # 时间推进索引，而不是按消息数推进，否则带宽的时间相关性失真。
         self.trace_interval_s = trace_interval_s
@@ -276,6 +293,20 @@ class CommunicationSimulator:
         )
 
     @property
+    def edge_cloud_trace(self) -> list[list]:
+        """edge-cloud 的逐消息记账记录，供离线重放（scripts/rebill.py）。
+
+        每项 [字节数, 轮号]。temp=0 且无 RL/ODLD 反馈时解码与通信参数
+        无关（A/B 预实验验证：两臂 accuracy 逐位一致），同一条记录可在
+        任意（带宽, NTT, 地板, bw_model, 往返口径）下重新计费——带宽
+        阶梯/NTT 敏感性/口径对照都变成纯 CPU 重放，不用重跑 GPU。
+        """
+        return [
+            [u["data_size_bytes"], u.get("round_idx")]
+            for u in self.stats["edge_cloud"]
+        ]
+
+    @property
     def edge_end_comm_time(self):
         return sum(
             self.stats["edge_end"][i]["transfer_time"]
@@ -340,12 +371,16 @@ class CommunicationSimulator:
         return self.connect_times
 
     def set_round(self, round_idx: int) -> None:
-        """标记进入新一轮；按轮合并模式下先把上一轮的累积量结算掉。"""
-        if not self.coalesce_rounds:
-            return
-        if self._round_idx is None or round_idx != self._round_idx:
+        """标记进入新一轮；按轮合并模式下先把上一轮的累积量结算掉。
+
+        轮号在两种模式下都记录（进 TransferUnit.round_idx）——离线重放
+        （scripts/rebill.py）靠它把逐消息字节重组成任意往返口径。
+        """
+        if self.coalesce_rounds and (
+            self._round_idx is None or round_idx != self._round_idx
+        ):
             self.flush_round()
-            self._round_idx = round_idx
+        self._round_idx = round_idx
 
     def flush_round(self) -> None:
         """结算本轮累积的字节：每条链路只计一次传输（一次往返、一次 NTT）。"""
@@ -406,6 +441,61 @@ class CommunicationSimulator:
             data_size_bytes, link_type, add_to_stats, topk, draft_len, trace_kind
         )
 
+    def _floor_bandwidth_bps(self) -> float:
+        """带宽下限（字节/秒），与 dimension 无关（显式用 Mbps 换算）。"""
+        return _convert_to_bytes_per_second(self.min_bandwidth_mbps, "Mbps")
+
+    def _trace_rate_bps(self, index: int) -> float:
+        """trace 第 index 个采样的有效速率（字节/秒），已套带宽下限。"""
+        rate = _convert_to_bytes_per_second(
+            self.trace_data[index], cast(Dimension, self.dimension)
+        )
+        return max(self._floor_bandwidth_bps(), rate)
+
+    def _drain_time_edge_cloud(
+        self, data_size_bytes: float, start_time_s: float
+    ) -> tuple[float, float]:
+        """流体模型：S 字节从 ``start_time_s`` 时刻起排空所需的时间。
+
+        排水从当前时刻在采样间隔内的**剩余部分**开始（不是整个间隔），
+        逐间隔用各自带宽积分；跨间隔长载荷因此正确积分。返回
+        (排空秒数, 排空结束时刻)——结束时刻包含起始偏移，调用方据此
+        推进连续时钟 ``_trace_time_s``（再加 NTT），游标取
+        ``int(时钟/间隔)``。小载荷虽在单间隔内排空，时钟仍前进，
+        反复计费会自然跨过间隔边界，trace 不冻结。
+        """
+        if data_size_bytes <= 0:
+            return 0.0, start_time_s
+        remaining = float(data_size_bytes)
+        tx = 0.0
+        t = float(start_time_s)
+        interval = self.trace_interval_s
+        n = len(self.trace_data)
+        # 防退化 trace（全 0 且 floor=0）死循环：间隔数封顶后按 1B/s 兜底
+        max_intervals = max(1, n * 100)
+        for _ in range(max_intervals):
+            k = int(t / interval)
+            # 剩余到下一边界的时间。浮点陷阱：t 累加贴近 (k+1)*interval 时，
+            # t % interval 会返回 ≈interval 而非 0，得到 frac≈1e-16 的零容量
+            # 且 int(t/interval) 不前进——排水循环原地空转直到兜底按 1B/s
+            # 计费（预实验实测 dsd 通信时间虚高百万秒）。贴边（相对量
+            # <1e-9）直接按"下一间隔完整容量"计，误差 ≤ 亚纳秒级空时。
+            frac = (k + 1) * interval - t
+            if frac < interval * 1e-9:
+                k += 1
+                t = k * interval
+                frac = interval
+            idx = k % n
+            rate = self._trace_rate_bps(idx)
+            capacity = rate * frac
+            if remaining <= capacity:
+                dt = remaining / rate
+                return tx + dt, t + dt
+            tx += frac
+            t += frac
+            remaining -= capacity
+        return tx + remaining / 1.0, t + remaining / 1.0
+
     def _charge_transfer(
         self,
         data_size_bytes: int | float,
@@ -458,10 +548,26 @@ class CommunicationSimulator:
 
         # 带宽下限（默认 5 Mbps，可通过 min_bandwidth_mbps 配置，0 表示不设下限）。
         # 显式使用 "Mbps" 保证下限与 self.dimension 无关。
-        bandwidth = max(
-            _convert_to_bytes_per_second(self.min_bandwidth_mbps, "Mbps"), bandwidth
-        )
-        tx_time = data_size_bytes / bandwidth
+        bandwidth = max(self._floor_bandwidth_bps(), bandwidth)
+
+        # ---- 载荷发射时长：两种带宽计算模型（见 __init__ 的 bw_model 注释）----
+        # instant：整条载荷按起始采样计费（历史口径，逐位可复现）。
+        fluid_end_time: Optional[float] = None
+        if not (
+            self.bw_model == "fluid"
+            and self.use_stochastic
+            and link_type == "edge_cloud"
+            and self.trace_data
+        ):
+            tx_time = data_size_bytes / bandwidth
+        else:
+            # fluid：从连续时钟的当前时刻起跨 trace 间隔积分排水。
+            tx_time, fluid_end_time = self._drain_time_edge_cloud(
+                data_size_bytes, self._trace_time_s
+            )
+            if tx_time > 0:
+                # stats 里的"瞬时带宽"记有效排水速率 S/tx，供 ODLD 等估计器读
+                bandwidth = data_size_bytes / tx_time
         transfer_time = tx_time
 
         if link_type == "edge_end":
@@ -479,14 +585,28 @@ class CommunicationSimulator:
         # 对应 trace 上 round(transfer_time / trace_interval_s) 个采样点。
         # 之前按"每传输一次 +1"推进，带宽的时间相关性随传输时长漂移。
         if self.use_stochastic and link_type == "edge_cloud" and self.trace_data:
-            steps = round(transfer_time / self.trace_interval_s)
-            self.trace_index = (self.trace_index + max(1, steps)) % len(self.trace_data)
+            if fluid_end_time is not None:
+                # fluid：连续时钟推进到"排空 + NTT"时刻（NTT 是传播/握手，
+                # 时间流逝但不传数据），游标取整数化后的采样；时钟模
+                # trace 全周期避免长跑浮点漂移。
+                self._trace_time_s = (fluid_end_time + ntt) % (
+                    len(self.trace_data) * self.trace_interval_s
+                )
+                self.trace_index = int(self._trace_time_s / self.trace_interval_s) % (
+                    len(self.trace_data)
+                )
+            else:
+                steps = round(transfer_time / self.trace_interval_s)
+                self.trace_index = (self.trace_index + max(1, steps)) % len(
+                    self.trace_data
+                )
 
         if add_to_stats:
             transfer_unit = TransferUnit(
                 data_size_bytes=data_size_bytes,
                 transfer_time=transfer_time,
                 tx_time=tx_time,
+                round_idx=self._round_idx,
             )
             self.stats[link_type].append(transfer_unit)
 
@@ -735,6 +855,93 @@ class CommunicationSimulator:
         return 0.0
 
 
+def cuhlm_uplink_payload_bytes(
+    compressed_k: int | None,
+    vocab_size: int,
+    prob_bits: int = 8,
+) -> float:
+    """CU-HLM 论文口径的上行载荷（式 (5) 的压缩形式），单位字节。
+
+    论文 §II-B：上行只计**词表分布**的传输——
+
+        B = k · (b_prob + b_index)  bits
+
+    - ``b_prob = 8`` bits：单个概率的量化位宽（论文 §V 仿真参数
+      "b_prob = 8"）；
+    - ``b_index = ⌈log₂|V|⌉`` bits：词表索引的二进制编码宽度
+      （V=32000 时为 15 bits）。
+
+    交叉验证：全词表无压缩时 k=|V|=32000 ⇒ 32000×23/8 = 92000 B，
+    正是论文摘要的 "up to 92kB of payload per token"；k*=30（论文离线
+    最优）⇒ 86.25 B，对应论文的 "<0.1% of the full vocabulary payload"。
+
+    论文 §II-B 与 §III-B Step 5 同时假设：draft token、响应 token 与
+    重同步 token 的**索引传输开销 negligible，不计入成本分析**——所以
+    本函数只含词表分布项，token 索引在各调用点按 0 字节报文计
+    （报文仍发生，链路模型的 per-message NTT 照付；见
+    ``baselines._send_downlink_index_only``）。
+
+    ``compressed_k`` 为 ``None``/``<=0``（未启用压缩）时按全词表计，
+    即论文 vanilla HLM 的上行口径。
+    """
+    if vocab_size is None or int(vocab_size) <= 1:
+        return 0.0
+    if compressed_k is None or int(compressed_k) <= 0:
+        k = int(vocab_size)
+    else:
+        k = int(compressed_k)
+        if k > int(vocab_size):
+            k = int(vocab_size)
+    b_index = max(1, (int(vocab_size) - 1).bit_length())
+    return k * (int(prob_bits) + b_index) / 8.0
+
+
+def tk_slt_uplink_payload_bytes(
+    transfer_top_k: int | None,
+    gamma: int,
+    vocab_size: int,
+    prob_bits: int = 16,
+) -> float:
+    """TK-SLT 论文口径的上行载荷（字节）。
+
+    论文 "Communication-Efficient Collaborative LLM Inference via
+    Distributed Speculative Decoding"（WCSP'25, Zheng & Yang）的 §II-B
+    式 (2) 在 TK-SLT（§III Solution 1）下变为：每个草稿位置只传 top-K
+    稀疏分布的 K 个概率值——
+
+        D_V = K · b_prob bits，b_prob = 16（FP16，§VI-B "logits are
+        quantized to half-precision (FP16) and transmitted"）
+
+    γ 个草稿位置合计 D_up = γ·D_V（式 (2)）。``transfer_top_k`` 未启用
+    （``None``/``<=0``）时退化为 vanilla DSD 的整词表载荷
+    D_V = |V|·b_prob（§II-B），即该论文自己的不压缩基线。
+
+    token 索引（草稿 token id 与 K 个词表索引）按 §II-B "the index size
+    is insignificant relative to the vocabulary distribution, our analysis
+    considers only the uplink transmission latency associated with the
+    vocabulary distribution" **不计字节**——这与 CUHLM 系对 token 索引的
+    处理一致（``_send_downlink_index_only``）。
+
+    交叉验证 1（论文 Table II 逐位吻合）：论文实测 c≈0.07（SLM 计算）、
+    b_full≈0.23（整词表传输），Table II 的 L 值满足
+    L(K) = c + b_full·(K/32000)：
+    K=3→0.0700、K=32→0.0702、K=320→0.0723、K=3200→0.093、
+    K=32000→0.300。即上行载荷严格 ∝ K·b_prob、不含索引项（若含
+    ⌈log₂V⌉ bits 索引，K=320 会得到 ≈0.0839 而非 0.0723）。
+
+    交叉验证 2（论文 §I 的量级声明）：K=|V|=32000、FP16 ⇒
+    32000×16/8 = 64000 B/token = 512 kbit，正是论文的
+    "about 500 kbit per token"。
+    """
+    if vocab_size is None or int(vocab_size) <= 1 or int(gamma) <= 0:
+        return 0.0
+    if transfer_top_k is None or int(transfer_top_k) <= 0:
+        k = int(vocab_size)
+    else:
+        k = min(int(transfer_top_k), int(vocab_size))
+    return int(gamma) * k * int(prob_bits) / 8.0
+
+
 class CUHLM(CommunicationSimulator):
     """
     基于不确定性进行机会传输的对比实验方法。
@@ -763,6 +970,7 @@ class CUHLM(CommunicationSimulator):
         mode: Literal["driving", "static", "walking"] = "static",
         min_bandwidth_mbps: float = 5.0,
         trace_interval_s: float = 0.2,
+        bw_model: Literal["instant", "fluid"] = "instant",
     ):
         # 除了edge-cloud链路，其他链路假设无限带宽，因为不传输数据
         super().__init__(
@@ -778,6 +986,7 @@ class CUHLM(CommunicationSimulator):
             mode=mode,
             min_bandwidth_mbps=min_bandwidth_mbps,
             trace_interval_s=trace_interval_s,
+            bw_model=bw_model,
         )
         self.uncertainty_threshold = uncertainty_threshold
         self.vocab_size = vocab_size
@@ -1077,6 +1286,7 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
         edge_cloud_args: dict | None = None,
         edge_end_args: dict | None = None,
         min_bandwidth_mbps: float = 5.0,
+        bw_model: Literal["instant", "fluid"] = "instant",
     ):
         SNR = channel_gain * send_power_watt / noise_power_watt
         channel_capacity_bps = bandwidth_hz * math.log2(1 + SNR)
@@ -1128,6 +1338,9 @@ class PreciseCommunicationSimulator(CommunicationSimulator):
             ntt_ms_edge_end=ntt_ms_edge_end,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             min_bandwidth_mbps=min_bandwidth_mbps,
+            # 香农容量是恒定带宽：流体与 instant 数学等价（排空期间速率
+            # 不变），接收参数只为让调用点统一（见 baselines.py 各构造点）
+            bw_model=bw_model,
         )
 
         self.comm_energy = 0.0  # 通信能耗，单位焦耳
@@ -1170,6 +1383,7 @@ class PreciseCUHLM(CUHLM):
         ntt_ms_edge_cloud: float = 200,
         ntt_ms_edge_end: float = 20,
         min_bandwidth_mbps: float = 5.0,
+        bw_model: Literal["instant", "fluid"] = "instant",
     ):
         # 计算信噪比
         SNR = channel_gain * send_power_watt / noise_power_watt
@@ -1195,6 +1409,8 @@ class PreciseCUHLM(CUHLM):
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             ntt_ms_edge_end=ntt_ms_edge_end,
             min_bandwidth_mbps=min_bandwidth_mbps,
+            # 同 PreciseCommunicationSimulator：恒定带宽下两模型等价
+            bw_model=bw_model,
         )
 
         # 存储通信物理参数

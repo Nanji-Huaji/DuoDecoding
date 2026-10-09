@@ -95,6 +95,10 @@ class ExpPrint:
                 "edge_cloud_topk_history",
                 "edge_cloud_draft_len_history",
             ]
+        # 逐消息记账记录（[字节, 轮号]）：离线重放（scripts/rebill.py）的
+        # 输入，带宽/NTT/口径敏感性不再占 GPU。与 dump_network_stats 的
+        # 聚合历史不同，它是重放的完备输入，必须默认落盘。
+        key_to_dump += ["comm_trace_edge_cloud"]
         dump_dict = {key: metrics.get(key) for key in key_to_dump}
         return dump_dict
 
@@ -120,29 +124,47 @@ class ExpPrint:
         eval_result["gamma1"] = self.args.gamma1 if self.args.gamma1 is not None else -1
         eval_result["gamma2"] = self.args.gamma2 if self.args.gamma2 is not None else -1
         # L1 口径收敛：每个结果工件自带通信计费口径与动态链路统计（可复现性）。
+        # 2026-04 全表解钳：honest/legacy 只由计费两开关区分（残差 + 往返）；
+        # transfer_top_k_cap 不再属于口径预设（cap=16 原是 ours 的方法设计），
+        # 手动设 cap 只改变方法的 top-k 行为，不改变计费口径标签。
         charge = bool(getattr(self.args, "charge_residual_payload", False))
         mode = str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-        cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        if charge and mode == "per_round" and cap > 0:
+        if charge and mode == "per_round":
             label = "honest"
-        elif (not charge) and mode == "per_transfer" and cap == 0:
+        elif (not charge) and mode == "per_transfer":
             label = "legacy"
         else:
             label = "custom"
-        eval_result["comm_accounting"] = label
         eval_result["charge_residual_payload"] = charge
         eval_result["comm_round_trip_mode"] = mode
-        eval_result["transfer_top_k_cap"] = cap
-        # 机制层：记录**实际消费**而非仅标称值。计费开关只被 adaptive_tridecoding
-        # 系读取（cee_sd / cee_sd_opportunistic 委托给它），其余模式的实际字节与
-        # 往返由其内联实现决定。旧版只记标称值，口径标签可能与真实行为不一致
-        # （见 docs/param_ledger.md §2）。
+        eval_result["transfer_top_k_cap"] = int(
+            getattr(self.args, "transfer_top_k_cap", 0) or 0
+        )
+        # §3.4 网络口径：发射时长模型 + 带宽地板（新旧口径的 run 只能靠这
+        # 两个字段从工件区分，exp_name 里不可见）
+        eval_result["comm_bw_model"] = str(
+            getattr(self.args, "comm_bw_model", "instant")
+        )
+        eval_result["min_bandwidth_mbps"] = float(
+            getattr(self.args, "min_bandwidth_mbps", 5.0)
+        )
+        # 机制层：记录**实际消费**而非仅标称值。2026-04 统一口径落地后
+        # （docs/protocol.md §3）基线族与 adaptive 族消费同一套开关；CUHLM
+        # 系不消费仓库开关，而是按 CU-HLM 论文自身的计费口径计费（式 (5)：
+        # 上行 k·(b_prob+b_index) bits，token 索引 negligible）；无通信的
+        # 纯本地模式标签无意义。标称口径若不被本模式消费，不得贴
+        # honest/legacy 标签——否则标签会骗人（见 docs/param_ledger.md §2）。
         eval_result["protocol"] = str(getattr(self.args, "protocol", "none"))
         eval_result["protocol_deviations"] = list(
             getattr(self.args, "protocol_deviations", ())
         )
         try:
-            from src.protocols import mode_consumption
+            from src.protocols import (
+                _CUHLM_MODES,
+                _NO_COMM_MODES,
+                _TK_SLT_MODES,
+                mode_consumption,
+            )
 
             _cons = mode_consumption(str(self.args.eval_mode))
         except Exception:  # pragma: no cover - 诊断信息不应影响评测主流程
@@ -151,6 +173,30 @@ class ExpPrint:
             eval_result["comm_accounting_consumed"] = _cons.consumes_accounting
             eval_result["depth_keys"] = list(_cons.depth_keys)
             eval_result["consumption_source"] = _cons.source
+            _mode = str(self.args.eval_mode)
+            if (
+                _cons.consumes_accounting
+                and _cons.accounting == ("comm_round_trip_mode",)
+                and (_mode in _CUHLM_MODES or _mode in _TK_SLT_MODES)
+            ):
+                # 2026-10-09 统一往返（docs/protocol.md §3.4）：CUHLM/TK-SLT
+                # 系载荷字节按各自论文口径，但往返次数接入 comm_round_trip_mode
+                # （per_round = 每次云端交互 1×NTT）。标 honest 会overclaim
+                # 残差计费，标 paper 会漏掉往返统一——专用标签 paper_rt。
+                label = "paper_rt"
+            elif not _cons.consumes_accounting:
+                if _mode in _NO_COMM_MODES:
+                    label = "n/a"  # 无通信阶段：计费标签无意义
+                elif _mode in _CUHLM_MODES:
+                    # CU-HLM 论文自身口径（不是仓库统一开关的混合体）
+                    label = "paper"
+                elif _mode in _TK_SLT_MODES:
+                    # TK-SLT 论文自身口径（γ·K·b_prob/FP16 上行，
+                    # 索引与下行 negligible——docs/protocol.md §3.3）
+                    label = "paper"
+                else:
+                    label = "mixed"  # 标称预设不描述本模式的实际行为
+        eval_result["comm_accounting"] = label
         eval_result["stochastic_ntt"] = bool(
             getattr(self.args, "stochastic_ntt", False)
         )

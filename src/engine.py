@@ -23,12 +23,16 @@ from .communication import (
     PreciseCommunicationSimulator,
     PreciseCUHLM,
 )
-from .decoding_ops import finalize_verification, verify_draft_sequence
+from .decoding_ops import (
+    finalize_verification,
+    reject_tail_scalar_bytes,
+    verify_draft_sequence,
+)
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
 from .graph_decode import acquire_graph_caches, graph_mode_cache_kwargs
 from .model_gpu import KVCacheModel
 from .mode_features import get_mode_spec
-from .proposal_utils import stage_topk_proposal_history
+from .proposal_utils import apply_transfer_top_k_cap, stage_topk_proposal_history
 from .model_loading import (
     build_sharded_target_device_map,
     build_quant_config,
@@ -1024,11 +1028,23 @@ class Decoding(Register, ABC):
         else:
             comm_simulator = CommunicationSimulator(
                 min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
                 bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
             )
+        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
+        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
+        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
+        comm_simulator.coalesce_rounds = (
+            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
+            == "per_round"
+        )
+        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
+        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
+        comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -1068,6 +1084,7 @@ class Decoding(Register, ABC):
             prefix_len = prefix.shape[1]
 
             idx += 1
+            comm_simulator.set_round(idx)
 
             # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
@@ -1177,6 +1194,17 @@ class Decoding(Register, ABC):
                     transfer_top_k is not None and transfer_top_k > 0,
                     transfer_top_k,
                 )
+                if charge_residual:
+                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
+                    comm_simulator.simulate_transfer(
+                        reject_tail_scalar_bytes(
+                            approx_model_cache.prob_history[
+                                :, n, : self.vocab_size
+                            ],
+                            transfer_top_k,
+                        ),
+                        "edge_cloud",
+                    )
 
             # finalize_verification自动回流状态与重新采样（或简单采样下一个字符）
             prefix = finalize_verification(
@@ -1206,6 +1234,7 @@ class Decoding(Register, ABC):
             # 传输新生成的 token id
             comm_simulator.simulate_transfer(INT_SIZE, "edge_cloud")
 
+        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
