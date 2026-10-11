@@ -66,6 +66,41 @@ baselines.py (~1800行)：薄编排 + Register 注册
 - RL decision/learn 分离（报告 D4）不并入——正交改动，叠在同一 diff 里
   会让回滚不可能
 
+### 1.1 解码方法的组织（按 stage 拓扑分族）
+
+方法间真正不同的只有两样：**stage 拓扑**（dual=单草稿循环 /
+tri=little→draft→target 两级级联，决定编排控制流 → 文件划分轴）与
+**能力组合**（RL/acc_head/prob_bits，已是 MODE_FEATURES 数据 → 只影响
+context 构造）。载荷公式/验证/计费差异全部被 Phase 1-3 的 seam 吸收。
+
+```
+src/decoding/
+├── __init__.py       # import 装配（触发注册）+ 兼容再导出
+├── runtime.py        # Baselines 类（组合根：模型/args/缓存/acc_head/ctx 工厂）
+├── accounting.py     # CommAccounting          ← Phase 1
+├── context.py        # DecodingContext         ← Phase 2
+├── verify.py         # Speculative/Cuhlm/Dsd   ← Phase 3
+├── dual.py           # dist_spec(=dsd) · dist_split_spec(=dssd) ·
+│                     # uncertainty_decoding(=cuhlm) · tk_slt(=tkslt) · adaptive_decoding
+└── tri.py            # target_only · tridecoding · ceesd_without_arp ·
+                      # adaptive_tridecoding(=cee_sd) · cee_cuhlm · cee_dsd ·
+                      # cee_dssd · cee_sd_opportunistic(薄壳)
+```
+
+- 实现共 13 个、注册名 16 个；别名在装饰器层保持（dsd/dssd/cuhlm/tkslt/
+  ceesd_w/o_arp/**cee_sd**——注意 cee_sd 是 adaptive_tridecoding 的注册
+  别名，论文主方法名与实现名同源）
+- 分发机制不变：Register 装饰器 + `func.__get__(self, cls)`——函数是
+  descriptor，物理位置与分发解耦
+- baselines.py 终态 = 单行兼容门面（`from src.decoding.runtime import
+  Baselines`），旧 import 零断
+- 迁移机械性：Phase 2 逐方法迁移 context 时**同 PR 完成物理搬家**，
+  不开独立的"搬文件" PR
+- 否决的备选：按 cee_ 前缀分族（前缀是论文命名的拓扑别名，漏 tri 无 RL
+  方法）；一方法一类（shallow，推翻已加固的 Register seam）；声明式引擎
+  （控制流差异真实存在，DSL 会重新发明 Python）；一方法一文件（碎片化，
+  失去族的 locality）
+
 ## 2. 口径处置决策（2026-10-11 审计结论）
 
 | 口径 | 本质 | 处置 |
