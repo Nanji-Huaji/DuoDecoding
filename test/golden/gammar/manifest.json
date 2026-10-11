@@ -1,0 +1,139 @@
+{
+  "_meta": {
+    "description": "gammar sweep（CEE-SD γ* 重推导，v3 自由策略）golden 固件",
+    "produced_by": "scripts/run_gamma_restar_sweep.sh（主树，2026-10-11 07:04-07:21 UTC）",
+    "code_state": "主树工作区状态（未提交 WIP）== refactor/baselines@6d66c72 快照",
+    "git_sha_note": "golden 本身未记录 git_sha——当时 Step 0 尚未落地，此为缺口；此后所有新结果工件由 get_save_dict 自动携带 git_sha",
+    "dataset": "gsm8k 3-shot, sample_seed=1234, random_sample, temp=0.0 (greedy)",
+    "comm": "protocol=paper_table5, comm_accounting=honest, bw_model=fluid, edge_cloud=46Mbps, edge_end=563Mbps, cloud_end=46Mbps, ntt_edge_cloud=50ms, ntt_edge_end=0.317ms, batch_delay=0.05s, stochastic_comm, min_bandwidth=4.6Mbps",
+    "rl": "use_rl_adapter + disable_rl_update（推理冻结），v3 checkpoint"
+  },
+  "tags": {
+    "llama_free_g8": {
+      "series": "llama",
+      "gamma1": 8,
+      "gamma2": 8,
+      "samples": 80,
+      "original_run_dir": "exp/gammar/llama_free_g8_071119",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model tiny-llama-1.1b --target_model llama-2-13b --little_model llama-68m --max_tokens 128 --temp 0.0 --gamma1 8 --gamma2 8 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 80 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/llama_free_g8_071119 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth --main_rl_best_path checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth --little_rl_path checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth --little_rl_best_path checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+          "sha256_16": "e3df8c7f3bc5decf"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+          "sha256_16": "4a08e73ac4688acb"
+        }
+      }
+    },
+    "q15_free_g5": {
+      "series": "q15",
+      "gamma1": 5,
+      "gamma2": 5,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q15_free_g5_071502",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen1.5-1.8B-Chat --target_model Qwen/Qwen1.5-7B-Chat --little_model Qwen/Qwen1.5-0.5B-Chat --max_tokens 128 --temp 0.0 --gamma1 5 --gamma2 5 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q15_free_g5_071502 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+          "sha256_16": "719cac1624b05acc"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+          "sha256_16": "e8defeec93bdec40"
+        }
+      }
+    },
+    "q15_free_g8": {
+      "series": "q15",
+      "gamma1": 8,
+      "gamma2": 8,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q15_free_g8_071607",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen1.5-1.8B-Chat --target_model Qwen/Qwen1.5-7B-Chat --little_model Qwen/Qwen1.5-0.5B-Chat --max_tokens 128 --temp 0.0 --gamma1 8 --gamma2 8 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q15_free_g8_071607 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+          "sha256_16": "719cac1624b05acc"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+          "sha256_16": "e8defeec93bdec40"
+        }
+      }
+    },
+    "q15_free_g16": {
+      "series": "q15",
+      "gamma1": 16,
+      "gamma2": 16,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q15_free_g16_071714",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen1.5-1.8B-Chat --target_model Qwen/Qwen1.5-7B-Chat --little_model Qwen/Qwen1.5-0.5B-Chat --max_tokens 128 --temp 0.0 --gamma1 16 --gamma2 16 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q15_free_g16_071714 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+          "sha256_16": "719cac1624b05acc"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+          "sha256_16": "e8defeec93bdec40"
+        }
+      }
+    },
+    "q3_free_g5": {
+      "series": "q3",
+      "gamma1": 5,
+      "gamma2": 5,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q3_free_g5_071822",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen3-1.7B --target_model Qwen/Qwen3-14B --little_model Qwen/Qwen3-0.6B --max_tokens 128 --temp 0.0 --gamma1 5 --gamma2 5 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q3_free_g5_071822 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+          "sha256_16": "dd89f9ff476d8935"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+          "sha256_16": "e04bc5b8898e0031"
+        }
+      }
+    },
+    "q3_free_g8": {
+      "series": "q3",
+      "gamma1": 8,
+      "gamma2": 8,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q3_free_g8_071951",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen3-1.7B --target_model Qwen/Qwen3-14B --little_model Qwen/Qwen3-0.6B --max_tokens 128 --temp 0.0 --gamma1 8 --gamma2 8 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q3_free_g8_071951 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+          "sha256_16": "dd89f9ff476d8935"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+          "sha256_16": "e04bc5b8898e0031"
+        }
+      }
+    },
+    "q3_free_g16": {
+      "series": "q3",
+      "gamma1": 16,
+      "gamma2": 16,
+      "samples": 20,
+      "original_run_dir": "exp/gammar/q3_free_g16_072124",
+      "command": "CUDA_VISIBLE_DEVICES=1 .venv/bin/accelerate launch --num_processes 1 --main_process_port <29300+RANDOM%400> eval/eval_gsm8k.py --eval_mode adaptive_tridecoding --protocol paper_table5 --comm_accounting honest --draft_model Qwen/Qwen3-1.7B --target_model Qwen/Qwen3-14B --little_model Qwen/Qwen3-0.6B --max_tokens 128 --temp 0.0 --gamma1 16 --gamma2 16 --gamma 3 --edge_end_bandwidth 563 --edge_cloud_bandwidth 46 --cloud_end_bandwidth 46 --min_bandwidth_mbps 4.6 --comm_bw_model fluid --transfer_top_k 300 --num_samples_per_task 1 --eval_data_num 20 --sample_seed 1234 --random_sample --small_draft_threshold 0.6 --draft_target_threshold 0.7 --uncertainty_threshold 0.8 --num_shots 3 --exp_name gammar/q3_free_g16_072124 --ntt_ms_edge_cloud 50 --ntt_ms_edge_end 0.317 --batch_delay 0.05 --use_stochastic_comm --use_rl_adapter --disable_rl_update --use_cuda_graph --small_draft_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3 --draft_target_acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --acc_head_path src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3 --main_rl_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --main_rl_best_path checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth --little_rl_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth --little_rl_best_path checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "checkpoints": {
+        "main": {
+          "path": "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+          "sha256_16": "dd89f9ff476d8935"
+        },
+        "little": {
+          "path": "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+          "sha256_16": "e04bc5b8898e0031"
+        }
+      }
+    }
+  }
+}
