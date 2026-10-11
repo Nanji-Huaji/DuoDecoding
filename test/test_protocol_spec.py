@@ -562,10 +562,12 @@ def _argument_groups() -> dict[str, list[str]]:
 
 
 class TestHelpGrouping(unittest.TestCase):
-    """`--help` 分组：105 个参数全部归类，① 组恰好是那 16 个。
+    """`--help` 分组：107 个参数全部归类，① 组恰好是那 16 个。
 
     参数总数历史：103 → 104（--tk_slt_odld，g_method）→ 105
-    （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）。"""
+    （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）→ 107
+    （2026-10-10 --rl_comm_cost_mode / --rl_threshold_candidates，
+    g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）。"""
 
     def test_every_argument_is_grouped(self):
         g = _argument_groups()
@@ -575,7 +577,7 @@ class TestHelpGrouping(unittest.TestCase):
             f"这些参数还挂在扁平 parser 上，未进任何分组: {g['_ungrouped']}",
         )
         total = sum(len(v) for k, v in g.items() if k != "_ungrouped")
-        self.assertEqual(total, 105)
+        self.assertEqual(total, 107)
 
     def test_no_argument_is_in_two_groups(self):
         seen: dict[str, str] = {}

@@ -6,10 +6,20 @@ import pynvml
 
 
 def get_available_gpus(
-    max_used_memory_mb: float = 1024,
+    max_used_memory_mb: float | None = None,
     max_gpu_utilization: float = 5,
 ) -> List[int]:
-    """Return GPU ids that look idle enough for running a new experiment."""
+    """Return GPU ids that look idle enough for running a new experiment.
+
+    ``max_used_memory_mb`` 缺省 1024，可被环境变量 GPU_MAX_USED_MEMORY_MB
+    覆盖（GPU 上有他人常驻小服务时调高，如 8192）。
+    """
+    import os
+
+    if max_used_memory_mb is None:
+        max_used_memory_mb = float(
+            os.environ.get("GPU_MAX_USED_MEMORY_MB", "1024")
+        )
     pynvml.nvmlInit()
     try:
         available_gpus: List[int] = []

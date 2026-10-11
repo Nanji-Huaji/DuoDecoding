@@ -276,7 +276,7 @@ class DDQNAgent:
 
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def save(self, path):
+    def save(self, path, extras: dict | None = None):
         # 尝试获取模型系列名称，用于校验
         model_series = os.environ.get("MODEL_SERIES_NAME", "unknown")
 
@@ -285,19 +285,23 @@ class DDQNAgent:
         # 均无法被 torch.save 感知）会留下半个损坏的 checkpoint——这是
         # "训练成果静默丢失"链条的第一环。
         tmp_path = path + ".tmp"
-        torch.save(
-            {
-                "policy_net": self.policy_net.state_dict(),
-                "target_net": self.target_net.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "epsilon": self.epsilon,
-                "update_count": self.update_count,
-                "model_series": model_series,
-                "init_seed": self.init_seed,
-                "best_tps": self.best_tps,
-            },
-            tmp_path,
-        )
+        payload = {
+            "policy_net": self.policy_net.state_dict(),
+            "target_net": self.target_net.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "update_count": self.update_count,
+            "model_series": model_series,
+            "init_seed": self.init_seed,
+            "best_tps": self.best_tps,
+        }
+        if extras:
+            # 动作格持久化（格错配防护）：阈值/top-k 候选的"标签"决定同一
+            # action_idx 的语义。不存的话，评测侧 registry/CLI 格一旦变
+            # 更，旧 checkpoint 的输出会被静默重标（训练学的是 0.4、
+            # 评测当 0.99 用）。
+            payload.update(extras)
+        torch.save(payload, tmp_path)
         os.replace(tmp_path, path)
 
         buffer_path = path + ".buffer"
@@ -403,6 +407,16 @@ class DDQNAgent:
                 f"请确认后删除旧 checkpoint 或改用其他候选"
             ) from e
 
+        # 动作格还原（格错配防护，与 save() 对应）：把 checkpoint 携带的
+        # 候选格暂存给外层 adapter——同一 action_idx 的语义以训练时为准。
+        # 格长度不一致时上方 _assert_state_dict_compatible 已按头部形状
+        # 拒绝，能走到这里的只剩"同长度不同标签"的重标场景。
+        self.loaded_extras = {
+            k: checkpoint[k]
+            for k in ("threshold_candidates", "topk_candidates")
+            if k in checkpoint
+        }
+
         buffer_path = path + ".buffer"
         if os.path.exists(buffer_path):
             try:
@@ -506,20 +520,14 @@ class RLNetworkAdapter:
         # 0.6/0.8/0.9 是否更好）。argmax 仍限制在"最接近的候选档"切片上选择
         # top-k/γ，但实际生效的阈值用原始值。
         _force_thr = getattr(args, "rl_force_threshold", None)
-        self._force_threshold_value = None if _force_thr is None else float(_force_thr)
+        self._force_thr_raw = None if _force_thr is None else float(_force_thr)
+        self._force_threshold_value = self._force_thr_raw
         # 按角色分离：little 级是 opportunistic（可能接受未经目标模型验证的 token），
         # 若把主阈值同时强加到它身上，准确率变化会与主阈值混在一起（实测过一次，
         # 见文档 F21/F23）。force_threshold_override 允许显式指定本实例的值。
         if force_threshold_override is not None:
             self._force_threshold_value = (
                 None if float(force_threshold_override) < 0 else float(force_threshold_override)
-            )
-        if _force_thr is None:
-            self._force_threshold_idx = None
-        else:
-            _cands = [float(c) for c in self.threshold_candidates]
-            self._force_threshold_idx = min(
-                range(len(_cands)), key=lambda i: abs(_cands[i] - float(_force_thr))
             )
 
         # 反事实消融（--rl_force_topk <值>）：把上行 top-k 钉死（最近候选），
@@ -530,20 +538,15 @@ class RLNetworkAdapter:
             if force_topk_override is None or float(force_topk_override) <= 0
             else float(force_topk_override)
         )
-        if self._force_topk_value is None:
-            self._force_topk_idx = None
-        else:
-            self._force_topk_idx = min(
-                range(len(self.topk_candidates)),
-                key=lambda i: abs(
-                    float(self.topk_candidates[i]) - self._force_topk_value
-                ),
-            )
-
+        # 档位解析单点化：load() 还原 checkpoint 动作格后需要重解析（见
+        # _resolve_force_indices 注释）。
+        self._resolve_force_indices()
         self.model_path = model_path
         self.best_model_path = best_model_path or model_path
         self.legacy_load_paths = list(legacy_load_paths or [])
-        agent_name = agent_name or os.path.basename(self.model_path).replace(".pth", "")
+        agent_name = agent_name or os.path.basename(self.model_path).replace(
+            ".pth", ""
+        )
 
         # ==========================================
         # 奖励设计 (v2)
@@ -693,7 +696,7 @@ class RLNetworkAdapter:
             def _try_load(load_path: str) -> bool:
                 """单候选加载：损坏时高声告警、改名保留证据，返回 False 继续尝试下一候选。"""
                 try:
-                    return bool(self.agent.load(load_path))
+                    ok = bool(self.agent.load(load_path))
                 except RuntimeError as e:
                     print(
                         f"[{agent_name}] CRITICAL: {e}\n"
@@ -705,6 +708,10 @@ class RLNetworkAdapter:
                     except OSError:
                         pass
                     return False
+                if ok:
+                    # 动作格以 checkpoint 为准（格错配防护）
+                    self._adopt_loaded_grid()
+                return ok
 
             if prefer_latest and os.path.exists(self.model_path) and _try_load(
                 self.model_path
@@ -725,7 +732,8 @@ class RLNetworkAdapter:
                     print(
                         f"[{agent_name}] Migrating legacy RL checkpoint from {legacy_path} to {self.model_path}"
                     )
-                    self.agent.save(self.model_path)
+                    # 迁移保存同样携带动作格（加载时已采纳 checkpoint 的格）
+                    self.agent.save(self.model_path, extras=self._grid_extras())
                 else:
                     print(
                         f"[{agent_name}] No loadable checkpoint found at "
@@ -733,6 +741,67 @@ class RLNetworkAdapter:
                         f"（损坏的候选已保留为 .corrupt，见上方 CRITICAL 日志）"
                     )
         self.best_tps = self.agent.best_tps
+
+    def _resolve_force_indices(self) -> None:
+        """把 force 阈值/top-k 的值映射到**当前**候选格的档位。
+
+        动作格可能在 load() 后被 checkpoint 还原成同长度、不同标签的格
+        （_adopt_loaded_grid），届时必须重解析，否则消融切片会钉在语义
+        已经漂移的档位上。
+        """
+        if self._force_thr_raw is None:
+            self._force_threshold_idx = None
+        else:
+            _cands = [float(c) for c in self.threshold_candidates]
+            self._force_threshold_idx = min(
+                range(len(_cands)), key=lambda i: abs(_cands[i] - self._force_thr_raw)
+            )
+        if self._force_topk_value is None:
+            self._force_topk_idx = None
+        else:
+            self._force_topk_idx = min(
+                range(len(self.topk_candidates)),
+                key=lambda i: abs(
+                    float(self.topk_candidates[i]) - self._force_topk_value
+                ),
+            )
+
+    def _grid_extras(self) -> dict:
+        """随 checkpoint 持久化的动作格（save 侧，与 _adopt_loaded_grid 对应）。"""
+        return {
+            "threshold_candidates": [float(x) for x in self.threshold_candidates],
+            "topk_candidates": [int(x) for x in self.topk_candidates],
+        }
+
+    def _adopt_loaded_grid(self) -> None:
+        """checkpoint 携带的动作格优先于构造时的 registry/CLI 格。
+
+        同一 action_idx 的语义以训练时为准；不还原的话，训练/评测两侧
+        候选格一旦不一致，策略输出会被静默重标（学的是 0.4、当 0.99 用）。
+        """
+        extras = getattr(self.agent, "loaded_extras", None) or {}
+        ckpt_thr = extras.get("threshold_candidates")
+        ckpt_topk = extras.get("topk_candidates")
+        changed = False
+        if ckpt_thr is not None and [
+            float(x) for x in ckpt_thr
+        ] != [float(x) for x in self.threshold_candidates]:
+            print(
+                f"[{self.agent.name}] Note: 采用 checkpoint 阈值格 {ckpt_thr}"
+                f"（构造时为 {self.threshold_candidates}，动作语义以训练时为准）"
+            )
+            self.threshold_candidates = [float(x) for x in ckpt_thr]
+            changed = True
+        if ckpt_topk is not None and [
+            int(x) for x in ckpt_topk
+        ] != [int(x) for x in self.topk_candidates]:
+            print(
+                f"[{self.agent.name}] Note: 采用 checkpoint top-k 格 {ckpt_topk}"
+            )
+            self.topk_candidates = [int(x) for x in ckpt_topk]
+            changed = True
+        if changed:
+            self._resolve_force_indices()
 
     def _get_current_feature_vector(
         self, bandwidth_mbps, latency_ms, entropy, last_acc_prob, task_name
@@ -1123,14 +1192,14 @@ class RLNetworkAdapter:
         if new_best:
             self.best_tps = current_tps
         self.agent.best_tps = self.best_tps
-        self.agent.save(self.model_path)
+        self.agent.save(self.model_path, extras=self._grid_extras())
 
         if new_best:
-            self.agent.save(self.best_model_path)
+            self.agent.save(self.best_model_path, extras=self._grid_extras())
             print(
                 f"[{self.agent.name}] New Best TPS: {current_tps:.2f}! Saved to {self.best_model_path}"
             )
 
         # 每 100 次更新备份一次（可选）
         if self.agent.update_count % 100 == 0:
-            self.agent.save(self.model_path)
+            self.agent.save(self.model_path, extras=self._grid_extras())

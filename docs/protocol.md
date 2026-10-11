@@ -287,23 +287,25 @@ edge_cloud（矩阵基线只用它）。回归锁定：
 `test/test_comm_simulation.py::TestCommTraceReplay*`（双口径重放等价、
 轮号标注、样本边界时钟归零）。
 
-## 4. 唯一待定项：投机深度（γ）
+## 4. 投机深度（γ）—— **2026-10-09 已定：按方法×带宽分档**
 
-现状：`--gamma` 只被 `dist_spec`/`dist_split_spec`/`uncertainty_decoding`/
-`tk_slt`/`adaptive_decoding`/engine 的 speculative 读取；三级方法只读 `gamma1`/`gamma2`。
-扫描没给 `--gamma` ⇒ 落到 `create_config(gamma=5)` 的**签名默认值** ⇒ 基线实际跑
-γ=5，而 `align_paper_t5_gsm8k.sh` 的头注释写的是"基线 γ=3"。
+历史：γ 曾是"唯一待定项"（`--gamma` 一律显式传，不许默认值兜底），旧矩阵
+用统一 γ=3（"前向数与论文对齐"的复现口径，DSD 4113 vs 3980）。γ 扫描
+（`experiment_results/gamma_sweep_dsd-dssd-cuhlm-tk_slt_llama_gsm8k.json`，
+80 样本/格）+ fluid 口径跨带宽预览（解码侧量与带宽无关，重放推断）给出
+各方法自己的 γ*，`exp.py:GAMMA_BY_MODE_BANDWIDTH` 落地：
 
-过渡期规则（在讨论清楚之前立即生效，避免再次误读）：
+| 方法 | 46 Mbps | 10 Mbps | 5 Mbps | 依据 |
+|---|---|---|---|---|
+| dsd | 3（3-4 平坦） | 1 | 1 | 载荷 ∝ γ，低带宽单调降；γ1@5 比 γ3 +31% |
+| dssd | 8 | 8 | 8 | 拒绝行载荷轻；46 下 γ8 比 γ3 +28% |
+| tk_slt | 8 | 8 | 8 | 46 下 8-16 平坦（<0.6%），低带宽收敛到 8 |
+| cuhlm | 3 | 3 | 3 | γ 盲（自适应 k(t)） |
+| CEE-SD | γ1=γ2=5 | 同 | 同 | RL 控制，非静态 γ |
 
-- `--gamma`、`--gamma1`、`--gamma2` **一律显式传**，不允许靠默认值兜底；
-- run 启动时打印 `[protocol] γ: 单-γ 方法=5 / 三级方法=3/3` 并标注
-  `γ 规则未定（协议 paper_table5 不含该项）`；
-- 结果文件名/JSON 记录实际用的 γ 与规则名。
-
-讨论时需要的数据（建议一次跑完，其余全部固定为 §2 的值，逐 γ 报
-`Fwd`、`Tcomm`、`tok/fwd`、`R_acce`、准确率）：`γ ∈ {3,5,8,16}`，每个方法一组。
-这样"matched 还是 per-method"就有表可依，而不是凭感觉。
+γ 进 `RUN_IDENTITY_FIELDS`：分档前后的 run 身份不互撞。改 γ 的动机是
+"每个基线取自己的最强设置"（strongest-baseline 惯例）；若论文对齐需要
+复现 γ=3 口径，把表改回统一 3 即可（`gamma_for_matrix` 单点收口）。
 
 ## 5. 强制机制（Step 1 已落地，不改动任何数字）
 

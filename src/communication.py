@@ -395,6 +395,34 @@ class CommunicationSimulator:
                     trace_kind="flushed",
                 )
 
+    def pending_bytes(self, link_type: str) -> float:
+        """当前轮尚未结算（flush 前）的累积字节数。
+
+        flush 前即可读：RL 奖励的名义通信成本（nominal_comm_s）依赖它。
+        """
+        return float(self._pending_bytes.get(link_type, {}).get("bytes", 0.0))
+
+    def nominal_comm_s(self, link_type: str) -> float:
+        """本轮名义通信成本（秒）：NTT + 未结算字节 / 带宽。
+
+        与 flush 后的真实计费（edge_*_comm_time）不同，本方法在轮内任意
+        时刻可读——fluid+per_round 口径下排水/NTT 到 flush_round 才入账，
+        轮内读差值恒为 0（RL 训练奖励因此长期无通信项，策略系统性偏好
+        短草稿，见 experiment_results/ceesd_gamma_threshold_probe.md 根因①）。
+        名义值略高于真实账（不含 fluid 跨轮重叠折扣），作为学习信号方向
+        正确且即时可用。
+        """
+        ntt = {
+            "edge_cloud": self.ntt_edge_cloud,
+            "edge_end": self.ntt_edge_end,
+        }.get(link_type, 0.0)
+        bw = {
+            "edge_cloud": self.bandwidth_edge_cloud,
+            "edge_end": self.bandwidth_edge_end,
+            "cloud_end": self.bandwidth_cloud_end,
+        }.get(link_type, self.bandwidth_cloud_end)
+        return float(ntt) + self.pending_bytes(link_type) / max(float(bw), 1e-9)
+
     def simulate_transfer(
         self,
         data_size_bytes: int | float,

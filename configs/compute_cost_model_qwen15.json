@@ -1,0 +1,14 @@
+{
+  "little": 0.0055,
+  "draft": 0.0061,
+  "target": 0.0296,
+  "_meta": {
+    "source": "135\u683c fluid \u77e9\u9635 metrics \u81ea\u6821\u51c6\uff08cuda-graph \u5b9e\u6d4b\uff0c2026-10-11\uff09",
+    "calibration": {
+      "target": "DSD \u683c target_computation_time/target_forward_times",
+      "draft": "CEE-SD \u683c draft_computation_time/draft_forward_times",
+      "little": "CEE-SD \u683c little_computation_time/little_forward_times"
+    },
+    "note": "\u66ff\u4ee3\u65e7 configs/compute_cost_model.json\uff08\u975e\u56fe\u52a0\u901f llama \u4e24\u6837\u672c\u503c\uff0c\u8349\u7a3f\u865a\u9ad84-5\u500d\u4e14\u5355\u5957\u4ef7\u683c\u7528\u4e8e\u4e09\u7cfb\u5217\uff09\u3002v4 \u91cd\u8bad\u6309\u7cfb\u5217\u53d6\u7528\u3002"
+  }
+}

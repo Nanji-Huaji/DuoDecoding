@@ -89,6 +89,28 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
+def _reward_comm_s(args, comm_simulator, link_type: str, settled_start: float) -> float:
+    """RL 奖励的通信成本（--rl_comm_cost_mode）。
+
+    - nominal（默认）：NTT + 本轮未结算字节/带宽（nominal_comm_s）。fluid+
+      per_round 口径下真实计费到 flush_round 才入账，轮内读差值恒为 0——
+      v2 重训的奖励因此长期无通信项，策略系统性偏好短草稿（根因①，见
+      experiment_results/ceesd_gamma_threshold_probe.md）。
+    - settled：旧口径（flush 差值），保留用于复现历史训练。
+    - off：恒 0。
+    """
+    mode = getattr(args, "rl_comm_cost_mode", "nominal")
+    if mode == "nominal":
+        return float(comm_simulator.nominal_comm_s(link_type))
+    if mode == "off":
+        return 0.0
+    if link_type == "edge_cloud":
+        return float(
+            comm_simulator.edge_cloud_comm_time - settled_start
+        )
+    return float(comm_simulator.edge_end_comm_time - settled_start)
+
+
 def _send_downlink_token(comm_simulator, token: torch.Tensor, link_type: str) -> None:
     """下行回传一个采样 token 及其位置索引，**合并为一次传输**。
 
@@ -663,6 +685,30 @@ class Baselines(Decoding):
                     target_model=args.target_model,
                     checkpoint_root=checkpoint_root,
                 )
+                # 阈值候选格：CLI 显式指定 > registry 默认。默认格顶 0.4 是
+                # v2 策略学偏的根因②（深草稿不可达）；扩格训练时传
+                # --rl_threshold_candidates，且格会随 checkpoint 持久化、
+                # 评测加载时自动还原（不会重演训练/评测格错配）。
+                _main_thr_grid = main_spec.threshold_candidates
+                if getattr(args, "rl_threshold_candidates", None):
+                    _main_thr_grid = [
+                        float(x)
+                        for x in str(args.rl_threshold_candidates).split(",")
+                        if x.strip()
+                    ]
+                    if not _main_thr_grid:
+                        raise ValueError(
+                            "--rl_threshold_candidates 解析为空格: "
+                            f"{args.rl_threshold_candidates!r}"
+                        )
+                if max(float(x) for x in _main_thr_grid) < 0.5:
+                    print(
+                        "Warning: main 阈值候选格上限 "
+                        f"{max(float(x) for x in _main_thr_grid)} < 0.5 —— 深草稿"
+                        "不可达（评测最优 ~0.8，见"
+                        " experiment_results/ceesd_gamma_threshold_probe.md）。"
+                        "训练请考虑 --rl_threshold_candidates 扩格。"
+                    )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
                     model_path=getattr(args, "main_rl_path", None)
@@ -684,7 +730,7 @@ class Baselines(Decoding):
                     ]
                     if legacy_load_paths
                     else [],
-                    threshold_candidates=main_spec.threshold_candidates,
+                    threshold_candidates=_main_thr_grid,
                     init_seed=init_seed,
                     init_strategy=init_strategy,
                     frozen=opportunistic,
@@ -3461,7 +3507,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                )
 
                 # 去掉分子 +1
                 tps_part = little_accepted_this_iter / (
@@ -3601,8 +3649,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
                 )
 
                 # 去掉分子 +1
@@ -4748,7 +4796,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                )
 
                 # 第一层（end->edge）奖励，走同一套奖励实现（见 src/rl_reward.py）。
                 # 注意：当前版本的信用分配是"各层局部奖励"，两层强耦合时这是有偏的；
@@ -5161,8 +5211,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
                 )
 
                 # 奖励统一由 src/rl_reward.py 实现：默认 legacy 即 v1 原式
@@ -5175,9 +5225,15 @@ class Baselines(Decoding):
                     comm_s=step_comm_time,
                     compute_s=step_time,
                     energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
-                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）
-                    transferred_bytes=comm_simulator.edge_cloud_data
-                    - edge_cloud_bytes_start,
+                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）。
+                    # nominal 口径下用轮内 pending 字节——settled 差值在 flush 前
+                    # 恒为 0（与 comm_s 同源的同款 bug）。
+                    transferred_bytes=(
+                        comm_simulator.pending_bytes("edge_cloud")
+                        if getattr(self.args, "rl_comm_cost_mode", "nominal")
+                        == "nominal"
+                        else comm_simulator.edge_cloud_data - edge_cloud_bytes_start
+                    ),
                     forward_counts={
                         "little": float(actual_gamma2),
                         "draft": float(actual_gamma1),
