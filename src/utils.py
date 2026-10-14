@@ -730,14 +730,14 @@ def parse_arguments():
     )
     g_rl.add_argument(
         "--rl_comm_cost_mode",
-        choices=["nominal", "settled", "off"],
+        choices=["nominal", "off"],
         default="nominal",
         help=(
             "RL 奖励的通信成本口径。nominal（默认）= NTT + 本轮未结算字节/带宽"
-            "（CommunicationSimulator.nominal_comm_s，轮内即时可读）；settled ="
-            " 旧口径（flush 后差值——fluid+per_round 下轮内读恒为 0，训练奖励因此"
-            "长期无通信项、策略偏好短草稿，见"
-            " experiment_results/ceesd_gamma_threshold_probe.md 根因①）；off = 恒 0。"
+            "（CommunicationSimulator.nominal_comm_s，轮内即时可读）；off = 恒 0。"
+            "（settled 旧口径已删除——fluid+per_round 下轮内读恒为 0，v2 重训"
+            "根因①，见 experiment_results/ceesd_gamma_threshold_probe.md；"
+            "历史训练复现请 checkout 删除前 commit）"
         ),
     )
     g_rl.add_argument(

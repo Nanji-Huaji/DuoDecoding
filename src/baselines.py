@@ -89,26 +89,29 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
-def _reward_comm_s(args, comm_simulator, link_type: str, settled_start: float) -> float:
+def _reward_comm_s(args, comm_simulator, link_type: str) -> float:
     """RL 奖励的通信成本（--rl_comm_cost_mode）。
 
-    - nominal（默认）：NTT + 本轮未结算字节/带宽（nominal_comm_s）。fluid+
-      per_round 口径下真实计费到 flush_round 才入账，轮内读差值恒为 0——
-      v2 重训的奖励因此长期无通信项，策略系统性偏好短草稿（根因①，见
+    - nominal（默认）：NTT + 本轮未结算字节/带宽（nominal_comm_s，
+      轮内即时可读——fluid+per_round 口径下真实计费到 flush_round 才
+      入账，差值口径轮内恒 0，v2 重训的奖励因此长期无通信项、策略
+      系统性偏好短草稿（根因①，见
       experiment_results/ceesd_gamma_threshold_probe.md）。
-    - settled：旧口径（flush 差值），保留用于复现历史训练。
     - off：恒 0。
+
+    历史注记：settled 口径（flush 差值）已于 Phase 1 删除（2026-10-11，
+    golden 闭环后）——fluid+per_round 下轮内差值恒 0 属坏观测，零脚本
+    引用；历史训练复现走 commit 锚定（结果工件 git_sha）。
     """
     mode = getattr(args, "rl_comm_cost_mode", "nominal")
     if mode == "nominal":
         return float(comm_simulator.nominal_comm_s(link_type))
     if mode == "off":
         return 0.0
-    if link_type == "edge_cloud":
-        return float(
-            comm_simulator.edge_cloud_comm_time - settled_start
-        )
-    return float(comm_simulator.edge_end_comm_time - settled_start)
+    raise ValueError(
+        f"未知 rl_comm_cost_mode {mode!r}（可用: nominal, off；"
+        f"settled 已删除，历史复现请 checkout 删除前 commit）"
+    )
 
 
 def _send_downlink_token(comm_simulator, token: torch.Tensor, link_type: str) -> None:
@@ -3417,7 +3420,6 @@ class Baselines(Decoding):
             draft_stage_probs: Optional[torch.Tensor] = None
 
             # 第一层 speculative
-            edge_end_comm_start = comm_simulator.edge_end_comm_time
             step_start_time = time.time()
 
             x, little_rebuilt_probs, little_rebuilt_meta, q = self._generate_with_optional_rebuilt_proposal(
@@ -3508,7 +3510,7 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
-                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                    self.args, comm_simulator, "edge_end"
                 )
 
                 # 去掉分子 +1
@@ -3559,7 +3561,6 @@ class Baselines(Decoding):
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
-            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             step_start_time = time.time()
 
             if idx == 1:
@@ -3650,7 +3651,7 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
-                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 去掉分子 +1
@@ -4599,7 +4600,6 @@ class Baselines(Decoding):
             current_proposal_top_k = proposal_top_k(transfer_top_k)
 
             # 第一层 speculative
-            edge_end_comm_start = comm_simulator.edge_end_comm_time
             edge_end_energy_start = comm_simulator.total_comm_energy
 
             self.small_draft_adapter.reset_step()
@@ -4797,7 +4797,7 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
-                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                    self.args, comm_simulator, "edge_end"
                 )
 
                 # 第一层（end->edge）奖励，走同一套奖励实现（见 src/rl_reward.py）。
@@ -4893,7 +4893,6 @@ class Baselines(Decoding):
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
-            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             edge_cloud_energy_start = comm_simulator.total_comm_energy
             edge_cloud_bytes_start = comm_simulator.edge_cloud_data
             step_start_time = time.time()
@@ -5212,7 +5211,7 @@ class Baselines(Decoding):
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
-                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 奖励统一由 src/rl_reward.py 实现：默认 legacy 即 v1 原式
@@ -5226,8 +5225,8 @@ class Baselines(Decoding):
                     compute_s=step_time,
                     energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
                     # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）。
-                    # nominal 口径下用轮内 pending 字节——settled 差值在 flush 前
-                    # 恒为 0（与 comm_s 同源的同款 bug）。
+                    # nominal 口径下用轮内 pending 字节；off 沿用 flush 差值
+                    # （字节轴与时间轴独立，off 保留历史原样行为）。
                     transferred_bytes=(
                         comm_simulator.pending_bytes("edge_cloud")
                         if getattr(self.args, "rl_comm_cost_mode", "nominal")

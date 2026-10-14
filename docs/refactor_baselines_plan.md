@@ -130,7 +130,7 @@ src/decoding/
 
 | 口径 | 本质 | 处置 |
 |---|---|---|
-| `rl_comm_cost_mode=settled` | bug（坏观测，已致 v2 重训事故） | **Phase 1 删**，零用户 |
+| `rl_comm_cost_mode=settled` | bug（坏观测，已致 v2 重训事故） | ✅ 已删（2026-10-11，Phase 1 首个 PR；argparse 收窄 nominal/off，未知值显式 ValueError，4 调用点 + 死捕获整链删除） |
 | `--no-charge_residual_payload` | bug 冻结（残差被无声省掉） | 保留为 `ours_hist` profile 数据直到论文冻结，之后删 |
 | `per_transfer`（2×NTT） | 口径（老实现确实发两条消息） | 保留，数据化 |
 | `instant` 带宽模型 | 口径（明示简化 + 历史数字复现锚点） | 保留为 adapter |

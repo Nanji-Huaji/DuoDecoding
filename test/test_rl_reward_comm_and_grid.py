@@ -61,35 +61,30 @@ class TestNominalComm:
 
 
 class TestRewardCommModes:
-    """根因①的语义回归：settled 轮内差值恒 0（旧行为），nominal 可读。"""
+    """根因①的语义回归。nominal 轮内可读（修复后行为）；settled 已删除
+    （Phase 1，2026-10-11）——其轮内差值恒 0 是坏观测本身，删除后传入
+    必须显式失败而非静默降级。"""
 
-    def test_settled_mode_reads_zero_mid_round(self):
+    def test_settled_mode_is_rejected(self):
+        """settled 已删除：传入即 ValueError，不静默落到任何口径。"""
         sim = _sim()
-        start = sim.edge_cloud_comm_time
-        sim.simulate_transfer(575_000, "edge_cloud")
-        assert (
+        with pytest.raises(ValueError, match="settled"):
             _reward_comm_s(
-                Namespace(rl_comm_cost_mode="settled"),
-                sim,
-                "edge_cloud",
-                start,
+                Namespace(rl_comm_cost_mode="settled"), sim, "edge_cloud"
             )
-            == 0.0
-        )
 
     def test_nominal_mode_reads_ntt_plus_drain_mid_round(self):
         sim = _sim()
-        start = sim.edge_cloud_comm_time
         sim.simulate_transfer(575_000, "edge_cloud")
         assert _reward_comm_s(
-            Namespace(rl_comm_cost_mode="nominal"), sim, "edge_cloud", start
+            Namespace(rl_comm_cost_mode="nominal"), sim, "edge_cloud"
         ) == pytest.approx(0.15)
 
     def test_default_mode_is_nominal(self):
         sim = _sim()
         sim.simulate_transfer(575_000, "edge_cloud")
         # Namespace 缺属性（历史调用方）→ getattr 默认 nominal
-        assert _reward_comm_s(Namespace(), sim, "edge_cloud", 0.0) == pytest.approx(
+        assert _reward_comm_s(Namespace(), sim, "edge_cloud") == pytest.approx(
             0.15
         )
 
@@ -98,7 +93,7 @@ class TestRewardCommModes:
         sim.simulate_transfer(575_000, "edge_cloud")
         assert (
             _reward_comm_s(
-                Namespace(rl_comm_cost_mode="off"), sim, "edge_cloud", 0.0
+                Namespace(rl_comm_cost_mode="off"), sim, "edge_cloud"
             )
             == 0.0
         )
@@ -107,7 +102,7 @@ class TestRewardCommModes:
         sim = _sim()
         sim.simulate_transfer(70_375, "edge_end")
         assert _reward_comm_s(
-            Namespace(rl_comm_cost_mode="nominal"), sim, "edge_end", 0.0
+            Namespace(rl_comm_cost_mode="nominal"), sim, "edge_end"
         ) == pytest.approx(0.001317)
 
 
