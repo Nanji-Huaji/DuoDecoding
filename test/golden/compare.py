@@ -26,7 +26,10 @@ from pathlib import Path
 
 GOLDEN_ROOT = Path(__file__).parent / "gammar"
 
-#: 实测计时字段——物理上不可复现，golden 不锁（Phase 0.1 可修订此表）
+#: 实测计时字段——物理上不可复现，golden 不锁
+#: （Phase 0.1 校准双跑裁决 2026-10-11：dra_overhead_time 三次独立 run
+#:   值 0.98/3.67/1.03，随机器负载波动且与 run1 的 little_computation_time
+#:   变慢同向相关——墙钟测量而非模拟；arp_overhead_time 同性质归入）
 TIMING_FIELDS = frozenset(
     {
         "wall_time",
@@ -35,6 +38,8 @@ TIMING_FIELDS = frozenset(
         "little_computation_time",
         "draft_computation_time",
         "target_computation_time",
+        "arp_overhead_time",
+        "dra_overhead_time",
     }
 )
 

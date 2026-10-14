@@ -158,6 +158,19 @@ honest`（三子开关统一覆盖，utils.py:1169-1185）、`--protocol paper_t
 
 锁：无（本阶段就是造锁）。风险：GPU 非确定性导致 golden 不可行 → 0.5 兜底。
 
+**执行记录（2026-10-11，commit 7e754c0 + 裁决修正）**：
+- 0.1 ✅ 双跑裁决：**LOCKED 类全部逐位稳定**（golden/run1/run2 三份
+  一致：token 数、接受数、前向数、通信模拟、bytes、connects）。
+  唯一漂移字段 `dra_overhead_time`（0.98/3.67/1.03）裁决为墙钟测量
+  （与 run1 的 little_computation_time 变慢同向相关），与
+  `arp_overhead_time` 同归 TIMING。**0.5 不需要**——temp=0 + 固定
+  seed + 同卡（GPU 1）下决策已天然确定
+- 0.2 ✅ 7 tag 固件 + manifest（命令行/代码状态 6d66c72/checkpoint
+  sha256 指纹）+ compare 执法者 + 28 个完整性测试
+- 0.4 ✅ `_git_provenance()` 入 `get_save_dict`——校准 run 的产物已
+  自带 `git_sha=7e754c0e`，验证生效
+- 0.3 ⏳ 留待 Phase 3（round 函数成形时逐 adapter 建）
+
 ### Phase 1 — CommAccounting（口径收拢）
 
 - 新建 `src/comm_accounting.py`：16 flag → 构造函数；5 方法接口；

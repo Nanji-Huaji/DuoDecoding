@@ -45,7 +45,7 @@ run_once () {  # run_once <run_name>
     --main_rl_path "$MAIN_P" --main_rl_best_path "$MAIN_P" \
     --little_rl_path "$LITTLE_P" --little_rl_best_path "$LITTLE_P" \
     > "golden_calib_$name.log" 2>&1
-  ls -dt exp/golden_calib/${name}_*/ | head -1
+  ls -dt exp/golden_calib/${name}*/ | head -1
 }
 
 echo "=== Phase 0.1 校准双跑（GPU=$GPU，worktree 隔离区）==="

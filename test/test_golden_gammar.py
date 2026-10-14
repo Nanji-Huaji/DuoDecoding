@@ -102,15 +102,15 @@ def test_new_field_is_informational():
 
 
 def test_timing_classification_covers_observed_timing_fields():
-    """固件里出现的 *_computation_time / wall_time / throughput 必须都在
-    TIMING 表内——防止新增实测字段漏分类而误锁。"""
+    """固件里出现的 *_time / throughput 必须有明确分类——模拟量（锁定）
+    与实测计时（TIMING）都不得漏登记。Phase 0.1 裁决：arp/dra_overhead
+    为墙钟测量，归 TIMING。"""
     for tag in MANIFEST["tags"]:
         for field in _load(tag):
             if field.endswith("_time") or field == "throughput":
                 if field in ("communication_time", "queuing_time",
-                             "edge_end_comm_time", "arp_overhead_time",
-                             "dra_overhead_time"):
-                    continue  # 模拟量：确定性，锁定
+                             "edge_end_comm_time"):
+                    continue  # 模拟量：确定性，锁定（校准确认逐位稳定）
                 assert field in compare.TIMING_FIELDS, (
                     f"{tag}: 字段 {field} 疑似实测计时但不在 TIMING 表——"
                     f"校准双跑后请修订分类"
