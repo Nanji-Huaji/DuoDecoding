@@ -88,17 +88,24 @@ getattr(cfg, "comm_round_trip_mode")       # 字符串常量 → 命中
 | `transfer_top_k_cap` | `0` | `16` |
 
 `parse_arguments()` 保证属性总是存在，所以回退值在生产路径不可达；
-但手工构造 `Namespace` 的测试/工具可能踩到。迁移到 `CommConfig` 后
-回退值统一为 CLI 默认——**这是行为差异**（只在属性缺失时可见），
-PR 说明里要写清楚，并确认没有测试依赖旧回退。
+但手工构造 `Namespace` 的测试会踩到。**`CommConfig.from_args` 保留这组
+回退值**（`src/comm_accounting.FALLBACKS`），避免合成 args 静默换口径：
+`test/test_decoding_avg_topk_metrics.py` 的 Namespace 就没有
+`transfer_top_k_cap`，若按 CLI 默认 16 钳位，`dsd` 的 0 会被钳成 16 而红。
 
-本仓库 `test/` 里没有构造缺失这些属性的 decode 调用点（2026-10-18 检查）。
+因此模块里有两套常量，职责不同：
+
+| 常量 | 用途 | 值 |
+|---|---|---|
+| `DEFAULTS` | 协议投影时缺失键的回退 | = argparse 默认 |
+| `FALLBACKS` | 从 args 读且属性缺失时的回退 | = 迁移前各方法 `getattr` 的字面值 |
 
 ## 5. 迁移配方
 
 每个方法一个 PR：
 
-1. `Baselines.__init__` 里建 `self.comm_config = CommConfig.from_args(args)`（首次一个 PR）；
+1. `Baselines.comm_config` 属性（惰性构造 + 缓存）：方法首次访问时调
+   `CommConfig.from_args(self.args)`，不改 `__init__`；
 2. 方法内把 `getattr(self.args, "<switch>", <fallback>)` 换成
    `self.comm_config.<switch>`——**字段名 = 开关名**；
 3. 跑 `python3 tools/logic_fingerprint.py diff src/baselines.py --entries <方法>`

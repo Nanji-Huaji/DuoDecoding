@@ -41,6 +41,19 @@ DEFAULTS: dict[str, Any] = {
     "prob_payload_bits": 16,
 }
 
+#: 迁移前各方法 `getattr(..., <fallback>)` 的回退值。阴影里的按键必须
+#: 逐字一致，否则手工构造的 Namespace（测试/工具）会静默换口径：
+#: 例如 test_decoding_avg_topk_metrics 的 Namespace 没有
+#: transfer_top_k_cap，旧代码回退 0（不钳位），CLI 默认 16 会把它钳到 16。
+#: CLI 路径上属性总是存在，这些回退不可达；保留只为合成 args 零漂移。
+FALLBACKS: dict[str, Any] = {
+    "comm_round_trip_mode": "per_transfer",
+    "charge_residual_payload": False,
+    "transfer_top_k_cap": 0,
+    "force_full_vocab_transfer": False,
+    "prob_payload_bits": 16,
+}
+
 
 @dataclass(frozen=True)
 class CommConfig:
@@ -81,9 +94,14 @@ class CommConfig:
 
     @classmethod
     def from_args(cls, args: Any) -> "CommConfig":
-        """从 argparse Namespace 读取——迁移后各方法的唯一入口。"""
+        """从 argparse Namespace 读取——迁移后各方法的唯一入口。
+
+        缺失属性回落 FALLBACKS（迁移前各方法自己的回退），不是 DEFAULTS：
+        CLI 路径属性总存在，但测试里的合成 Namespace 未必，且旧回退与
+        CLI 默认并不相同（docs/comm_call_sites.md §4.2）。
+        """
         return cls.from_values(
-            {key: getattr(args, key, default) for key, default in DEFAULTS.items()}
+            {key: getattr(args, key, value) for key, value in FALLBACKS.items()}
         )
 
     def as_dict(self) -> dict[str, Any]:

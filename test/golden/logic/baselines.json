@@ -216,12 +216,12 @@
       }
     },
     "Baselines.dist_spec": {
-      "events": 114,
-      "sha256_16": "64360ae417608196",
+      "events": 107,
+      "sha256_16": "8c5e75fb8ef3b888",
       "surface": {
         "boolop": {
           "And": 3,
-          "Or": 2
+          "Or": 1
         },
         "break": {
           "": 5
@@ -237,7 +237,7 @@
           "append": 2,
           "apply_rollback": 2,
           "apply_transfer_top_k_cap": 1,
-          "bool": 2,
+          "bool": 1,
           "build_draft_probs_override": 1,
           "build_rollback_plan": 1,
           "cat": 2,
@@ -254,7 +254,7 @@
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
-          "int": 2,
+          "int": 1,
           "list": 1,
           "materialize_acceptance": 1,
           "min": 1,
@@ -266,7 +266,7 @@
           "reset_for_new_sample": 2,
           "setattr": 1,
           "stage_topk_proposal_history": 1,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "time": 6,
           "to": 5
@@ -288,13 +288,10 @@
         },
         "flag_getattr": {
           "batch_delay": 2,
-          "charge_residual_payload": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "gamma": 1,
           "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1,
-          "transfer_top_k_cap": 1
+          "stochastic_ntt": 1
         },
         "loop": {
           "while": 1

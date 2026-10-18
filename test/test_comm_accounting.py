@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.comm_accounting import DEFAULTS, PROFILES, CommConfig
+from src.comm_accounting import DEFAULTS, FALLBACKS, PROFILES, CommConfig
 from src.protocols import PROTOCOLS
 
 
@@ -52,8 +52,10 @@ def test_from_args_reads_every_attribute():
     }
 
 
-def test_from_args_defaults_when_attributes_are_missing():
-    assert CommConfig.from_args(SimpleNamespace()).as_dict() == DEFAULTS
+def test_from_args_falls_back_to_pre_migration_values():
+    """合成 Namespace 必须与迁移前逐字一致（FALLBACKS，见模块注释）。"""
+    cfg = CommConfig.from_args(SimpleNamespace())
+    assert cfg.as_dict() == FALLBACKS
 
 
 def test_profiles_cover_every_protocol():
