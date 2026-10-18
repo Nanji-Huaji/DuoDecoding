@@ -494,12 +494,11 @@
       }
     },
     "Baselines.tridecoding": {
-      "events": 140,
-      "sha256_16": "744c33bbc73cb059",
+      "events": 133,
+      "sha256_16": "d43940101f3fd615",
       "surface": {
         "boolop": {
-          "And": 3,
-          "Or": 1
+          "And": 3
         },
         "break": {
           "": 2
@@ -513,7 +512,7 @@
           "_stop_at_eos": 1,
           "_uplink_prob_payload": 4,
           "apply_transfer_top_k_cap": 1,
-          "bool": 2,
+          "bool": 1,
           "build_adaptive_tridecoding_caches": 1,
           "build_draft_probs_override": 4,
           "build_rollback_plan": 2,
@@ -530,7 +529,6 @@
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 3,
-          "int": 1,
           "list": 1,
           "materialize_acceptance": 2,
           "numel": 3,
@@ -539,7 +537,7 @@
           "reject_tail_scalar_bytes": 2,
           "rollback": 7,
           "stage_topk_proposal_history": 4,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "to": 5,
           "verify_draft_sequence_result": 2
@@ -560,12 +558,9 @@
         },
         "flag_getattr": {
           "batch_delay": 2,
-          "charge_residual_payload": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1,
-          "transfer_top_k_cap": 1
+          "stochastic_ntt": 1
         },
         "loop": {
           "while": 1
