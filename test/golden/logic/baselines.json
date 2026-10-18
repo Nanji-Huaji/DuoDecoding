@@ -1025,12 +1025,11 @@
       }
     },
     "Baselines.cee_dssd": {
-      "events": 129,
-      "sha256_16": "9f3fbd938ac69cba",
+      "events": 122,
+      "sha256_16": "d58d914d9a22a9e9",
       "surface": {
         "boolop": {
-          "And": 4,
-          "Or": 1
+          "And": 4
         },
         "break": {
           "": 2
@@ -1045,7 +1044,7 @@
           "_graph_mode_cache_kwargs": 1,
           "_stop_at_eos": 1,
           "apply_transfer_top_k_cap": 1,
-          "bool": 2,
+          "bool": 1,
           "build_stage_prefix_topk_history": 1,
           "cast": 6,
           "cat": 2,
@@ -1059,7 +1058,7 @@
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 3,
-          "int": 3,
+          "int": 2,
           "list": 1,
           "merge_stage_topk_histories": 1,
           "numel": 3,
@@ -1070,7 +1069,7 @@
           "rollback": 1,
           "stage_prob_history": 2,
           "stage_topk_proposal_history": 3,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "to": 4
         },
@@ -1092,14 +1091,11 @@
         },
         "flag_getattr": {
           "batch_delay": 1,
-          "charge_residual_payload": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "gamma1": 1,
           "gamma2": 1,
           "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1,
-          "transfer_top_k_cap": 1
+          "stochastic_ntt": 1
         },
         "loop": {
           "while": 1
