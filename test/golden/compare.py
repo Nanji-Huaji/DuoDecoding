@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 GOLDEN_ROOT = Path(__file__).parent / "gammar"
+TOKEN_FILE = "tokens.json"
 
 #: 实测计时字段——物理上不可复现，golden 不锁
 #: （Phase 0.1 校准双跑裁决 2026-10-11：dra_overhead_time 三次独立 run
@@ -67,6 +68,69 @@ def golden_path(tag: str) -> Path:
 def _fmt(v) -> str:
     s = str(v)
     return s if len(s) <= 48 else s[:45] + "..."
+
+
+def token_path(tag: str) -> Path:
+    path = GOLDEN_ROOT / tag / TOKEN_FILE
+    if not path.exists():
+        raise SystemExit(f"token golden {tag!r} 不存在（先跑 tools/harvest_tokens.py）")
+    return path
+
+
+def load_jsonl(path: str | Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def compare_tokens(baseline: dict, records: list[dict]) -> tuple[bool, list[str]]:
+    """逐样本比较 token 序列。
+
+    metrics 相等只说明聚合口径一致，不同的 token 序列可能撞出同一组指标；
+    gen_ids 才是"模型每步选了什么"的直接观测。
+    """
+    golden = baseline["samples"]
+    lines: list[str] = []
+    ok = True
+
+    if len(golden) != len(records):
+        lines.append(f"  ✗ 样本数 {len(golden)} → {len(records)}")
+        ok = False
+
+    mismatches = 0
+    for position, sample in enumerate(golden):
+        if position >= len(records):
+            lines.append(f"  ✗ 样本 {position} 缺失")
+            ok = False
+            continue
+        expected = sample["gen_ids"]
+        actual = list(records[position].get("gen_ids", []))
+        if expected == actual:
+            continue
+        mismatches += 1
+        ok = False
+        pos = next(
+            (i for i, (a, b) in enumerate(zip(expected, actual)) if a != b),
+            min(len(expected), len(actual)),
+        )
+        detail = (
+            f"token[{pos}]"
+            if pos < min(len(expected), len(actual))
+            else f"长度 {len(expected)} → {len(actual)}"
+        )
+        if mismatches <= 5:
+            lines.append(
+                f"  ✗ 样本 {position}: {detail}"
+                f"（生成 {len(expected)} → {len(actual)}）"
+            )
+
+    if mismatches:
+        lines.append(f"  判定: FAIL（{mismatches}/{len(golden)} 个样本 token 序列漂移）")
+    elif ok:
+        lines.append(f"  判定: PASS（{len(golden)} 个样本，token 序列逐位一致）")
+    return ok, lines
 
 
 def compare_metrics(baseline: dict, new: dict) -> tuple[bool, list[str]]:
@@ -115,9 +179,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stability", action="store_true",
                         help="对照两份 run（校准模式），而非对照 golden")
+    parser.add_argument("--tokens", action="store_true",
+                        help="逐样本对比 gen_ids（a=tag, b=新 run 的 jsonl）")
     parser.add_argument("a", help="golden tag 或 run1 的 metrics.json")
     parser.add_argument("b", nargs="?", help="run2 的 metrics.json")
     args = parser.parse_args(argv)
+
+    if args.tokens:
+        if args.b is None:
+            parser.error("用法: python test/golden/compare.py --tokens <tag> <new.jsonl>")
+        fixture = json.loads(token_path(args.a).read_text(encoding="utf-8"))
+        ok, lines = compare_tokens(fixture, load_jsonl(args.b))
+        print(f"[TOKENS] tag={args.a}  new={args.b}")
+        print("\n".join(lines))
+        return 0 if ok else 1
 
     if args.stability:
         if not args.b:
