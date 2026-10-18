@@ -119,3 +119,36 @@ getattr(cfg, "comm_round_trip_mode")       # 字符串常量 → 命中
 
 只迁 `dist_spec` 的 3 行（1531/1534/1535），验证配方；`dist_split_spec`
 留给下一个 PR——它俩代码 81% 相同，一起改会让 diff 难以逐条解释。
+
+## 7. 计费接口的最终形状（与本轮实现一致）
+
+计划里写的是"5 个方法"，实施时改成**字段 + 纯 helper**，原因还是 §4.1：
+
+- 若方法体写 `cfg.per_round`，`"comm_round_trip_mode"` 会从该方法
+  的 `co_names` 里消失，`live_mode_consumption` 立刻判它不消费，
+  `test_protocol_spec` 直接红；
+- 保留名字的唯一无副作用写法，就是让方法继续出现开关名——
+  也就是直接读 `cfg.comm_round_trip_mode`。
+
+因此接口定义为：
+
+| 接口 | 位置 |
+|---|---|
+| 5 个口径字段（名字 = 开关名） | `CommConfig` |
+| top-k 钳位 | `proposal_utils.apply_transfer_top_k_cap`（已有） |
+| 概率载荷位宽与量化 | `baselines._uplink_prob_payload`（已有） |
+| 协议投影 | `CommConfig.from_values` / `PROFILES` |
+
+alias 方法（如 `cfg.per_round()`）看起来更整齐，代价是内省失效，
+或者在方法里留一个没人调用的字符串常量——两者都不值得。
+
+## 8. 本轮验证记录（2026-10-18，GPU 1）
+
+- `q15_free_g5` 复现：metrics 判定 PASS（8 个 timing 允许漂移），
+  tokens 20 样本逐位一致；
+- `dist_spec` before/after：64 个字段除 timing 与 `git_*` 外全等；
+  20 条 jsonl 只有 `time` 不同，`gen_ids` 相同；
+- 全套 pytest 427 passed；`test_protocol_spec` 31 passed；
+- 命令与产物：`.refactor/logs/q15_g5_calib.log`、
+  `dist_spec_{before,after}.log`、`dist_spec_before_metrics.json`；
+  worktree 的 `exp/gammar/` 下有三次 run 的完整产物。
