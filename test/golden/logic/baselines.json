@@ -666,12 +666,11 @@
       }
     },
     "Baselines.adaptive_decoding": {
-      "events": 133,
-      "sha256_16": "6ec87a62c5984d91",
+      "events": 126,
+      "sha256_16": "3948a1e6a7b62c88",
       "surface": {
         "boolop": {
-          "And": 4,
-          "Or": 1
+          "And": 4
         },
         "break": {
           "": 8
@@ -687,7 +686,7 @@
           "_stop_at_eos": 2,
           "append": 2,
           "apply_transfer_top_k_cap": 1,
-          "bool": 2,
+          "bool": 1,
           "cat": 2,
           "clone": 1,
           "color_print": 1,
@@ -702,7 +701,7 @@
           "get": 5,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
-          "int": 10,
+          "int": 9,
           "item": 1,
           "list": 1,
           "max_fn": 1,
@@ -720,7 +719,7 @@
           "stage_prob_history": 1,
           "state_entropy": 1,
           "step": 1,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "time": 3,
           "to": 8,
@@ -744,14 +743,11 @@
           "top_k": 1
         },
         "flag_getattr": {
-          "charge_residual_payload": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "disable_rl_update": 2,
           "gamma": 1,
           "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1,
-          "transfer_top_k_cap": 1
+          "stochastic_ntt": 1
         },
         "loop": {
           "for": 1,
