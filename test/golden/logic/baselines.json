@@ -3,6 +3,85 @@
   "include": [],
   "rev": "WORKTREE",
   "entries": {
+    "Baselines.__init__": {
+      "events": 77,
+      "sha256_16": "9e74080d2861aa29",
+      "surface": {
+        "assign_self": {
+          "little_rl_adapter": 3,
+          "rl_adapter": 3,
+          "task": 1
+        },
+        "boolop": {
+          "And": 3,
+          "Or": 4
+        },
+        "break": {
+          "": 1
+        },
+        "call": {
+          "FileNotFoundError": 1,
+          "RLNetworkAdapter": 2,
+          "ValueError": 1,
+          "__init__": 1,
+          "basename": 1,
+          "bool": 2,
+          "configure_ntt_trace": 1,
+          "float": 3,
+          "get": 1,
+          "get_rl_agent_spec": 2,
+          "max": 2,
+          "print": 1,
+          "read_trace_file": 1,
+          "resolve_legacy_rl_agent_load_path": 2,
+          "split": 1,
+          "strip": 1
+        },
+        "continue": {
+          "": 1
+        },
+        "except": {
+          "": 1
+        },
+        "flag": {
+          "draft_model": 4,
+          "little_model": 2,
+          "rl_threshold_candidates": 1,
+          "target_model": 4
+        },
+        "flag_getattr": {
+          "disable_rl_update": 1,
+          "eval_mode": 1,
+          "little_model": 2,
+          "little_rl_best_path": 1,
+          "little_rl_path": 1,
+          "main_rl_best_path": 1,
+          "main_rl_path": 1,
+          "ntt_trace_file": 1,
+          "ntt_trace_scale": 1,
+          "rl_batch_size": 1,
+          "rl_checkpoint_root": 1,
+          "rl_epsilon_decay": 1,
+          "rl_force_threshold": 1,
+          "rl_force_threshold_little": 2,
+          "rl_force_topk": 1,
+          "rl_init_seed": 1,
+          "rl_init_strategy": 1,
+          "rl_reward_scale": 1,
+          "rl_threshold_candidates": 1,
+          "use_rl_adapter": 1
+        },
+        "loop": {
+          "for": 1
+        },
+        "raise": {
+          "": 2
+        },
+        "try": {
+          "": 1
+        }
+      }
+    },
     "Baselines.target_only": {
       "events": 28,
       "sha256_16": "9429d25c22fee757",
