@@ -89,6 +89,28 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
+def _reward_comm_s(args, comm_simulator, link_type: str, settled_start: float) -> float:
+    """RL 奖励的通信成本（--rl_comm_cost_mode）。
+
+    - nominal（默认）：NTT + 本轮未结算字节/带宽（nominal_comm_s）。fluid+
+      per_round 口径下真实计费到 flush_round 才入账，轮内读差值恒为 0——
+      v2 重训的奖励因此长期无通信项，策略系统性偏好短草稿（根因①，见
+      experiment_results/ceesd_gamma_threshold_probe.md）。
+    - settled：旧口径（flush 差值），保留用于复现历史训练。
+    - off：恒 0。
+    """
+    mode = getattr(args, "rl_comm_cost_mode", "nominal")
+    if mode == "nominal":
+        return float(comm_simulator.nominal_comm_s(link_type))
+    if mode == "off":
+        return 0.0
+    if link_type == "edge_cloud":
+        return float(
+            comm_simulator.edge_cloud_comm_time - settled_start
+        )
+    return float(comm_simulator.edge_end_comm_time - settled_start)
+
+
 def _send_downlink_token(comm_simulator, token: torch.Tensor, link_type: str) -> None:
     """下行回传一个采样 token 及其位置索引，**合并为一次传输**。
 
@@ -643,9 +665,14 @@ class Baselines(Decoding):
             init_strategy = getattr(args, "rl_init_strategy", "resume")
             legacy_load_paths = eval_mode != "cee_sd_opportunistic"
             opportunistic = eval_mode == "cee_sd_opportunistic"
-            little_prefers_latest = opportunistic and not getattr(
-                args, "disable_rl_update", False
-            )
+            # 部署/续训一律加载 latest（收敛终态）。
+            # 旧逻辑仅 opportunistic 训练态取 latest，评测加载 best.pth——
+            # 但 best 的选取标准是"课程带宽 + ε 探索下的训练期 tps 峰值"，
+            # 实测会定格在早期快照（llama update 403/7352、qwen3 2973/13527），
+            # 比 latest 落后 4.3%~10.7% 吞吐（2026-10-11 best-vs-latest
+            # 对照，exp_logs/blcmp_batch.log）。best.pth 保留为训练工件，
+            # 不再自动部署。
+            little_prefers_latest = True
             epsilon_decay = getattr(args, "rl_epsilon_decay", None)
             reward_scale = getattr(args, "rl_reward_scale", None)
             batch_size = getattr(args, "rl_batch_size", None)
@@ -663,6 +690,30 @@ class Baselines(Decoding):
                     target_model=args.target_model,
                     checkpoint_root=checkpoint_root,
                 )
+                # 阈值候选格：CLI 显式指定 > registry 默认。默认格顶 0.4 是
+                # v2 策略学偏的根因②（深草稿不可达）；扩格训练时传
+                # --rl_threshold_candidates，且格会随 checkpoint 持久化、
+                # 评测加载时自动还原（不会重演训练/评测格错配）。
+                _main_thr_grid = main_spec.threshold_candidates
+                if getattr(args, "rl_threshold_candidates", None):
+                    _main_thr_grid = [
+                        float(x)
+                        for x in str(args.rl_threshold_candidates).split(",")
+                        if x.strip()
+                    ]
+                    if not _main_thr_grid:
+                        raise ValueError(
+                            "--rl_threshold_candidates 解析为空格: "
+                            f"{args.rl_threshold_candidates!r}"
+                        )
+                if max(float(x) for x in _main_thr_grid) < 0.5:
+                    print(
+                        "Warning: main 阈值候选格上限 "
+                        f"{max(float(x) for x in _main_thr_grid)} < 0.5 —— 深草稿"
+                        "不可达（评测最优 ~0.8，见"
+                        " experiment_results/ceesd_gamma_threshold_probe.md）。"
+                        "训练请考虑 --rl_threshold_candidates 扩格。"
+                    )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
                     model_path=getattr(args, "main_rl_path", None)
@@ -684,11 +735,11 @@ class Baselines(Decoding):
                     ]
                     if legacy_load_paths
                     else [],
-                    threshold_candidates=main_spec.threshold_candidates,
+                    threshold_candidates=_main_thr_grid,
                     init_seed=init_seed,
                     init_strategy=init_strategy,
                     frozen=opportunistic,
-                    prefer_latest=False,
+                    prefer_latest=True,
                     epsilon_decay=epsilon_decay,
                     reward_scale=reward_scale,
                     batch_size=batch_size,
@@ -3461,7 +3512,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                )
 
                 # 去掉分子 +1
                 tps_part = little_accepted_this_iter / (
@@ -3601,8 +3654,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
                 )
 
                 # 去掉分子 +1
@@ -4378,7 +4431,12 @@ class Baselines(Decoding):
                 **cache_kwargs,
                 "use_cuda_graph": True,
                 "verify_graph_sizes": sizes,
-                "graph_len_budget": int(self.args.max_tokens) + 256,
+                # 桶预算必须覆盖**草稿侧**的游标推进：每个生成 token 平均
+                # 消耗 ~1.8 个草稿位置（γ1=16 深草稿实测 6.85 草稿/轮、
+                # ~3.9 接受/轮），max_tokens+256 的旧预算在长 prompt（如
+                # mt_bench 多轮对话）上被深草稿打穿（graph_decode.py:498
+                # "超出图模式 max_len"）。×2 + 256 实测覆盖 γ16。
+                "graph_len_budget": int(self.args.max_tokens) * 2 + 256,
             }
 
         # 跨样本复用：图模式的三个缓存挂在 self 上，样本间只 reset（图不重捕获）。
@@ -4748,7 +4806,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end", edge_end_comm_start
+                )
 
                 # 第一层（end->edge）奖励，走同一套奖励实现（见 src/rl_reward.py）。
                 # 注意：当前版本的信用分配是"各层局部奖励"，两层强耦合时这是有偏的；
@@ -5161,8 +5221,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud", edge_cloud_comm_start
                 )
 
                 # 奖励统一由 src/rl_reward.py 实现：默认 legacy 即 v1 原式
@@ -5175,9 +5235,15 @@ class Baselines(Decoding):
                     comm_s=step_comm_time,
                     compute_s=step_time,
                     energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
-                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）
-                    transferred_bytes=comm_simulator.edge_cloud_data
-                    - edge_cloud_bytes_start,
+                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）。
+                    # nominal 口径下用轮内 pending 字节——settled 差值在 flush 前
+                    # 恒为 0（与 comm_s 同源的同款 bug）。
+                    transferred_bytes=(
+                        comm_simulator.pending_bytes("edge_cloud")
+                        if getattr(self.args, "rl_comm_cost_mode", "nominal")
+                        == "nominal"
+                        else comm_simulator.edge_cloud_data - edge_cloud_bytes_start
+                    ),
                     forward_counts={
                         "little": float(actual_gamma2),
                         "draft": float(actual_gamma1),

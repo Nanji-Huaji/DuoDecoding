@@ -43,7 +43,9 @@ class EvalMode(str, Enum):
     cuhlm = "uncertainty_decoding"
     # TK-SLT [WCSP'25 Zheng & Yang]：DSD + top-K 稀疏 logits 上行（基线）
     tk_slt = "tk_slt"
-    # tridecoding = "tridecoding"  # ablation of adaptive tridecoding
+    # Table VIII 的 Static 消融（CEE-SD 去 ARP+DRA）：固定 γ 窗口 + 固定
+    # top-k=1024。不进主表，经 --extra-modes tridecoding 附载进矩阵循环。
+    tridecoding = "tridecoding"
     # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
     ceesd = "adaptive_tridecoding"  # ours
     cee_cuhlm = "cee_cuhlm"
@@ -781,11 +783,51 @@ edge_cloud_bandwidth = [46.0, 10.0, 5.0]
 batch_delay_values = [50e-3]
 
 # 投机深度 γ：协议不冻结该项（docs/protocol.md §4，唯一待定项），因此一律显式传，
-# 不允许靠 create_config 的签名默认值兜底。取值沿用仓库 Table V 对齐时的选择：
-# 基线 γ=3（前向数与论文吻合，DSD 4113 vs 3980）、CEE-SD 取消融 static 的 γ1=γ2=5。
-GAMMA_SINGLE = 3  # 单-γ 方法：dsd / dssd / cuhlm 读 --gamma
-GAMMA1_CEESD = 5  # 三级方法 Draft→Target 推测窗口
-GAMMA2_CEESD = 5  # 三级方法 Little→Draft 推测窗口
+# 不允许靠 create_config 的签名默认值兜底。历史上的 GAMMA_SINGLE=3 是"前向数与
+# 论文对齐"的复现口径（DSD 4113 vs 3980），不是各方法自己的最优窗口。
+# 2026-10-09 起按方法×带宽分档（γ 扫描 + fluid 口径预览，证据：
+# experiment_results/gamma_sweep_dsd-dssd-cuhlm-tk_slt_llama_gsm8k.json）：
+#   · dsd：γ* 随带宽下移（46: 3-4 平坦取 3；10/5: 单调降到 1——载荷 ∝ γ，
+#     低带宽档发射时长主导，最小窗口最优；预览 γ1@5 比 γ3 +31%）
+#   · dssd：拒绝行下发载荷轻，γ* 全程 8（46 下 γ8 比 γ3 +28%）
+#   · tk_slt：46 下 8-16 平坦（差 <0.6%）取 8；低带宽收敛到 8
+#   · cuhlm：γ 盲（自适应 k(t)），保持 3
+GAMMA_SINGLE = 3  # 兜底 / γ 盲方法的缺省
+GAMMA_BY_MODE_BANDWIDTH = {
+    "dist_spec": {46.0: 3, 10.0: 1, 5.0: 1},
+    "dist_split_spec": {46.0: 8, 10.0: 8, 5.0: 8},
+    "tk_slt": {46.0: 8, 10.0: 8, 5.0: 8},
+    "uncertainty_decoding": {46.0: 3, 10.0: 3, 5.0: 3},
+}
+# 三级方法 Draft→Target / Little→Draft 推测窗口；可用环境变量
+# CEESD_GAMMA1 / CEESD_GAMMA2 覆盖（γ* 重推导、敏感性扫描用）。
+GAMMA1_CEESD = int(os.environ.get("CEESD_GAMMA1", "5"))
+GAMMA2_CEESD = int(os.environ.get("CEESD_GAMMA2", "5"))
+
+# 按系列覆盖（γ* 分系列推导后用）：CEESD_GAMMA1_LLAMA / _QWEN15 / _QWEN3，
+# 未设置时回退到上面的全局值。前缀匹配，Qwen15 先于 Qwen3 判断。
+_SERIES_GAMMA_PREFIXES = (
+    ("llama-2-13b", "LLAMA"),
+    ("Qwen/Qwen1.5-7B-Chat", "QWEN15"),
+    ("Qwen/Qwen3-14B", "QWEN3"),
+)
+
+
+def _ceesd_gamma_for(target_model, which: str, default: int) -> int:
+    model = str(target_model)
+    for prefix, suffix in _SERIES_GAMMA_PREFIXES:
+        if model.startswith(prefix):
+            return int(
+                os.environ.get(f"CEESD_GAMMA{which}_{suffix}", str(default))
+            )
+    return default
+
+
+def gamma_for_matrix(mode_value: str, edge_cloud_bw: float) -> int:
+    """主矩阵的基线 γ：方法×带宽分档表，缺档回退 GAMMA_SINGLE。"""
+    return GAMMA_BY_MODE_BANDWIDTH.get(str(mode_value), {}).get(
+        float(edge_cloud_bw), GAMMA_SINGLE
+    )
 
 # top-k 压缩：**只有 CEE-SD 自己的设计里有**（DRA 选 top-k，上行传 top-k 压缩 logits）。
 # 此前把 transfer_top_k=300 一律套在所有方法头上，等于把"压缩传输"这项本该被验证的
@@ -807,6 +849,10 @@ TRANSFER_TOP_K_PAPER = 0  # dsd / dssd：原文无 top-k 压缩 ⇒ 整词表载
 # 论文 §VI-B Fig 4 的最优工作点（T=0 与 T=1 两个温度下最大加速比都在
 # K=320 取得，此时上行载荷 ≈ 1% 词表）；K=0 可退回其 vanilla DSD 基线。
 TRANSFER_TOP_K_TKSLT = 320  # tk_slt：论文实测最优 K
+# Table VIII Static 消融的固定压缩档：manuscript §Ablation（"static top-k
+# compression scheme ... top-k value as 1024"）。Static 不含 DRA，压缩不
+# 自适应，取该固定值。
+TRANSFER_TOP_K_STATIC = 1024
 
 # CUHLM 的不确定度阈值（越大越少上云、越快越差）。
 #
@@ -846,7 +892,8 @@ paper_table5_datasets = (
 )
 
 # Table V 的方法列：四个基线 + 本方法。Table VI 的 CEE+ 变体与
-# Table VIII 的 Static 消融都是独立实验，不进入主表矩阵。
+# Table VIII 的 Static 消融不进入主表矩阵，经 --extra-modes 附载
+# （见 _extra_modes_from_argv）。
 paper_table5_modes = (
     EvalMode.dsd,  # DSD [7]
     EvalMode.dssd,  # DSSD [8]
@@ -855,12 +902,50 @@ paper_table5_modes = (
     EvalMode.ceesd,  # CEE-SD（本文方法，= adaptive_tridecoding）
 )
 
+
+def _extra_modes_from_argv() -> tuple[EvalMode, ...]:
+    """在模块级配置循环前预读 --extra-modes（循环在 argparse 之前执行）。
+
+    附载方法（如 Table VIII 的 tridecoding Static 消融）与主表共用
+    create_config 的全部口径分支，只是不进 paper_table5_modes 元组——
+    保证消融格与主表格 flag 级一致。重复/未知值直接报错。
+    """
+    if "--extra-modes" not in sys.argv:
+        return ()
+    idx = sys.argv.index("--extra-modes")
+    if idx + 1 >= len(sys.argv):
+        raise SystemExit("--extra-modes 需要一个逗号分隔的参数值")
+    tokens = [t.strip() for t in sys.argv[idx + 1].split(",") if t.strip()]
+    if not tokens:
+        return ()
+    out: list[EvalMode] = []
+    for token in tokens:
+        if token in EvalMode.__members__:
+            member = EvalMode[token]
+        elif token in _MODE_NAME_BY_VALUE:
+            member = EvalMode(_MODE_NAME_BY_VALUE[token])
+        else:
+            raise SystemExit(
+                f"--extra-modes 里有未知方法 {token!r}；"
+                f"可用: {sorted(EvalMode.__members__)}"
+            )
+        if member in out or member in paper_table5_modes:
+            raise SystemExit(f"--extra-modes 里 {token!r} 重复或已属主表")
+        out.append(member)
+    return tuple(out)
+
+
+extra_modes = _extra_modes_from_argv()
+
 for little_model, draft_model, target_model in paper_table5_series:
     for dataset in paper_table5_datasets:
-        for mode in paper_table5_modes:
+        for mode in paper_table5_modes + extra_modes:
             for edge_cloud_bw in edge_cloud_bandwidth:
                 for batch_delay in batch_delay_values:
                     is_ceesd = mode == EvalMode.ceesd
+                    # tri 族：三级窗口 γ1/γ2 语义 + 中间模型当草稿
+                    # （Static 消融与 CEE-SD 同构，只是无 ARP/DRA）
+                    is_tri = mode in (EvalMode.ceesd, EvalMode.tridecoding)
                     config = create_config(
                         eval_mode=mode,
                         ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
@@ -897,12 +982,24 @@ for little_model, draft_model, target_model in paper_table5_series:
                             else (
                                 TRANSFER_TOP_K_TKSLT
                                 if mode == EvalMode.tk_slt
-                                else TRANSFER_TOP_K_PAPER
+                                else (
+                                    TRANSFER_TOP_K_STATIC
+                                    if mode == EvalMode.tridecoding
+                                    else TRANSFER_TOP_K_PAPER
+                                )
                             )
                         ),
-                        gamma=GAMMA_SINGLE,
-                        gamma1=GAMMA1_CEESD if is_ceesd else GAMMA_SINGLE,
-                        gamma2=GAMMA2_CEESD if is_ceesd else GAMMA_SINGLE,
+                        gamma=gamma_for_matrix(mode.value, edge_cloud_bw),
+                        gamma1=(
+                            _ceesd_gamma_for(target_model, 1, GAMMA1_CEESD)
+                            if is_tri
+                            else GAMMA_SINGLE
+                        ),
+                        gamma2=(
+                            _ceesd_gamma_for(target_model, 2, GAMMA2_CEESD)
+                            if is_tri
+                            else GAMMA_SINGLE
+                        ),
                         max_tokens=128,
                         num_shots=3,
                         eval_dataset=dataset,
@@ -914,6 +1011,7 @@ for little_model, draft_model, target_model in paper_table5_series:
                             if mode
                             in [
                                 EvalMode.ceesd,
+                                EvalMode.tridecoding,
                                 EvalMode.cee_cuhlm,
                                 EvalMode.cee_dsd,
                                 EvalMode.cee_dssd,
@@ -1113,6 +1211,15 @@ def parse_exp_args(argv: List[str] | None = None) -> argparse.Namespace:
         default=None,
         metavar="MODE[,MODE...]",
         help="只跑这些方法（枚举名或枚举值，如 dsd,dssd 或 dist_spec,dist_split_spec）",
+    )
+    parser.add_argument(
+        "--extra-modes",
+        default=None,
+        metavar="MODE[,MODE...]",
+        help=(
+            "把主表之外的方法附载进矩阵循环（如 tridecoding = Table VIII 的 "
+            "Static 消融），口径分支与主表共用；须配合 --only-modes 只跑附载项"
+        ),
     )
     parser.add_argument(
         "--merged-output",

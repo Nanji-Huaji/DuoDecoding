@@ -43,7 +43,14 @@ class EvalMixed(Baselines):
         self.load_tokenizer()
         self.load_model()
 
-        actual_vocab_size = self.tokenizer.vocab_size
+        # 边界必须覆盖 tokenizer 能产出的全部 id：Qwen 系的
+        # tokenizer.vocab_size=151643 只数基础词表，不含 added specials
+        # （如  id=151643 会合法出现在 3-shot 提示里），用它做安全
+        # 校验会把整样本判成 Invalid token ids 而静默丢弃。eval 引擎
+        # （src/engine.py）一直用 max(len, vocab_size)，此处对齐。
+        actual_vocab_size = max(
+            len(self.tokenizer), self.tokenizer.vocab_size
+        )
         print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
 
         self.vocab_size = actual_vocab_size

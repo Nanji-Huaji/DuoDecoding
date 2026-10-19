@@ -729,6 +729,28 @@ def parse_arguments():
         ),
     )
     g_rl.add_argument(
+        "--rl_comm_cost_mode",
+        choices=["nominal", "settled", "off"],
+        default="nominal",
+        help=(
+            "RL 奖励的通信成本口径。nominal（默认）= NTT + 本轮未结算字节/带宽"
+            "（CommunicationSimulator.nominal_comm_s，轮内即时可读）；settled ="
+            " 旧口径（flush 后差值——fluid+per_round 下轮内读恒为 0，训练奖励因此"
+            "长期无通信项、策略偏好短草稿，见"
+            " experiment_results/ceesd_gamma_threshold_probe.md 根因①）；off = 恒 0。"
+        ),
+    )
+    g_rl.add_argument(
+        "--rl_threshold_candidates",
+        default=None,
+        help=(
+            "逗号分隔的 main agent ARP 阈值候选格（如 0.1,0.2,0.35,0.5,0.65,"
+            "0.8,0.9,0.99），覆盖 registry 默认 [0.05..0.4]（默认格顶 0.4 是"
+            "策略学偏的根因②）。候选格随 checkpoint 持久化，评测加载时自动"
+            "还原，不会重演训练/评测格错配。"
+        ),
+    )
+    g_rl.add_argument(
         "--rl_reward_lambda",
         type=float,
         default=0.0,

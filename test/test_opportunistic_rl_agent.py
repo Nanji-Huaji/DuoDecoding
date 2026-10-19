@@ -73,7 +73,7 @@ def test_opportunistic_mode_uses_isolated_root_and_threshold_only_little_agent(
     assert little_call.kwargs["k_candidates"] == [1]
 
 
-def test_prefer_latest_is_reserved_for_trainable_opportunistic_little(tmp_path):
+def test_deployment_always_loads_latest_checkpoint(tmp_path):
     # Given: opportunistic training, evaluation, and standard RL arguments.
     opportunistic_training = _opportunistic_args(tmp_path / "opportunistic-training")
     opportunistic_training.disable_rl_update = False
@@ -95,16 +95,17 @@ def test_prefer_latest_is_reserved_for_trainable_opportunistic_little(tmp_path):
             _TestBaselines(args)
             calls_by_args.append(adapter.call_args_list)
 
-    # Then: only trainable opportunistic Little prefers the latest checkpoint.
+    # Then: 部署/续训一律加载 latest（best.pth 定格在早期快照的问题，
+    # 见 src/baselines.py prefer_latest 注释与 2026-10-11 best-vs-latest 对照）。
     training_main, training_little = calls_by_args[0]
     evaluation_main, evaluation_little = calls_by_args[1]
     standard_main, standard_little = calls_by_args[2]
-    assert training_main.kwargs["prefer_latest"] is False
+    assert training_main.kwargs["prefer_latest"] is True
     assert training_little.kwargs["prefer_latest"] is True
-    assert evaluation_main.kwargs["prefer_latest"] is False
-    assert evaluation_little.kwargs["prefer_latest"] is False
-    assert standard_main.kwargs["prefer_latest"] is False
-    assert standard_little.kwargs["prefer_latest"] is False
+    assert evaluation_main.kwargs["prefer_latest"] is True
+    assert evaluation_little.kwargs["prefer_latest"] is True
+    assert standard_main.kwargs["prefer_latest"] is True
+    assert standard_little.kwargs["prefer_latest"] is True
 
 
 def test_fresh_initialization_refuses_to_overwrite_existing_checkpoint(tmp_path):

@@ -1,4 +1,8 @@
-# CLI 参数清单（103 个，按"谁消费它"分类）
+# CLI 参数清单（103 个，按谁消费它分类）
+
+> **2026-10-10 注**：参数总数已到 107（+--comm_bw_model 已计入 105；
+> +--rl_comm_cost_mode、--rl_threshold_candidates）。按**模式轴**的互补
+> 盘点见 `docs/modes_inventory.md`。
 
 > 生成方式：AST 解析 `src/utils.py` 的 `add_argument`，再按精确模式
 > `args.<dest>` / `getattr(args, "<dest>")` 扫描全仓（排除 `SpecDec_pp/` 与
