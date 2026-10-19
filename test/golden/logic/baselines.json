@@ -664,8 +664,8 @@
       }
     },
     "Baselines.adaptive_decoding": {
-      "events": 126,
-      "sha256_16": "3948a1e6a7b62c88",
+      "events": 127,
+      "sha256_16": "6c532f3a9e970232",
       "surface": {
         "boolop": {
           "And": 4
@@ -681,6 +681,7 @@
           "_check_stopping_criteria": 1,
           "_generate_with_optional_rebuilt_proposal": 1,
           "_graph_mode_cache_kwargs": 1,
+          "_reward_comm_s": 1,
           "_stop_at_eos": 2,
           "append": 2,
           "apply_transfer_top_k_cap": 1,
@@ -765,7 +766,7 @@
     },
     "Baselines.adaptive_tridecoding": {
       "events": 322,
-      "sha256_16": "467eab1ba3796442",
+      "sha256_16": "aee6db313b880bd3",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -842,6 +843,7 @@
           "resolve_stage_verification": 2,
           "rollback": 1,
           "round": 3,
+          "round_bytes": 1,
           "select_config": 2,
           "setattr": 1,
           "softmax": 1,
@@ -861,7 +863,6 @@
         },
         "comm": {
           "flush_round": 1,
-          "pending_bytes": 1,
           "send_accept_message": 1,
           "set_round": 1,
           "simulate_transfer": 6,

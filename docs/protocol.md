@@ -304,8 +304,12 @@ edge_cloud（矩阵基线只用它）。回归锁定：
 | CEE-SD | γ1=γ2=5 | 同 | 同 | RL 控制，非静态 γ |
 
 γ 进 `RUN_IDENTITY_FIELDS`：分档前后的 run 身份不互撞。改 γ 的动机是
-"每个基线取自己的最强设置"（strongest-baseline 惯例）；若论文对齐需要
-复现 γ=3 口径，把表改回统一 3 即可（`gamma_for_matrix` 单点收口）。
+"每个基线取自己的最强设置"（strongest-baseline 惯例）。
+
+**注意：分档表默认不启用。** 本重构分支只做口径/参数收口，不改变既有
+矩阵的数字；`gamma_for_matrix` 缺省走 `GAMMA_SINGLE=3`（与重构前矩阵
+逐位一致），要跑分档表需显式设 `EXP_GAMMA_SCHEDULE=by_mode`
+（`docs/refactor_baselines_plan.md` §Phase 3 的"不改数字"约束）。
 
 ## 5. 强制机制（Step 1 已落地，不改动任何数字）
 

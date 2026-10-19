@@ -509,6 +509,30 @@ class RLNetworkAdapter:
             if threshold_candidates is not None
             else THRESHOLD_CANDIDATES
         )
+
+        # 先读 checkpoint 动作格、再构造网络：load() 会用输出头形状校验
+        # state_dict，3 候选 checkpoint 配默认 8 候选格会在 load() 处判
+        # "不兼容"，被改名 .corrupt 后静默退回全新策略——一份有效
+        # checkpoint 就这样丢了。探测顺序与下方 _try_load 一致。
+        if init_strategy != "fresh":
+            _best = best_model_path or model_path
+            if prefer_latest and os.path.exists(model_path):
+                _probe = model_path
+            elif os.path.exists(_best):
+                _probe = _best
+            elif os.path.exists(model_path):
+                _probe = model_path
+            else:
+                _probe = next(
+                    (p for p in (legacy_load_paths or []) if os.path.exists(p)),
+                    None,
+                )
+            _grid = self._read_checkpoint_grid(_probe) if _probe else None
+            if _grid:
+                self._adopt_grid(
+                    _grid, agent_name or os.path.basename(str(model_path))
+                )
+
         self.action_dim = (
             len(self.topk_candidates)
             * len(self.threshold_candidates)
@@ -772,6 +796,44 @@ class RLNetworkAdapter:
             "threshold_candidates": [float(x) for x in self.threshold_candidates],
             "topk_candidates": [int(x) for x in self.topk_candidates],
         }
+
+    @staticmethod
+    def _read_checkpoint_grid(path: str) -> dict | None:
+        """只读 checkpoint 的动作格元数据，不构造网络。
+
+        load() 会按输出头形状校验 state_dict：候选格长度不同时直接
+        拒绝。因此必须在 DDQNAgent 构造前读出格，否则训练时 3 候选的
+        有效 checkpoint 会被判不兼容、改名 .corrupt 后退回全新策略。
+        损坏/旧格式文件返回 None，交给后续 _try_load 的既有告警路径。
+        """
+        try:
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        thr = payload.get("threshold_candidates")
+        topk = payload.get("topk_candidates")
+        if thr is None or topk is None:
+            return None
+        return {
+            "threshold_candidates": [float(x) for x in thr],
+            "topk_candidates": [int(x) for x in topk],
+        }
+
+    def _adopt_grid(self, grid: dict, name: str) -> None:
+        """采用 checkpoint 的动作格（构造网络之前调用）。"""
+        thr = [float(x) for x in grid.get("threshold_candidates") or []]
+        topk = [int(x) for x in grid.get("topk_candidates") or []]
+        if thr and thr != [float(x) for x in self.threshold_candidates]:
+            print(
+                f"[{name}] Note: 采用 checkpoint 阈值格 {thr}"
+                f"（构造时为 {self.threshold_candidates}，动作语义以训练时为准）"
+            )
+            self.threshold_candidates = thr
+        if topk and topk != [int(x) for x in self.topk_candidates]:
+            print(f"[{name}] Note: 采用 checkpoint top-k 格 {topk}")
+            self.topk_candidates = topk
 
     def _adopt_loaded_grid(self) -> None:
         """checkpoint 携带的动作格优先于构造时的 registry/CLI 格。

@@ -59,6 +59,18 @@ class TestNominalComm:
         assert sim.pending_bytes("edge_cloud") == 0.0
         assert sim.edge_cloud_comm_time > 0.0
 
+    def test_nominal_includes_payload_without_coalescing(self):
+        """per_transfer 下没有 pending：名义成本必须仍含本轮载荷。"""
+        sim = _sim()
+        sim.coalesce_rounds = False
+        sim.simulate_transfer(575_000, "edge_cloud")  # 575000B @46Mbps = 0.1s
+        assert sim.pending_bytes("edge_cloud") == 0.0
+        assert sim.round_bytes("edge_cloud") == 575_000.0
+        assert sim.nominal_comm_s("edge_cloud") == pytest.approx(0.15)
+        # 进入下一轮：字节清零，只剩 NTT
+        sim.set_round(1)
+        assert sim.nominal_comm_s("edge_cloud") == pytest.approx(0.05)
+
 
 class TestRewardCommModes:
     """根因①的语义回归。nominal 轮内可读（修复后行为）；settled 已删除
@@ -183,3 +195,34 @@ class TestActionGridPersistence:
         assert resumed.threshold_candidates == self.EXTENDED_GRID
         assert resumed._force_threshold_idx == 1
         assert resumed._force_threshold_value == 0.2
+
+    def test_grid_round_trip_with_different_lengths(self, tmp_path):
+        """训练 3 候选、评测默认 8 候选：必须在构造网络前还原格。
+
+        否则 load() 按输出头形状拒绝，checkpoint 被改名 .corrupt 后
+        静默退回全新策略（P1 回归）。
+        """
+        short_grid = [0.1, 0.4, 0.8]
+        checkpoint = tmp_path / "latest.pth"
+        first = RLNetworkAdapter(
+            Namespace(),
+            model_path=str(checkpoint),
+            best_model_path=str(checkpoint),
+            device="cpu",
+            init_seed=73,
+            init_strategy="fresh",
+            threshold_candidates=short_grid,
+        )
+        first.save(1.0)
+
+        resumed = RLNetworkAdapter(
+            Namespace(),
+            model_path=str(checkpoint),
+            best_model_path=str(checkpoint),
+            device="cpu",
+            init_seed=73,
+            init_strategy="resume",
+            threshold_candidates=self.REGISTRY_GRID,
+        )
+        assert resumed.threshold_candidates == short_grid
+        assert not (tmp_path / "latest.pth.corrupt").exists()

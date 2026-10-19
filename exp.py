@@ -823,8 +823,23 @@ def _ceesd_gamma_for(target_model, which: str, default: int) -> int:
     return default
 
 
+# 分档表默认不启用：本分支只做口径/参数重构，不改变既有矩阵的数字。
+# 要跑新 schedule 显式设 EXP_GAMMA_SCHEDULE=by_mode（docs/protocol.md §4）。
+GAMMA_SCHEDULE = os.environ.get("EXP_GAMMA_SCHEDULE", "legacy").strip().lower()
+if GAMMA_SCHEDULE not in {"legacy", "by_mode"}:
+    raise SystemExit(
+        f"EXP_GAMMA_SCHEDULE 只接受 legacy / by_mode，收到 {GAMMA_SCHEDULE!r}"
+    )
+
+
 def gamma_for_matrix(mode_value: str, edge_cloud_bw: float) -> int:
-    """主矩阵的基线 γ：方法×带宽分档表，缺档回退 GAMMA_SINGLE。"""
+    """主矩阵的基线 γ。
+
+    legacy（默认）：统一 GAMMA_SINGLE，与重构前矩阵逐位一致；
+    by_mode：方法×带宽分档表，缺档回退 GAMMA_SINGLE。
+    """
+    if GAMMA_SCHEDULE == "legacy":
+        return GAMMA_SINGLE
     return GAMMA_BY_MODE_BANDWIDTH.get(str(mode_value), {}).get(
         float(edge_cloud_bw), GAMMA_SINGLE
     )
@@ -906,16 +921,20 @@ paper_table5_modes = (
 def _extra_modes_from_argv() -> tuple[EvalMode, ...]:
     """在模块级配置循环前预读 --extra-modes（循环在 argparse 之前执行）。
 
+    用 add_help=False 的预解析器而不是手工比对 sys.argv：最终 parser 接受
+    `--extra-modes=tridecoding` 这种等号写法，而 index() 只认分离写法，
+    会让矩阵静默少跑一格（`--only-modes tridecoding` 也随之失败）。
+
     附载方法（如 Table VIII 的 tridecoding Static 消融）与主表共用
     create_config 的全部口径分支，只是不进 paper_table5_modes 元组——
     保证消融格与主表格 flag 级一致。重复/未知值直接报错。
     """
-    if "--extra-modes" not in sys.argv:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--extra-modes", default=None)
+    ns, _ = pre.parse_known_args()
+    if not ns.extra_modes:
         return ()
-    idx = sys.argv.index("--extra-modes")
-    if idx + 1 >= len(sys.argv):
-        raise SystemExit("--extra-modes 需要一个逗号分隔的参数值")
-    tokens = [t.strip() for t in sys.argv[idx + 1].split(",") if t.strip()]
+    tokens = [t.strip() for t in ns.extra_modes.split(",") if t.strip()]
     if not tokens:
         return ()
     out: list[EvalMode] = []
@@ -923,7 +942,9 @@ def _extra_modes_from_argv() -> tuple[EvalMode, ...]:
         if token in EvalMode.__members__:
             member = EvalMode[token]
         elif token in _MODE_NAME_BY_VALUE:
-            member = EvalMode(_MODE_NAME_BY_VALUE[token])
+            # 此时 token 是枚举**值**（如 "dist_spec"），必须按值构造；
+            # EvalMode("dsd") 会 ValueError，因为 "dsd" 只是成员名。
+            member = EvalMode(token)
         else:
             raise SystemExit(
                 f"--extra-modes 里有未知方法 {token!r}；"

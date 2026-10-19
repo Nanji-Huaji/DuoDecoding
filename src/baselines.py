@@ -4193,8 +4193,11 @@ class Baselines(Decoding):
             step_end_time = time.time()
             if self.rl_adapter is not None:
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - step_comm_time_start
+                # 与其余方法同一个口径入口：nominal/off 由 _reward_comm_s 决定。
+                # 直接读已结算计数器会有两个洞：per_round 下轮内差值恒 0
+                # （nominal 看不到通信成本）；per_transfer 下 off 也关不掉。
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 去掉分子 +1：只有真正产生 accepted tokens 才有 TPS 基础奖励
@@ -5247,10 +5250,12 @@ class Baselines(Decoding):
                     compute_s=step_time,
                     energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
                     # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）。
-                    # nominal 口径下用轮内 pending 字节；off 沿用 flush 差值
-                    # （字节轴与时间轴独立，off 保留历史原样行为）。
+                    # nominal 口径用本轮已发生字节（round_bytes：pending +
+                    # 即时结算），per_transfer 下 pending 恒 0，用 pending 会让
+                    # 字节单价失效；off 沿用 flush 差值（字节轴与时间轴独立，
+                    # off 保留历史原样行为）。
                     transferred_bytes=(
-                        comm_simulator.pending_bytes("edge_cloud")
+                        comm_simulator.round_bytes("edge_cloud")
                         if getattr(self.args, "rl_comm_cost_mode", "nominal")
                         == "nominal"
                         else comm_simulator.edge_cloud_data - edge_cloud_bytes_start

@@ -26,10 +26,14 @@ def _git_provenance() -> dict:
 
     git_sha + git_dirty 让"复现历史数字"锚定到 commit 而非代码内的
     legacy 分支——这是口径删除（settled / ours_hist 固化 bug 路径）的
-    前置条件（见 docs/refactor_baselines_plan.md §2）。cwd 即代码来源
-    （python 按 cwd 解析 src/），故 git 也按 cwd 查询；git 不可用时
-    降级为 "unknown"，不阻断评测。每进程缓存一次。
+    前置条件（见 docs/refactor_baselines_plan.md §2）。查询锚定到
+    **本文件所属的检出目录**（不是启动目录）：评测脚本会把父目录塞进
+    sys.path，代码可能被从别的仓库启动，按 cwd 查会记错 SHA。
+    git 不可用时降级为 "unknown"，不阻断评测。每进程缓存一次。
     """
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
     cache = getattr(_git_provenance, "_cache", None)
     if cache is None:
         import subprocess
@@ -41,6 +45,7 @@ def _git_provenance() -> dict:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                cwd=repo_root,
             )
             if sha.returncode == 0 and sha.stdout.strip():
                 cache["git_sha"] = sha.stdout.strip()
@@ -49,6 +54,7 @@ def _git_provenance() -> dict:
                     capture_output=True,
                     text=True,
                     timeout=5,
+                    cwd=repo_root,
                 )
                 cache["git_dirty"] = bool(
                     status.returncode == 0 and status.stdout.strip()
