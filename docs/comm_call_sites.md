@@ -85,13 +85,17 @@ getattr(cfg, "comm_round_trip_mode")       # 字符串常量 → 命中
 |---|---|---|
 | `comm_round_trip_mode` | `per_transfer` | `per_round` |
 | `charge_residual_payload` | `False` | `True` |
-| `transfer_top_k_cap` | `0` | `16` |
+| `transfer_top_k_cap` | `0` | `0`（2026-04 起不再全表钳位） |
 
 `parse_arguments()` 保证属性总是存在，所以回退值在生产路径不可达；
 但手工构造 `Namespace` 的测试会踩到。**`CommConfig.from_args` 保留这组
-回退值**（`src/comm_accounting.FALLBACKS`），避免合成 args 静默换口径：
-`test/test_decoding_avg_topk_metrics.py` 的 Namespace 就没有
-`transfer_top_k_cap`，若按 CLI 默认 16 钳位，`dsd` 的 0 会被钳成 16 而红。
+回退值**（`src/comm_accounting.FALLBACKS`），避免合成 args 静默换口径。
+
+这里有个实证：`Baselines.comm_config` 初版用模块里的 `DEFAULTS` 当缺失属性
+的回退，而 `DEFAULTS["transfer_top_k_cap"]` 曾误写成 16（CLI 实际是 0）；
+于是 `test_decoding_avg_topk_metrics` 里 dsd 的 0 被钳成 16 而红。
+修法不是改测试，而是把 `from_args` 的回退换成迁移前方法的字面值
+（`FALLBACKS`），同时把 `DEFAULTS` 改回 0——两套常量因此必须分别定义。
 
 因此模块里有两套常量，职责不同：
 

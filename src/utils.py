@@ -609,10 +609,11 @@ def parse_arguments():
         choices=["honest", "legacy"],
         default=None,
         help=(
-            "L1 口径收敛总开关：honest = 残差计费 + per_round + top-k cap16（论文协议，"
-            "= 仓库默认）；legacy = --no-charge_residual_payload + per_transfer + cap0"
-            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时覆盖"
-            "三个子开关并在日志回显；不给出时子开关独立生效。metrics json 会记录实际口径。"
+            "L1 口径收敛总开关：honest = 残差计费 + per_round（= 仓库默认）；"
+            "legacy = --no-charge_residual_payload + per_transfer"
+            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时"
+            "覆盖上述两个子开关并在日志回显；top-k 不在此处钳位（各方法用自身"
+            " transfer_top_k）。不给出时子开关独立生效；metrics json 记录实际口径。"
         ),
     )
     g_comm.add_argument(

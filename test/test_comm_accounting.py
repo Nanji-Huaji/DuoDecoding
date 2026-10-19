@@ -20,17 +20,47 @@ def test_defaults_are_the_current_cli_defaults():
     assert DEFAULTS == {
         "comm_round_trip_mode": "per_round",
         "charge_residual_payload": True,
-        "transfer_top_k_cap": 16,
+        "transfer_top_k_cap": 0,
         "force_full_vocab_transfer": False,
         "prob_payload_bits": 16,
     }
+
+
+def test_defaults_match_argparse_source():
+    """DEFAULTS 是 argparse 默认值的副本，必须可从源码机械核对。
+
+    2026-10 的教训：transfer_top_k_cap 的 CLI 默认早已是 0，DEFAULTS 里
+    却写着 16，硬编码断言抓不到，只有对照 parser 源码才会红。
+    """
+    import ast
+    import inspect
+
+    from src import utils
+
+    tree = ast.parse(inspect.getsource(utils))
+    found = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "add_argument"):
+            continue
+        opts = [a.value for a in node.args if isinstance(a, ast.Constant)]
+        if not opts:
+            continue
+        dest = opts[0].lstrip("-").replace("-", "_")
+        if dest not in DEFAULTS:
+            continue
+        kw = {k.arg: k.value for k in node.keywords}
+        if "default" in kw:
+            found[dest] = ast.literal_eval(kw["default"])
+        elif getattr(kw.get("action"), "value", "") in {"store_true", "store_false"}:
+            found[dest] = kw["action"].value == "store_false"
+    assert found == DEFAULTS
 
 
 def test_from_values_falls_back_to_defaults():
     cfg = CommConfig.from_values({"charge_residual_payload": False})
     assert cfg.charge_residual_payload is False
     assert cfg.comm_round_trip_mode == "per_round"
-    assert cfg.transfer_top_k_cap == 16
+    assert cfg.transfer_top_k_cap == 0
     assert cfg.force_full_vocab_transfer is False
     assert cfg.prob_payload_bits == 16
 

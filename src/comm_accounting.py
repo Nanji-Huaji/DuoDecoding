@@ -30,13 +30,14 @@ from typing import Any, Mapping
 
 from src.protocols import PROTOCOLS
 
-#: 五个开关的 argparse 默认值（src/utils.py，2026-10 现状）。
+#: 五个开关的 argparse 默认值（src/utils.py，2026-10 核对）。
 #: 这里复制的是**默认值**而不是取值逻辑；test_comm_accounting 与
 #: test_protocol_spec 共同保证它与 CLI 不漂移。
+#: 注意 transfer_top_k_cap：2026-04 起全表解钳，CLI 默认是 0 而不是 16。
 DEFAULTS: dict[str, Any] = {
     "comm_round_trip_mode": "per_round",
     "charge_residual_payload": True,
-    "transfer_top_k_cap": 16,
+    "transfer_top_k_cap": 0,
     "force_full_vocab_transfer": False,
     "prob_payload_bits": 16,
 }
