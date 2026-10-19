@@ -264,39 +264,41 @@ def parse_arguments():
     # ---- 参数分组：只改变 --help 的排版，不改动任何默认值或行为 ----
     # 分层依据见 docs/param_inventory.md；L0 通信/计费口径见 docs/protocol.md。
     g_daily = parser.add_argument_group(
-        "① 日常出表（改这些就够）（16）",
+        "① 日常出表（这些就够）",
         "跑任何一次评测都要定的：模型、模式、深度、生成长度、与命名协议。",
     )
     g_sample = parser.add_argument_group(
-        "② 数据集与采样（7）",
+        "② 数据集与采样",
         "选数据集、定样本数与随机采样。",
     )
     g_comm = parser.add_argument_group(
-        "③ 通信数值与计费口径（17）",
-        "L0：比较不同方法时必须逐项一致（冻结值见 docs/protocol.md）。",
+        "③ 通信数值与计费口径（常态交给 --protocol）",
+        "L0：比较不同方法时必须逐项一致（冻结值见 docs/protocol.md）。"
+        "paper_table5/honest/legacy 已冻结这些键；下面的子开关只在"
+        "做消融、或复现历史 run 时手动覆盖。",
     )
     g_trace = parser.add_argument_group(
-        "④ trace 回放（4）",
+        "④ trace 回放",
         "用实测 trace 取代解析式带宽/时延模型。",
     )
     g_method = parser.add_argument_group(
-        "⑤ 解码方法与准确率头（9）",
+        "⑤ 解码方法与准确率头",
         "投机深度之外的方法参数：早停、阈值、准确率头路径。",
     )
     g_rl = parser.add_argument_group(
-        "⑥ RL adapter（35）",
-        "挂载点、权重路径与 reward 整形；其中一批只在训练里被读取。",
+        "⑥ RL adapter",
+        "挂载点、权重路径与 reward 整形；只在 --use_rl_adapter 或训练时生效。",
     )
     g_deploy = parser.add_argument_group(
-        "⑦ 部署、精度与显存（6）",
+        "⑦ 部署、精度与显存",
         "dtype、量化、多卡与验证图档位。",
     )
     g_curr = parser.add_argument_group(
-        "⑧ curriculum（5）",
+        "⑧ curriculum",
         "训练用的网络条件课程；评测侧仅 eval_mixed 读取。",
     )
     g_out = parser.add_argument_group(
-        "⑨ 输出与裁判（4）",
+        "⑨ 输出与裁判",
         "结果落盘与 MT-Bench 裁判。",
     )
 
@@ -1187,6 +1189,11 @@ def parse_arguments():
             f"charge_residual={args.charge_residual_payload}, "
             f"round_trip={args.comm_round_trip_mode}, "
             f"topk_cap={args.transfer_top_k_cap}"
+        )
+        print(
+            "[deprecated] --comm_accounting 与 --protocol honest|legacy 重复，"
+            "将在下个版本移除；请改用 --protocol（同时记录协议名与代填项）。"
+            "本 run 仍按上面的取值执行。"
         )
 
     if args.run_full_dataset:
