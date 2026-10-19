@@ -302,8 +302,8 @@
       }
     },
     "Baselines.uncertainty_decoding": {
-      "events": 100,
-      "sha256_16": "6c2fcbe5231eff76",
+      "events": 98,
+      "sha256_16": "97fa370308a5d952",
       "surface": {
         "boolop": {
           "And": 3,
@@ -345,7 +345,7 @@
           "record": 2,
           "reset_for_new_sample": 2,
           "setattr": 1,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "time": 4,
           "to": 3,
@@ -373,7 +373,6 @@
         "flag_getattr": {
           "batch_delay": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "gamma": 1,
           "min_bandwidth_mbps": 2,
           "protocol_deviations": 1,
@@ -396,8 +395,8 @@
       }
     },
     "Baselines.tk_slt": {
-      "events": 138,
-      "sha256_16": "af157873898aeda4",
+      "events": 136,
+      "sha256_16": "a8ea5065bc445e81",
       "surface": {
         "assign_self": {
           "_tk_slt_caches": 1
@@ -447,7 +446,7 @@
           "prepare_verification_inputs": 1,
           "record": 2,
           "reset_for_new_sample": 2,
-          "str": 3,
+          "str": 2,
           "synchronize": 1,
           "time": 10,
           "tk_slt_select_speculative": 1,
@@ -474,7 +473,6 @@
         "flag_getattr": {
           "batch_delay": 1,
           "comm_bw_model": 2,
-          "comm_round_trip_mode": 1,
           "gamma": 1,
           "min_bandwidth_mbps": 2,
           "protocol_deviations": 1,
@@ -766,8 +764,8 @@
       }
     },
     "Baselines.adaptive_tridecoding": {
-      "events": 333,
-      "sha256_16": "8c8236dcf0ab0358",
+      "events": 322,
+      "sha256_16": "467eab1ba3796442",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -776,7 +774,7 @@
         },
         "boolop": {
           "And": 13,
-          "Or": 10
+          "Or": 9
         },
         "break": {
           "": 3
@@ -801,7 +799,7 @@
           "_uplink_prob_payload": 4,
           "_validate_token_range": 2,
           "append": 7,
-          "bool": 6,
+          "bool": 3,
           "build_stage_prefix_topk_history": 1,
           "calculate_uncertainty": 1,
           "cast": 4,
@@ -825,7 +823,7 @@
           "get": 6,
           "get_empty_metrics": 1,
           "get_model_input_device": 3,
-          "int": 28,
+          "int": 27,
           "isinstance": 1,
           "item": 7,
           "join": 2,
@@ -854,7 +852,7 @@
           "stage_topk_proposal_history": 3,
           "state_entropy": 2,
           "step": 2,
-          "str": 4,
+          "str": 3,
           "strip": 1,
           "synchronize": 1,
           "time": 18,
@@ -886,19 +884,15 @@
         },
         "flag_getattr": {
           "batch_delay": 1,
-          "charge_residual_payload": 1,
           "comm_bw_model": 3,
-          "comm_round_trip_mode": 1,
           "comm_trace_mode": 1,
           "disable_rl_update": 4,
-          "force_full_vocab_transfer": 2,
           "graph_verify_sizes": 1,
           "min_bandwidth_mbps": 3,
           "probe_cache_max_length": 1,
           "rl_comm_cost_mode": 1,
           "rl_team_reward": 2,
           "stochastic_ntt": 2,
-          "transfer_top_k_cap": 1,
           "uncertainty_threshold": 1,
           "use_cuda_graph": 1
         },

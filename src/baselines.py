@@ -1933,8 +1933,7 @@ class Baselines(Decoding):
         # 触发的上行+下行合并成一次云请求往返（1×NTT）。载荷字节仍是
         # 论文式 (5) 口径（cuhlm_uplink_payload_bytes）。
         comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+            self.comm_config.comm_round_trip_mode == "per_round"
         )
         _dev = (
             "cuhlm_fair_accounting: skip=0RTT(buffered resync), "
@@ -2332,8 +2331,7 @@ class Baselines(Decoding):
         # 此前逐报文各付 50ms（每轮 2×NTT），比 dsd/dssd/ours 每轮多付
         # 50ms 纯记账差异。载荷字节仍是论文口径（tk_slt_uplink_payload_bytes）。
         comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+            self.comm_config.comm_round_trip_mode == "per_round"
         )
 
         # 口径自述随 metrics 落盘（F-CUHLM 同款），保证论文口径跑出的工件
@@ -4394,7 +4392,9 @@ class Baselines(Decoding):
         #   机制：proposal_top_k(vocab_size) 返回 None（不截断），且计费公式
         #   draft_len × vocab_size × (prob+index) 会如实 charge 全词表载荷。
         #   必须在方法入口改写，才能同时影响「真实截断」与「通信计费」两条路径。
-        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+        # 口径对象在本方法入口构造一次，后面的 charge/top-k 都复用它。
+        _comm = self.comm_config
+        if _comm.force_full_vocab_transfer:
             transfer_top_k = int(getattr(self, "vocab_size", 0) or 32000)
 
         batch_delay = self.args.batch_delay
@@ -4413,9 +4413,7 @@ class Baselines(Decoding):
         # F43：是否按"拒绝位置残差所需的分布载荷"计费，并改用精确的
         # top-k + 均匀尾表示（TopKProposalHistory）而不是整行。默认关闭以保持
         # 历史数字可复现；开启后通信记账才与真实分布式实现一致。
-        charge_residual = bool(
-            getattr(self.args, "charge_residual_payload", False)
-        )
+        charge_residual = _comm.charge_residual_payload
         probe_cache_max_length = getattr(self.args, "probe_cache_max_length", None)
         cache_kwargs = (
             {"max_length": probe_cache_max_length}
@@ -4537,11 +4535,9 @@ class Baselines(Decoding):
         #  · comm_round_trip_mode=per_round：同一轮内多条消息合成"每链路一次往返"，
         #    只付一次 NTT（原实现一轮要付 3.2+3.0 次）；
         #  · transfer_top_k_cap：给 RL 选出的 top-k 设上限，直接压低拒绝载荷字节。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer")) == "per_round"
-        )
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        _topk_cap = _comm.transfer_top_k_cap
+        if _comm.force_full_vocab_transfer:
             # 强制全词表：cap 不再覆盖，并把全词表规模告知 simulator 用于计费
             comm_simulator.transfer_top_k = transfer_top_k
         elif _topk_cap > 0:
