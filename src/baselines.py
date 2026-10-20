@@ -4276,8 +4276,8 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        if self.rl_adapter is not None:
-            self.rl_adapter.save(metrics.get("throughput"))
+        # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
+        self._save_adaptive_rl_checkpoints(metrics.get("throughput"))
 
         # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
         _finalize_comm_metrics(metrics, comm_simulator, self.args)
@@ -5845,14 +5845,10 @@ class Baselines(Decoding):
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
 
-        if self.rl_adapter is not None:
-            dra_start = time.time()
-            self.rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
-        if self.little_rl_adapter is not None:
-            dra_start = time.time()
-            self.little_rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
+        # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
+        dra_start = time.time()
+        self._save_adaptive_rl_checkpoints(metrics.get("throughput"))
+        metrics["dra_overhead_time"] += time.time() - dra_start
 
         # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
         _finalize_comm_metrics(metrics, comm_simulator, self.args)

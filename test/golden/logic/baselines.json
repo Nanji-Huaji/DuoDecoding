@@ -640,7 +640,7 @@
     },
     "Baselines.adaptive_decoding": {
       "events": 122,
-      "sha256_16": "828a3ce3805723cd",
+      "sha256_16": "382390fd94e3f9f9",
       "surface": {
         "boolop": {
           "And": 4
@@ -657,6 +657,7 @@
           "_generate_with_optional_rebuilt_proposal": 1,
           "_graph_mode_cache_kwargs": 1,
           "_reward_comm_s": 1,
+          "_save_adaptive_rl_checkpoints": 1,
           "_stop_at_eos": 2,
           "acquire_graph_caches": 1,
           "append": 2,
@@ -688,7 +689,6 @@
           "reject_tail_scalar_bytes": 1,
           "reset_step": 1,
           "rollback": 3,
-          "save": 1,
           "select_config": 1,
           "stage_prob_history": 1,
           "state_entropy": 1,
@@ -891,8 +891,8 @@
       }
     },
     "Baselines.cee_cuhlm": {
-      "events": 137,
-      "sha256_16": "dbea453051ed4a59",
+      "events": 133,
+      "sha256_16": "f28a783b183caae9",
       "surface": {
         "boolop": {
           "And": 1
@@ -909,6 +909,7 @@
           "_generate_with_optional_rebuilt_proposal": 2,
           "_graph_mode_cache_kwargs": 1,
           "_move_token_tensor": 4,
+          "_save_adaptive_rl_checkpoints": 1,
           "_stop_at_eos": 1,
           "_validate_token_range": 2,
           "apply_rollback": 2,
@@ -923,7 +924,7 @@
           "elapsed_time": 1,
           "float": 3,
           "generate": 2,
-          "get": 5,
+          "get": 4,
           "get_empty_metrics": 1,
           "get_model_input_device": 3,
           "int": 7,
@@ -937,11 +938,10 @@
           "record": 3,
           "reset_for_new_sample": 3,
           "rollback": 2,
-          "save": 2,
           "setattr": 1,
           "stage_prob_history": 2,
           "synchronize": 1,
-          "time": 13
+          "time": 11
         },
         "comm": {
           "calculate_uncertainty": 1,
