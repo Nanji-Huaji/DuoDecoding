@@ -13,7 +13,7 @@
 |---|---|---|
 | CLI 默认 | `src/utils.py` | 命令行没给就用它 |
 | 命名协议 | `--protocol` → `src/protocols.PROTOCOLS` | 只填**命令行未显式给出**的项 |
-| 口径总开关 | `--comm_accounting honest\|legacy` | 强制覆盖 3 个子开关；**与 `--protocol honest\|legacy` 重复，已标弃用** |
+| 口径总开关 | `--comm_accounting honest\|legacy` | 强制覆盖 3 个子开关；**与 `--protocol honest\|legacy` 重复，已标弃用、help 隐藏（仍解析）** |
 | 扫描配置 | `exp.py` 的 `create_config` / `cmd_temp` | 布尔只有在为 True 时转发；部分字面量写死 |
 
 ## 1. 分组统计
@@ -80,7 +80,7 @@
 | `--ntt_trace_scale` | `1.0` | ④ | 2 | eval/utils.py, src/baselines.py |
 | `--stochastic_ntt` | `False` | ④ | 13 | eval/utils.py, src/baselines.py |
 | `--protocol` | `'none'` | ① | 2 | eval/utils.py, src/utils.py |
-| `--comm_accounting` | `None` | ③ | 3 | src/utils.py |
+| `--comm_accounting` | `None` | ③ | 3 | src/utils.py（**help 已隐藏**，仅为兼容旧命令保留解析） |
 | `--min_bandwidth_mbps` | `5.0` | ③ | 26 | eval/utils.py, src/baselines.py, src/engine.py |
 | `--comm_bw_model` | `'instant'` | ③ | 25 | eval/utils.py, src/baselines.py, src/engine.py |
 | `--curriculum_bw_start` | `'20,50'` | ⑧ | 1 | eval/eval_mixed.py |

@@ -115,7 +115,7 @@ call site。详见 `docs/protocol.md` §6。
 | `--batch_delay` | `0.05` | core解码×2,其它×1 | The delay time added to each batch in |
 | `--charge_residual_payload` | `True` | core解码×2,eval×1,测试×1 | F43：如实计入拒绝位置残差采样所需的提案分布载荷 |
 | `--cloud_end_bandwidth` | `100.0` | core解码×2,eval×1,其它×1 | The bandwidth between cloud and end d |
-| `--comm_accounting` | `None` | 其它×1 | L1 口径收敛总开关：honest = 残差计费 + per_round |
+| `--comm_accounting` | `None` | 其它×1 | L1 口径收敛总开关（已弃用、help 隐藏，仍解析以兼容旧命令） |
 | `--comm_round_trip_mode` | `'per_round'` | core解码×2,eval×1,测试×1 | 通信往返口径：per_round=同一轮内每条链路合并为一次往返（成批实现 |
 | `--comm_trace_mode` | `'static'` | core解码×1 | 随机通信 trace 的移动模式（配合 --use_stochastic_ |
 | `--curriculum_ntt_end` | `'0,5'` | eval×1 | Curriculum edge-cloud latency range ( |

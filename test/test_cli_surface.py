@@ -5,10 +5,18 @@ EXPECTED 由 src/utils.py 的 add_argument 字面量生成（2026-10-18，110 �
 更新 EXPECTED 必须与参数改动放在同一个提交里，并在提交信息写明原因。
 
 参数太多不是靠这个测试解决的；它只保证"以后不会再悄悄变多"。
+
+2026-10-19 起 `-e/-n/-s`（长选项的短别名）与 `--comm_accounting` 已从
+`--help` 隐藏（argparse.SUPPRESS），但仍可解析：旧脚本与 golden manifest
+里的历史命令不受影响。下面两条测试锁住"隐藏"与"仍可解析"两件事。
 """
 
 import ast
+import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 EXPECTED = (
     '--acc_head_path',
@@ -138,3 +146,42 @@ def _options():
 
 def test_surface_is_frozen():
     assert _options() == list(EXPECTED)
+
+
+def test_help_hides_legacy_flags(monkeypatch, capsys):
+    import src.utils as utils
+
+    monkeypatch.setattr(sys, "argv", ["prog", "--help"])
+    with patch("src.utils.model_zoo"):
+        with pytest.raises(SystemExit) as e:
+            utils.parse_arguments()
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "--comm_accounting" not in out
+    for short in ("  -e ", "  -n ", "  -s ", "[-e ", "[-n ", "[-s "):
+        assert short not in out, f"短别名仍在 help 里: {short!r}"
+
+
+def test_hidden_flags_still_parse(monkeypatch):
+    import src.utils as utils
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--eval_mode", "sd",
+            "--draft_model", "llama-68m",
+            "--target_model", "llama-2-13b",
+            "-e", "x",
+            "-n", "2",
+            "-s", "7",
+            "--comm_accounting", "honest",
+        ],
+    )
+    with patch("src.utils.model_zoo"):
+        args = utils.parse_arguments()
+    assert args.exp_name.endswith("/exp/x")
+    assert args.num_samples_per_task == 2
+    assert args.seed == 7
+    assert args.comm_accounting == "honest"

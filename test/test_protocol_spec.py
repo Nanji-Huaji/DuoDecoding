@@ -538,6 +538,19 @@ DAILY_ARGS = frozenset(
 )
 
 
+def _is_hidden_alias(node: ast.Call) -> bool:
+    """`-e/-n/-s` 这类"help 隐藏、仍可解析"的短别名：不计入可见参数面。"""
+    if not (node.args and isinstance(node.args[0], ast.Constant)):
+        return False
+    opt = node.args[0].value
+    if not (isinstance(opt, str) and opt.startswith("-") and not opt.startswith("--")):
+        return False
+    return any(
+        kw.arg == "help" and ast.unparse(kw.value).endswith("SUPPRESS")
+        for kw in node.keywords
+    )
+
+
 def _argument_groups() -> dict[str, list[str]]:
     """从 `src/utils.py` 提取 {分组变量名: [dest, ...]}；未归类的记在 `_ungrouped`。"""
     tree = ast.parse(UTILS_PY.read_text(encoding="utf-8"))
@@ -550,6 +563,8 @@ def _argument_groups() -> dict[str, list[str]]:
         if node.func.attr == "add_argument_group":
             group_names.add(ast.unparse(node.func.value))
         elif node.func.attr == "add_argument":
+            if _is_hidden_alias(node):
+                continue
             target = ast.unparse(node.func.value)
             dest = ast.unparse(node.args[0]).strip("\"'").lstrip("-").replace("-", "_")
             if target == "parser":
@@ -567,7 +582,10 @@ class TestHelpGrouping(unittest.TestCase):
     参数总数历史：103 → 104（--tk_slt_odld，g_method）→ 105
     （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）→ 107
     （2026-10-10 --rl_comm_cost_mode / --rl_threshold_candidates，
-    g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）。"""
+    g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）。
+
+    2026-10-19：`-e/-n/-s` 改为 help 隐藏的兼容别名（仍解析），可见参数
+    面仍是 107；`--comm_accounting` 同样隐藏但仍计入（它仍是独立参数）。"""
 
     def test_every_argument_is_grouped(self):
         g = _argument_groups()
