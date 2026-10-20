@@ -1,17 +1,34 @@
-# 通信计费开关的 call site 清单（Phase 1 迁移前）
+# 通信计费开关的 call site 清单（迁移前基线 + 迁移后状态）
 
 基线：`refactor/logic-gates@5ce0f28`（2026-10-18）。行号会随后续提交漂移，
 以"方法 + 开关"为准，行号只用于当前定位。
 
+> **2026-10-19 已全部迁移。** 下表是迁移前的审计快照，保留它是为了让
+> 每个读取点的旧回退值可查。现状：**32/32** 读取点经
+> `Decoding.comm_config`（基类；Baselines 与 engine.py 的
+> `speculative_decoding_with_bandwidth` 共用）；`_uplink_prob_payload`
+> 改为收 `bits: int`，调用点传 `self.comm_config.prob_payload_bits`；
+> 守卫测试 `test/test_comm_config_reads.py` 扫描两个文件、禁止回退。
+>
+> **通信数值层（2026-10-19）**：带宽 / `min_bandwidth_mbps` /
+> `comm_bw_model` / `stochastic_ntt` / `batch_delay` / NTT trace
+> 收进 `CommEnv`（`Decoding.comm_env`，**每次访问重建**：curriculum 会在
+> 同一 decoder 上逐样本改带宽，缓存会沿用首样本条件）。迁移前这些值在 ~20 处
+> `CommunicationSimulator(...)` / `PreciseCommunicationSimulator(...)`
+> 构造点各自 `getattr(self.args, ..., 默认)`；现在默认值只有
+> `comm_accounting.ENV_FALLBACKS` 一份，守卫同样禁止 args 直读。
+
 ## 1. 结论
 
-- 5 个开关、**29 个读取点**、11 个方法 + 1 个模块助手；
+- 5 个开关、**32 个读取点**、12 个方法 + 1 个模块助手
+  （初版审计漏了 engine.py 的 `speculative_decoding_with_bandwidth`，2026-10-19 补齐）；
 - 真正改数字的路径只有 5 条（见 §3），其余全是重复的 `getattr`；
 - `force_full_vocab_transfer` 只有 `adaptive_tridecoding` 读（2 处），
   与 `src/protocols.py::_STATIC_ACCOUNTING` 的快照一致；
 - CUHLM / TK-SLT 系只读 `comm_round_trip_mode`（统一往返），
   `cee_cuhlm` 一个都不读——与静态快照一致；
-- `prob_payload_bits` 只有一处（`_uplink_prob_payload`），所有方法共用。
+- `prob_payload_bits` 只有一处（`_uplink_prob_payload`），所有方法共用；
+  迁移后该 helper 收 int，8 个调用点传 `self.comm_config.prob_payload_bits`。
 
 ## 2. 读取点总表
 

@@ -1064,6 +1064,20 @@ for little_model, draft_model, target_model in paper_table5_series:
 # 不同的 exp_name，所以**不能拿 exp_name 当合并键**。合并与续跑的键是「这次到底跑的
 # 是什么」那组语义字段：数据集 + 方法 + 三档模型 + 通信口径 + 投机深度 + 采样设置。
 # CUDA_VISIBLE_DEVICES 与 exp_name 这类每次运行都会变的字段必须排除在外。
+# 计费口径的 argparse 默认值（src/utils.py，2026-10 核对）。旧汇总的
+# config 里没有这些键，补默认值后"都没记录"的两条仍相等——不改变既有
+# 合并行为；一旦将来有矩阵扫口径，honest/legacy 会被拆成两个实验。
+# comm_round_trip_mode 的默认必须是 per_round（CLI default，utils.py:834）：
+# 旧 run 没写这个键时实际跑的就是 per_round，填 per_transfer 会让它们
+# 与显式 per_round 的条目算成两个实验，且与显式 per_transfer 撞键。
+_IDENTITY_ACCOUNTING_DEFAULTS = {
+    "transfer_top_k": 300,
+    "charge_residual_payload": True,
+    "comm_round_trip_mode": "per_round",
+    "transfer_top_k_cap": 0,
+    "prob_payload_bits": 16,
+}
+
 RUN_IDENTITY_FIELDS = (
     "eval_dataset",
     "eval_mode",
@@ -1085,6 +1099,12 @@ RUN_IDENTITY_FIELDS = (
     "num_samples_per_task",
     "sample_seed",
     "random_sample",
+    # 计费口径：同模型/数据集上两种口径必须算两个实验（见上方默认值注释）
+    "transfer_top_k",
+    "charge_residual_payload",
+    "comm_round_trip_mode",
+    "transfer_top_k_cap",
+    "prob_payload_bits",
 )
 
 
@@ -1100,12 +1120,23 @@ def _identity_value(value):
 
 
 def run_identity(config: dict) -> tuple:
-    """把一个 config 压成与时间戳无关的语义键。"""
-    return tuple(
-        (field, _identity_value(config[field]))
-        for field in RUN_IDENTITY_FIELDS
-        if field in config
-    )
+    """把一个 config 压成与时间戳无关的语义键。
+
+    计费口径也进键（transfer_top_k / charge_residual_payload /
+    comm_round_trip_mode / transfer_top_k_cap / prob_payload_bits）：否则
+    同一模型/数据集上的 honest 与 legacy 会被 merge_summaries 当成一条
+    互相覆盖。旧汇总没有这些键时用 _IDENTITY_ACCOUNTING_DEFAULTS 补齐，
+    与迁移前的键保持相等。
+    """
+    items = []
+    for field in RUN_IDENTITY_FIELDS:
+        if field in config:
+            items.append((field, _identity_value(config[field])))
+        elif field in _IDENTITY_ACCOUNTING_DEFAULTS:
+            items.append(
+                (field, _identity_value(_IDENTITY_ACCOUNTING_DEFAULTS[field]))
+            )
+    return tuple(items)
 
 
 def load_summary(path: str | Path) -> List[dict]:

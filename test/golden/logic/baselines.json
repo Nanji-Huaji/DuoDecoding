@@ -4,8 +4,8 @@
   "rev": "WORKTREE",
   "entries": {
     "Baselines.__init__": {
-      "events": 77,
-      "sha256_16": "9e74080d2861aa29",
+      "events": 76,
+      "sha256_16": "93543b30eb5ceecc",
       "surface": {
         "assign_self": {
           "little_rl_adapter": 3,
@@ -28,6 +28,7 @@
           "bool": 2,
           "configure_ntt_trace": 1,
           "float": 3,
+          "from_args": 1,
           "get": 1,
           "get_rl_agent_spec": 2,
           "max": 2,
@@ -57,8 +58,6 @@
           "little_rl_path": 1,
           "main_rl_best_path": 1,
           "main_rl_path": 1,
-          "ntt_trace_file": 1,
-          "ntt_trace_scale": 1,
           "rl_batch_size": 1,
           "rl_checkpoint_root": 1,
           "rl_epsilon_decay": 1,
@@ -122,8 +121,8 @@
       }
     },
     "Baselines.dist_split_spec": {
-      "events": 110,
-      "sha256_16": "7fb1d5c8f2f3a347",
+      "events": 100,
+      "sha256_16": "d044d8ea1756ddb5",
       "surface": {
         "boolop": {
           "And": 2
@@ -147,7 +146,6 @@
           "append": 2,
           "apply_rollback": 2,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "build_draft_probs_override": 1,
           "build_rollback_plan": 1,
           "cat": 2,
@@ -177,7 +175,6 @@
           "reset_for_new_sample": 2,
           "setattr": 1,
           "stage_topk_proposal_history": 1,
-          "str": 2,
           "synchronize": 1,
           "time": 6,
           "to": 1
@@ -189,7 +186,6 @@
           "transfer": 2
         },
         "flag": {
-          "edge_cloud_bandwidth": 1,
           "gamma": 1,
           "max_tokens": 1,
           "temp": 2,
@@ -197,11 +193,7 @@
           "top_p": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 2,
-          "gamma": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma": 1
         },
         "loop": {
           "while": 1
@@ -212,8 +204,8 @@
       }
     },
     "Baselines.dist_spec": {
-      "events": 107,
-      "sha256_16": "8c5e75fb8ef3b888",
+      "events": 96,
+      "sha256_16": "06dd465476e6ef9d",
       "surface": {
         "boolop": {
           "And": 3,
@@ -233,7 +225,6 @@
           "append": 2,
           "apply_rollback": 2,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "build_draft_probs_override": 1,
           "build_rollback_plan": 1,
           "cat": 2,
@@ -262,7 +253,6 @@
           "reset_for_new_sample": 2,
           "setattr": 1,
           "stage_topk_proposal_history": 1,
-          "str": 2,
           "synchronize": 1,
           "time": 6,
           "to": 5
@@ -275,7 +265,6 @@
           "transfer": 3
         },
         "flag": {
-          "edge_cloud_bandwidth": 1,
           "gamma": 1,
           "max_tokens": 1,
           "temp": 2,
@@ -283,11 +272,7 @@
           "top_p": 2
         },
         "flag_getattr": {
-          "batch_delay": 2,
-          "comm_bw_model": 2,
-          "gamma": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma": 1
         },
         "loop": {
           "while": 1
@@ -302,8 +287,8 @@
       }
     },
     "Baselines.uncertainty_decoding": {
-      "events": 98,
-      "sha256_16": "97fa370308a5d952",
+      "events": 88,
+      "sha256_16": "1b7472bb6525b960",
       "surface": {
         "boolop": {
           "And": 3,
@@ -323,7 +308,6 @@
           "_graph_mode_cache_kwargs": 1,
           "_stop_at_eos": 1,
           "apply_rollback": 1,
-          "bool": 1,
           "build_rollback_plan": 1,
           "cat": 2,
           "color_print": 1,
@@ -345,7 +329,6 @@
           "record": 2,
           "reset_for_new_sample": 2,
           "setattr": 1,
-          "str": 2,
           "synchronize": 1,
           "time": 4,
           "to": 3,
@@ -363,7 +346,6 @@
           "": 1
         },
         "flag": {
-          "edge_cloud_bandwidth": 1,
           "max_tokens": 1,
           "protocol_deviations": 1,
           "temp": 2,
@@ -371,12 +353,8 @@
           "top_p": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 2,
           "gamma": 1,
-          "min_bandwidth_mbps": 2,
           "protocol_deviations": 1,
-          "stochastic_ntt": 1,
           "uncertainty_threshold": 2
         },
         "loop": {
@@ -395,8 +373,8 @@
       }
     },
     "Baselines.tk_slt": {
-      "events": 136,
-      "sha256_16": "a8ea5065bc445e81",
+      "events": 126,
+      "sha256_16": "a296cd56f2512975",
       "surface": {
         "assign_self": {
           "_tk_slt_caches": 1
@@ -424,7 +402,7 @@
           "_validate_token_range": 4,
           "append": 3,
           "apply_rollback": 2,
-          "bool": 2,
+          "bool": 1,
           "build_draft_probs_override": 1,
           "build_rollback_plan": 1,
           "cat": 3,
@@ -446,7 +424,6 @@
           "prepare_verification_inputs": 1,
           "record": 2,
           "reset_for_new_sample": 2,
-          "str": 2,
           "synchronize": 1,
           "time": 10,
           "tk_slt_select_speculative": 1,
@@ -463,7 +440,6 @@
           "": 1
         },
         "flag": {
-          "edge_cloud_bandwidth": 1,
           "gamma": 1,
           "max_tokens": 1,
           "protocol_deviations": 1,
@@ -471,12 +447,8 @@
           "top_p": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 2,
           "gamma": 1,
-          "min_bandwidth_mbps": 2,
           "protocol_deviations": 1,
-          "stochastic_ntt": 1,
           "tk_slt_odld": 1
         },
         "loop": {
@@ -492,8 +464,8 @@
       }
     },
     "Baselines.tridecoding": {
-      "events": 133,
-      "sha256_16": "d43940101f3fd615",
+      "events": 120,
+      "sha256_16": "a2f668c2f2fbb051",
       "surface": {
         "boolop": {
           "And": 3
@@ -510,7 +482,6 @@
           "_stop_at_eos": 1,
           "_uplink_prob_payload": 4,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "build_adaptive_tridecoding_caches": 1,
           "build_draft_probs_override": 4,
           "build_rollback_plan": 2,
@@ -535,7 +506,6 @@
           "reject_tail_scalar_bytes": 2,
           "rollback": 7,
           "stage_topk_proposal_history": 4,
-          "str": 2,
           "synchronize": 1,
           "to": 5,
           "verify_draft_sequence_result": 2
@@ -547,18 +517,9 @@
           "transfer": 7
         },
         "flag": {
-          "cloud_end_bandwidth": 1,
-          "edge_cloud_bandwidth": 1,
-          "edge_end_bandwidth": 1,
           "gamma1": 4,
           "gamma2": 12,
           "max_tokens": 1
-        },
-        "flag_getattr": {
-          "batch_delay": 2,
-          "comm_bw_model": 2,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
         },
         "loop": {
           "while": 1
@@ -574,8 +535,8 @@
       }
     },
     "Baselines.ceesd_without_arp": {
-      "events": 127,
-      "sha256_16": "311525690c864f26",
+      "events": 115,
+      "sha256_16": "06a4d0748ec51356",
       "surface": {
         "boolop": {
           "And": 4
@@ -594,7 +555,6 @@
           "_reward_comm_s": 2,
           "_stop_at_eos": 1,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "cast": 1,
           "cat": 2,
           "clone": 1,
@@ -622,7 +582,6 @@
           "stage_topk_proposal_history": 1,
           "state_entropy": 2,
           "step": 2,
-          "str": 2,
           "synchronize": 1,
           "time": 4,
           "to": 4
@@ -635,22 +594,15 @@
           "transfer": 7
         },
         "flag": {
-          "batch_delay": 1,
-          "cloud_end_bandwidth": 1,
-          "edge_cloud_bandwidth": 1,
-          "edge_end_bandwidth": 1,
           "gamma1": 1,
           "gamma2": 1,
           "max_tokens": 1,
           "top_k": 1
         },
         "flag_getattr": {
-          "comm_bw_model": 2,
           "disable_rl_update": 4,
           "gamma1": 1,
-          "gamma2": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma2": 1
         },
         "loop": {
           "while": 1
@@ -664,8 +616,8 @@
       }
     },
     "Baselines.adaptive_decoding": {
-      "events": 127,
-      "sha256_16": "6c532f3a9e970232",
+      "events": 117,
+      "sha256_16": "097198f80d62d65a",
       "surface": {
         "boolop": {
           "And": 4
@@ -685,7 +637,6 @@
           "_stop_at_eos": 2,
           "append": 2,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "cat": 2,
           "clone": 1,
           "color_print": 1,
@@ -718,7 +669,6 @@
           "stage_prob_history": 1,
           "state_entropy": 1,
           "step": 1,
-          "str": 2,
           "synchronize": 1,
           "time": 3,
           "to": 8,
@@ -735,18 +685,13 @@
           "": 1
         },
         "flag": {
-          "batch_delay": 1,
-          "edge_cloud_bandwidth": 1,
           "gamma": 1,
           "max_tokens": 1,
           "top_k": 1
         },
         "flag_getattr": {
-          "comm_bw_model": 2,
           "disable_rl_update": 2,
-          "gamma": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma": 1
         },
         "loop": {
           "for": 1,
@@ -765,8 +710,8 @@
       }
     },
     "Baselines.adaptive_tridecoding": {
-      "events": 322,
-      "sha256_16": "aee6db313b880bd3",
+      "events": 301,
+      "sha256_16": "43bdd46858038aa4",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -800,7 +745,7 @@
           "_uplink_prob_payload": 4,
           "_validate_token_range": 2,
           "append": 7,
-          "bool": 3,
+          "bool": 1,
           "build_stage_prefix_topk_history": 1,
           "calculate_uncertainty": 1,
           "cast": 4,
@@ -854,7 +799,6 @@
           "stage_topk_proposal_history": 3,
           "state_entropy": 2,
           "step": 2,
-          "str": 3,
           "strip": 1,
           "synchronize": 1,
           "time": 18,
@@ -872,10 +816,6 @@
           "": 3
         },
         "flag": {
-          "batch_delay": 1,
-          "cloud_end_bandwidth": 2,
-          "edge_cloud_bandwidth": 2,
-          "edge_end_bandwidth": 2,
           "gamma1": 2,
           "gamma2": 2,
           "max_tokens": 2,
@@ -884,16 +824,12 @@
           "top_p": 2
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 3,
           "comm_trace_mode": 1,
           "disable_rl_update": 4,
           "graph_verify_sizes": 1,
-          "min_bandwidth_mbps": 3,
           "probe_cache_max_length": 1,
           "rl_comm_cost_mode": 1,
           "rl_team_reward": 2,
-          "stochastic_ntt": 2,
           "uncertainty_threshold": 1,
           "use_cuda_graph": 1
         },
@@ -928,8 +864,8 @@
       }
     },
     "Baselines.cee_cuhlm": {
-      "events": 136,
-      "sha256_16": "8862b5058f7035f2",
+      "events": 123,
+      "sha256_16": "e8aca1914ff2ab72",
       "surface": {
         "boolop": {
           "And": 1
@@ -951,7 +887,6 @@
           "_stop_at_eos": 1,
           "_validate_token_range": 2,
           "apply_rollback": 1,
-          "bool": 1,
           "build_rollback_plan": 1,
           "cat": 2,
           "clone": 1,
@@ -978,7 +913,6 @@
           "save": 2,
           "setattr": 1,
           "stage_prob_history": 2,
-          "str": 2,
           "synchronize": 1,
           "time": 13
         },
@@ -989,21 +923,14 @@
           "transfer": 2
         },
         "flag": {
-          "batch_delay": 1,
-          "cloud_end_bandwidth": 1,
-          "edge_cloud_bandwidth": 2,
-          "edge_end_bandwidth": 1,
           "gamma1": 1,
           "gamma2": 1,
           "max_tokens": 1,
           "temp": 3
         },
         "flag_getattr": {
-          "comm_bw_model": 2,
           "gamma1": 1,
           "gamma2": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1,
           "uncertainty_threshold": 2
         },
         "loop": {
@@ -1020,8 +947,8 @@
       }
     },
     "Baselines.cee_dssd": {
-      "events": 122,
-      "sha256_16": "d58d914d9a22a9e9",
+      "events": 110,
+      "sha256_16": "49f1ee3163376d1b",
       "surface": {
         "boolop": {
           "And": 4
@@ -1039,7 +966,6 @@
           "_graph_mode_cache_kwargs": 1,
           "_stop_at_eos": 1,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "build_stage_prefix_topk_history": 1,
           "cast": 6,
           "cat": 2,
@@ -1064,7 +990,6 @@
           "rollback": 1,
           "stage_prob_history": 2,
           "stage_topk_proposal_history": 3,
-          "str": 2,
           "synchronize": 1,
           "to": 4
         },
@@ -1076,21 +1001,14 @@
           "transfer": 7
         },
         "flag": {
-          "cloud_end_bandwidth": 1,
-          "edge_cloud_bandwidth": 1,
-          "edge_end_bandwidth": 1,
           "gamma1": 6,
           "gamma2": 8,
           "max_tokens": 1,
           "top_k": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 2,
           "gamma1": 1,
-          "gamma2": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma2": 1
         },
         "loop": {
           "while": 1
@@ -1104,8 +1022,8 @@
       }
     },
     "Baselines.cee_dsd": {
-      "events": 125,
-      "sha256_16": "f9358c5709c7ab9b",
+      "events": 113,
+      "sha256_16": "e767a4eb5cb6154e",
       "surface": {
         "boolop": {
           "And": 4
@@ -1124,7 +1042,6 @@
           "_simulate_topk_prob_transfer": 2,
           "_stop_at_eos": 1,
           "apply_transfer_top_k_cap": 1,
-          "bool": 1,
           "build_stage_prefix_topk_history": 1,
           "clone": 1,
           "copy": 3,
@@ -1149,7 +1066,6 @@
           "resolve_stage_verification": 2,
           "rollback": 5,
           "stage_topk_proposal_history": 1,
-          "str": 2,
           "synchronize": 1,
           "to": 8
         },
@@ -1161,21 +1077,14 @@
           "transfer": 5
         },
         "flag": {
-          "cloud_end_bandwidth": 1,
-          "edge_cloud_bandwidth": 1,
-          "edge_end_bandwidth": 1,
           "gamma1": 7,
           "gamma2": 9,
           "max_tokens": 1,
           "top_k": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "comm_bw_model": 2,
           "gamma1": 1,
-          "gamma2": 1,
-          "min_bandwidth_mbps": 2,
-          "stochastic_ntt": 1
+          "gamma2": 1
         },
         "loop": {
           "while": 1

@@ -1,7 +1,8 @@
 # CLI 参数清单（103 个，按谁消费它分类）
 
-> **2026-10-18 注**：当前参数面以 `docs/param_surface.md` 为准（107 个参数、
-> 9 个 help 分组、全仓读取点扫描、`test/test_cli_surface.py` 冻结）。本文件
+> **2026-10-19 注**：当前参数面以 `docs/param_surface.md` 为准（108 个参数，
+> 默认 --help 可见 65 个；RL/curriculum 归档在 `--help-advanced`；
+> 10 个 help 分组、全仓读取点扫描、`test/test_cli_surface.py` 冻结）。本文件
 > 保留 2026-10-11 的消费轴盘点，作为历史记录，不再逐项更新。
 
 > **2026-10-10 注**：参数总数已到 107（+--comm_bw_model 已计入 105；
@@ -115,7 +116,7 @@ call site。详见 `docs/protocol.md` §6。
 | `--batch_delay` | `0.05` | core解码×2,其它×1 | The delay time added to each batch in |
 | `--charge_residual_payload` | `True` | core解码×2,eval×1,测试×1 | F43：如实计入拒绝位置残差采样所需的提案分布载荷 |
 | `--cloud_end_bandwidth` | `100.0` | core解码×2,eval×1,其它×1 | The bandwidth between cloud and end d |
-| `--comm_accounting` | `None` | 其它×1 | L1 口径收敛总开关：honest = 残差计费 + per_round |
+| `--comm_accounting` | `None` | 其它×1 | L1 口径收敛总开关（已弃用、help 隐藏，仍解析以兼容旧命令） |
 | `--comm_round_trip_mode` | `'per_round'` | core解码×2,eval×1,测试×1 | 通信往返口径：per_round=同一轮内每条链路合并为一次往返（成批实现 |
 | `--comm_trace_mode` | `'static'` | core解码×1 | 随机通信 trace 的移动模式（配合 --use_stochastic_ |
 | `--curriculum_ntt_end` | `'0,5'` | eval×1 | Curriculum edge-cloud latency range ( |

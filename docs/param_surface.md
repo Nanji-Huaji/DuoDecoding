@@ -1,9 +1,11 @@
-# CLI 参数面快照（2026-10-18，107 个）
+# CLI 参数面快照（2026-10-19，108 个；默认 --help 可见 65 个）
 
 > 生成方式：AST 解析 `src/utils.py::parse_arguments` 的 `add_argument`，
 > 再按 `args.<dest>` / `getattr(args, "<dest>")` 扫描 `exp.py` + `src/` +
 > `eval/` + `tools/`（排除 `SpecDec_pp/` 与 `test/`）。
-> 冻结测试：`test/test_cli_surface.py`（110 个选项字符串，只允许有意识地增删）。
+> 冻结测试：`test/test_cli_surface.py`（111 个选项字符串，只允许有意识地增删）。
+> 2026-10-19：RL（37）与 curriculum（5）归档到 `--help-advanced`；
+> 弃用的 `--comm_accounting` 也从 `--help` 隐藏（仍解析）。默认可见 65 项。
 
 ## 0. 四个取值来源
 
@@ -13,7 +15,7 @@
 |---|---|---|
 | CLI 默认 | `src/utils.py` | 命令行没给就用它 |
 | 命名协议 | `--protocol` → `src/protocols.PROTOCOLS` | 只填**命令行未显式给出**的项 |
-| 口径总开关 | `--comm_accounting honest\|legacy` | 强制覆盖 3 个子开关；**与 `--protocol honest\|legacy` 重复，已标弃用** |
+| 口径总开关 | `--comm_accounting honest\|legacy` | 强制覆盖 3 个子开关；**与 `--protocol honest\|legacy` 重复，已标弃用、help 隐藏（仍解析）** |
 | 扫描配置 | `exp.py` 的 `create_config` / `cmd_temp` | 布尔只有在为 True 时转发；部分字面量写死 |
 
 ## 1. 分组统计
@@ -29,6 +31,7 @@
 | ⑦ 部署、精度与显存 | 6 | 换机器时动 |
 | ⑧ curriculum | 5 | 训练 curriculum |
 | ⑨ 输出与裁判 | 4 | 输出与裁判 |
+| ⑩ 帮助 | 1 | `--help-advanced`（查看归档的 ⑥/⑧） |
 
 ## 2. 完整台账
 
@@ -80,7 +83,7 @@
 | `--ntt_trace_scale` | `1.0` | ④ | 2 | eval/utils.py, src/baselines.py |
 | `--stochastic_ntt` | `False` | ④ | 13 | eval/utils.py, src/baselines.py |
 | `--protocol` | `'none'` | ① | 2 | eval/utils.py, src/utils.py |
-| `--comm_accounting` | `None` | ③ | 3 | src/utils.py |
+| `--comm_accounting` | `None` | ③ | 3 | src/utils.py（**help 已隐藏**，仅为兼容旧命令保留解析） |
 | `--min_bandwidth_mbps` | `5.0` | ③ | 26 | eval/utils.py, src/baselines.py, src/engine.py |
 | `--comm_bw_model` | `'instant'` | ③ | 25 | eval/utils.py, src/baselines.py, src/engine.py |
 | `--curriculum_bw_start` | `'20,50'` | ⑧ | 1 | eval/eval_mixed.py |

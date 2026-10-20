@@ -14,7 +14,7 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
 from .adapter import DecodingAdapter
-from .comm_accounting import CommConfig
+from .comm_accounting import CommEnv
 from .communication import (
     CUHLM,
     CommunicationSimulator,
@@ -234,7 +234,7 @@ def _quantize_probs_logspace(probs: torch.Tensor, bits: int) -> torch.Tensor:
 
 
 def _uplink_prob_payload(
-    probs: Optional[torch.Tensor], args
+    probs: Optional[torch.Tensor], bits: Optional[int]
 ) -> tuple[Optional[torch.Tensor], Optional[int]]:
     """B15/B16：上行概率载荷的**原子决策**——返回的 (张量, 计费位宽)
     必须成对使用：张量继续流入下游验证路径，位宽传给 transfer/simulate
@@ -247,7 +247,7 @@ def _uplink_prob_payload(
     """
     if probs is None:
         return None, None
-    bits = int(getattr(args, "prob_payload_bits", 16) or 16)
+    bits = int(bits or 16)
     if bits >= PROB_QUANT_PASS_THROUGH_BITS:
         return probs, None
     return _quantize_probs_logspace(probs, bits), bits
@@ -647,24 +647,12 @@ class Baselines(Decoding):
 
         self.task = "unknown"  # This attribute should be set in the subclass
 
-    @property
-    def comm_config(self) -> CommConfig:
-        """一次运行生效的计费口径，首次访问时从 args 构造并缓存。
-
-        字段名刻意与 CLI 开关名逐字一致：src/protocols.py 的
-        live_mode_consumption 读方法代码对象里的名字来判断"消费了哪些
-        开关"；属性访问会把名字留在 co_names 里
-        （docs/comm_call_sites.md §4.1）。
-        """
-        cfg = getattr(self, "_comm_config", None)
-        if cfg is None:
-            cfg = CommConfig.from_args(self.args)
-            self._comm_config = cfg
-        return cfg
-
     def _configure_ntt_trace(self, args):
-        # 真实 RTT trace 回放：模块级一次性配置（所有模拟器实例共享，含基线）
-        ntt_trace_file = getattr(args, "ntt_trace_file", "")
+        # 真实 RTT trace 回放：模块级一次性配置（所有模拟器实例共享，含基线）。
+        # 显式收 args 而不是 self.args：测试会用 patched Decoding.__init__ 跳过
+        # 基类初始化（没有 self.args），但 trace 配置仍须可测。
+        env = CommEnv.from_args(args)
+        ntt_trace_file = env.ntt_trace_file
         if ntt_trace_file:
             from src.communication import configure_ntt_trace
             from src.utils import read_trace_file
@@ -681,7 +669,7 @@ class Baselines(Decoding):
                 raise FileNotFoundError(f"NTT trace 无法加载: {ntt_trace_file}")
             configure_ntt_trace(
                 trace_vals,
-                scale=getattr(args, "ntt_trace_scale", 1.0),
+                scale=env.ntt_trace_scale,
                 src=os.path.basename(ntt_trace_file),
             )
 
@@ -1133,8 +1121,8 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1144,16 +1132,16 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -1211,7 +1199,7 @@ class Baselines(Decoding):
         total_accepted_tokens = 0
         total_drafted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
 
         # 追踪 top-k 和 draft length
         total_draft_steps = 0
@@ -1518,8 +1506,8 @@ class Baselines(Decoding):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1529,16 +1517,16 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -1586,7 +1574,7 @@ class Baselines(Decoding):
         total_accepted_tokens = 0
         total_drafted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
 
         # 追踪 top-k 和 draft length
         total_draft_steps = 0
@@ -1838,7 +1826,7 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_forward_times * batch_delay
         metrics["queuing_time"] = queuing_time
         metrics["wall_time"] += queuing_time
@@ -1900,8 +1888,8 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator: CUHLM = PreciseCUHLM(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1915,13 +1903,13 @@ class Baselines(Decoding):
         else:
             threshold = getattr(self.args, "uncertainty_threshold", 0.8)
             comm_simulator = CUHLM(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 uncertainty_threshold=threshold,
                 dimension="Mbps",
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
             )
@@ -1996,7 +1984,7 @@ class Baselines(Decoding):
         total_accepted_tokens = 0
         total_drafted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
 
         loop_idx = 0
 
@@ -2302,8 +2290,8 @@ class Baselines(Decoding):
         """
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2313,16 +2301,16 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"TK-SLT using top-K: {transfer_top_k}", 2)
@@ -2394,7 +2382,7 @@ class Baselines(Decoding):
         total_accepted_tokens = 0
         total_drafted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
 
         # 追踪 top-k 和 draft length（B18：avg_top_k 只统计传输压缩 top-k，
         # 未压缩记 0，与 dsd/dssd/tridecoding 同名列口径一致）
@@ -2820,8 +2808,8 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -2831,17 +2819,17 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
@@ -2865,7 +2853,7 @@ class Baselines(Decoding):
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         wall_time = 0
         total_draft_steps = 0
         sum_draft_len = 0
@@ -2939,7 +2927,7 @@ class Baselines(Decoding):
                     little_stage_probs = little_model_cache.prob_history
                 # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
                 little_stage_probs, _little_bits = _uplink_prob_payload(
-                    little_stage_probs, self.args
+                    little_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens, draft_probs = collect_verification_payload(
                     little_stage_probs,
@@ -3009,7 +2997,7 @@ class Baselines(Decoding):
                     first_stage_inputs.draft_probs_batch[
                         :, n1 - (prefix_len - 1), : self.vocab_size
                     ],
-                    self.args,
+                    self.comm_config.prob_payload_bits,
                 )
                 comm_simulator.transfer(
                     None,
@@ -3106,7 +3094,7 @@ class Baselines(Decoding):
                 # override 却重建未量化副本（注释承诺的"验证看到同一个
                 # q̂"从未兑现）。现在两者同源；默认 16 时不量化、数字不变
                 draft_stage_probs, _draft_bits = _uplink_prob_payload(
-                    draft_stage_probs, self.args
+                    draft_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
@@ -3171,7 +3159,7 @@ class Baselines(Decoding):
                     second_stage_inputs.draft_probs_batch[
                         :, n2 - (prefix_len - 1), : self.vocab_size
                     ],
-                    self.args,
+                    self.comm_config.prob_payload_bits,
                 )
                 comm_simulator.transfer(
                     None,
@@ -3281,7 +3269,7 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_model_forward_times * batch_delay
         metrics["queuing_time"] = queuing_time
         metrics["wall_time"] += queuing_time
@@ -3330,7 +3318,7 @@ class Baselines(Decoding):
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         # 不启用 adaptive head，但是要启用 rl agent（只修改 top-k），需要修改 rl agent 和 adapter 的互动行为，使之不报错
-        batch_delay = self.args.batch_delay
+        batch_delay = self.comm_env.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.get_model_input_device(self.little_model)
@@ -3362,8 +3350,8 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3373,17 +3361,17 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
@@ -3967,8 +3955,8 @@ class Baselines(Decoding):
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -3978,16 +3966,16 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -4003,7 +3991,7 @@ class Baselines(Decoding):
         )
         comm_simulator.transfer_top_k = transfer_top_k
 
-        batch_delay = self.args.batch_delay
+        batch_delay = self.comm_env.batch_delay
         queuing_time = 0.0
 
         max_tokens = prefix.shape[1] + self.args.max_tokens
@@ -4400,7 +4388,7 @@ class Baselines(Decoding):
         if _comm.force_full_vocab_transfer:
             transfer_top_k = int(getattr(self, "vocab_size", 0) or 32000)
 
-        batch_delay = self.args.batch_delay
+        batch_delay = self.comm_env.batch_delay
         queuing_time = 0.0
         max_tokens = prefix.shape[1] + self.args.max_tokens
         little_device = self.get_model_input_device(self.little_model)
@@ -4509,8 +4497,8 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -4520,17 +4508,17 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
                 mode=getattr(self.args, "comm_trace_mode", "static"),
             )
 
@@ -4595,18 +4583,18 @@ class Baselines(Decoding):
                 ),
             )
             cuhlm_uncertainty_sim = CUHLM(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 uncertainty_threshold=little_uncertainty_threshold,
                 vocab_size=self.vocab_size,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
         little_comp_time = 0.0
@@ -4748,7 +4736,7 @@ class Baselines(Decoding):
                     # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
                     # （下方 verify 的 override 复用同一变量，天然同源）
                     little_stage_probs, _little_bits = _uplink_prob_payload(
-                        little_stage_probs, self.args
+                        little_stage_probs, self.comm_config.prob_payload_bits
                     )
                     draft_tokens, draft_probs = collect_verification_payload(
                         little_stage_probs,
@@ -4882,7 +4870,9 @@ class Baselines(Decoding):
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 # B15：位宽决策走原子 helper——此前只按 bits 计费却从不
                 # 量化（"收 bits 钱、传全宽信息"的活跃实例）
-                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                prob_data, _pb_bits = _uplink_prob_payload(
+                    prob_data, self.comm_config.prob_payload_bits
+                )
                 if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
@@ -5036,7 +5026,7 @@ class Baselines(Decoding):
                 # B15：原子化——此点位本就"量化+计费+verify 复用"三对，
                 # 收敛进 helper 消除门控样板；默认 16 行为不变
                 draft_stage_probs, _draft_bits = _uplink_prob_payload(
-                    draft_stage_probs, self.args
+                    draft_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
@@ -5267,7 +5257,7 @@ class Baselines(Decoding):
                     },
                     # 排队按每主决策一次 batch_delay 计（与 queuing_time 累计口径
                     # 一致）；是否计入 T 由 RewardConfig.charge_queue 决定。
-                    queue_s=float(getattr(self.args, "batch_delay", 0.0)),
+                    queue_s=float(self.comm_env.batch_delay),
                 )
 
                 if getattr(self.args, "rl_team_reward", False):
@@ -5309,7 +5299,9 @@ class Baselines(Decoding):
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 # B15：位宽决策走原子 helper（同 stage-1 拒绝点）
-                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                prob_data, _pb_bits = _uplink_prob_payload(
+                    prob_data, self.comm_config.prob_payload_bits
+                )
                 if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
@@ -5486,9 +5478,9 @@ class Baselines(Decoding):
             # cee_cuhlm 的精确仿真分支一进就 TypeError（对齐 1544 处
             # uncertainty_decoding 的完整调用）
             comm_simulator: CUHLM = PreciseCUHLM(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_hz=self.args.edge_cloud_bandwidth * 1e6,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_hz=self.comm_env.edge_cloud_bandwidth * 1e6,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
                 noise_power_watt=1e-10,
@@ -5498,20 +5490,20 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CUHLM(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 uncertainty_threshold=getattr(self.args, "uncertainty_threshold", 0.8),
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
-        batch_delay = self.args.batch_delay
+        batch_delay = self.comm_env.batch_delay
         queuing_time = 0.0
 
         # 如果不使用精准通信模拟器，则应用推荐的初始阈值
@@ -6019,8 +6011,8 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -6030,17 +6022,17 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
@@ -6064,7 +6056,7 @@ class Baselines(Decoding):
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         wall_time = 0
 
         idx = 0
@@ -6448,8 +6440,8 @@ class Baselines(Decoding):
 
         if use_precise_comm_sim:
             comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
                 bandwidth_hz=1e7,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -6459,17 +6451,17 @@ class Baselines(Decoding):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.args.edge_end_bandwidth,
-                bandwidth_cloud_end=self.args.cloud_end_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
+                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
+                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 transfer_top_k=transfer_top_k,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
                 use_stochastic=use_stochastic_comm,
-                stochastic_ntt=bool(getattr(self.args, "stochastic_ntt", False)),
+                stochastic_ntt=self.comm_env.stochastic_ntt,
             )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
@@ -6493,7 +6485,7 @@ class Baselines(Decoding):
         total_little_model_accepted_tokens = 0
         total_draft_model_accepted_tokens = 0
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         wall_time = 0
 
         idx = 0

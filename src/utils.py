@@ -301,6 +301,10 @@ def parse_arguments():
         "⑨ 输出与裁判",
         "结果落盘与 MT-Bench 裁判。",
     )
+    g_meta = parser.add_argument_group(
+        "⑩ 帮助",
+        "默认 --help 只展示日常口径；训练/RL 专项参数归档在 --help-advanced。",
+    )
 
     g_sample.add_argument(
         "--data_path",
@@ -323,25 +327,35 @@ def parse_arguments():
 
     g_daily.add_argument(
         "--exp_name",
-        "-e",
         type=str,
         default="test",
         help="folder name for storing results.",
     )
+    # 旧脚本的短别名：参数面收口后不再出现在 --help，但仍可解析。
+    g_daily.add_argument(
+        "-e", dest="exp_name", type=str, default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
     g_daily.add_argument("--eval_mode", type=str, default="small", help="eval mode.")
     g_sample.add_argument(
         "--num_samples_per_task",
-        "-n",
         type=int,
         default=1,
         help="num_samples for a task (prompt) in humaneval dataset.",
     )
     g_sample.add_argument(
+        "-n", dest="num_samples_per_task", type=int, default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    g_sample.add_argument(
         "--seed",
-        "-s",
         type=int,
         default=1234,
         help="set a random seed, which can makes the result reproducible",
+    )
+    g_sample.add_argument(
+        "-s", dest="seed", type=int, default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     g_daily.add_argument(
         "--max_tokens", type=int, default=1024, help="max token number generated."
@@ -610,13 +624,9 @@ def parse_arguments():
         "--comm_accounting",
         choices=["honest", "legacy"],
         default=None,
-        help=(
-            "L1 口径收敛总开关：honest = 残差计费 + per_round（= 仓库默认）；"
-            "legacy = --no-charge_residual_payload + per_transfer"
-            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时"
-            "覆盖上述两个子开关并在日志回显；top-k 不在此处钳位（各方法用自身"
-            " transfer_top_k）。不给出时子开关独立生效；metrics json 记录实际口径。"
-        ),
+        # 弃用（与 --protocol honest|legacy 重复），help 隐藏；仍解析——
+        # golden manifest 的历史命令里带着它，删掉会让旧命令无法复跑。
+        help=argparse.SUPPRESS,
     )
     g_comm.add_argument(
         "--min_bandwidth_mbps",
@@ -1131,6 +1141,25 @@ def parse_arguments():
         default="auto",
         help="Quantization mode for the little model.",
     )
+
+    g_meta.add_argument(
+        "--help-advanced",
+        action="store_true",
+        help="显示含 RL adapter / curriculum 的完整参数表后退出。",
+    )
+
+    # 高级参数归档（2026-10-19）：RL（37）与 curriculum（5）只在训练或
+    # --use_rl_adapter 时才有意义，默认 --help 不展示——可见参数从 107 降到
+    # 65（108 减去 RL 37 / curriculum 5 / 弃用的 --comm_accounting 1）；
+    # 解析始终保留，旧脚本与 golden manifest 不受影响。
+    if "--help" in sys.argv and "--help-advanced" not in sys.argv:
+        for _group in (g_rl, g_curr):
+            for _action in _group._group_actions:
+                _action.help = argparse.SUPPRESS
+            parser._action_groups.remove(_group)
+    if "--help-advanced" in sys.argv:
+        parser.print_help()
+        raise SystemExit(0)
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()

@@ -17,6 +17,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
+from .comm_accounting import CommConfig, CommEnv
 from .communication import (
     CUHLM,
     CommunicationSimulator,
@@ -128,6 +129,33 @@ class Decoding(Register, ABC):
         self.prob_with_flag = []
 
         self.vocab_size: int = -1
+
+    @property
+    def comm_config(self) -> CommConfig:
+        """一次运行生效的计费口径，首次访问时从 args 构造并缓存。
+
+        字段名刻意与 CLI 开关名逐字一致：src/protocols.py 的
+        live_mode_consumption 读方法代码对象里的名字来判断"消费了哪些
+        开关"；属性访问会把名字留在 co_names 里
+        （docs/comm_call_sites.md §4.1）。放在基类是因为所有注册解码方法
+        （含 engine.py 里的历史方法）都从这里取同一份口径。
+        """
+        cfg = getattr(self, "_comm_config", None)
+        if cfg is None:
+            cfg = CommConfig.from_args(self.args)
+            self._comm_config = cfg
+        return cfg
+
+    @property
+    def comm_env(self) -> CommEnv:
+        """当前 args 对应的通信数值层。
+
+        **不缓存**：curriculum 训练会在同一个 decoder 上逐样本改写
+        ``args.edge_cloud_bandwidth`` / ``edge_end_bandwidth``
+        （eval/eval_mixed.py），缓存会让后续样本沿用第一个样本的条件，
+        通信成本与 RL 奖励随之算错。构造只是 9 次 getattr，代价可忽略。
+        """
+        return CommEnv.from_args(self.args)
 
     def get_model_input_device(self, model) -> torch.device:
         if hasattr(model, "hf_device_map"):
@@ -734,7 +762,7 @@ class Decoding(Register, ABC):
 
         start_event.record(stream=torch.cuda.current_stream())
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         while x.shape[1] < max_tokens:
             queuing_time += batch_delay
             x = model.generate(x, 1)
@@ -983,7 +1011,7 @@ class Decoding(Register, ABC):
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + queuing_time
 
@@ -1019,7 +1047,7 @@ class Decoding(Register, ABC):
         # 接受并忽略这些参数（与其余 11 个注册方法的兜底模式一致）。
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
                 bandwidth_hz=1e6,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1027,23 +1055,22 @@ class Decoding(Register, ABC):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
             )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
-        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 开关，经 Decoding.comm_config 单点构造。开关名必须出现在本方法
+        # 代码里（protocols.py 运行时内省的依据）——属性名会留在 co_names。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = bool(_comm.charge_residual_payload)
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, int(_comm.transfer_top_k_cap)
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1241,7 +1268,7 @@ class Decoding(Register, ABC):
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
 

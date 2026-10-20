@@ -4,8 +4,8 @@
   "rev": "WORKTREE",
   "entries": {
     "Decoding.speculative_decoding": {
-      "events": 50,
-      "sha256_16": "db750d603aab8743",
+      "events": 49,
+      "sha256_16": "db61ae5699a0c766",
       "surface": {
         "boolop": {
           "And": 2
@@ -42,7 +42,6 @@
           "top_k": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
           "gamma": 1
         },
         "loop": {
@@ -54,12 +53,11 @@
       }
     },
     "Decoding.speculative_decoding_with_bandwidth": {
-      "events": 70,
-      "sha256_16": "e75bf8a53ebe863e",
+      "events": 59,
+      "sha256_16": "fc2ba080593a383d",
       "surface": {
         "boolop": {
-          "And": 3,
-          "Or": 1
+          "And": 3
         },
         "break": {
           "": 3
@@ -89,7 +87,6 @@
           "record": 2,
           "reject_tail_scalar_bytes": 1,
           "stage_topk_proposal_history": 2,
-          "str": 2,
           "synchronize": 1,
           "to": 5,
           "verify_draft_sequence": 1
@@ -101,19 +98,12 @@
           "transfer": 1
         },
         "flag": {
-          "edge_cloud_bandwidth": 1,
           "gamma": 1,
           "max_tokens": 1,
           "top_k": 1
         },
         "flag_getattr": {
-          "batch_delay": 1,
-          "charge_residual_payload": 1,
-          "comm_bw_model": 1,
-          "comm_round_trip_mode": 1,
-          "gamma": 1,
-          "min_bandwidth_mbps": 2,
-          "transfer_top_k_cap": 1
+          "gamma": 1
         },
         "loop": {
           "while": 1
