@@ -6,6 +6,13 @@
 > （H1 覆盖 11 个方法；H2/H2b 覆盖 8 个标准构造点），逻辑指纹 0 差异。
 > H3 评估后跳过（前置段顺序/有无不一致，净收益 ~15 行，见 §5）。H5 经
 > 逐语句 diff 复核后判定**不适合机械抽取**（见 §5.5），等设计评审。
+>
+> **验证与发现（同日）**：golden 固件扩到 7 个方法（见
+> `test/golden/baselines/`）；补固件过程中发现 main 上两个真实 bug 并修复：
+> `adaptive_decoding` 在 `--use_rl_adapter` 下读未定义的 `_topk_cap`
+> （NameError），以及评测收尾绕过 `disable_rl_update` 无条件写
+> checkpoint（会把 worktree 的 RL checkpoint 重写）。两者都由
+> 新增的 golden/smoke 暴露，与重构本身无关。
 > 目标对应："整理超大模块和超大方法，提取共同框架和 helper，减少耦合"。
 > 度量方法：AST 解析 + 方法内顶层语句的 5 语句滚动窗口哈希
 > （`K=5`，跨方法重复窗口 112 个）；行号以本基线为准。
