@@ -1067,10 +1067,13 @@ for little_model, draft_model, target_model in paper_table5_series:
 # 计费口径的 argparse 默认值（src/utils.py，2026-10 核对）。旧汇总的
 # config 里没有这些键，补默认值后"都没记录"的两条仍相等——不改变既有
 # 合并行为；一旦将来有矩阵扫口径，honest/legacy 会被拆成两个实验。
+# comm_round_trip_mode 的默认必须是 per_round（CLI default，utils.py:834）：
+# 旧 run 没写这个键时实际跑的就是 per_round，填 per_transfer 会让它们
+# 与显式 per_round 的条目算成两个实验，且与显式 per_transfer 撞键。
 _IDENTITY_ACCOUNTING_DEFAULTS = {
     "transfer_top_k": 300,
     "charge_residual_payload": True,
-    "comm_round_trip_mode": "per_transfer",
+    "comm_round_trip_mode": "per_round",
     "transfer_top_k_cap": 0,
     "prob_payload_bits": 16,
 }

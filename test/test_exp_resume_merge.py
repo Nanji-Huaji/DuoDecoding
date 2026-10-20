@@ -101,7 +101,7 @@ class TestRunIdentity:
         "field,value",
         [
             ("charge_residual_payload", False),
-            ("comm_round_trip_mode", "per_round"),
+            ("comm_round_trip_mode", "per_transfer"),
             ("transfer_top_k_cap", 16),
             ("prob_payload_bits", 8),
             ("transfer_top_k", 0),
@@ -121,7 +121,7 @@ class TestRunIdentity:
         explicit.update(
             {
                 "charge_residual_payload": True,
-                "comm_round_trip_mode": "per_transfer",
+                "comm_round_trip_mode": "per_round",
                 "transfer_top_k_cap": 0,
                 "prob_payload_bits": 16,
                 "transfer_top_k": 300,

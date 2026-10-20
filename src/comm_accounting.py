@@ -173,7 +173,13 @@ class CommEnv:
             stochastic_ntt=bool(values["stochastic_ntt"]),
             batch_delay=float(values["batch_delay"] or 0.0),
             ntt_trace_file=str(values["ntt_trace_file"] or ""),
-            ntt_trace_scale=float(values["ntt_trace_scale"] or 1.0),
+            # 只对缺失/None 回退：--ntt_trace_scale 0 是合法输入（trace RTT
+            # 归零），用 `or 1.0` 会把显式 0 改成 1.0，改变通信数字。
+            ntt_trace_scale=(
+                1.0
+                if values["ntt_trace_scale"] is None
+                else float(values["ntt_trace_scale"])
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:

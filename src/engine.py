@@ -148,12 +148,14 @@ class Decoding(Register, ABC):
 
     @property
     def comm_env(self) -> CommEnv:
-        """一次运行生效的通信数值层；首次访问时从 args 构造并缓存。"""
-        env = getattr(self, "_comm_env", None)
-        if env is None:
-            env = CommEnv.from_args(self.args)
-            self._comm_env = env
-        return env
+        """当前 args 对应的通信数值层。
+
+        **不缓存**：curriculum 训练会在同一个 decoder 上逐样本改写
+        ``args.edge_cloud_bandwidth`` / ``edge_end_bandwidth``
+        （eval/eval_mixed.py），缓存会让后续样本沿用第一个样本的条件，
+        通信成本与 RL 奖励随之算错。构造只是 9 次 getattr，代价可忽略。
+        """
+        return CommEnv.from_args(self.args)
 
     def get_model_input_device(self, model) -> torch.device:
         if hasattr(model, "hf_device_map"):

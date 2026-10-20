@@ -12,7 +12,8 @@
 >
 > **通信数值层（2026-10-19）**：带宽 / `min_bandwidth_mbps` /
 > `comm_bw_model` / `stochastic_ntt` / `batch_delay` / NTT trace
-> 收进 `CommEnv`（`Decoding.comm_env`）。迁移前这些值在 ~20 处
+> 收进 `CommEnv`（`Decoding.comm_env`，**每次访问重建**：curriculum 会在
+> 同一 decoder 上逐样本改带宽，缓存会沿用首样本条件）。迁移前这些值在 ~20 处
 > `CommunicationSimulator(...)` / `PreciseCommunicationSimulator(...)`
 > 构造点各自 `getattr(self.args, ..., 默认)`；现在默认值只有
 > `comm_accounting.ENV_FALLBACKS` 一份，守卫同样禁止 args 直读。

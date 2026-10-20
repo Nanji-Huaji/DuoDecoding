@@ -183,3 +183,41 @@ class TestCommEnv:
         d = env.as_dict()
         assert d["edge_cloud_bandwidth"] == 5.0
         assert d["batch_delay"] == 0.0
+
+
+def test_explicit_zero_trace_scale_is_preserved():
+    """--ntt_trace_scale 0 是合法输入（trace RTT 归零），不能被 `or 1.0` 吞掉。"""
+    env = CommEnv.from_args(SimpleNamespace(ntt_trace_scale=0))
+    assert env.ntt_trace_scale == 0.0
+
+
+def test_missing_trace_scale_falls_back_to_one():
+    env = CommEnv.from_args(SimpleNamespace(ntt_trace_scale=None))
+    assert env.ntt_trace_scale == 1.0
+
+
+def test_comm_env_rebuilds_when_args_change():
+    """curriculum 在同一 decoder 上逐样本改带宽，comm_env 不得缓存首样本值。"""
+    from src.engine import Decoding
+
+    class _Probe(Decoding):
+        def __init__(self, args):
+            self.args = args
+
+        def load_data(self):
+            return None
+
+        def preprocess(self, input_text):
+            return input_text
+
+        def postprocess(self, input_text, output_text):
+            return output_text
+
+        def eval(self):
+            return None
+
+    args = SimpleNamespace(edge_cloud_bandwidth=10.0)
+    probe = _Probe(args)
+    assert probe.comm_env.edge_cloud_bandwidth == 10.0
+    args.edge_cloud_bandwidth = 46.0
+    assert probe.comm_env.edge_cloud_bandwidth == 46.0
