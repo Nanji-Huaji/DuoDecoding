@@ -119,16 +119,25 @@ def test_topk_cap_is_defined_in_methods_that_use_it():
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
-        loads = {
-            n.id
+        loads = [
+            n.lineno
             for n in ast.walk(node)
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
-        }
-        stores = {
-            n.id
+            if isinstance(n, ast.Name)
+            and n.id == "_topk_cap"
+            and isinstance(n.ctx, ast.Load)
+        ]
+        stores = [
+            n.lineno
             for n in ast.walk(node)
-            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
-        }
-        if "_topk_cap" in loads and "_topk_cap" not in stores:
+            if isinstance(n, ast.Name)
+            and n.id == "_topk_cap"
+            and isinstance(n.ctx, ast.Store)
+        ]
+        if not loads:
+            continue
+        if not stores or min(stores) > min(loads):
             offenders.append(node.name)
-    assert not offenders, f"这些方法读取未定义的 _topk_cap: {offenders}"
+    assert not offenders, (
+        "这些方法先读后写（或从未赋值）_topk_cap，运行时会 NameError: "
+        f"{offenders}"
+    )

@@ -121,3 +121,14 @@ def test_golden_recorded_under_snapshot_code_state():
     """golden 产出的代码状态必须等于快照提交（否则复现对照无意义）。"""
     note = MANIFEST["_meta"]["code_state"]
     assert "6d66c72" in note
+
+
+def test_provenance_field_perturbation_tolerated():
+    """git_sha / git_dirty 是代码版本锚点，不参与 golden 判定。"""
+    metrics = _load("q15_free_g5")
+    baseline = dict(metrics, git_sha="a" * 40, git_dirty=True)
+    new = dict(baseline, git_sha="b" * 40, git_dirty=False)
+    ok, lines = compare.compare_metrics(baseline, new)
+    assert ok, lines
+    assert any("provenance" in ln and "git_sha" in ln for ln in lines)
+    assert any("provenance" in ln and "git_dirty" in ln for ln in lines)

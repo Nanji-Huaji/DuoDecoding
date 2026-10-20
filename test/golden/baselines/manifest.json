@@ -1,7 +1,7 @@
 {
   "_meta": {
     "description": "非 adaptive 基线（cee_dsd/cee_dssd/dist_spec/tridecoding/ceesd_without_arp/tk_slt/adaptive_decoding）的 golden 固件",
-    "produced_by": "refactor/baselines-h1@2aa225c，2026-10-19 本地 GPU1 重跑",
+    "produced_by": "refactor/baselines-h1（2aa225c..9e0b3ee），2026-10-19 本地 GPU1 重跑",
     "samples": 20,
     "checkpoint_note": "捕获期间曾发现 adaptive_decoding 旧收尾绕过 disable_rl_update 无条件 save()，把 wt 的主 checkpoint 从 719cac 重写成 5cb5f4；已从主 worktree 恢复 719cac，并在修复后用 golden_ref_adaptive_decoding4 重捕获（三个版本的 token 序列逐位相同）。"
   },

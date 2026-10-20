@@ -1,4 +1,4 @@
-"""非 adaptive 基线（cee_dsd / cee_dssd / dist_spec）的 golden 固件。
+"""7 个非 adaptive 方法的 golden 固件（cee_dsd/cee_dssd/dist_spec/tridecoding 等）。
 
 为什么单独一套：gammar 固件只覆盖 `adaptive_tridecoding`（γ 扫描），
 H1/H2 之后的下一步（CEE 公共核心）要动 `cee_dsd`/`cee_dssd`，必须先有
@@ -77,6 +77,7 @@ def test_manifest_command_is_complete(tag):
     for required in (
         f"--eval_mode {spec['eval_mode']}",
         "--protocol paper_table5",
+        "--use_rl_adapter",
         "--disable_rl_update",
         "--use_cuda_graph",
         f"--exp_name gammar/{Path(spec['original_run_dir']).name}",
@@ -100,3 +101,24 @@ def test_locked_field_perturbation_fails():
     ok, lines = compare.compare_metrics(metrics, perturbed)
     assert not ok
     assert any("generated_tokens" in ln for ln in lines)
+
+
+@pytest.mark.parametrize("tag", TAGS)
+def test_fixture_matches_original_run_when_available(tag):
+    """固件必须与 manifest 记录的 original_run_dir 产物一致（防止收割错文件）。"""
+    spec = MANIFEST["tags"][tag]
+    run = Path(__file__).resolve().parents[1] / spec["original_run_dir"]
+    if not run.is_dir():
+        pytest.skip(f"原始 run 不在本工作区: {run}")
+    mode = spec["eval_mode"]
+    assert _metrics(tag) == json.loads(
+        (run / f"{mode}_gsm8k_metrics.json").read_text(encoding="utf-8")
+    )
+    jsonl = next(run.glob("*.jsonl"))
+    records = [
+        {"gen_ids": json.loads(line)["gen_ids"]}
+        for line in jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ok, lines = compare.compare_tokens(_tokens(tag), records)
+    assert ok, lines
