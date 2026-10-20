@@ -1,6 +1,11 @@
 # `src/baselines.py` 拆分地图（只读分析，2026-10-19）
 
 > 基线：`main@b594290`（PR #12 合并后）。本文只做分析，不改代码。
+>
+> **进展（2026-10-19）**：H1、H2、H2b 已在 `refactor/baselines-h1` 落地
+> （H1 覆盖 11 个方法；H2/H2b 覆盖 8 个标准构造点），逻辑指纹 0 差异。
+> H3 评估后跳过（前置段顺序/有无不一致，净收益 ~15 行，见 §5）。H5 经
+> 逐语句 diff 复核后判定**不适合机械抽取**（见 §5.5），等设计评审。
 > 目标对应："整理超大模块和超大方法，提取共同框架和 helper，减少耦合"。
 > 度量方法：AST 解析 + 方法内顶层语句的 5 语句滚动窗口哈希
 > （`K=5`，跨方法重复窗口 112 个）；行号以本基线为准。
@@ -146,12 +151,29 @@ S3 公共段：`max_tokens`、三个 device、`draft_top_k`。
 只能做"按需参数化"（例如 `_fill_token_metrics(metrics, **kwargs)`），收益
 ~50 行，但可读性提升有限，优先级低。
 
-### H5 CEE 公共核心
+### H5 CEE 公共核心（**2026-10-19 复核后判定不适合机械抽取**）
 
-`cee_dsd` 与 `cee_dssd` 共享 54 个窗口段。建议在 H1/H2 落地后，把
-"验证 + 拒绝载荷计费"抽成带 hook 的核心（`_cee_verify_step(...)`），
-两方法保留各自的链路方向与停止条件。**这是收益最大、也最需要 golden 的
-一步**，单独 PR。
+`cee_dsd` 与 `cee_dssd` 在 AST 顶层语句上相似度 92%，但那是假象：
+两者各只有 ~35 条顶层语句，整段 `while` 循环只算 1 条。把循环体拆开逐语句
+比对后，**循环内相似度只有 56%**：
+
+| 差异点 | `cee_dsd` | `cee_dssd` |
+|---|---|---|
+| prefix 维护 | 预分配 `prefix_buffer`（性能） | `torch.cat` |
+| 上行/下行传输点 | 先传 `x`、再传 speculated tokens | 按 `little_all_accepted` / `draft_all_accepted` 分支传 stitched 载荷 |
+| 两级验证的输入构造 | `stage_prob_history` 的调用位置不同 | 同左但索引基准不同 |
+| 循环结束后的 prefix 语义 | 由 buffer 截断 | 由 cat 拼接 |
+
+共享的前置段（~35 条语句）里只有 3 处差异（docstring、cache 属性名、
+DSD 的 buffer 预分配），但这段持有 **19 个循环内变量**（devices、
+caches、counters、events、prefix、comm_simulator…）。抽成 helper 必须：
+要么返回 19 元组（不可读），要么引入 dataclass 并把循环体里上百处局部
+变量改成 `st.xxx`（大 diff、可读性反而下降）。
+
+结论：**不建议做机械抽取**。若要做，正确形态是"三层的公共基类 + 两个
+子类的 hook（传输点/验证输入构造/prefix 维护）"，属于设计变更，需要单独
+评审；当前的 golden 固件（`test/golden/baselines/` 的 cee_dsd/cee_dssd
+两个 tag）已经就位，可以直接支撑那次评审。
 
 ### H6 不建议：主循环整体抽象
 
@@ -189,11 +211,11 @@ src/baselines/tk_slt.py     # tk_slt
 | 步骤 | 内容 | 提交数 | 门禁 |
 |---|---|---|---|
 | 0 | 本文（只读地图） | 1 | — |
-| 1 | H1 `_finalize_comm_metrics`（先覆盖 4 个方法，再推广到 11 个） | 2 | 指纹不变 + golden q15 |
-| 2 | H2 仿真器工厂（先 2 个方法，再全量） | 2 | 指纹不变 + golden q15 |
-| 3 | H3 上下文准备 | 1 | 指纹不变 + golden q15 |
-| 4 | H5 CEE 公共核心 | 2–3 | 指纹**会变**，需逐事件说明 + golden |
-| 5 | 包化（shim 优先） | 2 | 全量测试 + 指纹重建 + golden |
+| 1 | H1 `_finalize_comm_metrics`（11 个方法） | 1 | ✅ 指纹不变 + q15 golden |
+| 2 | H2 仿真器工厂（tri/cee 4 + 对称 4） | 2 | ✅ 指纹不变 + 3 次 smoke |
+| 3 | H3 上下文准备 | — | ⏭ 跳过（前置段差异大，净收益 ~15 行） |
+| 4 | H5 CEE 公共核心 | — | ⏸ 判定不适合机械抽取，等设计评审 |
+| 5 | 包化（shim 优先） | 2 | 未开始；需先解决指纹多文件键 |
 
 每一步都遵循：**一次一个逻辑提交；指纹变化必须能逐事件解释；golden
 LOCKED 零漂移、tokens 逐位一致**。
