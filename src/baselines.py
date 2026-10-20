@@ -90,6 +90,33 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
+def _finalize_comm_metrics(
+    metrics: dict, comm_simulator: CommunicationSimulator, args
+) -> None:
+    """S7 公共尾巴：带宽/top-k/草稿历史 + 逐消息账 + 口径标签。
+
+    12 个解码方法此前各写一遍同一段（含相同注释）；抽成 helper 后方法体
+    只留各自的 forward/token/耗时字段。调用点必须在 flush_round 之后、
+    return 之前，顺序与抽取前逐事件一致（逻辑指纹要求）。
+    """
+    # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+    metrics["edge_cloud_bandwidth_history"] = (
+        comm_simulator.edge_cloud_bandwidth_history.copy()
+    )
+    # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+    # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+    # getattr 兜底：测试替身可能只实现聚合口径。
+    metrics["comm_trace_edge_cloud"] = getattr(
+        comm_simulator, "edge_cloud_trace", []
+    )
+    _add_comm_accounting_metrics(metrics, args, comm_simulator)
+    metrics["edge_cloud_topk_history"] = (
+        comm_simulator.edge_cloud_topk_history.copy()
+    )
+    metrics["edge_cloud_draft_len_history"] = (
+        comm_simulator.edge_cloud_draft_len_history.copy()
+    )
+
 def _reward_comm_s(args, comm_simulator, link_type: str) -> float:
     """RL 奖励的通信成本（--rl_comm_cost_mode）。
 
@@ -1469,23 +1496,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -1842,23 +1854,8 @@ class Baselines(Decoding):
             target_comp_time=target_comp_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token。
         # 参照 dist_spec（它靠 max(0, remaining-1) 截断 γ 来保证不越界），这里显式
@@ -2227,23 +2224,8 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -2762,23 +2744,8 @@ class Baselines(Decoding):
             )
             metrics["tk_slt_gamma_star_final"] = last_gamma_star
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -3283,23 +3250,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -3774,22 +3726,8 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
@@ -4339,23 +4277,8 @@ class Baselines(Decoding):
         if self.rl_adapter is not None:
             self.rl_adapter.save(metrics.get("throughput"))
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -5397,23 +5320,8 @@ class Baselines(Decoding):
         self._save_adaptive_rl_checkpoints(metrics["throughput"])
         metrics["dra_overhead_time"] += time.time() - dra_start
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -5944,23 +5852,8 @@ class Baselines(Decoding):
             self.little_rl_adapter.save(metrics.get("throughput"))
             metrics["dra_overhead_time"] += time.time() - dra_start
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -6374,23 +6267,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -6828,22 +6706,7 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
