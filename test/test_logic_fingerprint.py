@@ -199,3 +199,34 @@ def test_early_return_is_not_silently_absorbed() -> None:
     extracted = lf.load_entries({"m.py": RETURN_HELPER})["Runner.run"]
     assert inline != extracted
     assert any(event[0] == "return" for event in inline)
+
+
+SINGLE_ARM_RETURN_INLINE = """
+class Runner:
+    def run(self):
+        if self.args.stop:
+            return
+        sample(1)
+"""
+
+SINGLE_ARM_RETURN_EXTRACTED = """
+class Runner:
+    def run(self):
+        self._step()
+        sample(1)
+
+    def _step(self):
+        if self.args.stop:
+            return
+"""
+
+
+def test_single_arm_return_extraction_is_detected() -> None:
+    """单臂 if 的 return 位于"尾位置"，但抽成 helper 会改变控制流：
+
+    内联版 `if stop: return` 会跳过后面的 sample(1)；抽取版只退出 helper，
+    sample(1) 仍执行。指纹必须判 FAIL，不能因为 _is_tail 是位置判断而假 PASS。
+    """
+    inline = lf.load_entries({"m.py": SINGLE_ARM_RETURN_INLINE})["Runner.run"]
+    extracted = lf.load_entries({"m.py": SINGLE_ARM_RETURN_EXTRACTED})["Runner.run"]
+    assert inline != extracted

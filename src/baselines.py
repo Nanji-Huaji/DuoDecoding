@@ -95,9 +95,10 @@ def _finalize_comm_metrics(
 ) -> None:
     """S7 公共尾巴：带宽/top-k/草稿历史 + 逐消息账 + 口径标签。
 
-    12 个解码方法此前各写一遍同一段（含相同注释）；抽成 helper 后方法体
-    只留各自的 forward/token/耗时字段。调用点必须在 flush_round 之后、
-    return 之前，顺序与抽取前逐事件一致（逻辑指纹要求）。
+    11 个解码方法此前各写一遍同一段（10 个逐字相同 + ceesd_without_arp
+    的无注释变体）；抽成 helper 后方法体只留各自的 forward/token/耗时字段。
+    调用点必须在 flush_round 之后、return 之前，顺序与抽取前逐事件一致
+    （逻辑指纹要求）。
     """
     # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
     metrics["edge_cloud_bandwidth_history"] = (
@@ -129,12 +130,17 @@ def _make_comm_simulator(
     cloud_end: float,
     transfer_top_k: int | None = None,
 ) -> CommunicationSimulator:
-    """按统一口径构造通信模拟器（H2，仅 tri/cee 族使用）。
+    """按统一口径构造通信模拟器（H2，tri/cee 族）。
 
-    这 4 个方法里的 ``if use_precise_comm_sim: ... else: ...`` 逐字重复；
-    对称链路方法（DSSD/DSD/tk_slt/adaptive_decoding）仍保留显式块：
-    它们构造参数里的 ``float("inf")`` 是逻辑足迹的一部分，抽进工厂会改变
-    事件顺序（先算实参还是先展开工厂），不值得为 4 个方法引入第二套 helper。
+    这 4 个方法（tridecoding / ceesd_without_arp / cee_dsd / cee_dssd）的
+    ``if use_precise_comm_sim: ... else: ...`` 逐字重复。对称链路 4 个方法
+    （DSSD/DSD/tk_slt/adaptive_decoding）走
+    ``_make_symmetric_comm_simulator``：同样的 precise 分支，但
+    edge_end/cloud_end 固定为 inf。
+
+    仍保留显式块的只有 ``adaptive_tridecoding``（它在实参里读
+    comm_trace_mode，抽进工厂会改变指纹事件序）与两个 CUHLM 方法
+    （用 CUHLM 子类）。
 
     未给出的可选参数不传，让构造器用自身默认值（None / "static"），
     与抽取前逐字等价。
