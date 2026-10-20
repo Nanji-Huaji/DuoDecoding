@@ -577,15 +577,16 @@ def _argument_groups() -> dict[str, list[str]]:
 
 
 class TestHelpGrouping(unittest.TestCase):
-    """`--help` 分组：107 个参数全部归类，① 组恰好是那 16 个。
+    """`--help` 分组：108 个参数全部归类，① 组恰好是那 16 个。
 
     参数总数历史：103 → 104（--tk_slt_odld，g_method）→ 105
     （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）→ 107
     （2026-10-10 --rl_comm_cost_mode / --rl_threshold_candidates，
-    g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）。
+    g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）→ 108
+    （2026-10-19 --help-advanced，g_meta）。
 
     2026-10-19：`-e/-n/-s` 改为 help 隐藏的兼容别名（仍解析），可见参数
-    面仍是 107；`--comm_accounting` 同样隐藏但仍计入（它仍是独立参数）。"""
+    面仍是 108（默认 help 可见 65）；`--comm_accounting` 同样隐藏但仍计入。"""
 
     def test_every_argument_is_grouped(self):
         g = _argument_groups()
@@ -595,7 +596,7 @@ class TestHelpGrouping(unittest.TestCase):
             f"这些参数还挂在扁平 parser 上，未进任何分组: {g['_ungrouped']}",
         )
         total = sum(len(v) for k, v in g.items() if k != "_ungrouped")
-        self.assertEqual(total, 107)
+        self.assertEqual(total, 108)
 
     def test_no_argument_is_in_two_groups(self):
         seen: dict[str, str] = {}
@@ -618,8 +619,8 @@ class TestHelpGrouping(unittest.TestCase):
         self.assertEqual(set(daily), DAILY_ARGS)
         self.assertEqual(len(daily), 16)
 
-    def test_help_renders_groups(self):
-        """真跑一次 --help，确认渲染出分组而不是一张扁平清单。"""
+    @staticmethod
+    def _render_help(flag: str) -> str:
         import contextlib
         import io
 
@@ -627,18 +628,32 @@ class TestHelpGrouping(unittest.TestCase):
 
         buf = io.StringIO()
         argv = sys.argv
-        sys.argv = ["prog", "--help"]
+        sys.argv = ["prog", flag]
         try:
             with contextlib.redirect_stdout(buf):
                 parse_arguments()
         except SystemExit as exc:  # --help 本就以 SystemExit 结束
-            self.assertEqual(exc.code, 0)
+            assert exc.code == 0
         finally:
             sys.argv = argv
-        text = buf.getvalue()
+        return buf.getvalue()
+
+    def test_help_renders_daily_groups_only(self):
+        """默认 --help：日常分组可见，RL/curriculum 归档到 --help-advanced。"""
+        text = self._render_help("--help")
         self.assertIn("① 日常出表", text)
-        self.assertIn("⑥ RL adapter", text)
+        self.assertIn("⑨ 输出与裁判", text)
+        self.assertIn("⑩ 帮助", text)
         self.assertIn("--protocol {none,paper_table5,honest,legacy,smoke}", text)
+        self.assertNotIn("⑥ RL adapter", text)
+        self.assertNotIn("⑧ curriculum", text)
+        self.assertNotIn("--rl_reward_mode", text)
+
+    def test_help_advanced_renders_rl_and_curriculum(self):
+        text = self._render_help("--help-advanced")
+        self.assertIn("⑥ RL adapter", text)
+        self.assertIn("⑧ curriculum", text)
+        self.assertIn("--rl_reward_mode", text)
 
     def test_parse_still_works_after_grouping(self):
         """分组只改排版：真实命令行仍须解析出全部 104 个 dest。"""

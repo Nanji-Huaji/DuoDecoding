@@ -1,7 +1,8 @@
 # CLI 参数清单（103 个，按谁消费它分类）
 
-> **2026-10-18 注**：当前参数面以 `docs/param_surface.md` 为准（107 个参数、
-> 9 个 help 分组、全仓读取点扫描、`test/test_cli_surface.py` 冻结）。本文件
+> **2026-10-19 注**：当前参数面以 `docs/param_surface.md` 为准（108 个参数，
+> 默认 --help 可见 65 个；RL/curriculum 归档在 `--help-advanced`；
+> 10 个 help 分组、全仓读取点扫描、`test/test_cli_surface.py` 冻结）。本文件
 > 保留 2026-10-11 的消费轴盘点，作为历史记录，不再逐项更新。
 
 > **2026-10-10 注**：参数总数已到 107（+--comm_bw_model 已计入 105；

@@ -301,6 +301,10 @@ def parse_arguments():
         "⑨ 输出与裁判",
         "结果落盘与 MT-Bench 裁判。",
     )
+    g_meta = parser.add_argument_group(
+        "⑩ 帮助",
+        "默认 --help 只展示日常口径；训练/RL 专项参数归档在 --help-advanced。",
+    )
 
     g_sample.add_argument(
         "--data_path",
@@ -1137,6 +1141,25 @@ def parse_arguments():
         default="auto",
         help="Quantization mode for the little model.",
     )
+
+    g_meta.add_argument(
+        "--help-advanced",
+        action="store_true",
+        help="显示含 RL adapter / curriculum 的完整参数表后退出。",
+    )
+
+    # 高级参数归档（2026-10-19）：RL（37）与 curriculum（5）只在训练或
+    # --use_rl_adapter 时才有意义，默认 --help 不展示——可见参数从 107 降到
+    # 65（108 减去 RL 37 / curriculum 5 / 弃用的 --comm_accounting 1）；
+    # 解析始终保留，旧脚本与 golden manifest 不受影响。
+    if "--help" in sys.argv and "--help-advanced" not in sys.argv:
+        for _group in (g_rl, g_curr):
+            for _action in _group._group_actions:
+                _action.help = argparse.SUPPRESS
+            parser._action_groups.remove(_group)
+    if "--help-advanced" in sys.argv:
+        parser.print_help()
+        raise SystemExit(0)
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()

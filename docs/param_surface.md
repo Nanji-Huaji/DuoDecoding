@@ -1,9 +1,11 @@
-# CLI 参数面快照（2026-10-18，107 个）
+# CLI 参数面快照（2026-10-19，108 个；默认 --help 可见 65 个）
 
 > 生成方式：AST 解析 `src/utils.py::parse_arguments` 的 `add_argument`，
 > 再按 `args.<dest>` / `getattr(args, "<dest>")` 扫描 `exp.py` + `src/` +
 > `eval/` + `tools/`（排除 `SpecDec_pp/` 与 `test/`）。
-> 冻结测试：`test/test_cli_surface.py`（110 个选项字符串，只允许有意识地增删）。
+> 冻结测试：`test/test_cli_surface.py`（111 个选项字符串，只允许有意识地增删）。
+> 2026-10-19：RL（37）与 curriculum（5）归档到 `--help-advanced`；
+> 弃用的 `--comm_accounting` 也从 `--help` 隐藏（仍解析）。默认可见 65 项。
 
 ## 0. 四个取值来源
 
@@ -29,6 +31,7 @@
 | ⑦ 部署、精度与显存 | 6 | 换机器时动 |
 | ⑧ curriculum | 5 | 训练 curriculum |
 | ⑨ 输出与裁判 | 4 | 输出与裁判 |
+| ⑩ 帮助 | 1 | `--help-advanced`（查看归档的 ⑥/⑧） |
 
 ## 2. 完整台账
 
