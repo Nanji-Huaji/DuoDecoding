@@ -5,7 +5,6 @@
 - 能力表：supports_prob_bits 精确覆盖 tri 系双投机阶段协议
 """
 
-from argparse import Namespace
 from unittest.mock import patch
 
 import pytest
@@ -15,14 +14,15 @@ from src.baselines import _uplink_prob_payload
 from src.mode_features import MODE_FEATURES
 
 
-def _args(bits):
-    return Namespace(prob_payload_bits=bits)
+def _bits(bits):
+    """模拟 CommConfig.prob_payload_bits（迁移后 helper 只收 int）。"""
+    return bits
 
 
 class TestUplinkProbPayloadAtomicity:
     def test_bits8_quantizes_and_bills(self):
         probs = torch.softmax(torch.randn(1, 4, 32), dim=-1)
-        out, bits = _uplink_prob_payload(probs, _args(8))
+        out, bits = _uplink_prob_payload(probs, _bits(8))
         assert bits == 8
         assert out.shape == probs.shape
         assert out.dtype == probs.dtype
@@ -31,23 +31,23 @@ class TestUplinkProbPayloadAtomicity:
 
     def test_bits16_passes_through_unchanged(self):
         probs = torch.softmax(torch.randn(1, 4, 32), dim=-1)
-        out, bits = _uplink_prob_payload(probs, _args(16))
+        out, bits = _uplink_prob_payload(probs, _bits(16))
         assert bits is None
         assert out is probs  # 原对象，零开销
 
     def test_none_probs(self):
-        assert _uplink_prob_payload(None, _args(8)) == (None, None)
+        assert _uplink_prob_payload(None, _bits(8)) == (None, None)
 
     def test_none_bits_arg_falls_back_to_16(self):
-        # getattr(..., 16) or 16 的容错：None/0 视为默认全宽
+        # `bits or 16` 的容错：None/0 视为默认全宽
         probs = torch.softmax(torch.randn(1, 4, 32), dim=-1)
-        out, bits = _uplink_prob_payload(probs, Namespace(prob_payload_bits=None))
+        out, bits = _uplink_prob_payload(probs, None)
         assert bits is None and out is probs
 
     def test_quantized_is_normalized(self):
         # 量化后仍为分布（和为 1）——接受判据的比值不失真
         probs = torch.softmax(torch.randn(1, 4, 32), dim=-1)
-        out, _ = _uplink_prob_payload(probs, _args(4))
+        out, _ = _uplink_prob_payload(probs, _bits(4))
         assert torch.allclose(out.sum(dim=-1), torch.ones(1, 4), atol=1e-4)
 
 

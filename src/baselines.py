@@ -234,7 +234,7 @@ def _quantize_probs_logspace(probs: torch.Tensor, bits: int) -> torch.Tensor:
 
 
 def _uplink_prob_payload(
-    probs: Optional[torch.Tensor], args
+    probs: Optional[torch.Tensor], bits: Optional[int]
 ) -> tuple[Optional[torch.Tensor], Optional[int]]:
     """B15/B16：上行概率载荷的**原子决策**——返回的 (张量, 计费位宽)
     必须成对使用：张量继续流入下游验证路径，位宽传给 transfer/simulate
@@ -247,7 +247,7 @@ def _uplink_prob_payload(
     """
     if probs is None:
         return None, None
-    bits = int(getattr(args, "prob_payload_bits", 16) or 16)
+    bits = int(bits or 16)
     if bits >= PROB_QUANT_PASS_THROUGH_BITS:
         return probs, None
     return _quantize_probs_logspace(probs, bits), bits
@@ -2939,7 +2939,7 @@ class Baselines(Decoding):
                     little_stage_probs = little_model_cache.prob_history
                 # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
                 little_stage_probs, _little_bits = _uplink_prob_payload(
-                    little_stage_probs, self.args
+                    little_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens, draft_probs = collect_verification_payload(
                     little_stage_probs,
@@ -3009,7 +3009,7 @@ class Baselines(Decoding):
                     first_stage_inputs.draft_probs_batch[
                         :, n1 - (prefix_len - 1), : self.vocab_size
                     ],
-                    self.args,
+                    self.comm_config.prob_payload_bits,
                 )
                 comm_simulator.transfer(
                     None,
@@ -3106,7 +3106,7 @@ class Baselines(Decoding):
                 # override 却重建未量化副本（注释承诺的"验证看到同一个
                 # q̂"从未兑现）。现在两者同源；默认 16 时不量化、数字不变
                 draft_stage_probs, _draft_bits = _uplink_prob_payload(
-                    draft_stage_probs, self.args
+                    draft_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
@@ -3171,7 +3171,7 @@ class Baselines(Decoding):
                     second_stage_inputs.draft_probs_batch[
                         :, n2 - (prefix_len - 1), : self.vocab_size
                     ],
-                    self.args,
+                    self.comm_config.prob_payload_bits,
                 )
                 comm_simulator.transfer(
                     None,
@@ -4748,7 +4748,7 @@ class Baselines(Decoding):
                     # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
                     # （下方 verify 的 override 复用同一变量，天然同源）
                     little_stage_probs, _little_bits = _uplink_prob_payload(
-                        little_stage_probs, self.args
+                        little_stage_probs, self.comm_config.prob_payload_bits
                     )
                     draft_tokens, draft_probs = collect_verification_payload(
                         little_stage_probs,
@@ -4882,7 +4882,9 @@ class Baselines(Decoding):
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 # B15：位宽决策走原子 helper——此前只按 bits 计费却从不
                 # 量化（"收 bits 钱、传全宽信息"的活跃实例）
-                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                prob_data, _pb_bits = _uplink_prob_payload(
+                    prob_data, self.comm_config.prob_payload_bits
+                )
                 if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())
@@ -5036,7 +5038,7 @@ class Baselines(Decoding):
                 # B15：原子化——此点位本就"量化+计费+verify 复用"三对，
                 # 收敛进 helper 消除门控样板；默认 16 行为不变
                 draft_stage_probs, _draft_bits = _uplink_prob_payload(
-                    draft_stage_probs, self.args
+                    draft_stage_probs, self.comm_config.prob_payload_bits
                 )
                 draft_tokens_second, draft_probs_second = collect_verification_payload(
                     draft_stage_probs,
@@ -5309,7 +5311,9 @@ class Baselines(Decoding):
                 if transfer_top_k is not None and transfer_top_k > 0:
                     prob_bytes = transfer_top_k * prob_data.element_size()
                 # B15：位宽决策走原子 helper（同 stage-1 拒绝点）
-                prob_data, _pb_bits = _uplink_prob_payload(prob_data, self.args)
+                prob_data, _pb_bits = _uplink_prob_payload(
+                    prob_data, self.comm_config.prob_payload_bits
+                )
                 if _pb_bits is not None:
                     _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
                           else prob_data.numel())

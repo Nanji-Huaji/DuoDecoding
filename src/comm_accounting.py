@@ -1,7 +1,7 @@
-"""通信计费口径的构造点（Phase 1 地基，尚未接线）。
+"""通信计费口径的构造点（Phase 1 地基，已接线）。
 
-现状
-----
+迁移前
+------
 ``comm_round_trip_mode`` / ``charge_residual_payload`` /
 ``transfer_top_k_cap`` / ``force_full_vocab_transfer`` /
 ``prob_payload_bits`` 在 13 个解码方法里各自 ``getattr(args, ...)``。
@@ -9,15 +9,17 @@
 2026-04 之前这些开关只接线了 tri 系，metrics 标签却对全表生效——
 run 的标签与真实行为不一致（src/protocols.py 模块头有完整记录）。
 
+现状（2026-10-19，PR #11 已合并）
+-------------------------------
+29 个读取点全部收敛：解码方法经惰性 ``Baselines.comm_config`` 读字段，
+模块助手 ``_uplink_prob_payload`` 改收 ``bits: int``，由调用点传
+``self.comm_config.prob_payload_bits``。``test/test_comm_config_reads.py``
+守住"baselines 方法体内不得再出现这些开关的 args 直读"。
+
 本模块只做两件事：
 
 1. ``CommConfig``：把五个开关读成一个不可变对象；
 2. ``PROFILES``：从 ``src.protocols.PROTOCOLS`` 派生，不复制任何常量。
-
-尚未接线：解码方法仍直接读 args。按
-``docs/refactor_baselines_plan.md`` Phase 1 逐方法迁移（一个方法一个 PR）。
-在第一个方法迁移之前，本模块不被 src 的任何生产路径 import——这是
-有意的：先让构造函数和 profile 有一处可测的真源，再接第一条线。
 
 五个计费接口（上行/下行/残差/往返/RL 成本）留到下一个提交：它们需要
 先按 call site 列清楚"谁在哪一步计了哪一笔"，否则接口形状是猜的。

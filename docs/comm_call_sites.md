@@ -1,7 +1,13 @@
-# 通信计费开关的 call site 清单（Phase 1 迁移前）
+# 通信计费开关的 call site 清单（迁移前基线 + 迁移后状态）
 
 基线：`refactor/logic-gates@5ce0f28`（2026-10-18）。行号会随后续提交漂移，
 以"方法 + 开关"为准，行号只用于当前定位。
+
+> **2026-10-19 已全部迁移（PR #11 合并）。** 下表是迁移前的审计快照，
+> 保留它是为了让每个读取点的旧回退值可查。现状：29/29 读取点经
+> `Baselines.comm_config`；`_uplink_prob_payload` 改为收 `bits: int`，
+> 调用点传 `self.comm_config.prob_payload_bits`；守卫测试
+> `test/test_comm_config_reads.py` 禁止回退到 args 直读。
 
 ## 1. 结论
 
@@ -11,7 +17,8 @@
   与 `src/protocols.py::_STATIC_ACCOUNTING` 的快照一致；
 - CUHLM / TK-SLT 系只读 `comm_round_trip_mode`（统一往返），
   `cee_cuhlm` 一个都不读——与静态快照一致；
-- `prob_payload_bits` 只有一处（`_uplink_prob_payload`），所有方法共用。
+- `prob_payload_bits` 只有一处（`_uplink_prob_payload`），所有方法共用；
+  迁移后该 helper 收 int，8 个调用点传 `self.comm_config.prob_payload_bits`。
 
 ## 2. 读取点总表
 
