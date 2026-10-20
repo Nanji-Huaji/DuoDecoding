@@ -168,6 +168,47 @@ def _make_comm_simulator(
         sim = CommunicationSimulator(**kwargs)
     return sim
 
+
+def _make_symmetric_comm_simulator(
+    env: CommEnv,
+    *,
+    precise: bool,
+    use_stochastic_comm: bool,
+    ntt_ms_edge_cloud: float,
+    ntt_ms_edge_end: float,
+) -> CommunicationSimulator:
+    """对称链路方法的构造点（DSSD/DSD/TK-SLT/adaptive_decoding）。
+
+    这 4 个方法的建模只关心 edge-cloud 链路，edge_end 与 cloud_end 一律取
+    无限带宽。``float("inf")`` 特意留在 else 分支里：它和迁移前一样出现在
+    CommunicationSimulator 的实参上，逻辑指纹的事件序列因此不变。
+    """
+    if precise:
+        sim: CommunicationSimulator = PreciseCommunicationSimulator(
+            bandwidth_hz=1e7,
+            channel_gain=1e-8,
+            send_power_watt=0.5,
+            noise_power_watt=1e-10,
+            min_bandwidth_mbps=env.min_bandwidth_mbps,
+            bw_model=env.comm_bw_model,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
+    else:
+        sim = CommunicationSimulator(
+            bandwidth_edge_cloud=env.edge_cloud_bandwidth,
+            bandwidth_edge_end=float("inf"),
+            bandwidth_cloud_end=float("inf"),
+            min_bandwidth_mbps=env.min_bandwidth_mbps,
+            bw_model=env.comm_bw_model,
+            dimension="Mbps",
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            use_stochastic=use_stochastic_comm,
+            stochastic_ntt=env.stochastic_ntt,
+        )
+    return sim
+
 def _reward_comm_s(args, comm_simulator, link_type: str) -> float:
     """RL 奖励的通信成本（--rl_comm_cost_mode）。
 
@@ -1197,30 +1238,13 @@ class Baselines(Decoding):
           rejected position, and the device resamples locally from norm(max(P-Q, 0)).
         - All-accepted path: downlink sends only the next sampled token.
         """
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
         # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
@@ -1567,30 +1591,13 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
         # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
@@ -2321,30 +2328,13 @@ class Baselines(Decoding):
         默认关闭（固定 γ，与 dsd/dssd/cuhlm 同口径可比）；首轮无估计，
         用 --gamma 兜底。
         """
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"TK-SLT using top-K: {transfer_top_k}", 2)
         # 统一往返口径（2026-10-09，docs/protocol.md §3.4）：per_round 下
@@ -3912,30 +3902,13 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套

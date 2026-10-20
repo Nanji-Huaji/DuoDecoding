@@ -10,7 +10,10 @@
 from argparse import Namespace
 from unittest.mock import patch
 
-from src.baselines import _make_comm_simulator
+from src.baselines import (
+    _make_comm_simulator,
+    _make_symmetric_comm_simulator,
+)
 from src.comm_accounting import CommEnv
 
 
@@ -71,3 +74,32 @@ def test_transfer_top_k_omitted_when_none():
     with patch("src.baselines.CommunicationSimulator") as sim:
         _call(transfer_top_k=None)
     assert "transfer_top_k" not in sim.call_args.kwargs
+
+
+def test_symmetric_path_forces_infinite_edge_links():
+    """DSSD/DSD/TK-SLT/adaptive_decoding 只建模 edge-cloud；远端链路取 inf。"""
+    with patch("src.baselines.CommunicationSimulator") as sim:
+        _make_symmetric_comm_simulator(
+            _env(),
+            precise=False,
+            use_stochastic_comm=True,
+            ntt_ms_edge_cloud=50.0,
+            ntt_ms_edge_end=0.317,
+        )
+    kwargs = sim.call_args.kwargs
+    assert kwargs["bandwidth_edge_end"] == float("inf")
+    assert kwargs["bandwidth_cloud_end"] == float("inf")
+    assert kwargs["bandwidth_edge_cloud"] == 46.0
+    assert kwargs["stochastic_ntt"] is True
+
+
+def test_symmetric_precise_path_uses_historical_channel_bandwidth():
+    with patch("src.baselines.PreciseCommunicationSimulator") as precise:
+        _make_symmetric_comm_simulator(
+            _env(),
+            precise=True,
+            use_stochastic_comm=False,
+            ntt_ms_edge_cloud=50.0,
+            ntt_ms_edge_end=0.317,
+        )
+    assert precise.call_args.kwargs["bandwidth_hz"] == 1e7
