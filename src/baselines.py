@@ -3924,9 +3924,11 @@ class Baselines(Decoding):
         _comm = self.comm_config
         comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
         charge_residual = _comm.charge_residual_payload
-        transfer_top_k = apply_transfer_top_k_cap(
-            transfer_top_k, _comm.transfer_top_k_cap
-        )
+        # RL 在循环里改写 transfer_top_k 后，要再用同一个 cap 钳位
+        # （与 adaptive_tridecoding 阶段二一致）；此前这里没有定义
+        # _topk_cap，--use_rl_adapter 时循环内直接 NameError。
+        _topk_cap = _comm.transfer_top_k_cap
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         batch_delay = self.comm_env.batch_delay

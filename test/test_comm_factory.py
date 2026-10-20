@@ -103,3 +103,32 @@ def test_symmetric_precise_path_uses_historical_channel_bandwidth():
             ntt_ms_edge_end=0.317,
         )
     assert precise.call_args.kwargs["bandwidth_hz"] == 1e7
+
+
+def test_topk_cap_is_defined_in_methods_that_use_it():
+    """adaptive_decoding 曾在 RL 分支读未定义的 _topk_cap（NameError）。
+
+    通用规则：方法里 Load 了 _topk_cap，就必须在同方法里有 Store。
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "baselines.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        loads = {
+            n.id
+            for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        }
+        stores = {
+            n.id
+            for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+        }
+        if "_topk_cap" in loads and "_topk_cap" not in stores:
+            offenders.append(node.name)
+    assert not offenders, f"这些方法读取未定义的 _topk_cap: {offenders}"
