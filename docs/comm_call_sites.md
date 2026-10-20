@@ -3,15 +3,17 @@
 基线：`refactor/logic-gates@5ce0f28`（2026-10-18）。行号会随后续提交漂移，
 以"方法 + 开关"为准，行号只用于当前定位。
 
-> **2026-10-19 已全部迁移（PR #11 合并）。** 下表是迁移前的审计快照，
-> 保留它是为了让每个读取点的旧回退值可查。现状：29/29 读取点经
-> `Baselines.comm_config`；`_uplink_prob_payload` 改为收 `bits: int`，
-> 调用点传 `self.comm_config.prob_payload_bits`；守卫测试
-> `test/test_comm_config_reads.py` 禁止回退到 args 直读。
+> **2026-10-19 已全部迁移。** 下表是迁移前的审计快照，保留它是为了让
+> 每个读取点的旧回退值可查。现状：**32/32** 读取点经
+> `Decoding.comm_config`（基类；Baselines 与 engine.py 的
+> `speculative_decoding_with_bandwidth` 共用）；`_uplink_prob_payload`
+> 改为收 `bits: int`，调用点传 `self.comm_config.prob_payload_bits`；
+> 守卫测试 `test/test_comm_config_reads.py` 扫描两个文件、禁止回退。
 
 ## 1. 结论
 
-- 5 个开关、**29 个读取点**、11 个方法 + 1 个模块助手；
+- 5 个开关、**32 个读取点**、12 个方法 + 1 个模块助手
+  （初版审计漏了 engine.py 的 `speculative_decoding_with_bandwidth`，2026-10-19 补齐）；
 - 真正改数字的路径只有 5 条（见 §3），其余全是重复的 `getattr`；
 - `force_full_vocab_transfer` 只有 `adaptive_tridecoding` 读（2 处），
   与 `src/protocols.py::_STATIC_ACCOUNTING` 的快照一致；

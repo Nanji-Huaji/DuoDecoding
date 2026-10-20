@@ -14,7 +14,6 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
 from .adapter import DecodingAdapter
-from .comm_accounting import CommConfig
 from .communication import (
     CUHLM,
     CommunicationSimulator,
@@ -646,21 +645,6 @@ class Baselines(Decoding):
         )
 
         self.task = "unknown"  # This attribute should be set in the subclass
-
-    @property
-    def comm_config(self) -> CommConfig:
-        """一次运行生效的计费口径，首次访问时从 args 构造并缓存。
-
-        字段名刻意与 CLI 开关名逐字一致：src/protocols.py 的
-        live_mode_consumption 读方法代码对象里的名字来判断"消费了哪些
-        开关"；属性访问会把名字留在 co_names 里
-        （docs/comm_call_sites.md §4.1）。
-        """
-        cfg = getattr(self, "_comm_config", None)
-        if cfg is None:
-            cfg = CommConfig.from_args(self.args)
-            self._comm_config = cfg
-        return cfg
 
     def _configure_ntt_trace(self, args):
         # 真实 RTT trace 回放：模块级一次性配置（所有模拟器实例共享，含基线）

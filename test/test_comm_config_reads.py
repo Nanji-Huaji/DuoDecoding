@@ -5,9 +5,10 @@
 （src/protocols.py 模块头）。迁移后统一经 ``Baselines.comm_config``
 （或 ``_comm = self.comm_config`` 局部别名）；本测试防止回退。
 
-只约束解码方法所在文件 ``src/baselines.py``：``src/utils.py`` 里
-``--prob_payload_bits`` 的 CLI 合法性校验（B15 模式门）不是解码期读取，
-必须保留。
+扫描两个注册解码方法所在文件：``src/baselines.py`` 与 ``src/engine.py``
+（历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，2026-10-19
+补入）。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI 合法性校验
+（B15 模式门）不是解码期读取，必须保留。
 """
 
 import ast
@@ -21,11 +22,18 @@ SWITCHES = {
     "prob_payload_bits",
 }
 
-BASELINES = Path(__file__).resolve().parents[1] / "src" / "baselines.py"
+SRC = Path(__file__).resolve().parents[1] / "src"
+# 所有注册解码方法所在文件：Baselines 一族 + engine.py 的历史方法
+# （speculative_decoding_with_bandwidth 曾漏在审计外，2026-10-19 补上）。
+SOURCES = (SRC / "baselines.py", SRC / "engine.py")
+
+
+def _trees() -> dict[Path, ast.Module]:
+    return {path: ast.parse(path.read_text(encoding="utf-8")) for path in SOURCES}
 
 
 def _tree() -> ast.Module:
-    return ast.parse(BASELINES.read_text(encoding="utf-8"))
+    return ast.parse((SRC / "baselines.py").read_text(encoding="utf-8"))
 
 
 def _is_self_args(node: ast.AST) -> bool:
@@ -39,7 +47,8 @@ def _is_self_args(node: ast.AST) -> bool:
 
 def test_no_direct_args_reads_of_accounting_switches():
     offenders = []
-    for node in ast.walk(_tree()):
+    for path, tree in _trees().items():
+      for node in ast.walk(tree):
         # getattr(self.args, "<switch>", ...)
         if (
             isinstance(node, ast.Call)
@@ -50,14 +59,14 @@ def test_no_direct_args_reads_of_accounting_switches():
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value in SWITCHES
         ):
-            offenders.append((node.lineno, node.args[1].value))
+            offenders.append((path.name, node.lineno, node.args[1].value))
         # self.args.<switch>
         if (
             isinstance(node, ast.Attribute)
             and node.attr in SWITCHES
             and _is_self_args(node.value)
         ):
-            offenders.append((node.lineno, node.attr))
+            offenders.append((path.name, node.lineno, node.attr))
     assert not offenders, (
         "计费开关仍从 args 直读（应改读 self.comm_config / _comm）："
         f"{offenders}"
@@ -65,9 +74,11 @@ def test_no_direct_args_reads_of_accounting_switches():
 
 
 def test_every_switch_is_still_read_somewhere():
-    attrs = {
-        node.attr for node in ast.walk(_tree()) if isinstance(node, ast.Attribute)
-    }
+    attrs = set()
+    for tree in _trees().values():
+        attrs |= {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
     missing = SWITCHES - attrs
     assert not missing, (
         "以下开关在 src/baselines.py 里完全找不到属性读取，"

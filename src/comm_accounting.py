@@ -9,12 +9,13 @@
 2026-04 之前这些开关只接线了 tri 系，metrics 标签却对全表生效——
 run 的标签与真实行为不一致（src/protocols.py 模块头有完整记录）。
 
-现状（2026-10-19，PR #11 已合并）
--------------------------------
-29 个读取点全部收敛：解码方法经惰性 ``Baselines.comm_config`` 读字段，
-模块助手 ``_uplink_prob_payload`` 改收 ``bits: int``，由调用点传
+现状（2026-10-19）
+----------------
+32 个读取点全部收敛：解码方法经惰性 ``Decoding.comm_config``（基类，
+Baselines 与 engine.py 的历史方法共用）读字段；模块助手
+``_uplink_prob_payload`` 改收 ``bits: int``，由调用点传
 ``self.comm_config.prob_payload_bits``。``test/test_comm_config_reads.py``
-守住"baselines 方法体内不得再出现这些开关的 args 直读"。
+守住"baselines.py / engine.py 方法体内不得再出现这些开关的 args 直读"。
 
 本模块只做两件事：
 

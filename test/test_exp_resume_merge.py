@@ -97,6 +97,38 @@ class TestRunIdentity:
         as_enum["eval_dataset"] = exp.EvalDataset.gsm8k
         assert exp.run_identity(as_enum) == exp.run_identity(make_entry()["config"])
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("charge_residual_payload", False),
+            ("comm_round_trip_mode", "per_round"),
+            ("transfer_top_k_cap", 16),
+            ("prob_payload_bits", 8),
+            ("transfer_top_k", 0),
+        ],
+    )
+    def test_distinguishes_accounting(self, field, value):
+        """同一模型/数据集上两种计费口径必须算两个实验。"""
+        base = make_entry()
+        other = make_entry()
+        other["config"][field] = value
+        assert exp.run_identity(base["config"]) != exp.run_identity(other["config"])
+
+    def test_missing_accounting_keys_use_documented_defaults(self):
+        """旧汇总没有计费键：补默认值后与显式写默认值的条目相等。"""
+        base = make_entry()["config"]
+        explicit = dict(base)
+        explicit.update(
+            {
+                "charge_residual_payload": True,
+                "comm_round_trip_mode": "per_transfer",
+                "transfer_top_k_cap": 0,
+                "prob_payload_bits": 16,
+                "transfer_top_k": 300,
+            }
+        )
+        assert exp.run_identity(base) == exp.run_identity(explicit)
+
     def test_int_and_float_bandwidth_agree(self):
         """46 与 46.0 是同一个带宽，不该算成两个实验。"""
         first = make_entry()["config"]
