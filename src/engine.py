@@ -17,7 +17,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from .comm_accounting import CommConfig
+from .comm_accounting import CommConfig, CommEnv
 from .communication import (
     CUHLM,
     CommunicationSimulator,
@@ -145,6 +145,15 @@ class Decoding(Register, ABC):
             cfg = CommConfig.from_args(self.args)
             self._comm_config = cfg
         return cfg
+
+    @property
+    def comm_env(self) -> CommEnv:
+        """一次运行生效的通信数值层；首次访问时从 args 构造并缓存。"""
+        env = getattr(self, "_comm_env", None)
+        if env is None:
+            env = CommEnv.from_args(self.args)
+            self._comm_env = env
+        return env
 
     def get_model_input_device(self, model) -> torch.device:
         if hasattr(model, "hf_device_map"):
@@ -751,7 +760,7 @@ class Decoding(Register, ABC):
 
         start_event.record(stream=torch.cuda.current_stream())
         queuing_time = 0
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         while x.shape[1] < max_tokens:
             queuing_time += batch_delay
             x = model.generate(x, 1)
@@ -1000,7 +1009,7 @@ class Decoding(Register, ABC):
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + queuing_time
 
@@ -1036,7 +1045,7 @@ class Decoding(Register, ABC):
         # 接受并忽略这些参数（与其余 11 个注册方法的兜底模式一致）。
         if use_precise_comm_sim:
             comm_simulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
                 bandwidth_hz=1e6,
                 channel_gain=1e-8,
                 send_power_watt=0.5,
@@ -1044,9 +1053,9 @@ class Decoding(Register, ABC):
             )
         else:
             comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=getattr(self.args, "min_bandwidth_mbps", 5.0),
-                bw_model=str(getattr(self.args, "comm_bw_model", "instant")),
-                bandwidth_edge_cloud=self.args.edge_cloud_bandwidth,
+                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
+                bw_model=self.comm_env.comm_bw_model,
+                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
                 bandwidth_edge_end=float("inf"),
                 bandwidth_cloud_end=float("inf"),
                 dimension="Mbps",
@@ -1257,7 +1266,7 @@ class Decoding(Register, ABC):
 
         generated_tokens = prefix.shape[1] - current_tokens.shape[1]
 
-        batch_delay = getattr(self.args, "batch_delay", 0)
+        batch_delay = self.comm_env.batch_delay
         queuing_time = target_forward_times * batch_delay
         wall_time = elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
 

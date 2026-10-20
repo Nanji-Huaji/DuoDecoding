@@ -12,7 +12,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.comm_accounting import DEFAULTS, FALLBACKS, PROFILES, CommConfig
+from src.comm_accounting import (
+    DEFAULTS,
+    ENV_FALLBACKS,
+    FALLBACKS,
+    PROFILES,
+    CommConfig,
+    CommEnv,
+)
 from src.protocols import PROTOCOLS
 
 
@@ -126,3 +133,53 @@ def test_profiles_are_derived_not_copied():
     assert PROFILES["paper_table5"].charge_residual_payload is PROTOCOLS[
         "paper_table5"
     ].values["charge_residual_payload"]
+
+
+class TestCommEnv:
+    """通信数值层：迁移前 ~20 处构造点各自 getattr，现在只有一个入口。"""
+
+    def test_from_args_reads_every_field(self):
+        args = SimpleNamespace(
+            edge_cloud_bandwidth=46.0,
+            edge_end_bandwidth=563.0,
+            cloud_end_bandwidth=46.0,
+            min_bandwidth_mbps=5.0,
+            comm_bw_model="fluid",
+            stochastic_ntt=True,
+            batch_delay=0.05,
+            ntt_trace_file="trace.txt",
+            ntt_trace_scale=1.5,
+        )
+        env = CommEnv.from_args(args)
+        assert env.edge_cloud_bandwidth == 46.0
+        assert env.edge_end_bandwidth == 563.0
+        assert env.cloud_end_bandwidth == 46.0
+        assert env.min_bandwidth_mbps == 5.0
+        assert env.comm_bw_model == "fluid"
+        assert env.stochastic_ntt is True
+        assert env.batch_delay == 0.05
+        assert env.ntt_trace_file == "trace.txt"
+        assert env.ntt_trace_scale == 1.5
+
+    def test_from_args_falls_back_to_pre_migration_values(self):
+        env = CommEnv.from_args(SimpleNamespace())
+        assert env.edge_cloud_bandwidth == ENV_FALLBACKS["edge_cloud_bandwidth"]
+        assert env.min_bandwidth_mbps == 5.0
+        assert env.comm_bw_model == "instant"
+        assert env.stochastic_ntt is False
+        assert env.batch_delay == 0.0
+        assert env.ntt_trace_file == ""
+        assert env.ntt_trace_scale == 1.0
+
+    def test_env_is_frozen(self):
+        env = CommEnv.from_args(SimpleNamespace())
+        with pytest.raises(FrozenInstanceError):
+            env.comm_bw_model = "fluid"  # type: ignore[misc]
+
+    def test_as_dict_round_trips(self):
+        env = CommEnv.from_args(
+            SimpleNamespace(edge_cloud_bandwidth=5, batch_delay=None)
+        )
+        d = env.as_dict()
+        assert d["edge_cloud_bandwidth"] == 5.0
+        assert d["batch_delay"] == 0.0

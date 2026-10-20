@@ -9,6 +9,13 @@
 > `speculative_decoding_with_bandwidth` 共用）；`_uplink_prob_payload`
 > 改为收 `bits: int`，调用点传 `self.comm_config.prob_payload_bits`；
 > 守卫测试 `test/test_comm_config_reads.py` 扫描两个文件、禁止回退。
+>
+> **通信数值层（2026-10-19）**：带宽 / `min_bandwidth_mbps` /
+> `comm_bw_model` / `stochastic_ntt` / `batch_delay` / NTT trace
+> 收进 `CommEnv`（`Decoding.comm_env`）。迁移前这些值在 ~20 处
+> `CommunicationSimulator(...)` / `PreciseCommunicationSimulator(...)`
+> 构造点各自 `getattr(self.args, ..., 默认)`；现在默认值只有
+> `comm_accounting.ENV_FALLBACKS` 一份，守卫同样禁止 args 直读。
 
 ## 1. 结论
 

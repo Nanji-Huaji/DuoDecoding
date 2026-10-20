@@ -7,12 +7,26 @@
 
 扫描两个注册解码方法所在文件：``src/baselines.py`` 与 ``src/engine.py``
 （历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，2026-10-19
-补入）。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI 合法性校验
+补入）。同时守 ``CommEnv`` 的 9 个通信数值键：迁移前它们在 ~20 处
+构造点各自 ``getattr(self.args, ..., 默认)``，现在只许经 ``self.comm_env``。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI 合法性校验
 （B15 模式门）不是解码期读取，必须保留。
 """
 
 import ast
 from pathlib import Path
+
+#: 通信数值层：迁移前在 ~20 处构造点各自 getattr，现已收进 CommEnv。
+ENV_SWITCHES = {
+    "edge_cloud_bandwidth",
+    "edge_end_bandwidth",
+    "cloud_end_bandwidth",
+    "min_bandwidth_mbps",
+    "comm_bw_model",
+    "stochastic_ntt",
+    "batch_delay",
+    "ntt_trace_file",
+    "ntt_trace_scale",
+}
 
 SWITCHES = {
     "comm_round_trip_mode",
@@ -97,3 +111,43 @@ def test_uplink_prob_payload_takes_bits_not_args():
         "_uplink_prob_payload 必须收 (probs, bits)，"
         f"由调用点传 self.comm_config.prob_payload_bits，实际: {names}"
     )
+
+
+def test_no_direct_args_reads_of_env_knobs():
+    """通信数值层也只能经 self.comm_env 读取（单一默认值来源）。"""
+    offenders = []
+    for path, tree in _trees().items():
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and _is_self_args(node.args[0])
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in ENV_SWITCHES
+            ):
+                offenders.append((path.name, node.lineno, node.args[1].value))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in ENV_SWITCHES
+                and _is_self_args(node.value)
+            ):
+                offenders.append((path.name, node.lineno, node.attr))
+    assert not offenders, (
+        "通信数值仍从 args 直读（应改读 self.comm_env / CommEnv）："
+        f"{offenders}"
+    )
+
+
+def test_comm_env_is_used_at_construction_sites():
+    attrs = {
+        node.attr
+        for tree in _trees().values()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+    assert "comm_env" in attrs or "comm_env" in {
+        node.id for tree in _trees().values() for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+    }
