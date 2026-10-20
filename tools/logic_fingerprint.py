@@ -175,8 +175,15 @@ def _walk(node: ast.AST, ctx: Ctx) -> None:
         _walk(node.value, ctx)
         return
     if isinstance(node, ast.Return):
-        ctx.emit("return")
-    elif isinstance(node, ast.Break):
+        # 展开 helper 时（depth>0），尾返回是"返回值"而不是控制流事件：
+        # 抽取后的 caller 并没有多出一个 return。只有 helper 自身的 return
+        # 是尾返回才会被展开（见 _expandable），所以这里抑制是安全的。
+        if ctx.depth == 0:
+            ctx.emit("return")
+        if node.value is not None:
+            _walk(node.value, ctx)
+        return
+    if isinstance(node, ast.Break):
         ctx.emit("break")
     elif isinstance(node, ast.Continue):
         ctx.emit("continue")
@@ -257,13 +264,40 @@ def _walk_call(node: ast.Call, ctx: Ctx) -> None:
 
 
 def _expandable(node: ast.AST) -> bool:
-    """只展开"纯语句块"helper。
+    """只展开"纯语句块"或"尾返回"的 helper。
 
-    含 `return` 的 helper 不展开：把带 return 的语句块抽成函数会改变控制流
-    （旧代码 return 退出方法，新代码 return 只退出 helper）。不展开意味着
-    这种抽取会表现为 "return" → "call"，被 diff 抓住。
+    - 无 return：普通语句块（H1 式抽取）→ 原地展开；
+    - 只有尾返回（函数的每个 return 都是其所在块的最后一条语句，且一路
+      到函数体末尾）：值工厂（H2 式抽取）→ 展开，并抑制 return 事件；
+    - 含**早退** return：抽取会改变控制流（旧代码 return 退出方法，新代码
+      只退出 helper）→ 不展开，diff 表现为 "return" → "call"，由评审判断。
     """
-    return not any(isinstance(item, ast.Return) for item in ast.walk(node))
+    returns = [item for item in ast.walk(node) if isinstance(item, ast.Return)]
+    if not returns:
+        return True
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(node):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def _is_tail(ret: ast.Return) -> bool:
+        cur: ast.AST = ret
+        while cur is not node:
+            parent = parents.get(cur)
+            if parent is None:
+                return False
+            block = None
+            for field in ("body", "orelse", "finalbody"):
+                seq = getattr(parent, field, None)
+                if isinstance(seq, list) and cur in seq:
+                    block = seq
+                    break
+            if block is None or block[-1] is not cur:
+                return False
+            cur = parent
+        return True
+
+    return all(_is_tail(ret) for ret in returns)
 
 
 def events_for(node: ast.AST, index: Index) -> list[list[str]]:

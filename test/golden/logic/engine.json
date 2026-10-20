@@ -4,8 +4,8 @@
   "rev": "WORKTREE",
   "entries": {
     "Decoding.speculative_decoding": {
-      "events": 49,
-      "sha256_16": "db61ae5699a0c766",
+      "events": 55,
+      "sha256_16": "0f4fa770acc00313",
       "surface": {
         "boolop": {
           "And": 2
@@ -15,9 +15,10 @@
         },
         "call": {
           "Event": 2,
-          "_acquire_speculative_caches": 1,
+          "KVCacheModel": 2,
           "_check_stopping_criteria": 1,
           "_log_sd_alignment_snapshot": 2,
+          "acquire_graph_caches": 1,
           "append": 2,
           "cat": 3,
           "clone": 1,
@@ -39,7 +40,9 @@
         "flag": {
           "gamma": 1,
           "max_tokens": 1,
-          "top_k": 1
+          "temp": 2,
+          "top_k": 1,
+          "top_p": 2
         },
         "flag_getattr": {
           "gamma": 1
@@ -53,8 +56,8 @@
       }
     },
     "Decoding.speculative_decoding_with_bandwidth": {
-      "events": 59,
-      "sha256_16": "fc2ba080593a383d",
+      "events": 65,
+      "sha256_16": "e27188a40f3fada7",
       "surface": {
         "boolop": {
           "And": 3
@@ -65,8 +68,9 @@
         "call": {
           "CommunicationSimulator": 1,
           "Event": 2,
+          "KVCacheModel": 2,
           "PreciseCommunicationSimulator": 1,
-          "_acquire_speculative_caches": 1,
+          "acquire_graph_caches": 1,
           "append": 2,
           "apply_transfer_top_k_cap": 1,
           "bool": 1,
@@ -100,7 +104,9 @@
         "flag": {
           "gamma": 1,
           "max_tokens": 1,
-          "top_k": 1
+          "temp": 2,
+          "top_k": 1,
+          "top_p": 2
         },
         "flag_getattr": {
           "gamma": 1

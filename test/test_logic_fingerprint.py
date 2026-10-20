@@ -164,6 +164,35 @@ def test_dropped_billing_is_detected() -> None:
     assert inline != dropped
 
 
+VALUE_INLINE = """
+class Runner:
+    def run(self):
+        sim = precise_sim() if self.args.precise else sim_a(1, 2)
+        sim.flush_round()
+"""
+
+VALUE_EXTRACTED = """
+def _make_sim(flag):
+    if flag:
+        sim = precise_sim()
+    else:
+        sim = sim_a(1, 2)
+    return sim
+
+class Runner:
+    def run(self):
+        sim = _make_sim(self.args.precise)
+        sim.flush_round()
+"""
+
+
+def test_value_factory_extraction_keeps_fingerprint() -> None:
+    """尾返回的值工厂展开后应与内联代码同足迹（H2 式抽取）。"""
+    inline = lf.load_entries({"m.py": VALUE_INLINE})["Runner.run"]
+    extracted = lf.load_entries({"m.py": VALUE_EXTRACTED})["Runner.run"]
+    assert inline == extracted
+
+
 def test_early_return_is_not_silently_absorbed() -> None:
     """含 return 的 helper 不展开：`return` 退出谁，是语义差异。"""
     inline = lf.load_entries({"m.py": RETURN_INLINE})["Runner.run"]
