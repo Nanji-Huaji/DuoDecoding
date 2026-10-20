@@ -1,0 +1,127 @@
+{
+  "path": "src/engine.py",
+  "include": [],
+  "rev": "WORKTREE",
+  "entries": {
+    "Decoding.speculative_decoding": {
+      "events": 50,
+      "sha256_16": "db750d603aab8743",
+      "surface": {
+        "boolop": {
+          "And": 2
+        },
+        "break": {
+          "": 4
+        },
+        "call": {
+          "Event": 2,
+          "_acquire_speculative_caches": 1,
+          "_check_stopping_criteria": 1,
+          "_log_sd_alignment_snapshot": 2,
+          "append": 2,
+          "cat": 3,
+          "clone": 1,
+          "current_stream": 2,
+          "elapsed_time": 1,
+          "finalize_verification": 1,
+          "generate": 3,
+          "generate_with_rebuilt_topk": 1,
+          "get_empty_metrics": 1,
+          "graph_mode_cache_kwargs": 1,
+          "int": 3,
+          "min": 1,
+          "record": 2,
+          "stage_topk_proposal_history": 2,
+          "synchronize": 1,
+          "to": 5,
+          "verify_draft_sequence": 1
+        },
+        "flag": {
+          "gamma": 1,
+          "max_tokens": 1,
+          "top_k": 1
+        },
+        "flag_getattr": {
+          "batch_delay": 1,
+          "gamma": 1
+        },
+        "loop": {
+          "while": 1
+        },
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "Decoding.speculative_decoding_with_bandwidth": {
+      "events": 70,
+      "sha256_16": "e75bf8a53ebe863e",
+      "surface": {
+        "boolop": {
+          "And": 3,
+          "Or": 1
+        },
+        "break": {
+          "": 3
+        },
+        "call": {
+          "CommunicationSimulator": 1,
+          "Event": 2,
+          "PreciseCommunicationSimulator": 1,
+          "_acquire_speculative_caches": 1,
+          "append": 2,
+          "apply_transfer_top_k_cap": 1,
+          "bool": 1,
+          "cat": 3,
+          "clone": 1,
+          "color_print": 1,
+          "current_stream": 2,
+          "elapsed_time": 1,
+          "finalize_verification": 1,
+          "float": 2,
+          "generate": 3,
+          "generate_with_rebuilt_topk": 1,
+          "get_empty_metrics": 1,
+          "graph_mode_cache_kwargs": 1,
+          "int": 2,
+          "min": 1,
+          "rebuild_topk_uniform_probs": 1,
+          "record": 2,
+          "reject_tail_scalar_bytes": 1,
+          "stage_topk_proposal_history": 2,
+          "str": 2,
+          "synchronize": 1,
+          "to": 5,
+          "verify_draft_sequence": 1
+        },
+        "comm": {
+          "flush_round": 1,
+          "set_round": 1,
+          "simulate_transfer": 2,
+          "transfer": 1
+        },
+        "flag": {
+          "edge_cloud_bandwidth": 1,
+          "gamma": 1,
+          "max_tokens": 1,
+          "top_k": 1
+        },
+        "flag_getattr": {
+          "batch_delay": 1,
+          "charge_residual_payload": 1,
+          "comm_bw_model": 1,
+          "comm_round_trip_mode": 1,
+          "gamma": 1,
+          "min_bandwidth_mbps": 2,
+          "transfer_top_k_cap": 1
+        },
+        "loop": {
+          "while": 1
+        },
+        "return": {
+          "": 1
+        }
+      }
+    }
+  }
+}

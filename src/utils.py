@@ -264,39 +264,41 @@ def parse_arguments():
     # ---- 参数分组：只改变 --help 的排版，不改动任何默认值或行为 ----
     # 分层依据见 docs/param_inventory.md；L0 通信/计费口径见 docs/protocol.md。
     g_daily = parser.add_argument_group(
-        "① 日常出表（改这些就够）（16）",
+        "① 日常出表（这些就够）",
         "跑任何一次评测都要定的：模型、模式、深度、生成长度、与命名协议。",
     )
     g_sample = parser.add_argument_group(
-        "② 数据集与采样（7）",
+        "② 数据集与采样",
         "选数据集、定样本数与随机采样。",
     )
     g_comm = parser.add_argument_group(
-        "③ 通信数值与计费口径（17）",
-        "L0：比较不同方法时必须逐项一致（冻结值见 docs/protocol.md）。",
+        "③ 通信数值与计费口径（常态交给 --protocol）",
+        "L0：比较不同方法时必须逐项一致（冻结值见 docs/protocol.md）。"
+        "paper_table5/honest/legacy 已冻结这些键；下面的子开关只在"
+        "做消融、或复现历史 run 时手动覆盖。",
     )
     g_trace = parser.add_argument_group(
-        "④ trace 回放（4）",
+        "④ trace 回放",
         "用实测 trace 取代解析式带宽/时延模型。",
     )
     g_method = parser.add_argument_group(
-        "⑤ 解码方法与准确率头（9）",
+        "⑤ 解码方法与准确率头",
         "投机深度之外的方法参数：早停、阈值、准确率头路径。",
     )
     g_rl = parser.add_argument_group(
-        "⑥ RL adapter（35）",
-        "挂载点、权重路径与 reward 整形；其中一批只在训练里被读取。",
+        "⑥ RL adapter",
+        "挂载点、权重路径与 reward 整形；只在 --use_rl_adapter 或训练时生效。",
     )
     g_deploy = parser.add_argument_group(
-        "⑦ 部署、精度与显存（6）",
+        "⑦ 部署、精度与显存",
         "dtype、量化、多卡与验证图档位。",
     )
     g_curr = parser.add_argument_group(
-        "⑧ curriculum（5）",
+        "⑧ curriculum",
         "训练用的网络条件课程；评测侧仅 eval_mixed 读取。",
     )
     g_out = parser.add_argument_group(
-        "⑨ 输出与裁判（4）",
+        "⑨ 输出与裁判",
         "结果落盘与 MT-Bench 裁判。",
     )
 
@@ -609,10 +611,11 @@ def parse_arguments():
         choices=["honest", "legacy"],
         default=None,
         help=(
-            "L1 口径收敛总开关：honest = 残差计费 + per_round + top-k cap16（论文协议，"
-            "= 仓库默认）；legacy = --no-charge_residual_payload + per_transfer + cap0"
-            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时覆盖"
-            "三个子开关并在日志回显；不给出时子开关独立生效。metrics json 会记录实际口径。"
+            "L1 口径收敛总开关：honest = 残差计费 + per_round（= 仓库默认）；"
+            "legacy = --no-charge_residual_payload + per_transfer"
+            "（复现 2026-09-24 前历史序列：ab/vg/vg2/t5a/q_ours_hist）。显式给出时"
+            "覆盖上述两个子开关并在日志回显；top-k 不在此处钳位（各方法用自身"
+            " transfer_top_k）。不给出时子开关独立生效；metrics json 记录实际口径。"
         ),
     )
     g_comm.add_argument(
@@ -726,6 +729,28 @@ def parse_arguments():
             "T。t5a 轮预算里排队占 27%%，与 NTT 一样被长草稿摊薄——不计价会让策略"
             "系统性偏好短草稿（v2 重训 3.58 vs 钉死0.4 的 4.43 的主因之一）。"
             "默认关闭保持历史 reward 逐位可复现。"
+        ),
+    )
+    g_rl.add_argument(
+        "--rl_comm_cost_mode",
+        choices=["nominal", "off"],
+        default="nominal",
+        help=(
+            "RL 奖励的通信成本口径。nominal（默认）= NTT + 本轮未结算字节/带宽"
+            "（CommunicationSimulator.nominal_comm_s，轮内即时可读）；off = 恒 0。"
+            "（settled 旧口径已删除——fluid+per_round 下轮内读恒为 0，v2 重训"
+            "根因①，见 experiment_results/ceesd_gamma_threshold_probe.md；"
+            "历史训练复现请 checkout 删除前 commit）"
+        ),
+    )
+    g_rl.add_argument(
+        "--rl_threshold_candidates",
+        default=None,
+        help=(
+            "逗号分隔的 main agent ARP 阈值候选格（如 0.1,0.2,0.35,0.5,0.65,"
+            "0.8,0.9,0.99），覆盖 registry 默认 [0.05..0.4]（默认格顶 0.4 是"
+            "策略学偏的根因②）。候选格随 checkpoint 持久化，评测加载时自动"
+            "还原，不会重演训练/评测格错配。"
         ),
     )
     g_rl.add_argument(
@@ -1164,6 +1189,11 @@ def parse_arguments():
             f"charge_residual={args.charge_residual_payload}, "
             f"round_trip={args.comm_round_trip_mode}, "
             f"topk_cap={args.transfer_top_k_cap}"
+        )
+        print(
+            "[deprecated] --comm_accounting 与 --protocol honest|legacy 重复，"
+            "将在下个版本移除；请改用 --protocol（同时记录协议名与代填项）。"
+            "本 run 仍按上面的取值执行。"
         )
 
     if args.run_full_dataset:

@@ -21,6 +21,50 @@ def select_eval_data(data: list, args: ArgsLike) -> list:
     return data[:sample_size]
 
 
+def _git_provenance() -> dict:
+    """Step 0（重构前置，2026-10-11）：结果工件的代码版本锚点。
+
+    git_sha + git_dirty 让"复现历史数字"锚定到 commit 而非代码内的
+    legacy 分支——这是口径删除（settled / ours_hist 固化 bug 路径）的
+    前置条件（见 docs/refactor_baselines_plan.md §2）。查询锚定到
+    **本文件所属的检出目录**（不是启动目录）：评测脚本会把父目录塞进
+    sys.path，代码可能被从别的仓库启动，按 cwd 查会记错 SHA。
+    git 不可用时降级为 "unknown"，不阻断评测。每进程缓存一次。
+    """
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cache = getattr(_git_provenance, "_cache", None)
+    if cache is None:
+        import subprocess
+
+        cache = {"git_sha": "unknown", "git_dirty": None}
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=repo_root,
+            )
+            if sha.returncode == 0 and sha.stdout.strip():
+                cache["git_sha"] = sha.stdout.strip()
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    cwd=repo_root,
+                )
+                cache["git_dirty"] = bool(
+                    status.returncode == 0 and status.stdout.strip()
+                )
+        except Exception:  # pragma: no cover - 诊断信息不应影响评测主流程
+            pass
+        _git_provenance._cache = cache
+    return dict(cache)
+
+
 class ExpPrint:
     analysis_metrics = (
         "little_entropy_history",
@@ -221,4 +265,7 @@ class ExpPrint:
         eval_result["edge_cloud_bandwidth_mbps_stats"] = _link_stats(
             "edge_cloud_bandwidth_history"
         )
+        # Step 0：代码版本锚点入工件——复现锚点从代码内 legacy 分支
+        # 转移到 commit（口径删除的解锁条件）。
+        eval_result.update(_git_provenance())
         return eval_result

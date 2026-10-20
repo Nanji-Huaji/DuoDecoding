@@ -184,6 +184,10 @@ class CommunicationSimulator:
         self.coalesce_rounds = False
         self._round_idx: Optional[int] = None
         self._pending_bytes: dict = {}
+        # 本轮已发生（含已即时结算）的字节：per_transfer 下 pending 恒空，
+        # 名义成本若只看 pending 会把载荷成本整个丢掉（RL 奖励的 byte_price
+        # 因此失效）。set_round 进入新一轮时清零。
+        self._round_bytes: dict = {}
 
         self.connect_times = {"edge_end": 0, "cloud_end": 0, "edge_cloud": 0}
 
@@ -375,11 +379,13 @@ class CommunicationSimulator:
 
         轮号在两种模式下都记录（进 TransferUnit.round_idx）——离线重放
         （scripts/rebill.py）靠它把逐消息字节重组成任意往返口径。
+        进入新一轮时清空 ``_round_bytes``：名义成本只统计"本轮"的载荷。
         """
-        if self.coalesce_rounds and (
-            self._round_idx is None or round_idx != self._round_idx
-        ):
-            self.flush_round()
+        new_round = self._round_idx is None or round_idx != self._round_idx
+        if new_round:
+            if self.coalesce_rounds:
+                self.flush_round()
+            self._round_bytes = {}
         self._round_idx = round_idx
 
     def flush_round(self) -> None:
@@ -394,6 +400,46 @@ class CommunicationSimulator:
                     draft_len=int(bucket.get("draft_len", 0)),
                     trace_kind="flushed",
                 )
+
+    def pending_bytes(self, link_type: str) -> float:
+        """当前轮尚未结算（flush 前）的累积字节数。
+
+        flush 前即可读：RL 奖励的名义通信成本（nominal_comm_s）依赖它。
+        per_transfer 下没有 pending（字节即时结算），此时看 round_bytes。
+        """
+        return float(self._pending_bytes.get(link_type, {}).get("bytes", 0.0))
+
+    def round_bytes(self, link_type: str) -> float:
+        """本轮已发生的载荷字节（pending + 即时结算），per_transfer 也可读。
+
+        名义成本（nominal_comm_s）与 RL 的 byte_price 用它：只用 pending
+        时 per_transfer 恒为 0，载荷成本与字节单价会被整个丢掉。
+        """
+        return float(self._round_bytes.get(link_type, 0.0)) + self.pending_bytes(
+            link_type
+        )
+
+    def nominal_comm_s(self, link_type: str) -> float:
+        """本轮名义通信成本（秒）：NTT + 本轮载荷字节 / 带宽。
+
+        与 flush 后的真实计费（edge_*_comm_time）不同，本方法在轮内任意
+        时刻可读——fluid+per_round 口径下排水/NTT 到 flush_round 才入账，
+        轮内读差值恒为 0（RL 训练奖励因此长期无通信项，策略系统性偏好
+        短草稿，见 experiment_results/ceesd_gamma_threshold_probe.md 根因①）。
+        名义值略高于真实账（不含 fluid 跨轮重叠折扣），作为学习信号方向
+        正确且即时可用。per_transfer 下 pending 恒 0，故必须用 round_bytes
+        而不是 pending_bytes。
+        """
+        ntt = {
+            "edge_cloud": self.ntt_edge_cloud,
+            "edge_end": self.ntt_edge_end,
+        }.get(link_type, 0.0)
+        bw = {
+            "edge_cloud": self.bandwidth_edge_cloud,
+            "edge_end": self.bandwidth_edge_end,
+            "cloud_end": self.bandwidth_cloud_end,
+        }.get(link_type, self.bandwidth_cloud_end)
+        return float(ntt) + self.round_bytes(link_type) / max(float(bw), 1e-9)
 
     def simulate_transfer(
         self,
@@ -506,6 +552,13 @@ class CommunicationSimulator:
         trace_kind: str = "direct",
     ) -> float:
         """真正的计费入口（原 simulate_transfer 主体）。"""
+        # per_transfer：字节即时结算，不会进 _pending_bytes；单独累计
+        # 本轮载荷供 nominal_comm_s / byte_price 使用（coalesce 分支已在
+        # simulate_transfer 累计，flush 再计一次会重复）。
+        if add_to_stats and not self.coalesce_rounds:
+            self._round_bytes[link_type] = self._round_bytes.get(
+                link_type, 0.0
+            ) + float(data_size_bytes)
         if trace_kind and os.environ.get("COMM_TRACE"):
             _trace_comm(
                 trace_kind,

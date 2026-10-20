@@ -14,6 +14,7 @@ transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
 from .adapter import DecodingAdapter
+from .comm_accounting import CommConfig
 from .communication import (
     CUHLM,
     CommunicationSimulator,
@@ -86,6 +87,31 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     """
     metrics["edge_cloud_ntt_history"] = list(
         getattr(comm_simulator, "ntt_edge_cloud_history", [])
+    )
+
+
+def _reward_comm_s(args, comm_simulator, link_type: str) -> float:
+    """RL 奖励的通信成本（--rl_comm_cost_mode）。
+
+    - nominal（默认）：NTT + 本轮未结算字节/带宽（nominal_comm_s，
+      轮内即时可读——fluid+per_round 口径下真实计费到 flush_round 才
+      入账，差值口径轮内恒 0，v2 重训的奖励因此长期无通信项、策略
+      系统性偏好短草稿（根因①，见
+      experiment_results/ceesd_gamma_threshold_probe.md）。
+    - off：恒 0。
+
+    历史注记：settled 口径（flush 差值）已于 Phase 1 删除（2026-10-11，
+    golden 闭环后）——fluid+per_round 下轮内差值恒 0 属坏观测，零脚本
+    引用；历史训练复现走 commit 锚定（结果工件 git_sha）。
+    """
+    mode = getattr(args, "rl_comm_cost_mode", "nominal")
+    if mode == "nominal":
+        return float(comm_simulator.nominal_comm_s(link_type))
+    if mode == "off":
+        return 0.0
+    raise ValueError(
+        f"未知 rl_comm_cost_mode {mode!r}（可用: nominal, off；"
+        f"settled 已删除，历史复现请 checkout 删除前 commit）"
     )
 
 
@@ -608,6 +634,35 @@ class Baselines(Decoding):
 
     def __init__(self, args):
         super().__init__(args)
+        self._configure_ntt_trace(args)
+        # self.load_acc_head() # Moved to load_model
+        eval_mode = getattr(args, "eval_mode", "")
+        # D2：模式能力查询单点化（原两处硬编码集合移入 mode_features）
+        _spec = MODE_FEATURES.get(eval_mode)
+        uses_main_rl = bool(_spec and _spec.uses_main_rl)
+        uses_little_rl = bool(_spec and _spec.uses_little_rl)
+        self._build_rl_adapters(
+            args, eval_mode, uses_main_rl, uses_little_rl
+        )
+
+        self.task = "unknown"  # This attribute should be set in the subclass
+
+    @property
+    def comm_config(self) -> CommConfig:
+        """一次运行生效的计费口径，首次访问时从 args 构造并缓存。
+
+        字段名刻意与 CLI 开关名逐字一致：src/protocols.py 的
+        live_mode_consumption 读方法代码对象里的名字来判断"消费了哪些
+        开关"；属性访问会把名字留在 co_names 里
+        （docs/comm_call_sites.md §4.1）。
+        """
+        cfg = getattr(self, "_comm_config", None)
+        if cfg is None:
+            cfg = CommConfig.from_args(self.args)
+            self._comm_config = cfg
+        return cfg
+
+    def _configure_ntt_trace(self, args):
         # 真实 RTT trace 回放：模块级一次性配置（所有模拟器实例共享，含基线）
         ntt_trace_file = getattr(args, "ntt_trace_file", "")
         if ntt_trace_file:
@@ -629,12 +684,10 @@ class Baselines(Decoding):
                 scale=getattr(args, "ntt_trace_scale", 1.0),
                 src=os.path.basename(ntt_trace_file),
             )
-        # self.load_acc_head() # Moved to load_model
-        eval_mode = getattr(args, "eval_mode", "")
-        # D2：模式能力查询单点化（原两处硬编码集合移入 mode_features）
-        _spec = MODE_FEATURES.get(eval_mode)
-        uses_main_rl = bool(_spec and _spec.uses_main_rl)
-        uses_little_rl = bool(_spec and _spec.uses_little_rl)
+
+    def _build_rl_adapters(
+        self, args, eval_mode, uses_main_rl, uses_little_rl
+    ):
         if getattr(args, "use_rl_adapter", False):
             checkpoint_root = getattr(
                 args, "rl_checkpoint_root", "checkpoints/rl_agents"
@@ -663,6 +716,30 @@ class Baselines(Decoding):
                     target_model=args.target_model,
                     checkpoint_root=checkpoint_root,
                 )
+                # 阈值候选格：CLI 显式指定 > registry 默认。默认格顶 0.4 是
+                # v2 策略学偏的根因②（深草稿不可达）；扩格训练时传
+                # --rl_threshold_candidates，且格会随 checkpoint 持久化、
+                # 评测加载时自动还原（不会重演训练/评测格错配）。
+                _main_thr_grid = main_spec.threshold_candidates
+                if getattr(args, "rl_threshold_candidates", None):
+                    _main_thr_grid = [
+                        float(x)
+                        for x in str(args.rl_threshold_candidates).split(",")
+                        if x.strip()
+                    ]
+                    if not _main_thr_grid:
+                        raise ValueError(
+                            "--rl_threshold_candidates 解析为空格: "
+                            f"{args.rl_threshold_candidates!r}"
+                        )
+                if max(float(x) for x in _main_thr_grid) < 0.5:
+                    print(
+                        "Warning: main 阈值候选格上限 "
+                        f"{max(float(x) for x in _main_thr_grid)} < 0.5 —— 深草稿"
+                        "不可达（评测最优 ~0.8，见"
+                        " experiment_results/ceesd_gamma_threshold_probe.md）。"
+                        "训练请考虑 --rl_threshold_candidates 扩格。"
+                    )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
                     model_path=getattr(args, "main_rl_path", None)
@@ -684,7 +761,7 @@ class Baselines(Decoding):
                     ]
                     if legacy_load_paths
                     else [],
-                    threshold_candidates=main_spec.threshold_candidates,
+                    threshold_candidates=_main_thr_grid,
                     init_seed=init_seed,
                     init_strategy=init_strategy,
                     frozen=opportunistic,
@@ -755,8 +832,6 @@ class Baselines(Decoding):
         else:
             self.rl_adapter = None
             self.little_rl_adapter = None
-
-        self.task = "unknown"  # This attribute should be set in the subclass
 
     def load_model(self):
         super().load_model()
@@ -1082,14 +1157,14 @@ class Baselines(Decoding):
             )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1467,14 +1542,14 @@ class Baselines(Decoding):
             )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
@@ -1858,8 +1933,7 @@ class Baselines(Decoding):
         # 触发的上行+下行合并成一次云请求往返（1×NTT）。载荷字节仍是
         # 论文式 (5) 口径（cuhlm_uplink_payload_bytes）。
         comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+            self.comm_config.comm_round_trip_mode == "per_round"
         )
         _dev = (
             "cuhlm_fair_accounting: skip=0RTT(buffered resync), "
@@ -2257,8 +2331,7 @@ class Baselines(Decoding):
         # 此前逐报文各付 50ms（每轮 2×NTT），比 dsd/dssd/ours 每轮多付
         # 50ms 纯记账差异。载荷字节仍是论文口径（tk_slt_uplink_payload_bytes）。
         comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+            self.comm_config.comm_round_trip_mode == "per_round"
         )
 
         # 口径自述随 metrics 落盘（F-CUHLM 同款），保证论文口径跑出的工件
@@ -2773,14 +2846,14 @@ class Baselines(Decoding):
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
@@ -3315,14 +3388,14 @@ class Baselines(Decoding):
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
@@ -3371,7 +3444,6 @@ class Baselines(Decoding):
             draft_stage_probs: Optional[torch.Tensor] = None
 
             # 第一层 speculative
-            edge_end_comm_start = comm_simulator.edge_end_comm_time
             step_start_time = time.time()
 
             x, little_rebuilt_probs, little_rebuilt_meta, q = self._generate_with_optional_rebuilt_proposal(
@@ -3461,7 +3533,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end"
+                )
 
                 # 去掉分子 +1
                 tps_part = little_accepted_this_iter / (
@@ -3511,7 +3585,6 @@ class Baselines(Decoding):
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
-            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             step_start_time = time.time()
 
             if idx == 1:
@@ -3601,8 +3674,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 去掉分子 +1
@@ -3920,14 +3993,14 @@ class Baselines(Decoding):
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         batch_delay = self.args.batch_delay
@@ -4120,8 +4193,11 @@ class Baselines(Decoding):
             step_end_time = time.time()
             if self.rl_adapter is not None:
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - step_comm_time_start
+                # 与其余方法同一个口径入口：nominal/off 由 _reward_comm_s 决定。
+                # 直接读已结算计数器会有两个洞：per_round 下轮内差值恒 0
+                # （nominal 看不到通信成本）；per_transfer 下 off 也关不掉。
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 去掉分子 +1：只有真正产生 accepted tokens 才有 TPS 基础奖励
@@ -4319,7 +4395,9 @@ class Baselines(Decoding):
         #   机制：proposal_top_k(vocab_size) 返回 None（不截断），且计费公式
         #   draft_len × vocab_size × (prob+index) 会如实 charge 全词表载荷。
         #   必须在方法入口改写，才能同时影响「真实截断」与「通信计费」两条路径。
-        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+        # 口径对象在本方法入口构造一次，后面的 charge/top-k 都复用它。
+        _comm = self.comm_config
+        if _comm.force_full_vocab_transfer:
             transfer_top_k = int(getattr(self, "vocab_size", 0) or 32000)
 
         batch_delay = self.args.batch_delay
@@ -4338,9 +4416,7 @@ class Baselines(Decoding):
         # F43：是否按"拒绝位置残差所需的分布载荷"计费，并改用精确的
         # top-k + 均匀尾表示（TopKProposalHistory）而不是整行。默认关闭以保持
         # 历史数字可复现；开启后通信记账才与真实分布式实现一致。
-        charge_residual = bool(
-            getattr(self.args, "charge_residual_payload", False)
-        )
+        charge_residual = _comm.charge_residual_payload
         probe_cache_max_length = getattr(self.args, "probe_cache_max_length", None)
         cache_kwargs = (
             {"max_length": probe_cache_max_length}
@@ -4462,11 +4538,9 @@ class Baselines(Decoding):
         #  · comm_round_trip_mode=per_round：同一轮内多条消息合成"每链路一次往返"，
         #    只付一次 NTT（原实现一轮要付 3.2+3.0 次）；
         #  · transfer_top_k_cap：给 RL 选出的 top-k 设上限，直接压低拒绝载荷字节。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer")) == "per_round"
-        )
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        if bool(getattr(self.args, "force_full_vocab_transfer", False)):
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        _topk_cap = _comm.transfer_top_k_cap
+        if _comm.force_full_vocab_transfer:
             # 强制全词表：cap 不再覆盖，并把全词表规模告知 simulator 用于计费
             comm_simulator.transfer_top_k = transfer_top_k
         elif _topk_cap > 0:
@@ -4551,7 +4625,6 @@ class Baselines(Decoding):
             current_proposal_top_k = proposal_top_k(transfer_top_k)
 
             # 第一层 speculative
-            edge_end_comm_start = comm_simulator.edge_end_comm_time
             edge_end_energy_start = comm_simulator.total_comm_energy
 
             self.small_draft_adapter.reset_step()
@@ -4748,7 +4821,9 @@ class Baselines(Decoding):
             if self.little_rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = comm_simulator.edge_end_comm_time - edge_end_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_end"
+                )
 
                 # 第一层（end->edge）奖励，走同一套奖励实现（见 src/rl_reward.py）。
                 # 注意：当前版本的信用分配是"各层局部奖励"，两层强耦合时这是有偏的；
@@ -4843,7 +4918,6 @@ class Baselines(Decoding):
             new_generated_token = prefix[:, prefix_len:]
 
             # 第二层 speculative
-            edge_cloud_comm_start = comm_simulator.edge_cloud_comm_time
             edge_cloud_energy_start = comm_simulator.total_comm_energy
             edge_cloud_bytes_start = comm_simulator.edge_cloud_data
             step_start_time = time.time()
@@ -5161,8 +5235,8 @@ class Baselines(Decoding):
             if self.rl_adapter is not None:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
-                step_comm_time = (
-                    comm_simulator.edge_cloud_comm_time - edge_cloud_comm_start
+                step_comm_time = _reward_comm_s(
+                    self.args, comm_simulator, "edge_cloud"
                 )
 
                 # 奖励统一由 src/rl_reward.py 实现：默认 legacy 即 v1 原式
@@ -5175,9 +5249,17 @@ class Baselines(Decoding):
                     comm_s=step_comm_time,
                     compute_s=step_time,
                     energy_j=comm_simulator.total_comm_energy - edge_cloud_energy_start,
-                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）
-                    transferred_bytes=comm_simulator.edge_cloud_data
-                    - edge_cloud_bytes_start,
+                    # 本区间 WAN 实际传输的字节数（--rl_byte_price 的输入，见 F17）。
+                    # nominal 口径用本轮已发生字节（round_bytes：pending +
+                    # 即时结算），per_transfer 下 pending 恒 0，用 pending 会让
+                    # 字节单价失效；off 沿用 flush 差值（字节轴与时间轴独立，
+                    # off 保留历史原样行为）。
+                    transferred_bytes=(
+                        comm_simulator.round_bytes("edge_cloud")
+                        if getattr(self.args, "rl_comm_cost_mode", "nominal")
+                        == "nominal"
+                        else comm_simulator.edge_cloud_data - edge_cloud_bytes_start
+                    ),
                     forward_counts={
                         "little": float(actual_gamma2),
                         "draft": float(actual_gamma1),
@@ -5963,14 +6045,14 @@ class Baselines(Decoding):
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking
@@ -6392,14 +6474,14 @@ class Baselines(Decoding):
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 开关名必须出现在本方法代码里（protocols.py 运行时内省的依据）。
-        comm_simulator.coalesce_rounds = (
-            str(getattr(self.args, "comm_round_trip_mode", "per_transfer"))
-            == "per_round"
+        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
+        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        _comm = self.comm_config
+        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
+        charge_residual = _comm.charge_residual_payload
+        transfer_top_k = apply_transfer_top_k_cap(
+            transfer_top_k, _comm.transfer_top_k_cap
         )
-        charge_residual = bool(getattr(self.args, "charge_residual_payload", False))
-        _topk_cap = int(getattr(self.args, "transfer_top_k_cap", 0) or 0)
-        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         # Metrics tracking

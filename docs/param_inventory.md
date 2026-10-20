@@ -1,4 +1,12 @@
-# CLI 参数清单（103 个，按"谁消费它"分类）
+# CLI 参数清单（103 个，按谁消费它分类）
+
+> **2026-10-18 注**：当前参数面以 `docs/param_surface.md` 为准（107 个参数、
+> 9 个 help 分组、全仓读取点扫描、`test/test_cli_surface.py` 冻结）。本文件
+> 保留 2026-10-11 的消费轴盘点，作为历史记录，不再逐项更新。
+
+> **2026-10-10 注**：参数总数已到 107（+--comm_bw_model 已计入 105；
+> +--rl_comm_cost_mode、--rl_threshold_candidates）。按**模式轴**的互补
+> 盘点见 `docs/modes_inventory.md`。
 
 > 生成方式：AST 解析 `src/utils.py` 的 `add_argument`，再按精确模式
 > `args.<dest>` / `getattr(args, "<dest>")` 扫描全仓（排除 `SpecDec_pp/` 与

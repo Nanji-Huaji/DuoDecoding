@@ -1,0 +1,216 @@
+"""golden 对照工具——重构期间行为漂移的执法者。
+
+用法（在 worktree 根目录；脚本直调，避开与 stdlib `test` 包的命名冲突）：
+  python test/golden/compare.py <golden_tag> <new_metrics.json>
+      # 重构后的新 run 对照 golden 固件
+  python test/golden/compare.py --stability <run1.json> <run2.json>
+      # 校准双跑：同配置两遍，判定字段稳定性
+
+字段分类规则（Phase 0.1 校准双跑裁决前的初版）：
+  TIMING   实测计时（wall_time / throughput / *_computation_time）——
+           GPU 调度噪音，只报告漂移百分比，不判失败
+  LOCKED   其余全部字段（token 计数 / 接受数 / 前向数 / 通信模拟 /
+           配置回显 / 历史记录）——精确相等，漂移即 FAIL
+  NEW      新 run 独有的字段（如 0.4 之后新增的 git_sha）——信息性
+           列出，不判失败
+
+退出码：0 = 通过；1 = 有 LOCKED 字段漂移或缺失。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+GOLDEN_ROOT = Path(__file__).parent / "gammar"
+TOKEN_FILE = "tokens.json"
+
+#: 实测计时字段——物理上不可复现，golden 不锁
+#: （Phase 0.1 校准双跑裁决 2026-10-11：dra_overhead_time 三次独立 run
+#:   值 0.98/3.67/1.03，随机器负载波动且与 run1 的 little_computation_time
+#:   变慢同向相关——墙钟测量而非模拟；arp_overhead_time 同性质归入）
+TIMING_FIELDS = frozenset(
+    {
+        "wall_time",
+        "throughput",
+        "computation_time",
+        "little_computation_time",
+        "draft_computation_time",
+        "target_computation_time",
+        "arp_overhead_time",
+        "dra_overhead_time",
+    }
+)
+
+
+def classify(field: str) -> str:
+    return "timing" if field in TIMING_FIELDS else "locked"
+
+
+def load_metrics(path: str | Path) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def golden_path(tag: str) -> Path:
+    p = GOLDEN_ROOT / tag / "metrics.json"
+    if not p.exists():
+        available = sorted(
+            d.name for d in GOLDEN_ROOT.iterdir() if d.is_dir()
+        )
+        raise SystemExit(
+            f"golden tag {tag!r} 不存在（可用: {available}）"
+        )
+    return p
+
+
+def _fmt(v) -> str:
+    s = str(v)
+    return s if len(s) <= 48 else s[:45] + "..."
+
+
+def token_path(tag: str) -> Path:
+    path = GOLDEN_ROOT / tag / TOKEN_FILE
+    if not path.exists():
+        raise SystemExit(f"token golden {tag!r} 不存在（先跑 tools/harvest_tokens.py）")
+    return path
+
+
+def load_jsonl(path: str | Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def compare_tokens(baseline: dict, records: list[dict]) -> tuple[bool, list[str]]:
+    """逐样本比较 token 序列。
+
+    metrics 相等只说明聚合口径一致，不同的 token 序列可能撞出同一组指标；
+    gen_ids 才是"模型每步选了什么"的直接观测。
+    """
+    golden = baseline["samples"]
+    lines: list[str] = []
+    ok = True
+
+    if len(golden) != len(records):
+        lines.append(f"  ✗ 样本数 {len(golden)} → {len(records)}")
+        ok = False
+
+    mismatches = 0
+    for position, sample in enumerate(golden):
+        if position >= len(records):
+            lines.append(f"  ✗ 样本 {position} 缺失")
+            ok = False
+            continue
+        expected = sample["gen_ids"]
+        actual = list(records[position].get("gen_ids", []))
+        if expected == actual:
+            continue
+        mismatches += 1
+        ok = False
+        pos = next(
+            (i for i, (a, b) in enumerate(zip(expected, actual)) if a != b),
+            min(len(expected), len(actual)),
+        )
+        detail = (
+            f"token[{pos}]"
+            if pos < min(len(expected), len(actual))
+            else f"长度 {len(expected)} → {len(actual)}"
+        )
+        if mismatches <= 5:
+            lines.append(
+                f"  ✗ 样本 {position}: {detail}"
+                f"（生成 {len(expected)} → {len(actual)}）"
+            )
+
+    if mismatches:
+        lines.append(f"  判定: FAIL（{mismatches}/{len(golden)} 个样本 token 序列漂移）")
+    elif ok:
+        lines.append(f"  判定: PASS（{len(golden)} 个样本，token 序列逐位一致）")
+    return ok, lines
+
+
+def compare_metrics(baseline: dict, new: dict) -> tuple[bool, list[str]]:
+    """逐字段对照。返回 (是否通过, 报告行)。baseline 可为 golden 或 run1。"""
+    lines: list[str] = []
+    ok = True
+    fails = 0
+
+    for field in sorted(set(baseline) | set(new)):
+        if field not in baseline:
+            lines.append(f"  ℹ NEW     {field} = {_fmt(new[field])}")
+            continue
+        if field not in new:
+            if classify(field) == "timing":
+                lines.append(f"  ℹ 缺失    {field}（timing，忽略）")
+                continue
+            lines.append(f"  ✗ 缺失    {field}")
+            ok = False
+            fails += 1
+            continue
+
+        vb, vn = baseline[field], new[field]
+        if vb == vn:
+            continue
+
+        kind = classify(field)
+        if kind == "timing":
+            try:
+                rel = abs(vn - vb) / max(abs(vb), 1e-9) * 100
+                lines.append(
+                    f"  ⚠ timing  {field}: {_fmt(vb)} → {_fmt(vn)} ({rel:+.2f}%)"
+                )
+            except TypeError:
+                lines.append(f"  ⚠ timing  {field}: {_fmt(vb)} → {_fmt(vn)}")
+        else:
+            lines.append(f"  ✗ FAIL    {field}: {_fmt(vb)} → {_fmt(vn)}")
+            ok = False
+            fails += 1
+
+    verdict = "PASS" if ok else f"FAIL（{fails} 个锁定字段漂移）"
+    lines.append(f"  判定: {verdict}")
+    return ok, lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stability", action="store_true",
+                        help="对照两份 run（校准模式），而非对照 golden")
+    parser.add_argument("--tokens", action="store_true",
+                        help="逐样本对比 gen_ids（a=tag, b=新 run 的 jsonl）")
+    parser.add_argument("a", help="golden tag 或 run1 的 metrics.json")
+    parser.add_argument("b", nargs="?", help="run2 的 metrics.json")
+    args = parser.parse_args(argv)
+
+    if args.tokens:
+        if args.b is None:
+            parser.error("用法: python test/golden/compare.py --tokens <tag> <new.jsonl>")
+        fixture = json.loads(token_path(args.a).read_text(encoding="utf-8"))
+        ok, lines = compare_tokens(fixture, load_jsonl(args.b))
+        print(f"[TOKENS] tag={args.a}  new={args.b}")
+        print("\n".join(lines))
+        return 0 if ok else 1
+
+    if args.stability:
+        if not args.b:
+            parser.error("--stability 需要两份 metrics.json")
+        baseline, new = load_metrics(args.a), load_metrics(args.b)
+        header = f"[STABILITY] {args.a}  vs  {args.b}"
+    else:
+        if args.b is None:
+            parser.error("用法: python -m test.golden.compare <tag> <new.json>")
+        baseline = load_metrics(golden_path(args.a))
+        new = load_metrics(args.b)
+        header = f"[GOLDEN] tag={args.a}  new={args.b}"
+
+    ok, lines = compare_metrics(baseline, new)
+    print(header)
+    print("\n".join(lines))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
