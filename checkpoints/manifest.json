@@ -1,5 +1,13 @@
 {
   "entries": {
+    "checkpoints/MODEL_CARD.md": {
+      "pair": null,
+      "remote_path": "checkpoints/MODEL_CARD.md",
+      "role": "other",
+      "sha256": "e795bd6d31753e61ffce9b9976f26b5e4d409e76ee463a35959ec2cf559b322e",
+      "size": 2345,
+      "status": "legacy"
+    },
     "checkpoints/llama/rl_adapter_little.pth": {
       "pair": null,
       "remote_path": "checkpoints/llama/rl_adapter_little.pth",
@@ -3556,63 +3564,9 @@
       "size": 5,
       "status": "legacy"
     },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/.gitignore": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/.gitignore",
-      "role": "acc_head",
-      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
-      "size": 1,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.lock": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.metadata": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.metadata",
-      "role": "acc_head",
-      "sha256": "5b33401600c8b2eed28490655d5a011ca3b0dbd6688cf7c7cbd0f2a87cede4f1",
-      "size": 100,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.lock": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.metadata": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.metadata",
-      "role": "acc_head",
-      "sha256": "6aeba53a33ac5ed00db588d6a6f1d9aba9482fe5ae3fb23821794af53cb2b799",
-      "size": 100,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.lock": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.metadata": {
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.metadata",
-      "role": "acc_head",
-      "sha256": "5a4a54ab35e230832cd4be2b7392a01504761165b0506f5f50619f4be58b6644",
-      "size": 125,
-      "status": "production"
-    },
     "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json": {
+      "hf_path": "llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "llama-68m--to--tiny-llama-1.1b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json",
       "role": "acc_head",
@@ -3621,6 +3575,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors": {
+      "hf_path": "llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "llama-68m--to--tiny-llama-1.1b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors",
       "role": "acc_head",
@@ -3629,6 +3585,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/config.json": {
+      "hf_path": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/config.json",
       "role": "acc_head",
@@ -3637,6 +3595,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/model.safetensors": {
+      "hf_path": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/model.safetensors",
       "role": "acc_head",
@@ -3645,6 +3605,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/config.json": {
+      "hf_path": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/config.json",
       "role": "acc_head",
@@ -3653,6 +3615,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/model.safetensors": {
+      "hf_path": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/model.safetensors",
       "role": "acc_head",
@@ -3661,6 +3625,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/config.json": {
+      "hf_path": "qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen3-0.6b--to--qwen3-1.7b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/config.json",
       "role": "acc_head",
@@ -3669,6 +3635,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/model.safetensors": {
+      "hf_path": "qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen3-0.6b--to--qwen3-1.7b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/model.safetensors",
       "role": "acc_head",
@@ -3677,6 +3645,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/config.json": {
+      "hf_path": "qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen3-1.7b--to--qwen3-14b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/config.json",
       "role": "acc_head",
@@ -3685,6 +3655,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/model.safetensors": {
+      "hf_path": "qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "qwen3-1.7b--to--qwen3-14b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/model.safetensors",
       "role": "acc_head",
@@ -3692,63 +3664,9 @@
       "size": 50373328,
       "status": "production"
     },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/.gitignore": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/.gitignore",
-      "role": "acc_head",
-      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
-      "size": 1,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.lock": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.metadata": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.metadata",
-      "role": "acc_head",
-      "sha256": "cb7718ad1b8b7649d9b77ec40c7436807c8589a617586afc7a9b408f8baf8b5a",
-      "size": 99,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.lock": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.metadata": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.metadata",
-      "role": "acc_head",
-      "sha256": "2935ca5694474d1eab46bb58e322a1599ba20f1701981168bbe1d6d76c08b072",
-      "size": 99,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.lock": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.lock",
-      "role": "acc_head",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0,
-      "status": "production"
-    },
-    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.metadata": {
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.metadata",
-      "role": "acc_head",
-      "sha256": "49bcca002970619a563bd39d7b9dff4610ba2bca4a774790fadb7a19ca0fd736",
-      "size": 124,
-      "status": "production"
-    },
     "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json": {
+      "hf_path": "tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "tiny-llama-1.1b--to--llama-2-13b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json",
       "role": "acc_head",
@@ -3757,6 +3675,8 @@
       "status": "production"
     },
     "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors": {
+      "hf_path": "tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors",
+      "hf_repo": "ArcticHuaji/specdecpp-acc-heads",
       "pair": "tiny-llama-1.1b--to--llama-2-13b",
       "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors",
       "role": "acc_head",
@@ -3765,7 +3685,7 @@
       "status": "production"
     }
   },
-  "generated_at": "2026-10-21T12:57:07+00:00",
+  "generated_at": "2026-10-21T13:01:29+00:00",
   "hub": {
     "repo_id": null,
     "repo_type": "model",

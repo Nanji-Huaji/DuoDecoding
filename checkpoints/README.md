@@ -3,7 +3,9 @@
 本目录是唯一的 checkpoint 根目录；`manifest.json` 是权威索引（路径、sha256、角色、
 状态、旧路径映射）。
 
-- 下载 / 校验 / 恢复旧路径：`python tools/fetch_checkpoints.py`
+- 统一下载 / 校验 / 恢复旧路径：`python tools/fetch_checkpoints.py`
+  - `--groups acc_head`：从 `ArcticHuaji/specdecpp-acc-heads` 下验收头
+  - `--groups rl,acc_head`：RL agents（需先上传镜像）+ 验收头
 - 重新生成清单：`python tools/checkpoint_manifest.py --write`
 - 上传到 Hugging Face：`python tools/upload_checkpoints.py --repo-id <user>/DuoDecoding-checkpoints`
 

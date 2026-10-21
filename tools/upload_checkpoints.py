@@ -23,6 +23,11 @@ def main(argv=None) -> int:
     ap.add_argument("--revision", default="main")
     ap.add_argument("--create", action="store_true")
     ap.add_argument("--only", choices=["production", "all"], default="production")
+    ap.add_argument(
+        "--groups",
+        default="rl",
+        help="上传哪些组；acc_head 已有公共仓库，默认不重复上传",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -32,10 +37,17 @@ def main(argv=None) -> int:
         "repo_type": "model",
         "revision": args.revision,
     }
-    entries = [
-        e for e in manifest["entries"].values()
-        if args.only == "all" or e.get("status") == "production"
-    ]
+    groups = {g.strip() for g in args.groups.split(",") if g.strip()}
+    entries = []
+    for e in manifest["entries"].values():
+        role = e.get("role", "")
+        group = "rl" if role.startswith("rl_") else ("acc_head" if role == "acc_head" else "legacy")
+        if group not in groups:
+            continue
+        if e.get("hf_repo"):
+            continue  # 已有公共仓库（acc heads），不重复上传
+        if args.only == "all" or e.get("status") == "production":
+            entries.append(e)
     print(f"{len(entries)} files -> {args.repo_id}@{args.revision} (only={args.only})")
     if args.dry_run:
         for e in entries:

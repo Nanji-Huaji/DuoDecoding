@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""按 checkpoints/manifest.json 下载并校验 checkpoint，并恢复旧路径符号链接。
+"""统一下载全部实验 checkpoint（RL agents + SpecDec++ acc heads）。
+
+每个条目自带来源：
+- RL agents：manifest["hub"]["repo_id"]（本仓库的 HF 镜像，需先配置/上传）
+- acc heads：``ArcticHuaji/specdecpp-acc-heads``（已有公共仓库，按
+  ``acc_head_registry.json`` 的 hf_subpath 逐文件取）
+
+下载后逐个校验 sha256，并按 manifest 的 legacy_paths 建兼容符号链接。
 
 用法：
     python tools/fetch_checkpoints.py --dry-run
-    python tools/fetch_checkpoints.py --only production
+    python tools/fetch_checkpoints.py --groups acc_head
     python tools/fetch_checkpoints.py --verify-only
-
-下载源优先取 manifest["hub"]["repo_id"]（Hugging Face），可用 --repo-id 覆盖。
-校验失败会立即退出，不会留下"看似可用"的文件。
+    python tools/fetch_checkpoints.py --rl-repo <user>/DuoDecoding-checkpoints
 """
 
 from __future__ import annotations
@@ -16,7 +21,8 @@ import argparse
 import hashlib
 import json
 import os
-import sys
+import shutil
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +38,16 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def link_legacy(entry: dict, root: Path) -> list[Path]:
+def group_of(entry: dict) -> str:
+    role = entry.get("role", "")
+    if role.startswith("rl_"):
+        return "rl"
+    if role == "acc_head":
+        return "acc_head"
+    return "legacy"
+
+
+def link_legacy(entry: dict) -> list[Path]:
     created = []
     for legacy in entry.get("legacy_paths") or []:
         link = ROOT / legacy
@@ -42,8 +57,7 @@ def link_legacy(entry: dict, root: Path) -> list[Path]:
                 continue
             link.unlink()
         elif link.exists():
-            print(f"skip link（已存在且非链接）: {legacy}")
-            continue
+            continue  # 已由目录级符号链接覆盖
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(target)
         created.append(link)
@@ -53,64 +67,81 @@ def link_legacy(entry: dict, root: Path) -> list[Path]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--manifest", default=str(MANIFEST))
-    ap.add_argument("--root", default=str(CKPT))
-    ap.add_argument("--repo-id", default=None)
+    ap.add_argument("--rl-repo", default=None, help="覆盖 manifest.hub.repo_id")
     ap.add_argument("--revision", default=None)
     ap.add_argument("--only", choices=["production", "all"], default="production")
+    ap.add_argument("--groups", default="rl,acc_head", help="rl,acc_head,legacy 组合")
     ap.add_argument("--verify-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     hub = manifest.get("hub") or {}
-    repo_id = args.repo_id or hub.get("repo_id")
+    rl_repo = args.rl_repo or hub.get("repo_id")
     revision = args.revision or hub.get("revision", "main")
-    root = Path(args.root)
+    groups = {g.strip() for g in args.groups.split(",") if g.strip()}
 
     entries = [
         e for e in manifest["entries"].values()
-        if args.only == "all" or e.get("status") == "production"
+        if (args.only == "all" or e.get("status") == "production")
+        and group_of(e) in groups
     ]
-    missing = [e for e in entries if not (ROOT / e["remote_path"]).is_file()]
-    print(f"{len(entries)} entries, {len(missing)} missing (only={args.only})")
+    print(f"{len(entries)} entries (groups={sorted(groups)}, only={args.only})")
 
-    requires_net = [e for e in missing if not args.verify_only]
-    if requires_net and not repo_id:
-        print("manifest 未配置 hub.repo_id，且存在缺失文件；请用 --repo-id 指定")
-        return 2
-    if requires_net:
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError:
-            print("需要 huggingface_hub: pip install huggingface_hub")
-            return 2
-
+    missing, need_download = [], []
     for entry in entries:
-        remote = entry["remote_path"]
-        path = ROOT / remote
-        if not path.is_file() and not args.verify_only:
-            if args.dry-run:
-                print(f"would download {entry['path']}")
-                continue
-            print(f"download {entry['path']}")
-            hf_hub_download(
-                repo_id=repo_id,
-                filename=entry["path"],
-                revision=revision,
-                local_dir=str(root),
-            )
-        if not path.is_file():
-            print(f"MISSING {remote}")
-            return 1
-        digest = sha256_file(path)
-        if digest != entry["sha256"]:
-            print(f"SHA MISMATCH {remote}: {digest} != {entry['sha256']}")
-            return 1
-        for link in link_legacy(entry, root):
-            print(f"link {link.relative_to(ROOT)}")
+        dest = ROOT / entry["remote_path"]
+        if dest.is_file():
+            continue
+        missing.append(entry)
+        repo = entry.get("hf_repo") or (rl_repo if group_of(entry) == "rl" else None)
+        if repo:
+            need_download.append((entry, repo))
+        elif not args.verify_only:
+            print(f"NO SOURCE {entry['remote_path']}（rl_repo 未配置）")
 
-    print("OK")
-    return 0
+    if args.verify_only:
+        for entry in missing:
+            print(f"MISSING {entry['remote_path']}")
+        return 1 if missing else 0
+
+    if need_download and not args.dry_run:
+        from huggingface_hub import hf_hub_download
+
+    for entry, repo in need_download:
+        dest = ROOT / entry["remote_path"]
+        hf_path = entry.get("hf_path") or entry["remote_path"]
+        if args.dry_run:
+            print(f"would download {dest.relative_to(ROOT)} <- {repo}:{hf_path}")
+            continue
+        print(f"download {dest.relative_to(ROOT)} <- {repo}:{hf_path}")
+        with tempfile.TemporaryDirectory() as tmp:
+            hf_hub_download(
+                repo_id=repo,
+                filename=hf_path,
+                revision=revision,
+                local_dir=tmp,
+            )
+            src = Path(tmp) / hf_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+
+    bad = 0
+    for entry in entries:
+        dest = ROOT / entry["remote_path"]
+        if not dest.is_file():
+            print(f"MISSING {entry['remote_path']}")
+            bad += 1
+            continue
+        digest = sha256_file(dest)
+        if digest != entry["sha256"]:
+            print(f"SHA MISMATCH {entry['remote_path']}: {digest} != {entry['sha256']}")
+            bad += 1
+            continue
+        for link in link_legacy(entry):
+            print(f"link {link.relative_to(ROOT)}")
+    print("OK" if bad == 0 else f"{bad} bad")
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

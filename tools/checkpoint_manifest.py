@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CKPT = ROOT / "checkpoints"
 ACC = ROOT / "src" / "SpecDec_pp" / "checkpoints" / "acc_head"
 MANIFEST = CKPT / "manifest.json"
+ACC_REGISTRY = ROOT / "src" / "SpecDec_pp" / "checkpoints" / "acc_head_registry.json"
 SERIES = {"qwen15", "qwen", "llama", "vicuna", "best", "tinyllama"}
 SKIP_NAMES = {"manifest.json", "README.md", "readme.md", "training_status.json"}
 
@@ -56,8 +57,15 @@ def classify(rel: Path) -> dict:
     return {"role": "other", "pair": None, "status": "legacy"}
 
 
+def _acc_sources() -> list[dict]:
+    if not ACC_REGISTRY.is_file():
+        return []
+    return json.loads(ACC_REGISTRY.read_text(encoding="utf-8"))
+
+
 def entries() -> dict:
     out = {}
+    acc_sources = _acc_sources()
     for path in sorted(CKPT.rglob("*")):
         if path.is_symlink() or not path.is_file() or path.name in SKIP_NAMES:
             continue
@@ -71,16 +79,33 @@ def entries() -> dict:
     for path in sorted(ACC.rglob("*")):
         if path.is_symlink() or not path.is_file() or path.name in SKIP_NAMES:
             continue
+        if any(part in {".cache", ".git"} for part in path.parts):
+            continue
         rel = path.relative_to(ROOT / "src" / "SpecDec_pp" / "checkpoints")
         parts = rel.parts  # acc_head/<pair>/...
-        out[str(Path("src") / "SpecDec_pp" / "checkpoints" / rel)] = {
-            "remote_path": str(Path("src") / "SpecDec_pp" / "checkpoints" / rel),
+        remote = str(Path("src") / "SpecDec_pp" / "checkpoints" / rel)
+        local_abs = str(path)
+        hf_repo = None
+        hf_path = None
+        for entry in acc_sources:
+            local_root = str(ROOT / entry["local_path"])
+            if local_abs.startswith(local_root + "/"):
+                suffix = local_abs[len(local_root) + 1 :]
+                hf_repo = entry["hf_repo"]
+                hf_path = f"{entry['hf_subpath']}/{suffix}"
+                break
+        meta = {
+            "remote_path": remote,
             "sha256": sha256_file(path),
             "size": path.stat().st_size,
             "role": "acc_head",
             "pair": parts[1] if len(parts) > 1 else None,
             "status": "production",
         }
+        if hf_repo:
+            meta["hf_repo"] = hf_repo
+            meta["hf_path"] = hf_path
+        out[remote] = meta
     return out
 
 
