@@ -257,6 +257,16 @@ def _dest_to_flags(parser: argparse.ArgumentParser) -> dict[str, list[str]]:
     return out
 
 
+#: 语义上已归档的 eval_mode：仍可解析（复现历史 run），但启动时明确告知
+#: "这不是有效消融"。新代码不要依赖它们；论文消融应在核心方法上用 profile。
+LEGACY_EVAL_MODES: dict[str, str] = {
+    "ceesd_without_arp": (
+        "旧验证/回滚路径的实现，不是 CEE-SD 的有效消融；"
+        "论文消融应使用 adaptive_tridecoding 的 _ablation profile（待实现）。"
+    ),
+}
+
+
 def parse_arguments():
     """Specified arguments for running scripts."""
     parser = argparse.ArgumentParser(description="args for this file")
@@ -1163,6 +1173,10 @@ def parse_arguments():
 
     cli_args = sys.argv[1:]
     args = parser.parse_args()
+
+    _legacy_reason = LEGACY_EVAL_MODES.get(str(getattr(args, "eval_mode", "")))
+    if _legacy_reason is not None:
+        print(f"[legacy] --eval_mode {args.eval_mode}: {_legacy_reason}")
 
     # 口径协议：只填命令行未显式设置的项（默认 none ⇒ 不改变任何数字）。
     # 放在校验/后处理之前，让后续逻辑（如 --comm_accounting）看到协议值。
