@@ -435,3 +435,35 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TridecodingStaticAblationTests(unittest.TestCase):
+    """tridecoding = adaptive_tridecoding(_ablation="static") 的 wrapper。"""
+
+    def test_wrapper_forwards_static_ablation(self):
+        instance = object.__new__(_TestBaselines)
+        with patch.object(
+            Baselines,
+            "adaptive_tridecoding",
+            return_value=("out", {"ok": 1}),
+        ) as mocked:
+            result = instance.tridecoding("prefix", transfer_top_k=1024)
+        mocked.assert_called_once_with(
+            "prefix",
+            transfer_top_k=1024,
+            use_precise_comm_sim=False,
+            use_stochastic_comm=False,
+            ntt_ms_edge_cloud=10,
+            ntt_ms_edge_end=1,
+            use_early_stopping=False,
+            stop_sequences=None,
+            _ablation="static",
+        )
+        self.assertEqual(result, ("out", {"ok": 1}))
+
+    def test_unknown_ablation_is_rejected(self):
+        instance = object.__new__(_TestBaselines)
+        with self.assertRaises(ValueError):
+            instance.adaptive_tridecoding(
+                torch.tensor([[1]]), _ablation="bogus"
+            )

@@ -2809,483 +2809,35 @@ class Baselines(Decoding):
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
-    ):
-        max_tokens = prefix.shape[1] + self.args.max_tokens
-        little_device = self.get_model_input_device(self.little_model)
-        draft_device = self.get_model_input_device(self.draft_model)
-        target_device = self.get_model_input_device(self.target_model)
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """Table VIII Static 消融：CEE-SD 关 ARP/DRA，固定 γ 与 top-k。
 
-        caches = self.build_adaptive_tridecoding_caches(transfer_top_k)
-        little_model_cache = caches["little"]
-        draft_model_cache = caches["draft"]
-        target_model_cache = caches["target"]
+        实现上转发到 ``adaptive_tridecoding(_ablation="static")``，不再维护
+        第二套三级循环——消融只允许"关模块"，不允许换实现
+        （判定标准见 docs/modes_inventory.md §3）。
 
-        comm_simulator: CommunicationSimulator = _make_comm_simulator(
-            self.comm_env,
-            precise=use_precise_comm_sim,
+        与主方法的差异（都在 ``_ablation="static"`` 分支里表达）：
+        - 不驱动 ARP head：``MODE_FEATURES["tridecoding"]`` 是 no-RL/no-head，
+          草稿按固定 γ1/γ2 生成，没有 accept 预测早停；
+        - 不跑 RL/DRA：top-k 由调用方固定传入（Table VIII 用 1024）；
+        - 验证/回滚/计费仍与 ``adaptive_tridecoding`` 走完全相同的路径。
+
+        历史提示：2026-10-19 之前这是独立实现（旧 verify/rollback API），
+        Table VIII 的旧数字来自那份代码；改成本 wrapper 后数字会变，需要
+        重跑该表并重新收割 golden。
+        """
+        return self.adaptive_tridecoding(
+            prefix,
+            transfer_top_k=transfer_top_k,
+            use_precise_comm_sim=use_precise_comm_sim,
             use_stochastic_comm=use_stochastic_comm,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             ntt_ms_edge_end=ntt_ms_edge_end,
-            edge_end=self.comm_env.edge_end_bandwidth,
-            cloud_end=self.comm_env.cloud_end_bandwidth,
-            transfer_top_k=transfer_top_k,
+            use_early_stopping=use_early_stopping,
+            stop_sequences=stop_sequences,
+            _ablation="static",
+            **kwargs,
         )
-
-        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
-        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
-        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
-        _comm = self.comm_config
-        comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
-        charge_residual = _comm.charge_residual_payload
-        transfer_top_k = apply_transfer_top_k_cap(
-            transfer_top_k, _comm.transfer_top_k_cap
-        )
-        comm_simulator.transfer_top_k = transfer_top_k
-
-        # Metrics tracking
-        little_model_forward_times = 0
-        draft_model_forward_times = 0
-        target_model_forward_times = 0
-        total_little_model_generated_tokens = 0
-        total_draft_model_generated_tokens = 0
-        total_little_model_accepted_tokens = 0
-        total_draft_model_accepted_tokens = 0
-        queuing_time = 0
-        batch_delay = self.comm_env.batch_delay
-        wall_time = 0
-        total_draft_steps = 0
-        sum_draft_len = 0
-        sum_top_k = 0
-
-        idx = 0
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        current_tokens = prefix.clone()  # 用于计算生成token数
-
-        start_event.record(stream=torch.cuda.current_stream())
-
-        comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
-
-        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
-
-        while prefix.shape[1] < max_tokens:
-
-            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
-            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
-            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
-            if _eos_hit:
-                break
-            idx += 1
-            comm_simulator.set_round(idx)
-
-            prefix_len = prefix.shape[1]
-
-            # 第一层 speculative
-
-            current_proposal_top_k = proposal_top_k(transfer_top_k)
-            little_rebuilt_probs = None
-            little_rebuilt_meta = None
-            if current_proposal_top_k is not None:
-                x, little_rebuilt_probs, little_rebuilt_meta = (
-                    little_model_cache.generate_with_rebuilt_topk_metadata(
-                        prefix.to(little_device),
-                        self.args.gamma2,
-                        current_proposal_top_k,
-                    )
-                )
-            else:
-                x = little_model_cache.generate(
-                    prefix.to(little_device), self.args.gamma2
-                )
-            _ = draft_model_cache.generate(x.to(draft_device), 1)
-
-            little_model_forward_times += self.args.gamma2
-            draft_model_forward_times += 1
-            total_little_model_generated_tokens += self.args.gamma2
-
-            # 累积追踪指标 - 记录第一层 draft
-            total_draft_steps += 1
-            sum_draft_len += self.args.gamma2
-            sum_top_k += (
-                current_proposal_top_k if current_proposal_top_k is not None else 0
-            )
-
-            n1: int = prefix_len + self.args.gamma2 - 1
-
-            little_accepted_this_iter = 0
-            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
-            if self.args.gamma2 > 0:
-                little_stage_probs = build_draft_probs_override(
-                    little_model_cache,
-                    prefix_len,
-                    little_rebuilt_probs,
-                )
-                if little_stage_probs is None:
-                    little_stage_probs = little_model_cache.prob_history
-                # B15：量化与计费原子绑定——第一级上行此前静默忽略位宽
-                little_stage_probs, _little_bits = _uplink_prob_payload(
-                    little_stage_probs, self.comm_config.prob_payload_bits
-                )
-                draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs,
-                    x,
-                    prefix_len,
-                    self.args.gamma2,
-                )
-                comm_simulator.transfer(
-                    draft_tokens,
-                    draft_probs,
-                    "edge_end",
-                    prob_bits=_little_bits,
-                )
-
-            first_stage_inputs, first_stage_acceptance = verify_draft_sequence_result(
-                draft_model_cache=little_model_cache,
-                target_model_cache=draft_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=self.args.gamma2,
-                # B15：验证看到的 q̂ 与上行载荷同源（此前重建未量化副本，
-                # 位宽生效时验证与计费看到的是两个分布）
-                draft_probs_override=(
-                    cast(torch.Tensor, little_stage_probs)
-                    if self.args.gamma2 > 0
-                    else build_draft_probs_override(
-                        little_model_cache,
-                        prefix_len,
-                        little_rebuilt_probs,
-                    )
-                ),
-                draft_topk_history=stage_topk_proposal_history(
-                    little_rebuilt_meta,
-                    self.args.gamma2,
-                ),
-            )
-            # 注意：AcceptanceResult 只有 accepted_count（接受计数），绝对位置 n
-            # 必须经 materialize_acceptance 求（n = prefix_len + accepted_count - 1，
-            # 全部接受时取 prefix_len + actual_gamma - 1）。这里原先写的 `.n` 是
-            # 重构前的旧字段，会让 tridecoding/ceesd_without_arp 直接崩溃。
-            little_accepted_this_iter, n1, _ = materialize_acceptance(
-                first_stage_inputs, first_stage_acceptance
-            )
-
-            total_little_model_accepted_tokens += little_accepted_this_iter
-
-            assert n1 >= prefix_len - 1, f"n {n1}, prefix_len {prefix_len}"
-            prefix = x[:, : n1 + 1]
-
-            first_stage_rollback_plan = build_rollback_plan(
-                prefix_len,
-                first_stage_inputs.actual_gamma,
-                n1,
-            )
-            little_model_cache.rollback(first_stage_rollback_plan.draft_end_pos)
-
-            if not first_stage_rollback_plan.all_accepted:
-                # reject someone, sample from the pos n1
-                # rebuild_probs = comm_simulator.rebuild_full_probs(
-                #     little_model_cache.prob_history[:, n1, : self.vocab_size]
-                # )
-                # little_model_cache.prob_history[:, n1, : self.vocab_size] = (
-                #     rebuild_probs
-                # )
-
-                _rej_probs, _rej_bits = _uplink_prob_payload(
-                    first_stage_inputs.draft_probs_batch[
-                        :, n1 - (prefix_len - 1), : self.vocab_size
-                    ],
-                    self.comm_config.prob_payload_bits,
-                )
-                comm_simulator.transfer(
-                    None,
-                    _rej_probs,
-                    "edge_end",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                    prob_bits=_rej_bits,
-                )
-                if charge_residual:
-                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)（索引在内），
-                    # 与统一式 k*(4+元素)+元素 相比只差尾部标量。
-                    comm_simulator.simulate_transfer(
-                        reject_tail_scalar_bytes(_rej_probs, transfer_top_k),
-                        "edge_end",
-                    )
-
-                rejection_offset = n1 - (prefix_len - 1)
-                if little_rebuilt_meta is not None:
-                    t = sample_reject_token_from_topk_proposal(
-                        draft_model_cache.prob_history[:, n1, : self.vocab_size],
-                        stage_topk_proposal_history(
-                            little_rebuilt_meta,
-                            self.args.gamma2,
-                        ),
-                        rejection_offset,
-                        output_device=little_device,
-                    )
-                else:
-                    t = sample_reject_token(
-                        draft_model_cache.prob_history[:, n1, : self.vocab_size],
-                        first_stage_inputs.draft_probs_batch[
-                            :, rejection_offset, : self.vocab_size
-                        ],
-                        output_device=little_device,
-                    )
-
-                draft_model_cache.rollback(
-                    first_stage_rollback_plan.target_end_pos_reject
-                )
-
-            else:
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
-
-                draft_model_cache.rollback(
-                    first_stage_rollback_plan.target_end_pos_accept
-                )
-
-            # 传输索引
-            _send_downlink_token(comm_simulator, t, "edge_end")
-
-            prefix = torch.cat((prefix, t), dim=1)
-            new_generated_token = prefix[:, prefix_len:]
-
-            # 第二层 speculative
-
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token, None, "edge_cloud")
-
-            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
-                draft_model_cache,
-                prefix.to(draft_device),
-                self.args.gamma1,
-                current_proposal_top_k,
-            )
-
-            queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
-
-            draft_model_forward_times += self.args.gamma1
-            target_model_forward_times += 1
-            total_draft_model_generated_tokens += (
-                new_generated_token.shape[1] + self.args.gamma1
-            )
-
-            total_gamma = new_generated_token.shape[1] + self.args.gamma1
-            n2: int = prefix_len + total_gamma - 1
-
-            # 批量传输 draft tokens 和对应的 probabilities 以节省 RTT
-            if total_gamma > 0:
-                draft_stage_probs = build_draft_probs_override(
-                    draft_model_cache,
-                    prefix_len,
-                    draft_rebuilt_probs,
-                )
-                if draft_stage_probs is None:
-                    draft_stage_probs = draft_model_cache.prob_history
-                # B15：原子化——原实现量化只作用于计费载荷，verify 的
-                # override 却重建未量化副本（注释承诺的"验证看到同一个
-                # q̂"从未兑现）。现在两者同源；默认 16 时不量化、数字不变
-                draft_stage_probs, _draft_bits = _uplink_prob_payload(
-                    draft_stage_probs, self.comm_config.prob_payload_bits
-                )
-                draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_stage_probs,
-                    x,
-                    prefix_len,
-                    total_gamma,
-                )
-                comm_simulator.transfer(
-                    draft_tokens_second,
-                    draft_probs_second,
-                    "edge_cloud",
-                    prob_bits=_draft_bits,
-                )
-
-            second_stage_inputs, second_stage_acceptance = verify_draft_sequence_result(
-                draft_model_cache=draft_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=total_gamma,
-                draft_probs_override=(
-                    cast(torch.Tensor, draft_stage_probs)
-                    if total_gamma > 0
-                    else build_draft_probs_override(
-                        draft_model_cache,
-                        prefix_len,
-                        draft_rebuilt_probs,
-                    )
-                ),
-                draft_topk_history=stage_topk_proposal_history(
-                    draft_rebuilt_meta,
-                    total_gamma,
-                ),
-            )
-            # 同上：用 materialize_acceptance 求绝对位置，而不是旧字段 `.n`
-            draft_accepted_this_iter, n2, _ = materialize_acceptance(
-                second_stage_inputs, second_stage_acceptance
-            )
-            total_draft_model_accepted_tokens += draft_accepted_this_iter
-
-            assert n2 >= prefix_len - 1, (
-                f"n {n2} should be greater or equal than prefix_len {prefix_len}"
-            )
-            prefix = x[:, : n2 + 1]
-            second_stage_rollback_plan = build_rollback_plan(
-                prefix_len,
-                second_stage_inputs.actual_gamma,
-                n2,
-            )
-            draft_model_cache.rollback(second_stage_rollback_plan.draft_end_pos)
-            if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(second_stage_rollback_plan.draft_end_pos)
-            if not second_stage_rollback_plan.all_accepted:
-                # rebuild_probs = comm_simulator.rebuild_full_probs(
-                #     draft_model_cache.prob_history[:, n2, : self.vocab_size]
-                # )
-                # draft_model_cache.prob_history[:, n2, : self.vocab_size] = (
-                #     rebuild_probs
-                # )
-
-                _rej_probs2, _rej_bits2 = _uplink_prob_payload(
-                    second_stage_inputs.draft_probs_batch[
-                        :, n2 - (prefix_len - 1), : self.vocab_size
-                    ],
-                    self.comm_config.prob_payload_bits,
-                )
-                comm_simulator.transfer(
-                    None,
-                    _rej_probs2,
-                    "edge_cloud",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                    prob_bits=_rej_bits2,
-                )
-                if charge_residual:
-                    # 统一口径（§3.4）：同阶段一，补尾部标量。
-                    comm_simulator.simulate_transfer(
-                        reject_tail_scalar_bytes(_rej_probs2, transfer_top_k),
-                        "edge_cloud",
-                    )
-                rejection_offset = n2 - (prefix_len - 1)
-                if draft_rebuilt_meta is not None:
-                    t = sample_reject_token_from_topk_proposal(
-                        target_model_cache.prob_history[:, n2, : self.vocab_size],
-                        stage_topk_proposal_history(
-                            draft_rebuilt_meta,
-                            total_gamma,
-                        ),
-                        rejection_offset,
-                        output_device=draft_device,
-                    )
-                else:
-                    t = sample_reject_token(
-                        target_model_cache.prob_history[:, n2, : self.vocab_size],
-                        second_stage_inputs.draft_probs_batch[
-                            :, rejection_offset, : self.vocab_size
-                        ],
-                        output_device=draft_device,
-                    )
-                new_generated_token = prefix[:, prefix_len:]
-
-                target_model_cache.rollback(
-                    second_stage_rollback_plan.target_end_pos_reject
-                )
-
-            else:
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=draft_device,
-                )
-                new_generated_token = prefix[:, prefix_len:]
-
-                target_model_cache.rollback(
-                    second_stage_rollback_plan.target_end_pos_accept
-                )
-
-            prefix = torch.cat((prefix, t), dim=1)
-            # 传输索引
-            _send_downlink_token(comm_simulator, t, "edge_cloud")
-            _send_downlink_token(comm_simulator, t, "edge_end")
-            # 同步
-
-            if use_early_stopping and self._check_stopping_criteria(
-                prefix, stop_sequences
-            ):
-                break
-
-        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
-        end_event.record(stream=torch.cuda.current_stream())
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
-
-        wall_time += elapsed_time
-        # 遵守 max_tokens：投机按整块追加，最后一轮会多出若干 token。对照基线
-        # dist_spec 严格 128，而本方法此前 14/20 样本超预算（最多 +9），会让配对
-        # 质量比较与时延/吞吐统计都不公平（F33）。
-        if prefix.shape[1] > max_tokens:
-            prefix = prefix[:, :max_tokens]
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        wall_time += (
-            comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
-        )
-
-        metrics = get_empty_metrics()
-        metrics["avg_top_k"] = (
-            sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
-        )
-        metrics["avg_draft_len"] = (
-            sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
-        )
-        metrics["little_forward_times"] = little_model_forward_times
-        metrics["draft_forward_times"] = draft_model_forward_times
-        metrics["target_forward_times"] = target_model_forward_times
-        metrics["generated_tokens"] = generated_tokens
-        metrics["little_generated_tokens"] = total_little_model_generated_tokens
-        metrics["draft_generated_tokens"] = total_draft_model_generated_tokens
-        metrics["little_accepted_tokens"] = total_little_model_accepted_tokens
-        metrics["draft_accepted_tokens"] = total_draft_model_accepted_tokens
-        metrics["wall_time"] = wall_time
-        metrics["throughput"] = (
-            metrics["generated_tokens"] / wall_time if wall_time > 0 else 0
-        )
-        metrics["communication_time"] = (
-            comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
-        )
-        metrics["computation_time"] = elapsed_time
-        metrics["edge_end_comm_time"] = comm_simulator.edge_end_comm_time
-        metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
-        metrics["edge_end_data_bytes"] = comm_simulator.edge_end_data
-        metrics["cloud_end_data_bytes"] = comm_simulator.cloud_end_data
-
-        metrics["comm_energy"] = comm_simulator.total_comm_energy
-        metrics["connect_times"] = comm_simulator.connect_times
-
-        batch_delay = self.comm_env.batch_delay
-        queuing_time = target_model_forward_times * batch_delay
-        metrics["queuing_time"] = queuing_time
-        metrics["wall_time"] += queuing_time
-        if metrics["wall_time"] > 0:
-            metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
-
-        _add_per_model_wall_time(
-            metrics,
-            elapsed_time=elapsed_time,
-            comm_time=comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time,
-            queuing_time=queuing_time,
-        )
-
-        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
-        _finalize_comm_metrics(metrics, comm_simulator, self.args)
-
-        return prefix, metrics
 
     @Register.register_decoding("ceesd_w/o_arp")
     @Register.register_decoding("ceesd_without_arp")
@@ -4298,10 +3850,16 @@ class Baselines(Decoding):
         use_early_stopping: bool = False,
         stop_sequences: Optional[List[str]] = None,
         _opportunistic_first_stage: bool = False,
+        _ablation: str | None = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
         if prefix.dtype != torch.long:
             prefix = prefix.long()
+        if _ablation not in (None, "static"):
+            raise ValueError(
+                f"adaptive_tridecoding: 未知 _ablation={_ablation!r}（只支持 None/static）"
+            )
+        _static = _ablation == "static"
 
         # 新增开关（默认关闭，保证历史数字可复现）：
         #   force_full_vocab_transfer=True ⇒ 传完整词表分布（标准投机采样基线）。
@@ -4540,9 +4098,13 @@ class Baselines(Decoding):
             # 第一层 speculative
             edge_end_energy_start = comm_simulator.total_comm_energy
 
-            self.small_draft_adapter.reset_step()
-            adapter = self.small_draft_adapter
-            assert adapter.device != torch.device("cpu")
+            if _static:
+                # Table VIII Static 消融：不挂 ARP head，草稿按固定 γ 生成（无早停）
+                adapter = None
+            else:
+                self.small_draft_adapter.reset_step()
+                adapter = self.small_draft_adapter
+                assert adapter.device != torch.device("cpu")
             # 第一层的 draft 长度同理：动作空间含 gamma 时由策略决定。
             gamma2_used = getattr(self, "_next_gamma2", None) or self.args.gamma2
             little_gamma = 1 if _opportunistic_first_stage else gamma2_used
@@ -4564,7 +4126,7 @@ class Baselines(Decoding):
             little_entropy = state_entropy(q, little_model_cache)
             little_entropy_history.append(little_entropy)
 
-            if self.little_rl_adapter is not None:
+            if self.little_rl_adapter is not None and not _static:
                 dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_end_mbps
                 latency = comm_simulator.ntt_edge_end_ms
@@ -4607,7 +4169,7 @@ class Baselines(Decoding):
                     little_rebuilt_probs,
                 )
                 assert cuhlm_uncertainty_sim is not None
-                if self.little_rl_adapter is not None:
+                if self.little_rl_adapter is not None and not _static:
                     cuhlm_uncertainty_sim.uncertainty_threshold = float(
                         self.small_draft_adapter.threshold
                     )
@@ -4731,7 +4293,7 @@ class Baselines(Decoding):
                 transfer_topk_rank_history=little_accepted_transfer_topk_rank_history,
             )
 
-            if self.little_rl_adapter is not None:
+            if self.little_rl_adapter is not None and not _static:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
@@ -4843,9 +4405,13 @@ class Baselines(Decoding):
             gamma1_used = getattr(self, "_next_gamma1", None) or self.args.gamma1
 
             # Pre-launch GPU draft generation (overlaps with CPU comm sim below)
-            self.draft_target_adapter.reset_step()
-            adapter = self.draft_target_adapter
-            assert adapter.device != torch.device("cpu")
+            if _static:
+                # Table VIII Static 消融：第二级同样不挂 ARP head
+                adapter = None
+            else:
+                self.draft_target_adapter.reset_step()
+                adapter = self.draft_target_adapter
+                assert adapter.device != torch.device("cpu")
             t0 = time.time()
             x, draft_rebuilt_probs, draft_rebuilt_meta, q = (
                 self._generate_with_optional_rebuilt_proposal(
@@ -4877,7 +4443,7 @@ class Baselines(Decoding):
             draft_entropy = state_entropy(q, draft_model_cache)
             draft_entropy_history.append(draft_entropy)
 
-            if self.rl_adapter is not None:
+            if self.rl_adapter is not None and not _static:
                 dra_start = time.time()
                 bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
                 latency = comm_simulator.ntt_edge_cloud_ms
@@ -5033,8 +4599,9 @@ class Baselines(Decoding):
             # 真值 = min(1, p_t(x_i)/p_d(x_i))（采样域）与 argmax 匹配（贪心域），
             # 两个都dump，分析端按温度取用。arp 行只取 draft_target 头（主级）。
             _calib_path = os.environ.get("ARP_CALIB_TRACE")
+            _calib_adapter = getattr(self, "draft_target_adapter", None)
             _acc_probs_calib = list(
-                getattr(self.draft_target_adapter, "step_acc_probs", []) or []
+                getattr(_calib_adapter, "step_acc_probs", []) or []
             )
             if _calib_path and _acc_probs_calib:
                 try:
@@ -5147,7 +4714,7 @@ class Baselines(Decoding):
                 transfer_topk_rank_history=draft_accepted_transfer_topk_rank_history,
             )
 
-            if self.rl_adapter is not None:
+            if self.rl_adapter is not None and not _static:
                 step_end_time = time.time()
                 step_time = step_end_time - step_start_time
                 step_comm_time = _reward_comm_s(
