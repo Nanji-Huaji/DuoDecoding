@@ -194,7 +194,7 @@ The currently registered decoding modes are:
 - `dist_spec` / `dsd`
 - `dist_split_spec` / `dssd`
 - `uncertainty_decoding` / `cuhlm`
-- `tridecoding`（legacy：旧验证路径，归档候选；不是 CEE-SD 的有效消融）
+- `tridecoding`（Table VIII Static 消融：固定 γ/top-k、无 RL/ARP；旧实现保留）
 - `adaptive_decoding`（独立方法：2 模型 + ARP）
 - `adaptive_tridecoding` / `cee_sd`（CEE-SD，本方法）
 - `cee_cuhlm` / `cee_dsd` / `cee_dssd`（Table VI CEE+ 组合）

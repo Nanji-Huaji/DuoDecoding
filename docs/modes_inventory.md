@@ -68,7 +68,7 @@
 | `cee_dsd` | `cee_dsd` | combination（Table VI CEE+） | — | 同上 |
 | `cee_dssd` | `cee_dssd` | combination（Table VI CEE+） | — | 同上 |
 | `cee_sd_opportunistic` | `cee_sd_opportunistic` | variant（真消融） | — | CEE 循环 + little 策略开关；**转发参数**的正确形态 |
-| `tridecoding` | `tridecoding` | **legacy（归档候选）** | — | 旧验证/回滚路径，不是 CEE 的有效消融；论文若保留 Table VIII Static，需在 `cee_sd` 上重写 `_ablation="static"` 后重跑 |
+| `tridecoding` | `tridecoding` | **ablation（Table VIII Static，保留）** | — | 静态三级消融（无 RL/无 ARP）。当前是旧验证路径的实现；若要让消融与主方法同源，需在 `cee_sd` 上实现 `_ablation="static"` 并重跑该表 |
 | `ceesd_without_arp` | `ceesd_w/o_arp`, `ceesd_without_arp` | **legacy（已归档）** | — | 旧验证路径；已从 `exp.py` 矩阵移除，CLI 直跑会打印 `[legacy]` 告警 |
 | `adaptive_decoding` | `adaptive_decoding` | **独立方法（待定）** | — | 2 模型 + ARP，不是 CEE 消融；论文不报则归档 |
 | `autoregressive_sampling`（engine） | `small`, `large` | reference | — | 自回归基线 |
