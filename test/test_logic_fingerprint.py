@@ -164,9 +164,69 @@ def test_dropped_billing_is_detected() -> None:
     assert inline != dropped
 
 
+VALUE_INLINE = """
+class Runner:
+    def run(self):
+        sim = precise_sim() if self.args.precise else sim_a(1, 2)
+        sim.flush_round()
+"""
+
+VALUE_EXTRACTED = """
+def _make_sim(flag):
+    if flag:
+        sim = precise_sim()
+    else:
+        sim = sim_a(1, 2)
+    return sim
+
+class Runner:
+    def run(self):
+        sim = _make_sim(self.args.precise)
+        sim.flush_round()
+"""
+
+
+def test_value_factory_extraction_keeps_fingerprint() -> None:
+    """尾返回的值工厂展开后应与内联代码同足迹（H2 式抽取）。"""
+    inline = lf.load_entries({"m.py": VALUE_INLINE})["Runner.run"]
+    extracted = lf.load_entries({"m.py": VALUE_EXTRACTED})["Runner.run"]
+    assert inline == extracted
+
+
 def test_early_return_is_not_silently_absorbed() -> None:
     """含 return 的 helper 不展开：`return` 退出谁，是语义差异。"""
     inline = lf.load_entries({"m.py": RETURN_INLINE})["Runner.run"]
     extracted = lf.load_entries({"m.py": RETURN_HELPER})["Runner.run"]
     assert inline != extracted
     assert any(event[0] == "return" for event in inline)
+
+
+SINGLE_ARM_RETURN_INLINE = """
+class Runner:
+    def run(self):
+        if self.args.stop:
+            return
+        sample(1)
+"""
+
+SINGLE_ARM_RETURN_EXTRACTED = """
+class Runner:
+    def run(self):
+        self._step()
+        sample(1)
+
+    def _step(self):
+        if self.args.stop:
+            return
+"""
+
+
+def test_single_arm_return_extraction_is_detected() -> None:
+    """单臂 if 的 return 位于"尾位置"，但抽成 helper 会改变控制流：
+
+    内联版 `if stop: return` 会跳过后面的 sample(1)；抽取版只退出 helper，
+    sample(1) 仍执行。指纹必须判 FAIL，不能因为 _is_tail 是位置判断而假 PASS。
+    """
+    inline = lf.load_entries({"m.py": SINGLE_ARM_RETURN_INLINE})["Runner.run"]
+    extracted = lf.load_entries({"m.py": SINGLE_ARM_RETURN_EXTRACTED})["Runner.run"]
+    assert inline != extracted

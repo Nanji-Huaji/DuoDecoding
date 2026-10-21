@@ -90,6 +90,131 @@ def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
     )
 
 
+def _finalize_comm_metrics(
+    metrics: dict, comm_simulator: CommunicationSimulator, args
+) -> None:
+    """S7 公共尾巴：带宽/top-k/草稿历史 + 逐消息账 + 口径标签。
+
+    11 个解码方法此前各写一遍同一段（10 个逐字相同 + ceesd_without_arp
+    的无注释变体）；抽成 helper 后方法体只留各自的 forward/token/耗时字段。
+    调用点必须在 flush_round 之后、return 之前，顺序与抽取前逐事件一致
+    （逻辑指纹要求）。
+    """
+    # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
+    metrics["edge_cloud_bandwidth_history"] = (
+        comm_simulator.edge_cloud_bandwidth_history.copy()
+    )
+    # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
+    # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
+    # getattr 兜底：测试替身可能只实现聚合口径。
+    metrics["comm_trace_edge_cloud"] = getattr(
+        comm_simulator, "edge_cloud_trace", []
+    )
+    _add_comm_accounting_metrics(metrics, args, comm_simulator)
+    metrics["edge_cloud_topk_history"] = (
+        comm_simulator.edge_cloud_topk_history.copy()
+    )
+    metrics["edge_cloud_draft_len_history"] = (
+        comm_simulator.edge_cloud_draft_len_history.copy()
+    )
+
+
+def _make_comm_simulator(
+    env: CommEnv,
+    *,
+    precise: bool,
+    use_stochastic_comm: bool,
+    ntt_ms_edge_cloud: float,
+    ntt_ms_edge_end: float,
+    edge_end: float,
+    cloud_end: float,
+    transfer_top_k: int | None = None,
+) -> CommunicationSimulator:
+    """按统一口径构造通信模拟器（H2，tri/cee 族）。
+
+    这 4 个方法（tridecoding / ceesd_without_arp / cee_dsd / cee_dssd）的
+    ``if use_precise_comm_sim: ... else: ...`` 逐字重复。对称链路 4 个方法
+    （DSSD/DSD/tk_slt/adaptive_decoding）走
+    ``_make_symmetric_comm_simulator``：同样的 precise 分支，但
+    edge_end/cloud_end 固定为 inf。
+
+    仍保留显式块的只有 ``adaptive_tridecoding``（它在实参里读
+    comm_trace_mode，抽进工厂会改变指纹事件序）与两个 CUHLM 方法
+    （用 CUHLM 子类）。
+
+    未给出的可选参数不传，让构造器用自身默认值（None / "static"），
+    与抽取前逐字等价。
+    """
+    if precise:
+        sim: CommunicationSimulator = PreciseCommunicationSimulator(
+            bandwidth_hz=1e7,
+            channel_gain=1e-8,
+            send_power_watt=0.5,
+            noise_power_watt=1e-10,
+            min_bandwidth_mbps=env.min_bandwidth_mbps,
+            bw_model=env.comm_bw_model,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
+    else:
+        kwargs = {
+            "bandwidth_edge_cloud": env.edge_cloud_bandwidth,
+            "bandwidth_edge_end": edge_end,
+            "bandwidth_cloud_end": cloud_end,
+            "min_bandwidth_mbps": env.min_bandwidth_mbps,
+            "bw_model": env.comm_bw_model,
+            "dimension": "Mbps",
+            "ntt_ms_edge_cloud": ntt_ms_edge_cloud,
+            "ntt_ms_edge_end": ntt_ms_edge_end,
+            "use_stochastic": use_stochastic_comm,
+            "stochastic_ntt": env.stochastic_ntt,
+        }
+        if transfer_top_k is not None:
+            kwargs["transfer_top_k"] = transfer_top_k
+        sim = CommunicationSimulator(**kwargs)
+    return sim
+
+
+def _make_symmetric_comm_simulator(
+    env: CommEnv,
+    *,
+    precise: bool,
+    use_stochastic_comm: bool,
+    ntt_ms_edge_cloud: float,
+    ntt_ms_edge_end: float,
+) -> CommunicationSimulator:
+    """对称链路方法的构造点（DSSD/DSD/TK-SLT/adaptive_decoding）。
+
+    这 4 个方法的建模只关心 edge-cloud 链路，edge_end 与 cloud_end 一律取
+    无限带宽。``float("inf")`` 特意留在 else 分支里：它和迁移前一样出现在
+    CommunicationSimulator 的实参上，逻辑指纹的事件序列因此不变。
+    """
+    if precise:
+        sim: CommunicationSimulator = PreciseCommunicationSimulator(
+            bandwidth_hz=1e7,
+            channel_gain=1e-8,
+            send_power_watt=0.5,
+            noise_power_watt=1e-10,
+            min_bandwidth_mbps=env.min_bandwidth_mbps,
+            bw_model=env.comm_bw_model,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
+    else:
+        sim = CommunicationSimulator(
+            bandwidth_edge_cloud=env.edge_cloud_bandwidth,
+            bandwidth_edge_end=float("inf"),
+            bandwidth_cloud_end=float("inf"),
+            min_bandwidth_mbps=env.min_bandwidth_mbps,
+            bw_model=env.comm_bw_model,
+            dimension="Mbps",
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            use_stochastic=use_stochastic_comm,
+            stochastic_ntt=env.stochastic_ntt,
+        )
+    return sim
+
 def _reward_comm_s(args, comm_simulator, link_type: str) -> float:
     """RL 奖励的通信成本（--rl_comm_cost_mode）。
 
@@ -1119,30 +1244,13 @@ class Baselines(Decoding):
           rejected position, and the device resamples locally from norm(max(P-Q, 0)).
         - All-accepted path: downlink sends only the next sampled token.
         """
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
         # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
@@ -1469,23 +1577,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -1504,30 +1597,13 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
         # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
@@ -1842,23 +1918,8 @@ class Baselines(Decoding):
             target_comp_time=target_comp_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token。
         # 参照 dist_spec（它靠 max(0, remaining-1) 截断 γ 来保证不越界），这里显式
@@ -2227,23 +2288,8 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -2288,30 +2334,13 @@ class Baselines(Decoding):
         默认关闭（固定 γ，与 dsd/dssd/cuhlm 同口径可比）；首轮无估计，
         用 --gamma 兜底。
         """
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         comm_simulator.transfer_top_k = transfer_top_k
         self.color_print(f"TK-SLT using top-K: {transfer_top_k}", 2)
         # 统一往返口径（2026-10-09，docs/protocol.md §3.4）：per_round 下
@@ -2762,23 +2791,8 @@ class Baselines(Decoding):
             )
             metrics["tk_slt_gamma_star_final"] = last_gamma_star
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -2806,31 +2820,16 @@ class Baselines(Decoding):
         draft_model_cache = caches["draft"]
         target_model_cache = caches["target"]
 
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
-                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
-                transfer_top_k=transfer_top_k,
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            edge_end=self.comm_env.edge_end_bandwidth,
+            cloud_end=self.comm_env.cloud_end_bandwidth,
+            transfer_top_k=transfer_top_k,
+        )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -3283,23 +3282,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -3348,31 +3332,16 @@ class Baselines(Decoding):
         draft_model_cache = caches["draft"]
         target_model_cache = caches["target"]
 
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
-                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
-                transfer_top_k=transfer_top_k,
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            edge_end=self.comm_env.edge_end_bandwidth,
+            cloud_end=self.comm_env.cloud_end_bandwidth,
+            transfer_top_k=transfer_top_k,
+        )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -3774,22 +3743,8 @@ class Baselines(Decoding):
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
@@ -3953,30 +3908,13 @@ class Baselines(Decoding):
         stop_sequences: Optional[List[str]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=float("inf"),
-                bandwidth_cloud_end=float("inf"),
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+        )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
@@ -3986,9 +3924,11 @@ class Baselines(Decoding):
         _comm = self.comm_config
         comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
         charge_residual = _comm.charge_residual_payload
-        transfer_top_k = apply_transfer_top_k_cap(
-            transfer_top_k, _comm.transfer_top_k_cap
-        )
+        # RL 在循环里改写 transfer_top_k 后，要再用同一个 cap 钳位
+        # （与 adaptive_tridecoding 阶段二一致）；此前这里没有定义
+        # _topk_cap，--use_rl_adapter 时循环内直接 NameError。
+        _topk_cap = _comm.transfer_top_k_cap
+        transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
 
         batch_delay = self.comm_env.batch_delay
@@ -4336,26 +4276,11 @@ class Baselines(Decoding):
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        if self.rl_adapter is not None:
-            self.rl_adapter.save(metrics.get("throughput"))
+        # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
+        self._save_adaptive_rl_checkpoints(metrics.get("throughput"))
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -5397,23 +5322,8 @@ class Baselines(Decoding):
         self._save_adaptive_rl_checkpoints(metrics["throughput"])
         metrics["dra_overhead_time"] += time.time() - dra_start
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -5935,32 +5845,13 @@ class Baselines(Decoding):
         metrics["arp_overhead_time"] = arp_overhead_time
         metrics["dra_overhead_time"] = dra_overhead_time
 
-        if self.rl_adapter is not None:
-            dra_start = time.time()
-            self.rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
-        if self.little_rl_adapter is not None:
-            dra_start = time.time()
-            self.little_rl_adapter.save(metrics.get("throughput"))
-            metrics["dra_overhead_time"] += time.time() - dra_start
+        # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
+        dra_start = time.time()
+        self._save_adaptive_rl_checkpoints(metrics.get("throughput"))
+        metrics["dra_overhead_time"] += time.time() - dra_start
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -6009,31 +5900,16 @@ class Baselines(Decoding):
         draft_model_cache = caches["draft"]
         target_model_cache = caches["target"]
 
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
-                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
-                transfer_top_k=transfer_top_k,
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            edge_end=self.comm_env.edge_end_bandwidth,
+            cloud_end=self.comm_env.cloud_end_bandwidth,
+            transfer_top_k=transfer_top_k,
+        )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -6374,23 +6250,8 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
 
@@ -6438,31 +6299,16 @@ class Baselines(Decoding):
         draft_model_cache = caches["draft"]
         target_model_cache = caches["target"]
 
-        if use_precise_comm_sim:
-            comm_simulator: CommunicationSimulator = PreciseCommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_hz=1e7,
-                channel_gain=1e-8,
-                send_power_watt=0.5,
-                noise_power_watt=1e-10,
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-            )
-        else:
-            comm_simulator = CommunicationSimulator(
-                min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
-                bw_model=self.comm_env.comm_bw_model,
-                bandwidth_edge_cloud=self.comm_env.edge_cloud_bandwidth,
-                bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
-                bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
-                transfer_top_k=transfer_top_k,
-                dimension="Mbps",
-                ntt_ms_edge_cloud=ntt_ms_edge_cloud,
-                ntt_ms_edge_end=ntt_ms_edge_end,
-                use_stochastic=use_stochastic_comm,
-                stochastic_ntt=self.comm_env.stochastic_ntt,
-            )
+        comm_simulator: CommunicationSimulator = _make_comm_simulator(
+            self.comm_env,
+            precise=use_precise_comm_sim,
+            use_stochastic_comm=use_stochastic_comm,
+            ntt_ms_edge_cloud=ntt_ms_edge_cloud,
+            ntt_ms_edge_end=ntt_ms_edge_end,
+            edge_end=self.comm_env.edge_end_bandwidth,
+            cloud_end=self.comm_env.cloud_end_bandwidth,
+            transfer_top_k=transfer_top_k,
+        )
 
         # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
         # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
@@ -6828,22 +6674,7 @@ class Baselines(Decoding):
             queuing_time=queuing_time,
         )
 
-        # 复制 edge-cloud 的带宽、top-k 和起草长度历史数据
-        metrics["edge_cloud_bandwidth_history"] = (
-            comm_simulator.edge_cloud_bandwidth_history.copy()
-        )
-        # 逐消息记账记录（[字节, 轮号]）——离线重放（scripts/rebill.py）的
-        # 输入：换带宽/NTT/地板/口径的敏感性分析不用重跑 GPU。
-        # getattr 兜底：测试替身可能只实现聚合口径。
-        metrics["comm_trace_edge_cloud"] = getattr(
-            comm_simulator, "edge_cloud_trace", []
-        )
-        _add_comm_accounting_metrics(metrics, self.args, comm_simulator)
-        metrics["edge_cloud_topk_history"] = (
-            comm_simulator.edge_cloud_topk_history.copy()
-        )
-        metrics["edge_cloud_draft_len_history"] = (
-            comm_simulator.edge_cloud_draft_len_history.copy()
-        )
+        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
+        _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics

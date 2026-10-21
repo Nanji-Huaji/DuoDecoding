@@ -31,6 +31,10 @@ TOKEN_FILE = "tokens.json"
 #: （Phase 0.1 校准双跑裁决 2026-10-11：dra_overhead_time 三次独立 run
 #:   值 0.98/3.67/1.03，随机器负载波动且与 run1 的 little_computation_time
 #:   变慢同向相关——墙钟测量而非模拟；arp_overhead_time 同性质归入）
+#: provenance 字段：代码版本锚点，不参与判定（不同 commit 的 run 天然不同）。
+#: 旧 gammar 固件没有这两个字段（NEW 信息项），新基线固件会带上它们。
+PROVENANCE_FIELDS = frozenset({"git_sha", "git_dirty"})
+
 TIMING_FIELDS = frozenset(
     {
         "wall_time",
@@ -46,7 +50,11 @@ TIMING_FIELDS = frozenset(
 
 
 def classify(field: str) -> str:
-    return "timing" if field in TIMING_FIELDS else "locked"
+    if field in TIMING_FIELDS:
+        return "timing"
+    if field in PROVENANCE_FIELDS:
+        return "provenance"
+    return "locked"
 
 
 def load_metrics(path: str | Path) -> dict:
@@ -147,6 +155,9 @@ def compare_metrics(baseline: dict, new: dict) -> tuple[bool, list[str]]:
             if classify(field) == "timing":
                 lines.append(f"  ℹ 缺失    {field}（timing，忽略）")
                 continue
+            if classify(field) == "provenance":
+                lines.append(f"  ℹ 缺失    {field}（provenance，忽略）")
+                continue
             lines.append(f"  ✗ 缺失    {field}")
             ok = False
             fails += 1
@@ -165,6 +176,8 @@ def compare_metrics(baseline: dict, new: dict) -> tuple[bool, list[str]]:
                 )
             except TypeError:
                 lines.append(f"  ⚠ timing  {field}: {_fmt(vb)} → {_fmt(vn)}")
+        elif kind == "provenance":
+            lines.append(f"  ℹ provenance {field}: {_fmt(vb)} → {_fmt(vn)}")
         else:
             lines.append(f"  ✗ FAIL    {field}: {_fmt(vb)} → {_fmt(vn)}")
             ok = False
