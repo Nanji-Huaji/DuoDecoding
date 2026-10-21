@@ -1,12 +1,13 @@
-"""6 个非 adaptive 方法的 golden 固件（cee_dsd/cee_dssd/dist_spec 等）。
+"""7 个非 adaptive 方法的 golden 固件（cee_dsd/cee_dssd/dist_spec/tridecoding 等）。
 
 为什么单独一套：gammar 固件只覆盖 `adaptive_tridecoding`（γ 扫描），
 H1/H2 之后的下一步（CEE 公共核心）要动 `cee_dsd`/`cee_dssd`，必须先有
 这两个方法的数字与 token 基线。本套固件在 `refactor/baselines-h1@2aa225c`
 上重跑，20 样本、同一 q15 模型与 paper_table5 协议。
 
-`tridecoding` 在 2026-10-19 改为 `cee_sd(_ablation="static")` wrapper 后数字
-会变，旧 tag 已移除；等该分支合并后按新实现重新收割。
+`tridecoding` 在 2026-10-19 改为 `cee_sd(_ablation="static")` wrapper 后
+数字变了：本套固件用的是新实现（golden_ref_tridecoding_v2，top-k=1024），
+旧实现 tag 已移除。
 
 用法（worktree 根目录）：
 
