@@ -4,7 +4,8 @@
 状态、旧路径映射）。
 
 - 统一下载 / 校验 / 恢复旧路径：`python tools/fetch_checkpoints.py`
-  - `--groups acc_head`：从 `ArcticHuaji/specdecpp-acc-heads` 下验收头
+  - `--groups acc_head`：从 `ArcticHuaji/specdecpp-acc-heads` 下论文必需的
+    6 个验收头（`--all-acc-heads` 补全 12 个）
   - `--groups rl,acc_head`：RL agents（需先上传镜像）+ 验收头
 - 重新生成清单：`python tools/checkpoint_manifest.py --write`
 - 上传到 Hugging Face：`python tools/upload_checkpoints.py --repo-id <user>/DuoDecoding-checkpoints`

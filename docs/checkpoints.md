@@ -63,12 +63,16 @@ src/SpecDec_pp/checkpoints/acc_head/   # 第二物理根（SpecDec_pp 子模块�
 | 组 | 来源 | 说明 |
 |---|---|---|
 | `rl` | `<user>/DuoDecoding-checkpoints`（本仓库镜像） | RL agents；需先上传 |
-| `acc_head` | `ArcticHuaji/specdecpp-acc-heads`（已有公共仓库） | 由 `acc_head_registry.json` 的 `hf_repo`/`hf_subpath` 决定，逐文件下载 |
+| `acc_head` | `ArcticHuaji/specdecpp-acc-heads`（已有公共仓库） | 由 `acc_head_registry.json` 决定；默认补 `scripts/setup/assets.json` 里的 **6 个论文必需对**，`--all-acc-heads` 补全 12 对 |
 | `legacy` | 同上（manifest 里已有源的条目） | 历史实验，默认不下载 |
 
 ```bash
-# 只下论文必需的 acc heads（RL 镜像就绪前）
+# 只下论文必需的 acc heads（RL 镜像就绪前；默认 6 个必需对）
 python tools/fetch_checkpoints.py --groups acc_head
+
+# 补全全部 12 对 / 指定 pair
+python tools/fetch_checkpoints.py --groups acc_head --all-acc-heads
+python tools/fetch_checkpoints.py --groups acc_head --acc-head-pairs qwen3-0.6b--to--qwen3-1.7b
 
 # 全部实验 checkpoint（RL 镜像就绪后）
 python tools/fetch_checkpoints.py --groups rl,acc_head
@@ -80,6 +84,10 @@ python tools/fetch_checkpoints.py --dry-run
 # 指定 RL 镜像仓库（覆盖 manifest.hub.repo_id）
 python tools/fetch_checkpoints.py --rl-repo <user>/DuoDecoding-checkpoints
 ```
+
+acc heads 的"是否齐全"按 `model.safetensors` / `pytorch_model.bin` 判断，已有目录会跳过；
+manifest 只索引本机已有的文件，因此新 clone 上 acc heads 由 registry 补齐后再跑
+`checkpoint_manifest.py --write` 即可纳入 sha 校验。
 
 基础模型（Llama/Qwen 权重、数据集）不在本脚本范围，仍用现有入口：
 `scripts/download_models.py`（模型 + acc heads）与

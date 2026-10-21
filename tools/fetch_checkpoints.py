@@ -28,6 +28,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CKPT = ROOT / "checkpoints"
 MANIFEST = CKPT / "manifest.json"
+ACC_REGISTRY = ROOT / "src" / "SpecDec_pp" / "checkpoints" / "acc_head_registry.json"
+ASSETS = ROOT / "scripts" / "setup" / "assets.json"
 
 
 def sha256_file(path: Path) -> str:
@@ -64,6 +66,69 @@ def link_legacy(entry: dict) -> list[Path]:
     return created
 
 
+def _acc_complete(local: Path) -> bool:
+    return (local / "model.safetensors").exists() or (local / "pytorch_model.bin").exists()
+
+
+def sync_acc_heads(args, dry_run: bool) -> int:
+    """按 acc_head_registry.json 补全缺失的验收头（支持镜像/代理）。"""
+    if not ACC_REGISTRY.is_file():
+        print(f"skip acc heads：找不到 {ACC_REGISTRY}")
+        return 0
+    registry = json.loads(ACC_REGISTRY.read_text(encoding="utf-8"))
+    if args.acc_head_pairs:
+        wanted = {p.strip() for p in args.acc_head_pairs if p.strip()}
+    elif args.all_acc_heads:
+        wanted = None
+    else:
+        required = json.loads(ASSETS.read_text(encoding="utf-8"))["acc_head_required"]
+        wanted = {p.split("/")[0] + "|" + p.split("/")[1] for p in required}
+
+    todo = []
+    for entry in registry:
+        key = f"{entry['source']}--to--{entry['target']}"
+        run = entry["hf_subpath"].split("/")[-1]
+        if wanted is not None and f"{key}|{run}" not in wanted and entry["hf_subpath"] not in wanted:
+            continue
+        local = ROOT / entry["local_path"]
+        if _acc_complete(local):
+            continue
+        todo.append(entry)
+
+    if not todo:
+        return 0
+    print(f"acc heads 待补 {len(todo)} 个")
+    for entry in todo:
+        label = f"{entry['source']}--to--{entry['target']}/{entry['hf_subpath'].split('/')[-1]}"
+        if dry_run:
+            print(f"would download acc_head {label} <- {entry['hf_repo']}")
+            continue
+        print(f"download acc_head {label} <- {entry['hf_repo']}")
+        from huggingface_hub import snapshot_download
+
+        local = ROOT / entry["local_path"]
+        local.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_download(
+                repo_id=entry["hf_repo"],
+                local_dir=tmp,
+                allow_patterns=[f"{entry['hf_subpath']}/*"],
+                token=os.environ.get("HF_TOKEN"),
+                max_workers=args.workers,
+            )
+            src = Path(tmp) / entry["hf_subpath"]
+            if not src.exists():
+                print(f"FAIL {label}: 远端缺少 {entry['hf_subpath']}")
+                return 1
+            for item in src.iterdir():
+                dst = local / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dst)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--manifest", default=str(MANIFEST))
@@ -73,6 +138,9 @@ def main(argv=None) -> int:
     ap.add_argument("--groups", default="rl,acc_head", help="rl,acc_head,legacy 组合")
     ap.add_argument("--verify-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--acc-head-pairs", default="", help="逗号分隔的 pair 或 pair/run")
+    ap.add_argument("--all-acc-heads", action="store_true")
+    ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args(argv)
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
@@ -80,6 +148,11 @@ def main(argv=None) -> int:
     rl_repo = args.rl_repo or hub.get("repo_id")
     revision = args.revision or hub.get("revision", "main")
     groups = {g.strip() for g in args.groups.split(",") if g.strip()}
+
+    if "acc_head" in groups:
+        rc = sync_acc_heads(args, args.dry_run)
+        if rc:
+            return rc
 
     entries = [
         e for e in manifest["entries"].values()
