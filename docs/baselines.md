@@ -194,6 +194,20 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 旧实现的值（实测 6000 / 100）是跨样本累计的异常值（`avg_draft_len=100`
 大于 γ），本就不应作为消融指标。
 
+重跑对照（2026-10-19，q15/GSM8K，20 样本，top-k=1024，γ1=γ2=5）：
+
+| 指标 | 旧实现 | 新实现（wrapper） |
+|---|---|---|
+| throughput | 12.74 | **23.38** |
+| communication_time | 50.4 s | **27.1 s** |
+| edge_cloud_data_bytes | 4.79 MB | **2.57 MB** |
+| draft / target forwards | 5772 / 962 | **3028 / 504** |
+| accuracy | 0.15 | 0.25 |
+
+20 个样本的 token 序列无一相同。差异来自验证路径统一（旧 `verify_draft_sequence_result`
+vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须按新实现
+整体重跑，不能与旧数字混用**。
+
 ### 5) `ceesd_without_arp`（3 模型，消融：无 ARP）
 
 行为要点：
