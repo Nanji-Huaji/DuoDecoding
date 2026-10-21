@@ -747,6 +747,23 @@ def compute_stage_reward(
     return reward
 
 
+def _rl_train_paths(output_dir, role: str, model_path: str, best_model_path: str):
+    """训练 checkpoint 的落盘路径。
+
+    ``--rl_output_dir`` 为空时沿用生产路径；设置后写到
+    ``<output_dir>/<role>/<pair>/{latest,best}.pth``，由
+    ``tools/promote_checkpoint.py`` 显式晋升，训练过程不再改生产文件。
+    """
+    if not output_dir:
+        return model_path, best_model_path
+    pair = os.path.basename(os.path.dirname(str(model_path)))
+    base = os.path.join(str(output_dir), role, pair)
+    return (
+        os.path.join(base, os.path.basename(str(model_path))),
+        os.path.join(base, os.path.basename(str(best_model_path))),
+    )
+
+
 class Baselines(Decoding):
     """
     用于实验的方法。
@@ -807,6 +824,7 @@ class Baselines(Decoding):
             )
             init_seed = getattr(args, "rl_init_seed", None)
             init_strategy = getattr(args, "rl_init_strategy", "resume")
+            rl_output_dir = getattr(args, "rl_output_dir", None)
             legacy_load_paths = eval_mode != "cee_sd_opportunistic"
             opportunistic = eval_mode == "cee_sd_opportunistic"
             little_prefers_latest = opportunistic and not getattr(
@@ -853,12 +871,19 @@ class Baselines(Decoding):
                         " experiment_results/ceesd_gamma_threshold_probe.md）。"
                         "训练请考虑 --rl_threshold_candidates 扩格。"
                     )
+                _main_model_path = (
+                    getattr(args, "main_rl_path", None) or main_spec.latest_path
+                )
+                _main_best_path = (
+                    getattr(args, "main_rl_best_path", None) or main_spec.best_path
+                )
+                _main_model_path, _main_best_path = _rl_train_paths(
+                    rl_output_dir, ROLE_MAIN, _main_model_path, _main_best_path
+                )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "main_rl_path", None)
-                    or main_spec.latest_path,
-                    best_model_path=getattr(args, "main_rl_best_path", None)
-                    or main_spec.best_path,
+                    model_path=_main_model_path,
+                    best_model_path=_main_best_path,
                     agent_name=main_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -898,12 +923,20 @@ class Baselines(Decoding):
                     target_model=args.target_model,
                     checkpoint_root=checkpoint_root,
                 )
+                _little_model_path = (
+                    getattr(args, "little_rl_path", None) or little_spec.latest_path
+                )
+                _little_best_path = (
+                    getattr(args, "little_rl_best_path", None)
+                    or little_spec.best_path
+                )
+                _little_model_path, _little_best_path = _rl_train_paths(
+                    rl_output_dir, ROLE_LITTLE, _little_model_path, _little_best_path
+                )
                 self.little_rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "little_rl_path", None)
-                    or little_spec.latest_path,
-                    best_model_path=getattr(args, "little_rl_best_path", None)
-                    or little_spec.best_path,
+                    model_path=_little_model_path,
+                    best_model_path=_little_best_path,
                     agent_name=little_spec.agent_name,
                     legacy_load_paths=[
                         path

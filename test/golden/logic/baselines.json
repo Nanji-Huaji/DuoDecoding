@@ -4,8 +4,8 @@
   "rev": "WORKTREE",
   "entries": {
     "Baselines.__init__": {
-      "events": 76,
-      "sha256_16": "93543b30eb5ceecc",
+      "events": 79,
+      "sha256_16": "ad0211639620d7d5",
       "surface": {
         "assign_self": {
           "little_rl_adapter": 3,
@@ -24,6 +24,7 @@
           "RLNetworkAdapter": 2,
           "ValueError": 1,
           "__init__": 1,
+          "_rl_train_paths": 2,
           "basename": 1,
           "bool": 2,
           "configure_ntt_trace": 1,
@@ -66,6 +67,7 @@
           "rl_force_topk": 1,
           "rl_init_seed": 1,
           "rl_init_strategy": 1,
+          "rl_output_dir": 1,
           "rl_reward_scale": 1,
           "rl_threshold_candidates": 1,
           "use_rl_adapter": 1

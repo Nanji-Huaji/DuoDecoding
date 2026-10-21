@@ -48,15 +48,43 @@ src/SpecDec_pp/checkpoints/acc_head/   # 第二物理根（SpecDec_pp 子模块�
 - `legacy_paths`: 下载后自动建的兼容链接；
 - 文件级 sha256 是唯一内容标识，**golden/结果工件应引用 manifest 条目而不是裸路径**。
 
-## 3. 工作流
+## 3. 训练与晋升（staging → promote）
 
-1. **训练**：写 `checkpoints/staging/<run-id>/`，不碰生产路径；
-2. **晋升**：人工确认 eval/golden 证据后，把产物移入 `rl/...` 或 `acc_head/...`，跑
-   `python tools/checkpoint_manifest.py --write` 更新清单；
-3. **评测**：只读。`--disable_rl_update` 已保证不写 checkpoint（PR #13）；
-4. **分发**：`tools/upload_checkpoints.py` 上传，`tools/fetch_checkpoints.py` 下载并校验。
+训练默认仍写生产路径；要启用 staging：
 
-## 4. 统一下载（RL agents + acc heads）
+```bash
+python eval/eval_mixed.py ... --use_rl_adapter --disable_rl_update False   --rl_output_dir checkpoints/staging/<run-id> --rl_init_strategy fresh
+```
+
+- latest/best/.buffer 写到 `checkpoints/staging/<run-id>/<role>/<pair>/`；
+- 训练过程不碰 `checkpoints/rl/**`（评测侧另有 `disable_rl_update` 只读守卫）；
+- `resume` 时若 staging 已有 checkpoint 就续训；没有则回退读生产/legacy 并迁入 staging。
+
+验证后显式晋升：
+
+```bash
+# 预览
+python tools/promote_checkpoint.py   --staging checkpoints/staging/<run-id> --dry-run
+# 执行（自动备份旧文件 + 更新 manifest provenance）
+python tools/promote_checkpoint.py   --staging checkpoints/staging/<run-id> --evidence "q15 golden PASS"
+```
+
+晋升行为：
+
+- 校验 payload（policy/target/optimizer + 动作格）；
+- 旧生产文件移到 `checkpoints/archive/<timestamp>/<role>/<pair>/`；
+- 复制到 `checkpoints/rl/<role>/<pair>/`；
+- 重算 sha256/size，写回 `manifest.json`，并记录
+  `provenance: {promoted_at, staging, evidence}`；
+- 之后按需重新收割 golden、上传 HF。
+
+## 4. 评测与分发
+
+1. **评测**：只读。`--disable_rl_update` 已保证不写 checkpoint（PR #13）；
+2. **分发**：`tools/fetch_checkpoints.py` 下载并校验，
+   `tools/upload_checkpoints.py` 上传 RL 镜像。
+
+## 5. 统一下载（RL agents + acc heads）
 
 `tools/fetch_checkpoints.py` 是唯一的 checkpoint 下载入口，按 manifest 逐条取源：
 
@@ -93,7 +121,7 @@ manifest 只索引本机已有的文件，因此新 clone 上 acc heads 由 regi
 `scripts/download_models.py`（模型 + acc heads）与
 `scripts/setup/download_assets.py`（论文最小集 / 全量资产）。
 
-## 5. Hugging Face Hub（推荐）
+## 6. Hugging Face Hub（推荐）
 
 仓库建议命名：`<user>/DuoDecoding-checkpoints`（model 类型，私有或公开均可）。
 
@@ -118,7 +146,7 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 历史实验另有 ~900 MB，容易超额；且 LFS 指针与现有 100 个已跟踪二进制叠加会继续
 膨胀历史。**优先 HF**，GitHub 只放 manifest + 脚本。
 
-## 6. 迁移记录
+## 7. 迁移记录
 
 - 2026-10-21：`checkpoints/rl_agents` 改名为 `rl` 并保留兼容链接；
   acc heads 留在 SpecDec_pp 子模块，纳入同一份 manifest；
@@ -126,9 +154,9 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 - 同期停止用 git 跟踪 `checkpoints/**` 二进制（历史仍保留），只跟踪
   `manifest.json` 与 README。
 
-## 7. 待办
+## 8. 待办
 
-- [ ] 训练脚本改为写 `staging/` + 显式 promote；
+- [x] 训练可写 `staging/`（`--rl_output_dir`）+ 显式 `promote`（含备份/provenance）；
 - [ ] `rl_agent_registry` / `acc_head_registry` 改为经 manifest 解析并校验 sha；
 - [ ] 评测结果记录 `checkpoint_ids`（与 `git_sha` 并列）；
 - [ ] golden manifest 绑定 checkpoint id（替代裸路径 + sha）。

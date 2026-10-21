@@ -94,6 +94,7 @@ EXPECTED = (
     '--rl_include_gamma_in_state',
     '--rl_init_seed',
     '--rl_init_strategy',
+    '--rl_output_dir',
     '--rl_reward_deadline_ms',
     '--rl_reward_deadline_penalty',
     '--rl_reward_energy_weight',

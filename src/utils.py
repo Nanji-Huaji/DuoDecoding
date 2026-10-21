@@ -1087,6 +1087,16 @@ def parse_arguments():
         help="Initialize new RL agents or resume existing dedicated checkpoints.",
     )
     g_rl.add_argument(
+        "--rl_output_dir",
+        type=str,
+        default=None,
+        help=(
+            "训练 checkpoint 的输出目录（如 checkpoints/staging/<run-id>）。"
+            "None=沿用原路径直接写生产目录；设置后 latest/best/.buffer 写到 "
+            "<dir>/<role>/<pair>/，再用 tools/promote_checkpoint.py 显式晋升。"
+        ),
+    )
+    g_rl.add_argument(
         "--rl_epsilon_decay",
         type=float,
         default=None,
