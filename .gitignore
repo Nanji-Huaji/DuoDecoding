@@ -118,4 +118,4 @@ thinking-effort-loaded.json
 checkpoints/*
 !checkpoints/manifest.json
 !checkpoints/README.md
-!checkpoints/readme.md
+!checkpoints/MODEL_CARD.md

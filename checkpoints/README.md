@@ -11,3 +11,5 @@
 符号链接；acc heads 仍在 `src/SpecDec_pp/checkpoints/acc_head`（子模块），
 由同一份 manifest 索引。下载脚本按 `remote_path` 把文件放回仓库相对位置，
 代码路径无需改动。
+
+模型卡（RL adapter 的架构与用途）见 `MODEL_CARD.md`。
