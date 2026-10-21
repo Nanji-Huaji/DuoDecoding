@@ -46,7 +46,8 @@ class EvalMode(str, Enum):
     # Table VIII 的 Static 消融（CEE-SD 去 ARP+DRA）：固定 γ 窗口 + 固定
     # top-k=1024。不进主表，经 --extra-modes tridecoding 附载进矩阵循环。
     tridecoding = "tridecoding"
-    # # cee_sd_without_arp = "ceesd_without_arp"  # ours without arp
+    # 归档（2026-10-19）：ceesd_without_arp 走的是旧验证/回滚路径，不是
+    # CEE-SD 的有效消融；已从矩阵/EvalMode 移除，CLI 直跑会打印 [legacy] 告警。
     ceesd = "adaptive_tridecoding"  # ours
     cee_cuhlm = "cee_cuhlm"
     cee_dssd = "cee_dssd"
