@@ -69,7 +69,9 @@ _STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
     "dist_spec": _BASELINE_ACCOUNTING,
     "dssd": _BASELINE_ACCOUNTING,
     "dist_split_spec": _BASELINE_ACCOUNTING,
-    "tridecoding": _BASELINE_ACCOUNTING,
+    # 2026-10-19 起 tridecoding 是 adaptive_tridecoding(_ablation="static")
+    # 的 wrapper：运行时内省会跟随调用，消费集与主方法一致。
+    "tridecoding": ACCOUNTING_SWITCHES,
     "ceesd_without_arp": _BASELINE_ACCOUNTING,
     "ceesd_w/o_arp": _BASELINE_ACCOUNTING,
     "adaptive_decoding": _BASELINE_ACCOUNTING,

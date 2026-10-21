@@ -244,7 +244,7 @@ class TestConsumptionTruth(unittest.TestCase):
     def test_baseline_accounting_is_three_switches_without_full_vocab_bypass(self):
         from src.protocols import ACCOUNTING_SWITCHES
 
-        for mode in ("dsd", "tridecoding", "cee_dsd", "speculative_decoding_with_bandwidth"):
+        for mode in ("dsd", "cee_dsd", "speculative_decoding_with_bandwidth"):
             self.assertEqual(
                 mode_consumption(mode).accounting,
                 tuple(
@@ -256,6 +256,16 @@ class TestConsumptionTruth(unittest.TestCase):
                 ),
                 mode,
             )
+
+    def test_tridecoding_static_wrapper_consumes_same_set_as_cee_sd(self):
+        self.assertEqual(
+            mode_consumption("tridecoding").accounting,
+            mode_consumption("adaptive_tridecoding").accounting,
+        )
+        self.assertIn(
+            "force_full_vocab_transfer",
+            mode_consumption("tridecoding").accounting,
+        )
 
     def test_only_cuhlm_family_and_local_modes_do_not_consume(self):
         """不消费计费开关的通信方法：纯本地系 + cee_cuhlm（三级变体，

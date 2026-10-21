@@ -49,7 +49,7 @@ output_ids, metrics = decoding(input_ids)
 | `dsd`, `dist_spec` | 2 | `dist_spec` | DSD：传 draft token 序列 +（可 top-k）draft 概率窗口，批量验证 accept/reject |
 | `cuhlm`, `uncertainty_decoding` | 2 | `uncertainty_decoding` | CUHLM：按不确定度机会传输/压缩传输概率分布（当前实现阈值固定 0.8） |
 | `tk_slt`, `tkslt` | 2 | `tk_slt` | TK-SLT（WCSP'25）：top-K 稀疏 logits 上行（FP16），按论文自身口径计费；可选 ODLD/AS² 自适应 γ |
-| `tridecoding` | 3 | `tridecoding` | 三级：Little→Draft→Target，两层投机验证与通信（edge-end + edge-cloud） |
+| `tridecoding` | 3 | `tridecoding` | Table VIII Static 消融：`adaptive_tridecoding(_ablation="static")` 的 wrapper（同验证路径，关 ARP/DRA、固定 γ/top-k） |
 | `ceesd_w/o_arp`, `ceesd_without_arp` | 3 | `ceesd_without_arp` | CEE-SD 去 ARP head 的消融：可启用 RL 仅调 top-k（不依赖 ARP） |
 | `adaptive_decoding` | 2 | `adaptive_decoding` | 2 模型 + ARP head：草稿侧每步可提前 stop（自适应 draft 长度） |
 | `cee_sd`, `adaptive_tridecoding` | 3 | `adaptive_tridecoding` | 3 模型 + 2 个 ARP head：两层都可自适应 stop；可启用 RL 动态调参 |
@@ -174,17 +174,39 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
   （target 直出、无上行分布）。run 工件在 `protocol_deviations` 中带
   `tk_slt_paper_accounting` 标记。口径细节见 docs/protocol.md §3.3
 
-### 4) `tridecoding`（3 模型）
+### 4) `tridecoding`（3 模型，Table VIII Static 消融）
 
 签名要点：
 
 - `tridecoding(prefix, transfer_top_k=300, use_precise_comm_sim=False, use_stochastic_comm=False, ntt_ms_edge_cloud=10, ntt_ms_edge_end=1, use_early_stopping=False, stop_sequences=None, ...)`
+- 实现是 `return self.adaptive_tridecoding(..., _ablation="static")`——**不再有第二套循环**。
 
 行为要点：
 
-- Layer1（edge-end）：Little draft `gamma2`，由 Draft 验证；必要时传概率用于 reject 重采样
-- Layer2（edge-cloud）：Draft draft `gamma1`，由 Target 验证；批量传输 token/prob 窗口以节省 RTT
-- 同时统计 edge-end 与 edge-cloud 两条链路的通信耗时/字节数
+- 与 CEE-SD 共用同一条验证/回滚/计费路径；
+- `_ablation="static"` 关掉 ARP head 与 RL/DRA：草稿按固定 γ1/γ2 生成、
+  top-k 由调用方固定传入（Table VIII 用 1024）；
+- 因此它是"同一实现关模块"的有效消融；旧独立实现的数字已作废，
+  Table VIII 需按此实现重跑。
+
+指标差异（重跑时注意）：`adaptive_tridecoding` 路径不维护
+`avg_top_k` / `avg_draft_len`，`tridecoding` 的这两个字段现在恒为 0。
+旧实现的值（实测 6000 / 100）是跨样本累计的异常值（`avg_draft_len=100`
+大于 γ），本就不应作为消融指标。
+
+重跑对照（2026-10-19，q15/GSM8K，20 样本，top-k=1024，γ1=γ2=5）：
+
+| 指标 | 旧实现 | 新实现（wrapper） |
+|---|---|---|
+| throughput | 12.74 | **23.38** |
+| communication_time | 50.4 s | **27.1 s** |
+| edge_cloud_data_bytes | 4.79 MB | **2.57 MB** |
+| draft / target forwards | 5772 / 962 | **3028 / 504** |
+| accuracy | 0.15 | 0.25 |
+
+20 个样本的 token 序列无一相同。差异来自验证路径统一（旧 `verify_draft_sequence_result`
+vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须按新实现
+整体重跑，不能与旧数字混用**。
 
 ### 5) `ceesd_without_arp`（3 模型，消融：无 ARP）
 

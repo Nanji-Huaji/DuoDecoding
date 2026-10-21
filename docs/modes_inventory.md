@@ -1,4 +1,4 @@
-# 口径与模式总盘点（2026-10-10 快照）
+# 口径与模式总盘点（2026-10-10 快照，2026-10-19 更新 L0 清单）
 
 > 互补文档：`docs/param_inventory.md` 按**旗标**清点（108 个参数谁在消费）；
 > 本文按**模式轴**清点——每条轴有哪些取值、默认是什么、当前论文口径用哪个、
@@ -8,7 +8,7 @@
 
 | 层 | 轴数 | 一句话 |
 |---|---|---|
-| L0 解码方法 | 1（9 注册） | 跑哪个算法 |
+| L0 解码方法 | 1（23 个注册名 / 16 个函数） | 跑哪个算法 |
 | L1 通信数值 | ~6 | 链路多快、多抖 |
 | L2 计费口径 | 4（捆绑成 4 协议） | 字节/时间怎么记账 |
 | L3 方法内参数 | ~6 | γ、top-k、阈值、ODLD |
@@ -51,18 +51,32 @@
 | `comm_trace_mode` | static | 另有 driving/walking（5G 车载，实验性） |
 | `stochastic_ntt` + trace 文件 | 关 | NTT 也可走 trace（实验性） |
 
-## 3. L0 解码方法（`@Register.register_decoding`，9 个注册名）
+## 3. L0 解码方法（`@Register.register_decoding`）
 
-| 方法 | 别名 | 主表 | 备注 |
-|---|---|---|---|
-| dist_spec | dsd | ✓ | transfer_top_k=**0**（原文无压缩） |
-| dist_split_spec | dssd | ✓ | top_k=0 |
-| uncertainty_decoding | cuhlm | ✓ | top_k=300；工作点阈值 0.08（exp.py 常量，非 0.8） |
-| tk_slt | tkslt | ✓ | top_k=**320**（论文实测最优）；`--tk_slt_odld` 开关（实验性） |
-| adaptive_tridecoding | — | ✓（CEE-SD） | top_k=300；γ1/γ2 见 §4 |
-| ceesd_without_arp | ceesd_w/o_arp | 消融 | 无 ARP/无 adapter 的 CEE-SD |
-| tridecoding | — | 消融 | 静态三级（无 RL） |
-| target_only | — | 对照 | 纯目标模型 |
+2026-10-19 按注册表实测重写：**23 个注册名 / 16 个函数**（旧版只列了 9 个，
+漏了 CEE+ 组合与 `adaptive_decoding`）。`status` 是语义定位，不是代码成熟度：
+
+| 函数 | 注册名 / 别名 | status | 主表 | 备注 |
+|---|---|---|---|---|
+| `dist_spec` | `dsd`, `dist_spec` | baseline | ✓ | transfer_top_k=**0**（原文无压缩） |
+| `dist_split_spec` | `dssd`, `dist_split_spec` | baseline | ✓ | top_k=0 |
+| `uncertainty_decoding` | `cuhlm`, `uncertainty_decoding` | baseline | ✓ | top_k=300；工作点阈值 0.08（`exp.py` 常量） |
+| `tk_slt` | `tkslt`, `tk_slt` | baseline | ✓ | top_k=**320**；`--tk_slt_odld`（实验性） |
+| `adaptive_tridecoding` | `cee_sd`, `adaptive_tridecoding` | **core** | ✓（CEE-SD） | top_k=300；γ1/γ2 见 §4 |
+| `target_only` | `target_only` | reference | 对照 | 纯目标模型 |
+| `cee_cuhlm` | `cee_cuhlm` | combination（Table VI CEE+） | — | 经 `--extra-modes` 附载 |
+| `cee_dsd` | `cee_dsd` | combination（Table VI CEE+） | — | 同上 |
+| `cee_dssd` | `cee_dssd` | combination（Table VI CEE+） | — | 同上 |
+| `cee_sd_opportunistic` | `cee_sd_opportunistic` | variant（真消融） | — | CEE 循环 + little 策略开关；**转发参数**的正确形态 |
+| `tridecoding` | `tridecoding` | **ablation（Table VIII Static，已同源）** | — | `adaptive_tridecoding(_ablation="static")` 的 wrapper：同一条验证/计费路径，只关 ARP/DRA（无 RL、固定 γ1/γ2、固定 top-k）。旧实现已删除；Table VIII 数字需按新实现重跑 |
+| `ceesd_without_arp` | `ceesd_w/o_arp`, `ceesd_without_arp` | **legacy（已归档）** | — | 旧验证路径；已从 `exp.py` 矩阵移除，CLI 直跑会打印 `[legacy]` 告警 |
+| `adaptive_decoding` | `adaptive_decoding` | **独立方法（待定）** | — | 2 模型 + ARP，不是 CEE 消融；论文不报则归档 |
+| `autoregressive_sampling`（engine） | `small`, `large` | reference | — | 自回归基线 |
+| `speculative_decoding`（engine） | `sd` | baseline | — | 标准投机解码 |
+| `speculative_decoding_with_bandwidth`（engine） | 同名 | legacy（engine） | — | 历史方法，按带宽建模；保留用于对照 |
+
+> 判定"消融"的标准：**同一个实现上关掉某个模块**（如 `cee_sd_opportunistic`）。
+> 换了一条代码血缘的实现不能自称消融——那测的是"另一个历史实现"。
 
 ## 4. L3 γ 体系（三种语义，别混）
 

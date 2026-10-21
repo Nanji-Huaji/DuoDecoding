@@ -474,83 +474,14 @@
       }
     },
     "Baselines.tridecoding": {
-      "events": 135,
-      "sha256_16": "7f8521d6b7d6aa72",
+      "events": 2,
+      "sha256_16": "85cd22843c836269",
       "surface": {
-        "boolop": {
-          "And": 4
-        },
-        "break": {
-          "": 2
-        },
         "call": {
-          "CommunicationSimulator": 1,
-          "Event": 2,
-          "KVCacheModel": 3,
-          "PreciseCommunicationSimulator": 1,
-          "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 1,
-          "_graph_mode_cache_kwargs": 1,
-          "_stop_at_eos": 1,
-          "_uplink_prob_payload": 4,
-          "acquire_graph_caches": 1,
-          "apply_transfer_top_k_cap": 1,
-          "build_draft_probs_override": 4,
-          "build_rollback_plan": 2,
-          "cast": 2,
-          "cat": 2,
-          "clone": 1,
-          "collect_verification_payload": 2,
-          "copy": 3,
-          "current_stream": 2,
-          "elapsed_time": 1,
-          "element_size": 3,
-          "generate": 3,
-          "generate_with_rebuilt_topk_metadata": 1,
-          "get": 3,
-          "get_empty_metrics": 1,
-          "get_model_input_device": 3,
-          "int": 2,
-          "list": 1,
-          "materialize_acceptance": 2,
-          "numel": 3,
-          "proposal_top_k": 1,
-          "record": 2,
-          "reject_tail_scalar_bytes": 2,
-          "rollback": 7,
-          "stage_topk_proposal_history": 4,
-          "synchronize": 1,
-          "to": 5,
-          "verify_draft_sequence_result": 2
-        },
-        "comm": {
-          "flush_round": 1,
-          "set_round": 1,
-          "simulate_transfer": 5,
-          "transfer": 7
-        },
-        "flag": {
-          "gamma1": 4,
-          "gamma2": 12,
-          "max_tokens": 1,
-          "temp": 3,
-          "top_k": 1,
-          "top_p": 2
-        },
-        "flag_getattr": {
-          "gamma1": 1,
-          "gamma2": 1
-        },
-        "loop": {
-          "while": 1
+          "adaptive_tridecoding": 1
         },
         "return": {
           "": 1
-        },
-        "rng": {
-          "sample_accept_token": 2,
-          "sample_reject_token": 2,
-          "sample_reject_token_from_topk_proposal": 2
         }
       }
     },
@@ -736,8 +667,8 @@
       }
     },
     "Baselines.adaptive_tridecoding": {
-      "events": 304,
-      "sha256_16": "5849373ac3226258",
+      "events": 311,
+      "sha256_16": "ad5575a5ee31ed00",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -745,7 +676,7 @@
           "_team_reward_buffer": 1
         },
         "boolop": {
-          "And": 13,
+          "And": 18,
           "Or": 9
         },
         "break": {
@@ -757,7 +688,7 @@
           "Event": 2,
           "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
-          "ValueError": 1,
+          "ValueError": 2,
           "_check_stopping_criteria": 1,
           "_generate_with_optional_rebuilt_proposal": 2,
           "_graph_cache_kwargs": 3,
@@ -865,7 +796,7 @@
           "while": 1
         },
         "raise": {
-          "": 1
+          "": 2
         },
         "return": {
           "": 3

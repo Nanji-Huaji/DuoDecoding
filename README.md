@@ -194,13 +194,11 @@ The currently registered decoding modes are:
 - `dist_spec` / `dsd`
 - `dist_split_spec` / `dssd`
 - `uncertainty_decoding` / `cuhlm`
-- `tridecoding`
-- `adaptive_decoding`
-- `adaptive_tridecoding` / `cee_sd`
-- `cee_cuhlm`
-- `cee_dsd`
-- `cee_dssd`
-- `ceesd_without_arp` / `ceesd_w/o_arp`
+- `tridecoding`（Table VIII Static 消融：`adaptive_tridecoding(_ablation="static")` 的 wrapper，固定 γ/top-k、无 RL/ARP）
+- `adaptive_decoding`（独立方法：2 模型 + ARP）
+- `adaptive_tridecoding` / `cee_sd`（CEE-SD，本方法）
+- `cee_cuhlm` / `cee_dsd` / `cee_dssd`（Table VI CEE+ 组合）
+- `ceesd_without_arp` / `ceesd_w/o_arp`（legacy：已归档，仅用于复现历史 run）
 
 ### Important Arguments
 
