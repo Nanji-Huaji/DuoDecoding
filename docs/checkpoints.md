@@ -56,7 +56,9 @@ src/SpecDec_pp/checkpoints/acc_head/   # 第二物理根（SpecDec_pp 子模块�
 python eval/eval_mixed.py ... --use_rl_adapter --disable_rl_update False   --rl_output_dir checkpoints/staging/<run-id> --rl_init_strategy fresh
 ```
 
-- latest/best/.buffer 写到 `checkpoints/staging/<run-id>/<role>/<pair>/`；
+- `latest.pth` / `.buffer` 写到 `checkpoints/staging/<run-id>/<role>/<pair>/`；
+- **训练不再自动写 `best.pth`**：单样本训练吞吐噪声太大，不能代表"最优"；
+  需要诊断时加 `--rl_track_best_tps`，会写 `best_tps.pth`（不参与加载）；
 - 训练过程不碰 `checkpoints/rl/**`（评测侧另有 `disable_rl_update` 只读守卫）；
 - `resume` 时若 staging 已有 checkpoint 就续训；没有则回退读生产/legacy 并迁入 staging。
 
@@ -76,7 +78,12 @@ python tools/promote_checkpoint.py   --staging checkpoints/staging/<run-id> --ev
 - 复制到 `checkpoints/rl/<role>/<pair>/`；
 - 重算 sha256/size，写回 `manifest.json`，并记录
   `provenance: {promoted_at, staging, evidence}`；
+- `--as-best`：同时把晋升的 `latest.pth` 复制成生产 `best.pth`（manifest 记
+  `designation: best`）；这是唯一的 best 来源；
 - 之后按需重新收割 golden、上传 HF。
+
+加载顺序保持不变（评测/续训默认 best-first，opportunistic 训练 prefer latest）：
+现在 `best.pth` 只可能来自显式晋升，不会再是"某个样本的瞬时吞吐冠军"。
 
 ## 4. 评测与分发
 
@@ -157,6 +164,7 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 ## 8. 待办
 
 - [x] 训练可写 `staging/`（`--rl_output_dir`）+ 显式 `promote`（含备份/provenance）；
+- [x] `best.pth` 改为晋升产物（`promote --as-best`）；训练只写 `latest.pth`；
 - [ ] `rl_agent_registry` / `acc_head_registry` 改为经 manifest 解析并校验 sha；
 - [ ] 评测结果记录 `checkpoint_ids`（与 `git_sha` 并列）；
 - [ ] golden manifest 绑定 checkpoint id（替代裸路径 + sha）。

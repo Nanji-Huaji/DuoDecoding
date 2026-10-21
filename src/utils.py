@@ -1097,6 +1097,14 @@ def parse_arguments():
         ),
     )
     g_rl.add_argument(
+        "--rl_track_best_tps",
+        action="store_true",
+        help=(
+            "训练时额外写 best_tps.pth（单样本训练吞吐最优，仅诊断用）。"
+            "默认关闭：best.pth 只由 tools/promote_checkpoint.py --as-best 产生。"
+        ),
+    )
+    g_rl.add_argument(
         "--rl_epsilon_decay",
         type=float,
         default=None,

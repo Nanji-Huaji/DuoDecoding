@@ -1,4 +1,5 @@
 import pickle
+import shutil
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -174,6 +175,10 @@ def test_resume_prefers_latest_only_when_requested(tmp_path):
     first.agent.store_transition(state, 0, 1.0, state, True)
     first.agent.update()
     first.save(2.0)
+    # 新语义：训练只写 latest；best 由 promote --as-best 产生。
+    # 这里显式复制一份 best（含 replay buffer）来模拟晋升。
+    shutil.copy2(latest, best)
+    shutil.copy2(str(latest) + ".buffer", str(best) + ".buffer")
     first.agent.store_transition(state, 1, 2.0, state, True)
     first.agent.update()
     first.save(1.0)

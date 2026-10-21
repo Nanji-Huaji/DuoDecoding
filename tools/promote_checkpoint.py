@@ -66,6 +66,7 @@ def promote(
     pair_filter: str | None = None,
     dry_run: bool = True,
     evidence: str | None = None,
+    as_best: bool = False,
     root: Path = ROOT,
 ) -> list[dict]:
     root = Path(root)
@@ -105,10 +106,8 @@ def promote(
                 if dry_run:
                     promoted.append(record)
                     continue
-                _backup(
-                    dst,
-                    ckpt / "archive" / stamp / role / pair,
-                )
+                backup_dir = ckpt / "archive" / stamp / role / pair
+                _backup(dst, backup_dir)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
                 digest = sha256_file(dst)
@@ -132,6 +131,32 @@ def promote(
                 record["size"] = dst.stat().st_size
                 promoted.append(record)
 
+                # 生产 best 由晋升决定，而不是训练吞吐
+                if as_best and src.name == "latest.pth":
+                    best_dst = dst.with_name("best.pth")
+                    _backup(best_dst, backup_dir)
+                    shutil.copy2(dst, best_dst)
+                    best_rel = str(best_dst.relative_to(root))
+                    manifest["entries"][best_rel] = {
+                        "remote_path": best_rel,
+                        "sha256": sha256_file(best_dst),
+                        "size": best_dst.stat().st_size,
+                        "role": ROLE_DIR[role],
+                        "pair": pair,
+                        "status": "production",
+                        "designation": "best",
+                        "legacy_paths": [
+                            f"checkpoints/rl_agents/{role}/{pair}/best.pth"
+                        ],
+                        "provenance": {
+                            "promoted_at": stamp,
+                            "staging": str(src.relative_to(root)),
+                            "evidence": evidence or "",
+                            "designated_best": True,
+                        },
+                    }
+                    print(f"designate best: {best_rel}")
+
     if not dry_run and promoted:
         manifest_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -147,6 +172,7 @@ def main(argv=None) -> int:
     ap.add_argument("--roles", default="main,little")
     ap.add_argument("--pair", default=None)
     ap.add_argument("--evidence", default=None)
+    ap.add_argument("--as-best", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     roles = [r.strip() for r in args.roles.split(",") if r.strip()]
@@ -156,6 +182,7 @@ def main(argv=None) -> int:
         pair_filter=args.pair,
         dry_run=args.dry_run,
         evidence=args.evidence,
+        as_best=args.as_best,
     )
     print(f"{len(promoted)} files {'planned' if args.dry_run else 'promoted'}")
     return 0

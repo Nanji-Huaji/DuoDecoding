@@ -74,3 +74,58 @@ def test_promote_rejects_invalid_checkpoint(tmp_path):
         assert "latest.pth" in str(exc) or "checkpoint" in str(exc).lower()
     else:  # pragma: no cover
         raise AssertionError("无效 checkpoint 应被拒绝")
+
+
+def test_promote_as_best_designates_production_best(tmp_path):
+    staging = tmp_path / "checkpoints" / "staging" / "run1" / "main" / "pairA"
+    staging.mkdir(parents=True)
+    torch.save(_payload(), staging / "latest.pth")
+
+    pc.promote(
+        staging=tmp_path / "checkpoints" / "staging" / "run1",
+        roles=["main"],
+        dry_run=False,
+        evidence="eval-ok",
+        as_best=True,
+        root=tmp_path,
+    )
+    best = tmp_path / "checkpoints" / "rl" / "main" / "pairA" / "best.pth"
+    assert best.is_file()
+    manifest = json.loads((tmp_path / "checkpoints" / "manifest.json").read_text())
+    entry = manifest["entries"]["checkpoints/rl/main/pairA/best.pth"]
+    assert entry["designation"] == "best"
+    assert entry["provenance"]["evidence"] == "eval-ok"
+
+
+from argparse import Namespace
+
+from src.rl_adapter import RLNetworkAdapter
+
+
+def test_training_writes_latest_only_by_default(tmp_path):
+    adapter = RLNetworkAdapter(
+        Namespace(),
+        model_path=str(tmp_path / "latest.pth"),
+        best_model_path=str(tmp_path / "best.pth"),
+        device="cpu",
+        init_seed=1,
+        init_strategy="fresh",
+    )
+    adapter.save(1.0)
+    assert (tmp_path / "latest.pth").is_file()
+    assert not (tmp_path / "best.pth").exists()
+    assert not (tmp_path / "best_tps.pth").exists()
+
+
+def test_track_best_tps_writes_diagnostic_only(tmp_path):
+    adapter = RLNetworkAdapter(
+        Namespace(rl_track_best_tps=True),
+        model_path=str(tmp_path / "latest.pth"),
+        best_model_path=str(tmp_path / "best.pth"),
+        device="cpu",
+        init_seed=1,
+        init_strategy="fresh",
+    )
+    adapter.save(5.0)
+    assert (tmp_path / "best_tps.pth").is_file()
+    assert not (tmp_path / "best.pth").exists()

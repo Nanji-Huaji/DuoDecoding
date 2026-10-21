@@ -105,6 +105,7 @@ EXPECTED = (
     '--rl_reward_scale',
     '--rl_team_reward',
     '--rl_threshold_candidates',
+    '--rl_track_best_tps',
     '--run_full_dataset',
     '--sample_seed',
     '--seed',
