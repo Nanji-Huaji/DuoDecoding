@@ -1,0 +1,3775 @@
+{
+  "entries": {
+    "checkpoints/llama/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/llama/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "8b03c0ce306b9c5fa4554776b77e6e5b5637cc1d43df08db0b44eeff0c919058",
+      "size": 4942131,
+      "status": "legacy"
+    },
+    "checkpoints/llama/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/llama/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/llama/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/llama/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "589d1a5331694e2dc681b8d825d9e8230b46219cb4601dcb5bb0e2b02fd7bd7b",
+      "size": 4987279,
+      "status": "legacy"
+    },
+    "checkpoints/llama/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/llama/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "a1b60193dd4930e336ffd23d55d8591438133bcbe90adca42609091d28d4d6b1",
+      "size": 4942131,
+      "status": "legacy"
+    },
+    "checkpoints/qwen/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "18cadb91da42c597397174aac68a43dc9248e414412af5c541f89085b6b6a82f",
+      "size": 4987279,
+      "status": "legacy"
+    },
+    "checkpoints/qwen/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "b8309b605858f3ac8ccfe9252a9935bbc79257d36634e6320f66e80089540580",
+      "size": 4941939,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "03e9ef063482980e0d2a6048dfd13768da4718b87735b223aa70be84a1e4b8d1",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "5590d087c219a40b0b2a42bf04b2ae09b57589984060da6d4f6ca0c16a66696d",
+      "size": 4987087,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "68b9d89ea290698120678f2aa732de73724f437256af3b6b62c1aefd844c4c9f",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "8b0955021c1bdbbf84e91a2ca918d022fa29b552f4d8170c979e28907ade5259",
+      "size": 4941939,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "4953402fbe7949c872bacfbd03c6b92067fcac9e71a77f5bf44c84ffd0ce653d",
+      "size": 55522,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "63fb86d6e0dd4da82041779c26f86087dc97acb59e80a061de8d256f106303a7",
+      "size": 4987087,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "e298012773340ae98cfc60beef167f7e6616e014c30ec5b0b718619620fd9fde",
+      "size": 55522,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "b8309b605858f3ac8ccfe9252a9935bbc79257d36634e6320f66e80089540580",
+      "size": 4941939,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "03e9ef063482980e0d2a6048dfd13768da4718b87735b223aa70be84a1e4b8d1",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "5590d087c219a40b0b2a42bf04b2ae09b57589984060da6d4f6ca0c16a66696d",
+      "size": 4987087,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "68b9d89ea290698120678f2aa732de73724f437256af3b6b62c1aefd844c4c9f",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "ba64955f6a3275a0b3aabe815c09e394c262b8924e28830353e3b6a62ff89c9b",
+      "size": 4941939,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "80063a7deb3567f44a109e7dc6c25f40199cf813f886ea7ca7a15b8d3ed27f5b",
+      "size": 306808,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "8338529614c204591040487490700de706384ac4d483169e7b730fccde5d812d",
+      "size": 4987087,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "85438447aa25694c46b0dbc4b61a28a22e4c47a8c779b140528505ebe5f95e76",
+      "size": 306808,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "65ea6b1e176c34cb5c2136a877649cd4d6c03b32d96476e4a9a13db1f1e4fc37",
+      "size": 2468345,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "60209bd647bd6214dec1f380ca8f3b9a6a8f3098a11be2feb4900fd1b73b88eb",
+      "size": 2490945,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/rl_adapter_little.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "03e9ef063482980e0d2a6048dfd13768da4718b87735b223aa70be84a1e4b8d1",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/rl_adapter_main.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "68b9d89ea290698120678f2aa732de73724f437256af3b6b62c1aefd844c4c9f",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_15.970_0206_184934_qwen15/rl_adapter_little.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4953402fbe7949c872bacfbd03c6b92067fcac9e71a77f5bf44c84ffd0ce653d",
+      "size": 55522,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_15.970_0206_184934_qwen15/rl_adapter_main.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "e298012773340ae98cfc60beef167f7e6616e014c30ec5b0b718619620fd9fde",
+      "size": 55522,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_16.280_0206_185234_qwen15/rl_adapter_little.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "03e9ef063482980e0d2a6048dfd13768da4718b87735b223aa70be84a1e4b8d1",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_16.280_0206_185234_qwen15/rl_adapter_main.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "68b9d89ea290698120678f2aa732de73724f437256af3b6b62c1aefd844c4c9f",
+      "size": 562971,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_17.910_0206_185104_qwen15/rl_adapter_little.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "80063a7deb3567f44a109e7dc6c25f40199cf813f886ea7ca7a15b8d3ed27f5b",
+      "size": 306808,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/best/tps_17.910_0206_185104_qwen15/rl_adapter_main.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "85438447aa25694c46b0dbc4b61a28a22e4c47a8c779b140528505ebe5f95e76",
+      "size": 306808,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/rl_adapter_little.pth",
+      "role": "experiment_legacy",
+      "sha256": "65ea6b1e176c34cb5c2136a877649cd4d6c03b32d96476e4a9a13db1f1e4fc37",
+      "size": 2468345,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/rl_adapter_little.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/rl_adapter_main.pth",
+      "role": "experiment_legacy",
+      "sha256": "60209bd647bd6214dec1f380ca8f3b9a6a8f3098a11be2feb4900fd1b73b88eb",
+      "size": 2490945,
+      "status": "legacy"
+    },
+    "checkpoints/qwen15_backup_20260208_192023/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/qwen15_backup_20260208_192023/rl_adapter_main.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "other",
+      "sha256": "7fd4615f04c11dcb699ecd62dcfdac16937a3809e94089e16e92bc4486693273",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "other",
+      "sha256": "6b04998688dd9c44c448917b6a46b284c4e63e34fd6ca29b9368c17ef34ef5dc",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "other",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "other",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "other",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "other",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "other",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "other",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "other",
+      "sha256": "bbba3a63ad682f7df6d78e8ad46f5440cc8745e223bfea7f522bd4a961a1f13e",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "other",
+      "sha256": "e57fc1483902a7e56ec6836d3fb57f60707983dd87d196ccef7b21501fd84c50",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "other",
+      "sha256": "40dee97a18589b191ab5ce227acd30ef48ccc4096870d3188a9cee29dc41b093",
+      "size": 4813570,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "other",
+      "sha256": "e59c7acf9d2d89d600485f75e58d50f8fecbf83b857f5283a01ec2359cdb611c",
+      "size": 4813730,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "other",
+      "sha256": "c2db6c426eee085f73c2cdd847765c5e1da4aea919fcfcc92cc80ad5ac18c4c6",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "other",
+      "sha256": "9182130f1d1378c7522dd2699d7a9962d073f82ec43c1943031a496579c2e2c6",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json": {
+      "pair": null,
+      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json",
+      "role": "other",
+      "sha256": "03b543cf0ba40b7870b6c26e7cd11419d6f3f3a400fa5b512921d8a6847e8a51",
+      "size": 999,
+      "status": "legacy"
+    },
+    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/best.pth"
+      ],
+      "pair": "llama-68m--to--llama-2-7b-chat",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth",
+      "role": "rl_little",
+      "sha256": "08a0da7ad3ff3886fa7208587c7269a0cdca9118a3b04bdd5806d021684667b8",
+      "size": 4937282,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer"
+      ],
+      "pair": "llama-68m--to--llama-2-7b-chat",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer",
+      "role": "rl_little",
+      "sha256": "01d10882e3a08c0f9289819bdb4c69432f3c037d0c1ab81327cf6f576100809c",
+      "size": 750471,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/latest.pth"
+      ],
+      "pair": "llama-68m--to--llama-2-7b-chat",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/latest.pth",
+      "role": "rl_little",
+      "sha256": "2689606dc6f2e3f4c482269522e6523e4be64ab686dfe797efb3a08c58a814e0",
+      "size": 4937442,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer"
+      ],
+      "pair": "llama-68m--to--llama-2-7b-chat",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer",
+      "role": "rl_little",
+      "sha256": "dc72f8dd22c39ae3002a2e741e934ec70f5e892dd1ca4946eeba7fd2022ee3a6",
+      "size": 750471,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/best.pth"
+      ],
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "rl_little",
+      "sha256": "18b68d8a6b31e70e2199a6452ef2c1be73f63b32b0a7164564f056078244eacb",
+      "size": 4940994,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer"
+      ],
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "rl_little",
+      "sha256": "eceb19bfe87a2dc9a9e8e35f19ee827be3059a00baa1373ce3b4f6d7120e3301",
+      "size": 168440,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth"
+      ],
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "rl_little",
+      "sha256": "4a08e73ac4688acb9688902921bd22c539a0389b1efe121e6db3b30a25bd7502",
+      "size": 4941154,
+      "status": "production"
+    },
+    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer"
+      ],
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "rl_little",
+      "sha256": "6a5dd87df1cb4072afb283327dd038c1f6256a6f6a0184b57351d20323d52cf3",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth"
+      ],
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "rl_little",
+      "sha256": "5d9b3682b6a8258bc5f58ac7eb97785951ca930b7fdac5d534fe8309245925ce",
+      "size": 4940994,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer"
+      ],
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "rl_little",
+      "sha256": "8327814b7432049146c3eb2ad47b26839f3cb24b97153472d738c0bfdbe58729",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth"
+      ],
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "rl_little",
+      "sha256": "e8defeec93bdec4004058352f21c50eae7db1b76e78d27aead0380f501cd8900",
+      "size": 4941154,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer"
+      ],
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "rl_little",
+      "sha256": "4f4339bfefd56cc45a07e3909907bff09a0cf954935fdf952a37f179c8af870f",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/best.pth"
+      ],
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "rl_little",
+      "sha256": "3d0f85a1df116cf4a2e7d0bb702be169c78cbe0847bbb3ae82d6d903c747b9ba",
+      "size": 4940994,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer"
+      ],
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "rl_little",
+      "sha256": "5b9c9f2595de791182f1fe589734b9121f57a283beaa8c5b94eae14656843dbc",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth"
+      ],
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "rl_little",
+      "sha256": "e04bc5b8898e003178a408b607c84ef5de958fbc030de8fcb0eaa69a972e360d",
+      "size": 4941154,
+      "status": "production"
+    },
+    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer"
+      ],
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "rl_little",
+      "sha256": "0fbf5d13fa6db22edb7c64ffa5f14326317e9fc1c7f23506b78592ac9f958721",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth"
+      ],
+      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
+      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth",
+      "role": "rl_main",
+      "sha256": "80a5820f67559a26cea2f85d4ba50a632b77d9122757746dd025ae4ccbdb2581",
+      "size": 4982594,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer"
+      ],
+      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
+      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer",
+      "role": "rl_main",
+      "sha256": "9cb7e9736a82ec89a4e1756c55a2a0084d3b196f5b7dced57b1fb8a6bb16902e",
+      "size": 750471,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth"
+      ],
+      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
+      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth",
+      "role": "rl_main",
+      "sha256": "76ee1f0e8be2ef62dd0be43fc5d079af1ae0009560e665cd220957b613523403",
+      "size": 4982754,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer"
+      ],
+      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
+      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer",
+      "role": "rl_main",
+      "sha256": "52bbfebbf9fa6c51b5faa048f17c70dfde90e1cee78b0b0daa28f696e2e57565",
+      "size": 750471,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/best.pth"
+      ],
+      "pair": "llama-68m--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "rl_main",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/best.pth.buffer"
+      ],
+      "pair": "llama-68m--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "rl_main",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/latest.pth"
+      ],
+      "pair": "llama-68m--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "rl_main",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "production"
+    },
+    "checkpoints/rl/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/latest.pth.buffer"
+      ],
+      "pair": "llama-68m--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "rl_main",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth"
+      ],
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "rl_main",
+      "sha256": "79ef039138633b013e42162590dc726f5961b05caf5a5db1263d0cc44b6536ab",
+      "size": 4986306,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer"
+      ],
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "rl_main",
+      "sha256": "9e12ceef2607fa19b3e607a62cbb3cf5137652dc44ed071f537c5bc9aeda89fb",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth"
+      ],
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "rl_main",
+      "sha256": "719cac1624b05accc96ba3291f730b605da02b2c017a6fdbda9d57ef5148e5db",
+      "size": 4986466,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer"
+      ],
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "rl_main",
+      "sha256": "2e843acae81b38491b8b0765d147128303c899ef463db80cb16e9014bc0b2c70",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/best.pth"
+      ],
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "rl_main",
+      "sha256": "498ce49c78a29d9153fbb4eb31d4c666b5313b550b0f5c885c7eccb2c8677606",
+      "size": 4986306,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer"
+      ],
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "rl_main",
+      "sha256": "74d03ddaf87c71c7deb12b49fb7ba6bae7a9c92579864ee18069b966056fbf26",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth"
+      ],
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "rl_main",
+      "sha256": "dd89f9ff476d893580b3a38cb2d9ebb97ae9ef26a260693247b2a2f2e0d7b927",
+      "size": 4986466,
+      "status": "production"
+    },
+    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer"
+      ],
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "rl_main",
+      "sha256": "274c0a32ee765dc89f4efb655a5dfa23b01fd1c938205ca732c5a52c194002ad",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/best.pth"
+      ],
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "rl_main",
+      "sha256": "851995594d40cb30957f8e6e04231887ff06bd6ed4230afe288e4e7a98b7a263",
+      "size": 4986306,
+      "status": "production"
+    },
+    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer"
+      ],
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "rl_main",
+      "sha256": "ba39f28e58a3d4ef3dac1fe06861f1722925e621ea983214bec0076d63082c19",
+      "size": 165065,
+      "status": "production"
+    },
+    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth"
+      ],
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "rl_main",
+      "sha256": "e3df8c7f3bc5decf6a01fac4673dd3f077f3d1d4449fd1e43564419891e88c84",
+      "size": 4986466,
+      "status": "production"
+    },
+    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "legacy_paths": [
+        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer"
+      ],
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "rl_main",
+      "sha256": "649ef41b325759a6b6e57bee769e7da94973324b73d16bc0969e940a8dc33331",
+      "size": 750121,
+      "status": "production"
+    },
+    "checkpoints/rl_3shot_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_3shot_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "2c6847b7c83c9d780c33c0651dde9c6ee74280574ae10347b8030000d28b0c26",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_3shot_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_3shot_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "6c7b48327d18062b000c97f94ed9585c10fdbb5e4c63c188ea47a84af65908b6",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_3shot_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_3shot_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "072855873c40cf024a1e04b06f7a30c8a3bdd591b1e296c837fc710f121532cc",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_3shot_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_3shot_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9c14256a9722790335dcf228a87aa858ac511d3dc1b231c10fdd82a13ebffc86",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "e00124b4799e40174a5c95114b129e9da498a302b0fe6b9b8d9de465ce9155f3",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b54aac309b47ce050d859484eeb69f1c69bd79b4cb5da40d5d5315cc65587962",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "2294f2f6460c96be33ee4f8f196dbc4d08ce06d063a18d4cb768e1b4cdc701c7",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4fbd8b828167b0477c4edcbd6a4b7fd51019b83952867577d664190d253c382e",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "f1845912e4789cfc3c34a02fb35c10be2dbe343eceb1a8d2a50fb6645e7b55b9",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "12907662f53374744df3c3b1831f8c9564b799d0b6599f308745dded7e79a993",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "3c98a4edd9e0cdd18ba0d37333ceb75edef0848e6b31a2a0f11d43253ae1be68",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ca33c94de5ce28c041a76291bab173272ada403450bf193d88e941d40eefdc1c",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "d93c224b7a9980ed90f444a8ddcdf510dd8cddf91770e6ca6240c78c16c2b2bb",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "53f6c350269d76da8f6dadccdfb03708133825041c8569a9f5799ce799b73126",
+      "size": 755426,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "c4b3be10b1abce8e54aa22f34f145ae54218d6ec64d096f97d5abc9d7fe21536",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "f72aa8a7b617adde5d89425a093bd3cc0e7c669dc9e989835e1a33f7c8ccd954",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "79bf895c83190683edde4b495d292da12f4df17b5770ecd2f14057a500fef27d",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "d6fea3f75fef5c6af0b9fa88cdb4e72af51c6510abb629d32ae330f1f6a4dea5",
+      "size": 755426,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "5013df54cb5ae8ea0bd733ca0d022290f096dfa24ae5d37a1d781766831e1edd",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_cont_log/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "04f38b0738e3f109e5d9406ed4077a4d6ba8687167b5e0a95f794812eb29de3f",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "7fd4615f04c11dcb699ecd62dcfdac16937a3809e94089e16e92bc4486693273",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "6b04998688dd9c44c448917b6a46b284c4e63e34fd6ca29b9368c17ef34ef5dc",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "bbba3a63ad682f7df6d78e8ad46f5440cc8745e223bfea7f522bd4a961a1f13e",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e57fc1483902a7e56ec6836d3fb57f60707983dd87d196ccef7b21501fd84c50",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "40dee97a18589b191ab5ce227acd30ef48ccc4096870d3188a9cee29dc41b093",
+      "size": 4813570,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e59c7acf9d2d89d600485f75e58d50f8fecbf83b857f5283a01ec2359cdb611c",
+      "size": 4813730,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "c2db6c426eee085f73c2cdd847765c5e1da4aea919fcfcc92cc80ad5ac18c4c6",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "9182130f1d1378c7522dd2699d7a9962d073f82ec43c1943031a496579c2e2c6",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json",
+      "role": "experiment_legacy",
+      "sha256": "03b543cf0ba40b7870b6c26e7cd11419d6f3f3a400fa5b512921d8a6847e8a51",
+      "size": 999,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "08a0da7ad3ff3886fa7208587c7269a0cdca9118a3b04bdd5806d021684667b8",
+      "size": 4937282,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "01d10882e3a08c0f9289819bdb4c69432f3c037d0c1ab81327cf6f576100809c",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "2689606dc6f2e3f4c482269522e6523e4be64ab686dfe797efb3a08c58a814e0",
+      "size": 4937442,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "dc72f8dd22c39ae3002a2e741e934ec70f5e892dd1ca4946eeba7fd2022ee3a6",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "e24647be04eeb5c6e7bce3de4b75e8c747ef3b7d33e169c073d12d67ed89425c",
+      "size": 4937282,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ef8a4d3da8234148ec4f2c6957185a49169a59c520f9dd4c170fa890c3a9d60f",
+      "size": 555496,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "07b163b84bbbdb5db85a7374364df903f0597a68d4f95f73994f8d64fc7c682b",
+      "size": 4937442,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "cb4080b40642c37a47b14ae39bf48b59e4b64c2c55654007c747210fb24527e9",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "07b3430ab01ebc144bc3a74f21315f3d00b0e3e433d8534b7b95a62da7a45f91",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "8bc9ab3ad202cfdc13131ca268d4eb74c13cf16eedcb30912f99216100f9009c",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "c29646d9ac53f90f30a53fc04ea4982ca900225a4982ed1da06181686bcf69ef",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "436ad49be4baa06831be8610bb1e18fadb8cfd117607c6aa4944d486ae15a2f5",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "80a5820f67559a26cea2f85d4ba50a632b77d9122757746dd025ae4ccbdb2581",
+      "size": 4982594,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9cb7e9736a82ec89a4e1756c55a2a0084d3b196f5b7dced57b1fb8a6bb16902e",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "76ee1f0e8be2ef62dd0be43fc5d079af1ae0009560e665cd220957b613523403",
+      "size": 4982754,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "52bbfebbf9fa6c51b5faa048f17c70dfde90e1cee78b0b0daa28f696e2e57565",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "0433b64a5898769a8b24025f7020e066d6f048b78a2c7c9117a09cc195d60412",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "7e1579976dc802c643062c2d560a94227c82169a1681a9c72a17a4755cd9f4ea",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "73bbff468eea3ab6d15a7708f73fafbc91ce7aca3edfa286842598ae1c06c089",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "9005941e3df88bea7e1a67d3b0ec5929325d2bfbbfbdd57bc719abe68a0cc747",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "49b5ef7fdebd326db0f89fe2e83e1a1d01f0c58f6e58e7387fdc24a797542ed2",
+      "size": 4982594,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "f8bb07c9f736eb94cea73a85fc408ff391a3c8126707535d2a2001bee1a8007b",
+      "size": 555496,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "cdb9eb4be4c6c9ac17c13bf9944d7c4a0668803a807438ff62117cd3b6210336",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261009_2336/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "f8bb07c9f736eb94cea73a85fc408ff391a3c8126707535d2a2001bee1a8007b",
+      "size": 555496,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "7fd4615f04c11dcb699ecd62dcfdac16937a3809e94089e16e92bc4486693273",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "6b04998688dd9c44c448917b6a46b284c4e63e34fd6ca29b9368c17ef34ef5dc",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "bbba3a63ad682f7df6d78e8ad46f5440cc8745e223bfea7f522bd4a961a1f13e",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e57fc1483902a7e56ec6836d3fb57f60707983dd87d196ccef7b21501fd84c50",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "40dee97a18589b191ab5ce227acd30ef48ccc4096870d3188a9cee29dc41b093",
+      "size": 4813570,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e59c7acf9d2d89d600485f75e58d50f8fecbf83b857f5283a01ec2359cdb611c",
+      "size": 4813730,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "c2db6c426eee085f73c2cdd847765c5e1da4aea919fcfcc92cc80ad5ac18c4c6",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "9182130f1d1378c7522dd2699d7a9962d073f82ec43c1943031a496579c2e2c6",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json",
+      "role": "experiment_legacy",
+      "sha256": "03b543cf0ba40b7870b6c26e7cd11419d6f3f3a400fa5b512921d8a6847e8a51",
+      "size": 999,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "08a0da7ad3ff3886fa7208587c7269a0cdca9118a3b04bdd5806d021684667b8",
+      "size": 4937282,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "01d10882e3a08c0f9289819bdb4c69432f3c037d0c1ab81327cf6f576100809c",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "2689606dc6f2e3f4c482269522e6523e4be64ab686dfe797efb3a08c58a814e0",
+      "size": 4937442,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--llama-2-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "dc72f8dd22c39ae3002a2e741e934ec70f5e892dd1ca4946eeba7fd2022ee3a6",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "25176fa7dd78a2c4763c9ed56009d1cdb9fba8b1f936085c651f7a008112a667",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "26d38b4f65515a455a08e0c75766d4f408c64cb6a713ecc757e401bc8e5e68b5",
+      "size": 45422,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "1fe8e87cfc94b1a80e7db6c8ca60b90a60f74effc562a91d4e5d203efe8cf508",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ddef580e010ec88a1880bc47b363e79bb519d1497a98702ef4f385764f5bdb1c",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "a5dd10661347e8a7fe8e69dd5aac213b04da967450c9d3402a26dd321f5291b9",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "336224953aa862e4d5ac3169bbb054072f99298fc0bf7554c97f4dacf987a936",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "3dd0246ac02339b996e6e2d17256f5c3cf9f3627c3534abac78e9ad182742273",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "59f345a24f3a628a326ddd9ad612c738ac14278c402892e38fdac1d7d641b5d6",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "f03627f7289fc86b48ee428ba1cc861ee6d8a2aef8415bb202046415da0337da",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "7299a171d30b150b6e57cb187188df887163dcef2814058cdef0f31bbbb31064",
+      "size": 352217,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "05895188bbd4464c838b86b4bf889308b3a0f397e0e99422701141a8f4048f22",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "488ca56de167e5d38adef8832490f886e796c119f2afd0d75ff0b9dfd02ac7fe",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "80a5820f67559a26cea2f85d4ba50a632b77d9122757746dd025ae4ccbdb2581",
+      "size": 4982594,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9cb7e9736a82ec89a4e1756c55a2a0084d3b196f5b7dced57b1fb8a6bb16902e",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "76ee1f0e8be2ef62dd0be43fc5d079af1ae0009560e665cd220957b613523403",
+      "size": 4982754,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "52bbfebbf9fa6c51b5faa048f17c70dfde90e1cee78b0b0daa28f696e2e57565",
+      "size": 750471,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
+      "size": 2489030,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "35ad24e1e1feb864f54c0158c91127feb7f81e7eefc3334ea4190eea5e3f2fa8",
+      "size": 2489082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "e0c0263011bc654d4170dd6a4ecd31e0f381514ea7667d7c0fc1ba94b9807755",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "e80bb79af1af3fe2d7e9b8bc96a20c8bd9e0f2adb4fec735f93b648f74fb3c76",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "816d878fd36bbc267c8e379e338577c9b6712946a77ea7766dcbb219fca64f00",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "617d95650c1731c9eb9ebb9ea0f79a2cad9b9a57cfb3b3de686a8c0109043b04",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "8d405a774cd4850297a8d886415a2dd9146fa35b78aecb41ad6814243aa1c2c8",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "3aa60672a2f8261f93d30b3f4f7971a5a912871f70c1f466621313d32c31a7b0",
+      "size": 352217,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "b43a06b903ae7fbac1668a4e708d6b67d77ff8e6e48f8928d2b674b73d678cc6",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "81c31cb3caf89bc42bf36f2a6ee4a19788159f6ae8ade71a9fba7bbbc4e56ce0",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "a7767c41e22088c03f2e8112c8aaf99e17812a947fbeced0ad82c24b514f20be",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "80be2443ec9dad1cc4210af556dff0ca37ccd8f0fb4ce4185e3b41d04233f9df",
+      "size": 44672,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "88b2c1c7111fdb12998651d93b546bbc58e2c6b0854821168836c8c318e0455a",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_agents_instant_20261010_2058/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b1de4e3085d9a0d59abf00e656731d44f38e332efe9dd5fe886be7e4ed48fe3e",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "43092fc00dbeba83afd8ac5589a79bc4b7d8eed6f4105fdb6391455c3f06499e",
+      "size": 4937282,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ac513b9690e70999b58fe02f727965499cb5949df19fd4809601ae5642f03edc",
+      "size": 459862,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "db8e3d84ce5723f230f9555811a1ae9a3b24006b60f8ed0cd48c894de4e84d52",
+      "size": 4937442,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "c3cc690b7726a469c46371a916f3e0d5cbe795df79645a2a00fab2cfba97c4bc",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "1d6da539f3db922f2132c9386698820ae3c54e97472c6fda479a280bda2160a0",
+      "size": 4982594,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "29dbcccfcb6724d61dced44b390f2250ee1b6a0bf7ba25408801e415e9efd910",
+      "size": 459862,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "bf18035c14adb04ca21d98ec15d9a2545c6f652490e1672386deb96309a3b662",
+      "size": 4982754,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_bp160/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "bb3580a81449cd1464c77a00367e842fe155ac0a79098720c6ccda997fc3d360",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "0f3f521427cf93de9c9b7671b84dfa9da505e9e9ed5d8ecbe89d849c7b7aab29",
+      "size": 4937282,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "f34c12eeb554074f59ba0c440b8d9fbde35a3924a8992a1156cd518006e810a6",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "ad5210dc26032dd3e0357f2b846dba32f9b98567e2aac14d2c993908770c0cc8",
+      "size": 4937442,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ea1ad80f796d2ed23863a7f1a5ea2c6e1e1e764965ce990a80092e6a618015d5",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "78fa11c215c683a3b81b5d93f631d7317045d2e0081cdb8def13d72d34fddfb6",
+      "size": 4982594,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "27eb11b132c3ce8f8237276de648f2f1b76dbed0d758f41930211048a21bdc62",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "eeda1d53d2cd71b65d2820a9bd29acb7f3b303cf4dc63b9fbc87d0169e92014e",
+      "size": 4982754,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fixedg16_nobp/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9c543dc619852eb6457cac37206119d85d1c1bcc700abeb20f54bd3af6711c07",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "25176fa7dd78a2c4763c9ed56009d1cdb9fba8b1f936085c651f7a008112a667",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "26d38b4f65515a455a08e0c75766d4f408c64cb6a713ecc757e401bc8e5e68b5",
+      "size": 45422,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "1fe8e87cfc94b1a80e7db6c8ca60b90a60f74effc562a91d4e5d203efe8cf508",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ddef580e010ec88a1880bc47b363e79bb519d1497a98702ef4f385764f5bdb1c",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "a7767c41e22088c03f2e8112c8aaf99e17812a947fbeced0ad82c24b514f20be",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "80be2443ec9dad1cc4210af556dff0ca37ccd8f0fb4ce4185e3b41d04233f9df",
+      "size": 44672,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "88b2c1c7111fdb12998651d93b546bbc58e2c6b0854821168836c8c318e0455a",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b1de4e3085d9a0d59abf00e656731d44f38e332efe9dd5fe886be7e4ed48fe3e",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "a5dd10661347e8a7fe8e69dd5aac213b04da967450c9d3402a26dd321f5291b9",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "336224953aa862e4d5ac3169bbb054072f99298fc0bf7554c97f4dacf987a936",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "3dd0246ac02339b996e6e2d17256f5c3cf9f3627c3534abac78e9ad182742273",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "59f345a24f3a628a326ddd9ad612c738ac14278c402892e38fdac1d7d641b5d6",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "e0c0263011bc654d4170dd6a4ecd31e0f381514ea7667d7c0fc1ba94b9807755",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "e80bb79af1af3fe2d7e9b8bc96a20c8bd9e0f2adb4fec735f93b648f74fb3c76",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "816d878fd36bbc267c8e379e338577c9b6712946a77ea7766dcbb219fca64f00",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "617d95650c1731c9eb9ebb9ea0f79a2cad9b9a57cfb3b3de686a8c0109043b04",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "f03627f7289fc86b48ee428ba1cc861ee6d8a2aef8415bb202046415da0337da",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "7299a171d30b150b6e57cb187188df887163dcef2814058cdef0f31bbbb31064",
+      "size": 352217,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "05895188bbd4464c838b86b4bf889308b3a0f397e0e99422701141a8f4048f22",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "488ca56de167e5d38adef8832490f886e796c119f2afd0d75ff0b9dfd02ac7fe",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "8d405a774cd4850297a8d886415a2dd9146fa35b78aecb41ad6814243aa1c2c8",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "3aa60672a2f8261f93d30b3f4f7971a5a912871f70c1f466621313d32c31a7b0",
+      "size": 352217,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "b43a06b903ae7fbac1668a4e708d6b67d77ff8e6e48f8928d2b674b73d678cc6",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "81c31cb3caf89bc42bf36f2a6ee4a19788159f6ae8ade71a9fba7bbbc4e56ce0",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "18b68d8a6b31e70e2199a6452ef2c1be73f63b32b0a7164564f056078244eacb",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "eceb19bfe87a2dc9a9e8e35f19ee827be3059a00baa1373ce3b4f6d7120e3301",
+      "size": 168440,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "4a08e73ac4688acb9688902921bd22c539a0389b1efe121e6db3b30a25bd7502",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "6a5dd87df1cb4072afb283327dd038c1f6256a6f6a0184b57351d20323d52cf3",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "851995594d40cb30957f8e6e04231887ff06bd6ed4230afe288e4e7a98b7a263",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ba39f28e58a3d4ef3dac1fe06861f1722925e621ea983214bec0076d63082c19",
+      "size": 165065,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e3df8c7f3bc5decf6a01fac4673dd3f077f3d1d4449fd1e43564419891e88c84",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "649ef41b325759a6b6e57bee769e7da94973324b73d16bc0969e940a8dc33331",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "5d9b3682b6a8258bc5f58ac7eb97785951ca930b7fdac5d534fe8309245925ce",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "8327814b7432049146c3eb2ad47b26839f3cb24b97153472d738c0bfdbe58729",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e8defeec93bdec4004058352f21c50eae7db1b76e78d27aead0380f501cd8900",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4f4339bfefd56cc45a07e3909907bff09a0cf954935fdf952a37f179c8af870f",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "79ef039138633b013e42162590dc726f5961b05caf5a5db1263d0cc44b6536ab",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9e12ceef2607fa19b3e607a62cbb3cf5137652dc44ed071f537c5bc9aeda89fb",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "719cac1624b05accc96ba3291f730b605da02b2c017a6fdbda9d57ef5148e5db",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "2e843acae81b38491b8b0765d147128303c899ef463db80cb16e9014bc0b2c70",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "3d0f85a1df116cf4a2e7d0bb702be169c78cbe0847bbb3ae82d6d903c747b9ba",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "5b9c9f2595de791182f1fe589734b9121f57a283beaa8c5b94eae14656843dbc",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e04bc5b8898e003178a408b607c84ef5de958fbc030de8fcb0eaa69a972e360d",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "0fbf5d13fa6db22edb7c64ffa5f14326317e9fc1c7f23506b78592ac9f958721",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "498ce49c78a29d9153fbb4eb31d4c666b5313b550b0f5c885c7eccb2c8677606",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "74d03ddaf87c71c7deb12b49fb7ba6bae7a9c92579864ee18069b966056fbf26",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "dd89f9ff476d893580b3a38cb2d9ebb97ae9ef26a260693247b2a2f2e0d7b927",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v3/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "274c0a32ee765dc89f4efb655a5dfa23b01fd1c938205ca732c5a52c194002ad",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "c79d704b9fcb2ab35981c137dc74df61560b3fe9dd49ab630e46f47dd6e771e1",
+      "size": 4941346,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b646dd6b35d81f368c62f0195874455456e12a14fc5d019b62e4633f220dcd16",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "ae69b9adaa16cdf285870403610876af00d44ccecb983a8cb1210a85d5d3e58f",
+      "size": 4986658,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "a502044ae0fe1bd41fa6d5a6a26da194edff35bee5ffb1bc7467f2ac287bae56",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "9624eea4fcb4d09db67696b479e148d3947fdc160416f2b9f865f18e062428d1",
+      "size": 4941346,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "0bbaf284956d7e2c6be125dfcf25663bb8c3885262cab99215048f4fa571ea6b",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "b1fd511e9cbb8954e588a6244185d3904a63226d6b19161fb3399a42241ba99d",
+      "size": 4986658,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b5e2094d2ada095f2cbb000273d3d7b4cc39533c4cea8c810dd7eb8e6976fefe",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "66eeb01448a7d049174a08a267a9a0e8e8d1b2afa8cc18a8917d03186eed803c",
+      "size": 4941346,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "2237c5e57efe8482289df00af2342336d57a26e9146b9a9a8de673407563751c",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "93845c6fc827cd0dbb84716fbf670ff669889014199e064d7876bacc9b2e001f",
+      "size": 4986658,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v4/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v4/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "a4d8ac478472d34ad2e97c3dc8bece694434741dbde608a1d3b29b69e721f258",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "65aa8ca41950bd9d215ee6bfda66c88936bfcd7a61a739cd20b0b8ff2e2afe3e",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "60977db87d1697e030f42f7ce264b29a01e0a72538bedb17267a560f6c96c408",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "6e0e124473896fa43e363137a066c74d1d2c757d08a6c2c13816fb6ac36c8ce0",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "e5d7bcbccac56d5842d8979a131cf8178b2b9d83a58d644fc95c511b960b979a",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "fc877199766c1cf78c7d271e943451c3c4b1b7b47e99cf7d208879a9e96972c0",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "19ba6fbcc2154b01d5b90b996021e89def461e77227e66792044708cd7d29294",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "90b2edc77bf72f440228b8944886e8cba69ba9831e5da1f4f6995776718e3c78",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "881cd77ea8fca53c6350b77568a877b8f85415a72e09bbe6acbd68a0b311cd0c",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "16c4f5800af4a8b098939bcdbe64c24869a631a19619d681a81024b48276d914",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ee78eba1a7b632db6303716f49480be5f801fd54d002e3ea6c36f7c267c38280",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "92d0f9471423d26374ae3fc9ac2f00603d95b085c089933cf9910cfaf9920c96",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "c5154dc5204414e5deaa9ce84a6cd882f03679bd472cab2074262c677bc389c3",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "92a52e4adb5aa5588afd4dc03abcd93181c6dee7c574dd9c7d03d3fb378e1204",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "d0e4d4a3c960216c0d3fe114287e24e7a7a4b461d074a9c29d114a3831d7bfe8",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "7b5e9ce1b160540a38c8d3017bbca2946ed23537f3d631c2efb92f292a6c0ce7",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen15/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ce2e79fc9ba6fb778a32fd9a877c1cadd55813bafbb07041b447a95531da7972",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "e53442e5709e7d094a66baab4847cac39f0227aadbdbd0a5b112ef845597aced",
+      "size": 4940994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "18a32d4a91448843b10386c4769aad9ef56b16311e0c8dfea7ca286b5611a3df",
+      "size": 581371,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "657093b92af6cbad0189b3fb18c860ea3e19d16b15ffb2ca61af73fc710a2b10",
+      "size": 4941154,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "0c627dd05e5feb5facdeea693d73f1b4804739f4648531cd9513365c3a7f1a70",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "c477e5efb1735efe9c75eae66a166b7bafe1f2965c3389fa9fc4cfb3359b012b",
+      "size": 4986306,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "5bd080a1b067580e468132202410ad465551eb0a0dc32ba510646fff1d65305a",
+      "size": 581371,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "60b4b6a1ca0a54e402c71072b2a7a9cb51c6a633d18dce247258b1a33ab9aa92",
+      "size": 4986466,
+      "status": "legacy"
+    },
+    "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_fluid_retrain_v5/qwen3/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "5ee90f72bdf99f37df9554a9219a41c2710d52b5fc5eccad176dea38ca8664c4",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "bf7eafd271e9c03bb76f02269ef0ac9034e21c73542bb1d0c557f7e31c90d0f0",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4c21b4f817ad8eb738b584155b6a155cb396cb7b4b8a74a9a05ae75f4b96f577",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "a9072eb5f5a3b64cb0aa4bafbfd35981c61ab786dc36a92d59cb8c4acef67732",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "68b32a7085ec1370d8570eb47e19a33e15fd70c0bcd18893b6bd27998d4107fa",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "6f08d6d19b131a0e74beaca0b62647c7d0f641daae0f779251f689cfd93e1db7",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "5b4604927caebac625b651d549357dd65d6dee91b0330dfc420682b2a156ba2f",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "196223c776ab6a2f248bcba513e586fee0098ebfc22818a22eeaf9db2063b1e9",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_46mbps_sn/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ea98a30aad36d0cc91685520944987965a0b242923881fe1b045866fe85e6050",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "ae9d4572092b9ea20520c4db8b4364b4e907c654eaeb1d8178c38322b8cee4ff",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "46e2859b6eb0b9a9528a70e890bc9f98b1bcbe6d9e73574ac08f239b84df1eaf",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "addfd64c6da3902c8a41ed08768f8370997f89a4290d09b9d24d14d4715e4224",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "f7c7214073e5b37e55686188a1b6e3b3b028e6db3c0795ce20d8d4fb08c2ac70",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "c0c547439589e3a7fc801eb0ab532e2e647b6ca97acbdccda0a49901517d6515",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "698e2b25f04221693b64a2987046e374ba049faa192b93da889efd136e6ecda9",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "f87467fef2b9f245dc2e0ee63d4ffb6c0bacaf2cc8a0ea5585c42681ab2ee997",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_pin/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "aceb1516de1e9aea694b25d42043736ecb22ee5f01039777664e65c4d8dc1a9d",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "d196c4845380953ab00a95868930164a50fe5608d8207bbccda59402b90e39fa",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9c76b8e1f4c1b278a59a7527f89f907e37b14ad495d7c1853201186c4e9896d9",
+      "size": 750118,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "964e47a3cb11f717dfaa79477ce422cb314d58bb5068c7ea082607eb770cbd32",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "bdc197d29fd55da88f201942593c31ca38ca1ed1978022bb72263c2184b6ad72",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "8f2c04251035c086c20da698bb553acd41f5a96c1ceef10e955148f82b2ba456",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "545efe4a6dda115f1282c2f637ab1ef1cc49bc2d6a74756ee3a5d26a9f7e7fbf",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "070dc7764026499192aac62658fb36f47a3f09020623f412c60ae6c555b65f9e",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_inregime_v3/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4042347162e4fc0b5a3964add05f415fe2c11f084d6f30248ae84f7060f669a3",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "45471a9bd038955fb363460c193fe68eec45b8eb1a9f7a18e0e3c7f7e5efd424",
+      "size": 5347970,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "c6caa4607a416d592b0e93c8695f5af8b4ed2e0f0ec3e4748816fb1eecc0e624",
+      "size": 729178,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "b249ab0a2dba77932965a4c6ea57fc8f21aad4591cdf845df0a56d30e2b91b86",
+      "size": 5348130,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "41fe780c6a6a61cbbc74a2203aa2f27c040d273f090bb9b5b456357892a5b392",
+      "size": 814143,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "28d75209b391d39b5c09635e20ed60faf7898d86a4d7a54e7e56cade320a92ce",
+      "size": 5529474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "8a5e1969e97551da97fe231f6eade915197407bc5b02ff952b2db821e7398dcd",
+      "size": 729688,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "34bad7cefce8d4f939a0f8921dfb02818ec6341e8a1923d1d544e04101c227cb",
+      "size": 5529634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "fefb90bdb586c02f2fbdbe3dfdb2604257b8389e9b1a118bb5395dcc3b5aa347",
+      "size": 814444,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "77b09521516e029087e1e52ad77f931886d9fecca48cef31accd436682ed174e",
+      "size": 5345922,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "ca103babea4d2cec58c93024136fe9a7e02fef0634a5bd4c89a8a4c114410053",
+      "size": 751222,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "39511bc7d0b9b6edd36e965813030868b0d9082388c7b89bb05052efd48b570c",
+      "size": 5346082,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "75f710e0a60a55fd8f7554fa0781c73b558bf533e1d0772a232d3c6158217205",
+      "size": 751541,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "790b60aeabe7439d3145653b8dc2a6859142aa6ef5ff0282eeb0beca3934abbb",
+      "size": 5527426,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "98f718ef0a2f201b05f777bc22c44537e1dc479ecda7de91f193766bdb25fd00",
+      "size": 752225,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "5a124357fd8229c20075fe80632b8064a6f2979406757acf43661c71c934241f",
+      "size": 5527586,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_badscale_20260911/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "6120af79747a218b53e2d9cbcff76beafaa9a864b6323206ec72f0bbaccb8326",
+      "size": 751792,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "d731230f41f41f238de2b38a165737cb438001b98885088cf4c500409cbdfb43",
+      "size": 5384994,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "89b8936e8490e8820bf133b31cdf838458398a4291793e44f3617d9bcced6fa6",
+      "size": 814208,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "4e0cdbfddf0245a4ce5bdf7b7b1f635fd5e42fa131e9ee6333f078ebfeddebbe",
+      "size": 5385682,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "71bf87a9fc0bc2bb2f1629cdc83f98caec751967b2dfafc8f6b7fafca3cce0e3",
+      "size": 814199,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "282a54ba294d9526c8e50e06ecee0545d909a88866cf1b1e64250e9287a978d8",
+      "size": 5389090,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9d32d64d7e34e9c4d8be047ccfc13d41dda3698c0490a06be2cbc1b8bb18bc31",
+      "size": 814489,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "612f9f25ee9b8fe12ac96943cb6fefcb4fb528f6c329728aa0f0c9d44661c02e",
+      "size": 5389778,
+      "status": "legacy"
+    },
+    "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_joint_action_factored/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "1e19c7638a1c5cb99861ee70eaf36877a405bd9b15b0ae2eba19ccd44dde2fc2",
+      "size": 814738,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "353683b038cd21b49487fd826051537f3860c689340e2925494693f30ffd5ee7",
+      "size": 4937474,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "a81b25cd8260d428f4b682276344041bf5befc881d84a641ab93b1a4a25146ed",
+      "size": 56672,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "da55684a5d9a532c9bc23706e811ffd50dd225f62470f79cd1e2a80ed69240e2",
+      "size": 4937634,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "2091f4dae5c5b1fd3416ca5077f74a626bd2f44051ae8d97859cec4d20b762f2",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "7028306c20878ca3df598dd7005aa5ea59e6389abe7a1bcfbf2092e234e81215",
+      "size": 4982786,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "b588227d8c6ee880a258089e4545dab7c7ee75070bdf794c99fbdd8fdbdce03e",
+      "size": 56297,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "4500870ba321ad52351b61dc62bfde7ec20292ef402e16c42a849ed8b7aaa380",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_r2_weaklink/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "eac0db89ab8966a51df67a2960a2dd9947ad199d0d56976cf7e0670a84a0a654",
+      "size": 750121,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/little/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/little/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "677da6c46e94e5b27885ae9bfc33b9dcf4c93de007bab519d2d068fede511ed5",
+      "size": 2671750,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/little/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/little/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "3bdc85880eab4361fedbc84705fcda71b76551a01b69710ed34c71accc44d9b3",
+      "size": 12720,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/little/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/little/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "9891e54e2b237f84c3596e442aa097441bafd60fe7b2e203f8f4c6aa7b8cd0c4",
+      "size": 2671802,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/little/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/little/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "3bdc85880eab4361fedbc84705fcda71b76551a01b69710ed34c71accc44d9b3",
+      "size": 12720,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/main/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/main/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "3c7cb24db5d33b9de21b2df4aef70e1725e29b20f375ca1cff8d651898dd8825",
+      "size": 2762502,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/main/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/main/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "87857e22ce5dbfdd1e1920de82ba2474d8026a144cd6faa6f7761353cf087ccf",
+      "size": 12726,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/main/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/main/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e9826199204762fffc9990343eb723c761130cea4295968a181d9ff22ebac86c",
+      "size": 2762554,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_reward/main/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_reward/main/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "87857e22ce5dbfdd1e1920de82ba2474d8026a144cd6faa6f7761353cf087ccf",
+      "size": 12726,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "909bd52d8c41f607460173ab55660332bd8b924e9a5de5d279bd785ce3789d94",
+      "size": 4941186,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "9d2a49ad1c51741639516f755d72a8ec51e786aefc3d6d0bafa594f68cac86e0",
+      "size": 45797,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "40768147e6b173f5431a0a9eca4dba20a9e46a9eec592a15cdd661b4aa8b242f",
+      "size": 4941346,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "4090826ebf91d02d34e6c16a8ecb8e6ce818e8882803dcc5c0396d384b8257b3",
+      "size": 245324,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
+      "role": "experiment_legacy",
+      "sha256": "25d8f91c86da2221ccaa752efd3284634afeb00d1fe15eeef684c3e71f77f1bb",
+      "size": 4986498,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "34c6789ad475bde910c02ed930102bdd1144b43247877de56ff5468a4a9b2682",
+      "size": 44672,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "experiment_legacy",
+      "sha256": "e7b8a791b8a1e8f01011559416daea9390492ded943cda133cc6eecbd92a093e",
+      "size": 4986658,
+      "status": "legacy"
+    },
+    "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/rl_smoke_v4/llama/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "experiment_legacy",
+      "sha256": "147edbf756cb13866fd71421d5fb10dd521b33963d634daac2325384fbd289d8",
+      "size": 241199,
+      "status": "legacy"
+    },
+    "checkpoints/vicuna/rl_adapter_little.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/vicuna/rl_adapter_little.pth",
+      "role": "series_legacy",
+      "sha256": "9456a273180ae1a485a2754e6c81bc375b3f0853d707b83cff6fbd6084427457",
+      "size": 4942131,
+      "status": "legacy"
+    },
+    "checkpoints/vicuna/rl_adapter_little.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/vicuna/rl_adapter_little.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/vicuna/rl_adapter_main.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/vicuna/rl_adapter_main.pth",
+      "role": "series_legacy",
+      "sha256": "6189ed527a0094aa230c86d37f463cbbe79ecf3e0f620d793360c1fa9509744e",
+      "size": 4987279,
+      "status": "legacy"
+    },
+    "checkpoints/vicuna/rl_adapter_main.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/vicuna/rl_adapter_main.pth.buffer",
+      "role": "series_legacy",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/.gitignore": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/.gitignore",
+      "role": "acc_head",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+      "size": 1,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.lock": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.metadata": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/README.md.metadata",
+      "role": "acc_head",
+      "sha256": "5b33401600c8b2eed28490655d5a011ca3b0dbd6688cf7c7cbd0f2a87cede4f1",
+      "size": 100,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.lock": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.metadata": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json.metadata",
+      "role": "acc_head",
+      "sha256": "6aeba53a33ac5ed00db588d6a6f1d9aba9482fe5ae3fb23821794af53cb2b799",
+      "size": 100,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.lock": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.metadata": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/.cache/huggingface/download/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors.metadata",
+      "role": "acc_head",
+      "sha256": "5a4a54ab35e230832cd4be2b7392a01504761165b0506f5f50619f4be58b6644",
+      "size": 125,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "8fec2d56c46d94d1a8951a1b1b724075fbef90936bca4bd0f57abd3c661a13a2",
+      "size": 43,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors": {
+      "pair": "llama-68m--to--tiny-llama-1.1b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/llama-68m--to--tiny-llama-1.1b/exp-weight6-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "0550781ebf843127a1fb7436e1004c848b32caa3e757c78fd584698858767bac",
+      "size": 2369056,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/config.json": {
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "95bd897bd6be7155335c728ffe86410967cb0576a4fa186d3ca6231971e84c28",
+      "size": 44,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/model.safetensors": {
+      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/exp-weight-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "551ed8c688678eb5d331bbd01be5464ff74866e7c4381f19e526d10d5f76abe1",
+      "size": 6302404,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/config.json": {
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "87a9af8dffa10a5a516af2d2bc335bf93c748009913271b27578e678b3ab29e0",
+      "size": 44,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/model.safetensors": {
+      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/exp-weight6-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "a9dd27ce92ab6eaeb663a735ad3ae4a1e172ca3a44e6d240a334fe02b88ae8fa",
+      "size": 25187020,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/config.json": {
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "95bd897bd6be7155335c728ffe86410967cb0576a4fa186d3ca6231971e84c28",
+      "size": 44,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/model.safetensors": {
+      "pair": "qwen3-0.6b--to--qwen3-1.7b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-0.6b--to--qwen3-1.7b/exp-weight6-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "5b697e7856e9b786e0d8f44bd1c3b7089f709bb890fb23486afa78fb5582620e",
+      "size": 12604104,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/config.json": {
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "87a9af8dffa10a5a516af2d2bc335bf93c748009913271b27578e678b3ab29e0",
+      "size": 44,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/model.safetensors": {
+      "pair": "qwen3-1.7b--to--qwen3-14b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/qwen3-1.7b--to--qwen3-14b/exp-weight6-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "19219024698a0cf3203de58e7fe8346ec25d05ca1e091d78915206674ea9d00c",
+      "size": 50373328,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/.gitignore": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/.gitignore",
+      "role": "acc_head",
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+      "size": 1,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.lock": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.metadata": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/README.md.metadata",
+      "role": "acc_head",
+      "sha256": "cb7718ad1b8b7649d9b77ec40c7436807c8589a617586afc7a9b408f8baf8b5a",
+      "size": 99,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.lock": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.metadata": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json.metadata",
+      "role": "acc_head",
+      "sha256": "2935ca5694474d1eab46bb58e322a1599ba20f1701981168bbe1d6d76c08b072",
+      "size": 99,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.lock": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.lock",
+      "role": "acc_head",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.metadata": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/.cache/huggingface/download/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors.metadata",
+      "role": "acc_head",
+      "sha256": "49bcca002970619a563bd39d7b9dff4610ba2bca4a774790fadb7a19ca0fd736",
+      "size": 124,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/config.json",
+      "role": "acc_head",
+      "sha256": "87a9af8dffa10a5a516af2d2bc335bf93c748009913271b27578e678b3ab29e0",
+      "size": 44,
+      "status": "production"
+    },
+    "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors": {
+      "pair": "tiny-llama-1.1b--to--llama-2-13b",
+      "remote_path": "src/SpecDec_pp/checkpoints/acc_head/tiny-llama-1.1b--to--llama-2-13b/exp-weight6-layer3/model.safetensors",
+      "role": "acc_head",
+      "sha256": "06729bd0556fafbc7c525416cdbc97b603957ac22e98aef26da99286f5b8e1d3",
+      "size": 50373328,
+      "status": "production"
+    }
+  },
+  "generated_at": "2026-10-21T12:57:07+00:00",
+  "hub": {
+    "repo_id": null,
+    "repo_type": "model",
+    "revision": "main"
+  },
+  "version": 1
+}
