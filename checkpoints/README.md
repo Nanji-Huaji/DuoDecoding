@@ -3,6 +3,7 @@
 本目录是唯一的 checkpoint 根目录；`manifest.json` 是权威索引（路径、sha256、角色、
 状态、旧路径映射）。
 
+- 一键：`python tools/checkpoints.py pull|push|verify|status`
 - 统一下载 / 校验 / 恢复旧路径：`python tools/fetch_checkpoints.py`
   - `--groups acc_head`：从 `ArcticHuaji/specdecpp-acc-heads` 下论文必需的
     6 个验收头（`--all-acc-heads` 补全 12 个）

@@ -113,7 +113,27 @@ python tools/promote_checkpoint.py   --staging checkpoints/staging/<run-id> --ev
 `{path, sha256, role, pair, source}`（或 acc head 的 `files`），与 `git_sha`
 一起构成完整 provenance。
 
-## 6. 统一下载（RL agents + acc heads）
+## 6. 一键脚本
+
+```bash
+# 下载全部 production（RL + acc heads），校验 sha，建兼容链接
+python tools/checkpoints.py pull
+
+# 刷新 manifest + 上传 RL 到 HF + 提交清单
+python tools/checkpoints.py push   --repo-id <user>/DuoDecoding-checkpoints --create --commit
+
+# 只校验 / 看概览 / 晋升
+python tools/checkpoints.py verify
+python tools/checkpoints.py status
+python tools/checkpoints.py promote --staging checkpoints/staging/<run> --as-best
+```
+
+- `push` 默认只传 RL（acc heads 已有公共源，会自动跳过），并重建 manifest；
+  `--commit` 会 `git add checkpoints/manifest.json` 并提交；
+- `pull` 等价于 `fetch_checkpoints.py` 的 production 全量；
+- `status` 会统计 production / legacy 与缺失文件，缺失时返回非零。
+
+## 7. 统一下载（RL agents + acc heads）
 
 `tools/fetch_checkpoints.py` 是唯一的 checkpoint 下载入口，按 manifest 逐条取源：
 
@@ -150,7 +170,7 @@ manifest 只索引本机已有的文件，因此新 clone 上 acc heads 由 regi
 `scripts/download_models.py`（模型 + acc heads）与
 `scripts/setup/download_assets.py`（论文最小集 / 全量资产）。
 
-## 7. Hugging Face Hub（推荐）
+## 8. Hugging Face Hub（推荐）
 
 仓库建议命名：`<user>/DuoDecoding-checkpoints`（model 类型，私有或公开均可）。
 
@@ -175,7 +195,7 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 历史实验另有 ~900 MB，容易超额；且 LFS 指针与现有 100 个已跟踪二进制叠加会继续
 膨胀历史。**优先 HF**，GitHub 只放 manifest + 脚本。
 
-## 8. 迁移记录
+## 9. 迁移记录
 
 - 2026-10-21：`checkpoints/rl_agents` 改名为 `rl` 并保留兼容链接；
   acc heads 留在 SpecDec_pp 子模块，纳入同一份 manifest；
@@ -183,7 +203,7 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 - 同期停止用 git 跟踪 `checkpoints/**` 二进制（历史仍保留），只跟踪
   `manifest.json` 与 README。
 
-## 9. 待办
+## 10. 待办
 
 - [x] 训练可写 `staging/`（`--rl_output_dir`）+ 显式 `promote`（含备份/provenance）；
 - [x] `best.pth` 改为晋升产物（`promote --as-best`）；训练只写 `latest.pth`；
