@@ -1,4 +1,4 @@
-# CLI 参数面快照（2026-10-21，110 个；默认 --help 可见 65 个）
+# CLI 参数面快照（2026-10-22，111 个；默认 --help 可见 66 个）
 
 > 生成方式：AST 解析 `src/utils.py::parse_arguments` 的 `add_argument`，
 > 再按 `args.<dest>` / `getattr(args, "<dest>")` 扫描 `exp.py` + `src/` +
@@ -28,7 +28,7 @@
 | ④ trace 回放 | 4 | 实测 trace 回放时用 |
 | ⑤ 解码方法与准确率头 | 10 | 调方法/准确率头时动 |
 | ⑥ RL adapter | 39 | RL adapter（仅 --use_rl_adapter 时有效） |
-| ⑦ 部署、精度与显存 | 6 | 换机器时动 |
+| ⑦ 部署、精度与显存 | 7 | 换机器时动 |
 | ⑧ curriculum | 5 | 训练 curriculum |
 | ⑨ 输出与裁判 | 4 | 输出与裁判 |
 | ⑩ 帮助 | 1 | `--help-advanced`（查看归档的 ⑥/⑧） |

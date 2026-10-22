@@ -21,7 +21,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "configs" / "model_repos_modelscope.json"
+CONFIG = ROOT / "configs" / "model_repos.json"
 WEIGHT_SUFFIXES = (".safetensors", ".bin")
 
 

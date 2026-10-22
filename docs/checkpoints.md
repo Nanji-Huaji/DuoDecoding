@@ -133,7 +133,26 @@ python tools/checkpoints.py promote --staging checkpoints/staging/<run> --as-bes
 - `pull` 等价于 `fetch_checkpoints.py` 的 production 全量；
 - `status` 会统计 production / legacy 与缺失文件，缺失时返回非零。
 
-### 6.1 用 ModelScope 下载大型模型（国内网络）
+### 6.1 模型来源与 transformers 缓存
+
+模型清单在 `configs/model_repos.json`（别名 → `hf_repo` / `hf_revision` /
+`modelscope_id` / `local_dir` / `verified`），`model_zoo` 按
+`--model_source` 解析：
+
+| `--model_source` | 行为 |
+|---|---|
+| `auto`（默认） | 本地目录存在就用本地；否则用 `hf_repo`（transformers 自动下载到 HF 缓存） |
+| `local` | 强制本地路径（离线复现） |
+| `hub` | 强制 HF repo id（需要网络或已预热缓存） |
+| `legacy` | 旧硬编码 zoo 映射（复现旧行为） |
+
+- 推荐设置 `HF_HOME=models/hf`，让所有 worktree 共享一份缓存；
+- 没有公开 HF/ModelScope 仓库的自训权重（`tiny-vicuna-1b`、`vicuna-68m`、
+  `llama-160m` 等）只在 `local_dir` 里维护；
+- 解析结果写入 metrics 的 `models` 字段：
+  `{role: {alias, resolved, source, hf_repo, hf_revision, modelscope_id}}`。
+
+### 6.2 用 ModelScope 下载大型模型（国内网络）
 
 HF 不可达时用 ModelScope 下载 base models（清单/映射在
 `configs/model_repos_modelscope.json`）：

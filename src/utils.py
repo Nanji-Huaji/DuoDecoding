@@ -396,6 +396,15 @@ def parse_arguments():
         ),
     )
     g_deploy.add_argument(
+        "--model_source",
+        choices=["auto", "local", "hub", "legacy"],
+        default="auto",
+        help=(
+            "模型来源：auto=本地目录存在就用本地、否则 HF repo id；"
+            "local=强制本地；hub=强制 HF repo id；legacy=旧 zoo 映射（复现旧行为）"
+        ),
+    )
+    g_deploy.add_argument(
         "--graph_verify_sizes",
         type=str,
         default="",

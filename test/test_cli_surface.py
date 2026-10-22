@@ -64,6 +64,7 @@ EXPECTED = (
     '--max_tokens',
     '--min_bandwidth_mbps',
     '--model_dtype',
+    '--model_source',
     '--ntt_ms_edge_cloud',
     '--ntt_ms_edge_end',
     '--ntt_trace_file',
