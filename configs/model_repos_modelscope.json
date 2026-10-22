@@ -1,0 +1,109 @@
+{
+  "_comment": "别名 -> ModelScope 模型 id + 本地目录。verified=true 表示已用 ModelScope API 校验；llama-68m 在 ModelScope 未找到，保留本地/HF。",
+  "groups": {
+    "qwen15": [
+      "qwen15-0.5b",
+      "qwen15-1.8b",
+      "qwen15-7b"
+    ],
+    "qwen3": [
+      "qwen3-0.6b",
+      "qwen3-1.7b",
+      "qwen3-14b",
+      "qwen3-32b-fp8"
+    ],
+    "llama": [
+      "llama-68m",
+      "tiny-llama-1.1b",
+      "llama-2-13b",
+      "llama-2-7b-chat",
+      "llama-2-70b"
+    ],
+    "vicuna": [
+      "vicuna-13b-v1.5"
+    ]
+  },
+  "models": {
+    "qwen15-0.5b": {
+      "hf_repo": "Qwen/Qwen1.5-0.5B-Chat",
+      "modelscope_id": "Qwen/Qwen1.5-0.5B-Chat",
+      "local_dir": "models/Qwen/Qwen1.5-0.5B-Chat",
+      "verified": true
+    },
+    "qwen15-1.8b": {
+      "hf_repo": "Qwen/Qwen1.5-1.8B-Chat",
+      "modelscope_id": "Qwen/Qwen1.5-1.8B-Chat",
+      "local_dir": "models/Qwen/Qwen1.5-1.8B-Chat",
+      "verified": true
+    },
+    "qwen15-7b": {
+      "hf_repo": "Qwen/Qwen1.5-7B-Chat",
+      "modelscope_id": "Qwen/Qwen1.5-7B-Chat",
+      "local_dir": "models/Qwen/Qwen1.5-7B-Chat",
+      "verified": true
+    },
+    "qwen3-0.6b": {
+      "hf_repo": "Qwen/Qwen3-0.6B",
+      "modelscope_id": "Qwen/Qwen3-0.6B",
+      "local_dir": "models/Qwen/Qwen3-0.6B",
+      "verified": true
+    },
+    "qwen3-1.7b": {
+      "hf_repo": "Qwen/Qwen3-1.7B",
+      "modelscope_id": "Qwen/Qwen3-1.7B",
+      "local_dir": "models/Qwen/Qwen3-1.7B",
+      "verified": true
+    },
+    "qwen3-14b": {
+      "hf_repo": "Qwen/Qwen3-14B",
+      "modelscope_id": "Qwen/Qwen3-14B",
+      "local_dir": "models/Qwen/Qwen3-14B",
+      "verified": true
+    },
+    "qwen3-32b-fp8": {
+      "hf_repo": "Qwen/Qwen3-32B-FP8",
+      "modelscope_id": "Qwen/Qwen3-32B-FP8",
+      "local_dir": "models/Qwen/Qwen3-32B-FP8",
+      "verified": true
+    },
+    "tiny-llama-1.1b": {
+      "hf_repo": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+      "modelscope_id": "AI-ModelScope/TinyLlama-1.1B-Chat-v1.0",
+      "local_dir": "models/llama/tiny-llama-1.1b",
+      "verified": true
+    },
+    "llama-68m": {
+      "hf_repo": "JackFram/llama-68m",
+      "modelscope_id": null,
+      "local_dir": "models/llama/llama-68m",
+      "verified": false,
+      "note": "ModelScope 未找到公开同名仓库；保留本地/HF"
+    },
+    "llama-2-13b": {
+      "hf_repo": "meta-llama/Llama-2-13b-hf",
+      "modelscope_id": "modelscope/Llama-2-13b-ms",
+      "local_dir": "models/llama/Llama-2-13b-hf",
+      "verified": true,
+      "note": "ModelScope 的 -ms 转换版（HF 格式权重）"
+    },
+    "llama-2-7b-chat": {
+      "hf_repo": "meta-llama/Llama-2-7b-chat-hf",
+      "modelscope_id": "modelscope/Llama-2-7b-chat-ms",
+      "local_dir": "models/llama/Llama-2-7b-chat-hf",
+      "verified": true,
+      "note": "ModelScope 的 -ms 转换版（HF 格式权重）"
+    },
+    "llama-2-70b": {
+      "hf_repo": "meta-llama/Llama-2-70b-hf",
+      "modelscope_id": "AI-ModelScope/llama-2-70b-hf",
+      "local_dir": "models/llama/llama-2-70b",
+      "verified": true
+    },
+    "vicuna-13b-v1.5": {
+      "hf_repo": "lmsys/vicuna-13b-v1.5",
+      "modelscope_id": "lmsys/vicuna-13b-v1.5",
+      "local_dir": "models/vicuna/vicuna-13b-v1.5",
+      "verified": true
+    }
+  }
+}

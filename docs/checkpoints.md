@@ -133,6 +133,34 @@ python tools/checkpoints.py promote --staging checkpoints/staging/<run> --as-bes
 - `pull` 等价于 `fetch_checkpoints.py` 的 production 全量；
 - `status` 会统计 production / legacy 与缺失文件，缺失时返回非零。
 
+### 6.1 用 ModelScope 下载大型模型（国内网络）
+
+HF 不可达时用 ModelScope 下载 base models（清单/映射在
+`configs/model_repos_modelscope.json`）：
+
+```bash
+# 看清单与本地状态
+python scripts/download_models_modelscope.py --list
+
+# 只下某一组 / 全部缺失项
+python scripts/download_models_modelscope.py --only qwen15
+python scripts/download_models_modelscope.py --only qwen15 qwen3 llama
+
+# 覆盖未验证的 ModelScope id
+python scripts/download_models_modelscope.py --only llama \
+  --model-id llama-68m=AI-ModelScope/llama-68m
+```
+
+- 默认下载到 `models/...`；已有 `config.json` + 权重则跳过；
+- `verified=false` 的条目会打印警告，ID 不对时用 `--model-id` 覆盖；
+- 需要 `pip install modelscope`（本机已装 1.34.0）；
+- 若报 `InvalidSchema: Missing dependencies for SOCKS support`，是 `ALL_PROXY`
+  指向 socks5 但缺 `pysocks`：`unset ALL_PROXY` 或 `pip install pysocks`；
+- 已验证：Qwen1.5/Qwen3/TinyLlama/`modelscope/Llama-2-*-ms`/`lmsys/vicuna-13b-v1.5`；
+  `llama-68m` 在 ModelScope 未找到公开仓库，保留本地/HF。
+- ModelScope 的 revision 是 tag/branch（不是 HF commit hash），结果工件应记录
+  `modelscope_id + revision`。
+
 ## 7. 统一下载（RL agents + acc heads）
 
 `tools/fetch_checkpoints.py` 是唯一的 checkpoint 下载入口，按 manifest 逐条取源：
