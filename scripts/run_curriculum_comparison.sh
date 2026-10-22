@@ -18,8 +18,8 @@ cd "$(dirname "$0")/.."
 GPU_ID=${1:-0}
 PORT_BASE=29650
 ACC_ROOT=src/SpecDec_pp/checkpoints/acc_head
-OLD_MAIN=checkpoints_backup_pre_curriculum/main/tiny-llama-1.1b--to--llama-2-13b
-OLD_LITTLE=checkpoints_backup_pre_curriculum/little/llama-68m--to--tiny-llama-1.1b
+OLD_MAIN=archive/checkpoints_backup_pre_curriculum/main/tiny-llama-1.1b--to--llama-2-13b
+OLD_LITTLE=archive/checkpoints_backup_pre_curriculum/little/llama-68m--to--tiny-llama-1.1b
 # Curriculum agent: use the FINAL trained policy (latest.pth, end of curriculum).
 # The old agent: its best.pth (same convention as the previous A/B).
 CURR_MAIN=checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth

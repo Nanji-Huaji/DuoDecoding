@@ -119,3 +119,19 @@ checkpoints/*
 !checkpoints/manifest.json
 !checkpoints/README.md
 !checkpoints/MODEL_CARD.md
+
+# Local experiment outputs are consolidated under experiments/ (symlinks keep old paths).
+/experiments/
+/exp
+/exp_logs
+/exp_res
+/experiment_results
+
+# Model weights live under models/; root paths are compatibility symlinks.
+/models/
+/llama
+/qwen
+/Qwen
+/google
+/vicuna
+/unsloth
