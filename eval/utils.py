@@ -192,6 +192,10 @@ class ExpPrint:
         eval_result["min_bandwidth_mbps"] = float(
             getattr(self.args, "min_bandwidth_mbps", 5.0)
         )
+        # checkpoint provenance（manifest 校验结果；见 src/checkpoint_provenance.py）
+        eval_result["checkpoints"] = dict(
+            getattr(self.args, "_checkpoint_provenance", {})
+        )
         # 机制层：记录**实际消费**而非仅标称值。2026-04 统一口径落地后
         # （docs/protocol.md §3）基线族与 adaptive 族消费同一套开关；CUHLM
         # 系不消费仓库开关，而是按 CU-HLM 论文自身的计费口径计费（式 (5)：

@@ -4,8 +4,8 @@
   "rev": "WORKTREE",
   "entries": {
     "Baselines.__init__": {
-      "events": 79,
-      "sha256_16": "ad0211639620d7d5",
+      "events": 93,
+      "sha256_16": "36980d1eb03d2f9d",
       "surface": {
         "assign_self": {
           "little_rl_adapter": 3,
@@ -28,16 +28,20 @@
           "basename": 1,
           "bool": 2,
           "configure_ntt_trace": 1,
+          "describe_path": 4,
+          "exists": 2,
           "float": 3,
           "from_args": 1,
           "get": 1,
           "get_rl_agent_spec": 2,
           "max": 2,
-          "print": 1,
+          "print": 3,
           "read_trace_file": 1,
+          "record_checkpoint": 4,
           "resolve_legacy_rl_agent_load_path": 2,
           "split": 1,
-          "strip": 1
+          "strip": 1,
+          "summary_line": 2
         },
         "continue": {
           "": 1

@@ -24,6 +24,12 @@ from .communication import (
     cuhlm_uplink_payload_bytes,
     tk_slt_uplink_payload_bytes,
 )
+from .checkpoint_provenance import (
+    describe_dir,
+    describe_path,
+    record as record_checkpoint,
+    summary_line,
+)
 from .decoding_ops import (
     apply_rollback,
     build_rollback_plan,
@@ -880,6 +886,13 @@ class Baselines(Decoding):
                 _main_model_path, _main_best_path = _rl_train_paths(
                     rl_output_dir, ROLE_MAIN, _main_model_path, _main_best_path
                 )
+                _info = describe_path(_main_model_path)
+                record_checkpoint(args, "rl_main", _info)
+                print(summary_line("rl_main", _info))
+                if os.path.exists(_main_best_path):
+                    record_checkpoint(
+                        args, "rl_main_best", describe_path(_main_best_path)
+                    )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
                     model_path=_main_model_path,
@@ -933,6 +946,13 @@ class Baselines(Decoding):
                 _little_model_path, _little_best_path = _rl_train_paths(
                     rl_output_dir, ROLE_LITTLE, _little_model_path, _little_best_path
                 )
+                _info = describe_path(_little_model_path)
+                record_checkpoint(args, "rl_little", _info)
+                print(summary_line("rl_little", _info))
+                if os.path.exists(_little_best_path):
+                    record_checkpoint(
+                        args, "rl_little_best", describe_path(_little_best_path)
+                    )
                 self.little_rl_adapter = RLNetworkAdapter(
                     args,
                     model_path=_little_model_path,
@@ -1103,6 +1123,9 @@ class Baselines(Decoding):
         if _acc == "draft_target":
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.acc_head_path = args.acc_head_path
+            _info = describe_dir(self.acc_head_path)
+            record_checkpoint(args, "acc_head", _info)
+            print(summary_line("acc_head", _info))
             self.acc_head = load_acceptance_prediction_head(
                 self.acc_head_path,
             )
@@ -1118,6 +1141,9 @@ class Baselines(Decoding):
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
+            _info = describe_dir(self.small_draft_acc_head_path)
+            record_checkpoint(args, "acc_head_small_draft", _info)
+            print(summary_line("acc_head_small_draft", _info))
             self.small_draft_acc_head = load_acceptance_prediction_head(
                 self.small_draft_acc_head_path,
             )
@@ -1125,6 +1151,9 @@ class Baselines(Decoding):
             if hasattr(self, "little_model"):
                 self.small_draft_acc_head.to(self.little_model.device)
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
+            _info = describe_dir(self.draft_target_acc_head_path)
+            record_checkpoint(args, "acc_head_draft_target", _info)
+            print(summary_line("acc_head_draft_target", _info))
             self.draft_target_acc_head = load_acceptance_prediction_head(
                 self.draft_target_acc_head_path,
             )
