@@ -3391,9 +3391,9 @@
       "status": "production"
     }
   },
-  "generated_at": "2026-10-23T11:24:24+00:00",
+  "generated_at": "2026-10-23T14:33:25+00:00",
   "hub": {
-    "repo_id": null,
+    "repo_id": "ArcticHuaji/DuoDecoding-checkpoints",
     "repo_type": "model",
     "revision": "main"
   },
