@@ -152,7 +152,30 @@ python tools/checkpoints.py promote --staging checkpoints/staging/<run> --as-bes
 - 解析结果写入 metrics 的 `models` 字段：
   `{role: {alias, resolved, source, hf_repo, hf_revision, modelscope_id}}`。
 
-### 6.2 用 ModelScope 下载大型模型（国内网络）
+### 6.2 本机代理（HF/ModelScope 网络）
+
+本机 Clash 提供两个代理端口：
+
+| 端口 | 类型 |
+|---|---|
+| `127.0.0.1:7890` | HTTP 代理 |
+| `127.0.0.1:7891` | SOCKS5 |
+
+注意：环境变量里的 `ALL_PROXY=socks5h://127.0.0.1:1055` 是 **tailscaled** 的
+SOCKS 端口，不是外网代理；且本机 venv 未装 `pysocks`，requests 走它会报
+`Missing dependencies for SOCKS support`。
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:7890
+export HTTPS_PROXY=http://127.0.0.1:7890
+unset ALL_PROXY
+```
+
+- 直连 `huggingface.co` 不通；走 Clash 返回 200，`hf auth whoami` = `ArcticHuaji`；
+- ModelScope 直连可用（走代理也可以，返回 302）；
+- `tools/pin_model_revisions.py` 需要这组代理环境变量。
+
+### 6.3 用 ModelScope 下载大型模型（国内网络）
 
 HF 不可达时用 ModelScope 下载 base models（清单/映射在
 `configs/model_repos_modelscope.json`）：
