@@ -8,6 +8,46 @@
       "size": 2345,
       "status": "legacy"
     },
+    "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
+      "role": "other",
+      "sha256": "e59c7acf9d2d89d600485f75e58d50f8fecbf83b857f5283a01ec2359cdb611c",
+      "size": 4813730,
+      "status": "legacy"
+    },
+    "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
+      "pair": null,
+      "remote_path": "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
+      "role": "other",
+      "sha256": "9182130f1d1378c7522dd2699d7a9962d073f82ec43c1943031a496579c2e2c6",
+      "size": 4982946,
+      "status": "legacy"
+    },
+    "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
+      "pair": null,
+      "remote_path": "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
+      "role": "other",
+      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
+      "size": 5,
+      "status": "legacy"
+    },
+    "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json": {
+      "pair": null,
+      "remote_path": "checkpoints/legacy/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json",
+      "role": "other",
+      "sha256": "03b543cf0ba40b7870b6c26e7cd11419d6f3f3a400fa5b512921d8a6847e8a51",
+      "size": 999,
+      "status": "legacy"
+    },
     "checkpoints/llama/rl_adapter_little.pth": {
       "pair": null,
       "remote_path": "checkpoints/llama/rl_adapter_little.pth",
@@ -328,22 +368,6 @@
       "size": 5,
       "status": "legacy"
     },
-    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth",
-      "role": "other",
-      "sha256": "7fd4615f04c11dcb699ecd62dcfdac16937a3809e94089e16e92bc4486693273",
-      "size": 4982786,
-      "status": "legacy"
-    },
-    "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/best.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
     "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth": {
       "pair": null,
       "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth",
@@ -355,22 +379,6 @@
     "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer": {
       "pair": null,
       "remote_path": "checkpoints/rl/adaptive_decoding/main/llama-68m--to--llama-2-13b/latest.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
-      "role": "other",
-      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
-      "size": 2489030,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
       "role": "other",
       "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
       "size": 5,
@@ -392,22 +400,6 @@
       "size": 5,
       "status": "legacy"
     },
-    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth",
-      "role": "other",
-      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
-      "size": 2489030,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
     "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
       "pair": null,
       "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth",
@@ -419,22 +411,6 @@
     "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer": {
       "pair": null,
       "remote_path": "checkpoints/rl/cee_cuhlm/main/qwen3-1.7b--to--qwen3-14b/latest.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
-      "role": "other",
-      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
-      "size": 2489030,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_cuhlm/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
       "role": "other",
       "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
       "size": 5,
@@ -488,100 +464,6 @@
       "size": 5,
       "status": "legacy"
     },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth",
-      "role": "other",
-      "sha256": "40dee97a18589b191ab5ce227acd30ef48ccc4096870d3188a9cee29dc41b093",
-      "size": 4813570,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth",
-      "role": "other",
-      "sha256": "e59c7acf9d2d89d600485f75e58d50f8fecbf83b857f5283a01ec2359cdb611c",
-      "size": 4813730,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
-      "role": "other",
-      "sha256": "c2db6c426eee085f73c2cdd847765c5e1da4aea919fcfcc92cc80ad5ac18c4c6",
-      "size": 4982786,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth",
-      "role": "other",
-      "sha256": "9182130f1d1378c7522dd2699d7a9962d073f82ec43c1943031a496579c2e2c6",
-      "size": 4982946,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth.buffer",
-      "role": "other",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "legacy"
-    },
-    "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json": {
-      "pair": null,
-      "remote_path": "checkpoints/rl/cee_sd_opportunistic/pilot/seed73/pilot_metadata.json",
-      "role": "other",
-      "sha256": "03b543cf0ba40b7870b6c26e7cd11419d6f3f3a400fa5b512921d8a6847e8a51",
-      "size": 999,
-      "status": "legacy"
-    },
-    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/best.pth"
-      ],
-      "pair": "llama-68m--to--llama-2-7b-chat",
-      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth",
-      "role": "rl_little",
-      "sha256": "08a0da7ad3ff3886fa7208587c7269a0cdca9118a3b04bdd5806d021684667b8",
-      "size": 4937282,
-      "status": "production"
-    },
-    "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer"
-      ],
-      "pair": "llama-68m--to--llama-2-7b-chat",
-      "remote_path": "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/best.pth.buffer",
-      "role": "rl_little",
-      "sha256": "01d10882e3a08c0f9289819bdb4c69432f3c037d0c1ab81327cf6f576100809c",
-      "size": 750471,
-      "status": "production"
-    },
     "checkpoints/rl/little/llama-68m--to--llama-2-7b-chat/latest.pth": {
       "legacy_paths": [
         "checkpoints/rl_agents/little/llama-68m--to--llama-2-7b-chat/latest.pth"
@@ -604,28 +486,6 @@
       "size": 750471,
       "status": "production"
     },
-    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/best.pth"
-      ],
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth",
-      "role": "rl_little",
-      "sha256": "18b68d8a6b31e70e2199a6452ef2c1be73f63b32b0a7164564f056078244eacb",
-      "size": 4940994,
-      "status": "production"
-    },
-    "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer"
-      ],
-      "pair": "llama-68m--to--tiny-llama-1.1b",
-      "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/best.pth.buffer",
-      "role": "rl_little",
-      "sha256": "eceb19bfe87a2dc9a9e8e35f19ee827be3059a00baa1373ce3b4f6d7120e3301",
-      "size": 168440,
-      "status": "production"
-    },
     "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth": {
       "legacy_paths": [
         "checkpoints/rl_agents/little/llama-68m--to--tiny-llama-1.1b/latest.pth"
@@ -645,28 +505,6 @@
       "remote_path": "checkpoints/rl/little/llama-68m--to--tiny-llama-1.1b/latest.pth.buffer",
       "role": "rl_little",
       "sha256": "6a5dd87df1cb4072afb283327dd038c1f6256a6f6a0184b57351d20323d52cf3",
-      "size": 750121,
-      "status": "production"
-    },
-    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth"
-      ],
-      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
-      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth",
-      "role": "rl_little",
-      "sha256": "5d9b3682b6a8258bc5f58ac7eb97785951ca930b7fdac5d534fe8309245925ce",
-      "size": 4940994,
-      "status": "production"
-    },
-    "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer"
-      ],
-      "pair": "qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat",
-      "remote_path": "checkpoints/rl/little/qwen1.5-0.5b-chat--to--qwen1.5-1.8b-chat/best.pth.buffer",
-      "role": "rl_little",
-      "sha256": "8327814b7432049146c3eb2ad47b26839f3cb24b97153472d738c0bfdbe58729",
       "size": 750121,
       "status": "production"
     },
@@ -692,28 +530,6 @@
       "size": 750121,
       "status": "production"
     },
-    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/best.pth"
-      ],
-      "pair": "qwen3-0.6b--to--qwen3-1.7b",
-      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth",
-      "role": "rl_little",
-      "sha256": "3d0f85a1df116cf4a2e7d0bb702be169c78cbe0847bbb3ae82d6d903c747b9ba",
-      "size": 4940994,
-      "status": "production"
-    },
-    "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer"
-      ],
-      "pair": "qwen3-0.6b--to--qwen3-1.7b",
-      "remote_path": "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/best.pth.buffer",
-      "role": "rl_little",
-      "sha256": "5b9c9f2595de791182f1fe589734b9121f57a283beaa8c5b94eae14656843dbc",
-      "size": 750121,
-      "status": "production"
-    },
     "checkpoints/rl/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth": {
       "legacy_paths": [
         "checkpoints/rl_agents/little/qwen3-0.6b--to--qwen3-1.7b/latest.pth"
@@ -734,28 +550,6 @@
       "role": "rl_little",
       "sha256": "0fbf5d13fa6db22edb7c64ffa5f14326317e9fc1c7f23506b78592ac9f958721",
       "size": 750121,
-      "status": "production"
-    },
-    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth"
-      ],
-      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
-      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth",
-      "role": "rl_main",
-      "sha256": "80a5820f67559a26cea2f85d4ba50a632b77d9122757746dd025ae4ccbdb2581",
-      "size": 4982594,
-      "status": "production"
-    },
-    "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer"
-      ],
-      "pair": "llama-2-7b-chat--to--llama-2-chat-70b",
-      "remote_path": "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/best.pth.buffer",
-      "role": "rl_main",
-      "sha256": "9cb7e9736a82ec89a4e1756c55a2a0084d3b196f5b7dced57b1fb8a6bb16902e",
-      "size": 750471,
       "status": "production"
     },
     "checkpoints/rl/main/llama-2-7b-chat--to--llama-2-chat-70b/latest.pth": {
@@ -780,28 +574,6 @@
       "size": 750471,
       "status": "production"
     },
-    "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/best.pth"
-      ],
-      "pair": "llama-68m--to--llama-2-13b",
-      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth",
-      "role": "rl_main",
-      "sha256": "579c9a3517548f457e88b13b37688af9347bfaf57db012e252b17a13d3ff58e4",
-      "size": 2489030,
-      "status": "production"
-    },
-    "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/best.pth.buffer"
-      ],
-      "pair": "llama-68m--to--llama-2-13b",
-      "remote_path": "checkpoints/rl/main/llama-68m--to--llama-2-13b/best.pth.buffer",
-      "role": "rl_main",
-      "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
-      "size": 5,
-      "status": "production"
-    },
     "checkpoints/rl/main/llama-68m--to--llama-2-13b/latest.pth": {
       "legacy_paths": [
         "checkpoints/rl_agents/main/llama-68m--to--llama-2-13b/latest.pth"
@@ -822,28 +594,6 @@
       "role": "rl_main",
       "sha256": "ec0a6ccf9debf1c16781445c4b9106080d00478b0559469336db7c7b7b9711c8",
       "size": 5,
-      "status": "production"
-    },
-    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth"
-      ],
-      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
-      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth",
-      "role": "rl_main",
-      "sha256": "79ef039138633b013e42162590dc726f5961b05caf5a5db1263d0cc44b6536ab",
-      "size": 4986306,
-      "status": "production"
-    },
-    "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer"
-      ],
-      "pair": "qwen1.5-1.8b-chat--to--qwen1.5-7b-chat",
-      "remote_path": "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/best.pth.buffer",
-      "role": "rl_main",
-      "sha256": "9e12ceef2607fa19b3e607a62cbb3cf5137652dc44ed071f537c5bc9aeda89fb",
-      "size": 750121,
       "status": "production"
     },
     "checkpoints/rl/main/qwen1.5-1.8b-chat--to--qwen1.5-7b-chat/latest.pth": {
@@ -868,28 +618,6 @@
       "size": 750121,
       "status": "production"
     },
-    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/best.pth"
-      ],
-      "pair": "qwen3-1.7b--to--qwen3-14b",
-      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth",
-      "role": "rl_main",
-      "sha256": "498ce49c78a29d9153fbb4eb31d4c666b5313b550b0f5c885c7eccb2c8677606",
-      "size": 4986306,
-      "status": "production"
-    },
-    "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer"
-      ],
-      "pair": "qwen3-1.7b--to--qwen3-14b",
-      "remote_path": "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/best.pth.buffer",
-      "role": "rl_main",
-      "sha256": "74d03ddaf87c71c7deb12b49fb7ba6bae7a9c92579864ee18069b966056fbf26",
-      "size": 750121,
-      "status": "production"
-    },
     "checkpoints/rl/main/qwen3-1.7b--to--qwen3-14b/latest.pth": {
       "legacy_paths": [
         "checkpoints/rl_agents/main/qwen3-1.7b--to--qwen3-14b/latest.pth"
@@ -910,28 +638,6 @@
       "role": "rl_main",
       "sha256": "274c0a32ee765dc89f4efb655a5dfa23b01fd1c938205ca732c5a52c194002ad",
       "size": 750121,
-      "status": "production"
-    },
-    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/best.pth"
-      ],
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth",
-      "role": "rl_main",
-      "sha256": "851995594d40cb30957f8e6e04231887ff06bd6ed4230afe288e4e7a98b7a263",
-      "size": 4986306,
-      "status": "production"
-    },
-    "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer": {
-      "legacy_paths": [
-        "checkpoints/rl_agents/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer"
-      ],
-      "pair": "tiny-llama-1.1b--to--llama-2-13b",
-      "remote_path": "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/best.pth.buffer",
-      "role": "rl_main",
-      "sha256": "ba39f28e58a3d4ef3dac1fe06861f1722925e621ea983214bec0076d63082c19",
-      "size": 165065,
       "status": "production"
     },
     "checkpoints/rl/main/tiny-llama-1.1b--to--llama-2-13b/latest.pth": {
@@ -3685,7 +3391,7 @@
       "status": "production"
     }
   },
-  "generated_at": "2026-10-21T13:01:29+00:00",
+  "generated_at": "2026-10-23T11:24:24+00:00",
   "hub": {
     "repo_id": null,
     "repo_type": "model",

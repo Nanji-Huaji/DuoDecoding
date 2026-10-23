@@ -267,6 +267,11 @@ GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生�
 
 ## 9. 迁移记录
 
+- 2026-10-22：训练侧历史 `best.pth`（TPS 语义）已从 `checkpoints/rl/` 归档到
+  `archive/checkpoints/stale_best_<timestamp>/`；生产 `best.pth` 现在只由
+  `promote --as-best` 产生。`cee_sd_opportunistic` pilot 目录移到
+  `checkpoints/legacy/`（旧路径保留符号链接）。
+
 - 2026-10-21：`checkpoints/rl_agents` 改名为 `rl` 并保留兼容链接；
   acc heads 留在 SpecDec_pp 子模块，纳入同一份 manifest；
   停止用 git 跟踪 `checkpoints/**` 二进制（历史仍保留）；

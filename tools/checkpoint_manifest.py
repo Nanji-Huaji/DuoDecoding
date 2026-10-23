@@ -110,10 +110,16 @@ def entries() -> dict:
 
 
 def build() -> dict:
+    hub = {"repo_id": None, "repo_type": "model", "revision": "main"}
+    if MANIFEST.is_file():
+        try:
+            hub = json.loads(MANIFEST.read_text(encoding="utf-8")).get("hub", hub)
+        except (json.JSONDecodeError, OSError):
+            pass
     return {
         "version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "hub": {"repo_id": None, "repo_type": "model", "revision": "main"},
+        "hub": hub,
         "entries": entries(),
     }
 
