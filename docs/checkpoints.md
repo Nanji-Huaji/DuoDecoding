@@ -1,7 +1,7 @@
 # Checkpoint 管理（2026-10-21）
 
 checkpoint 和口径/参数一样是实验资产：没有清单就无法回答"这张表用的是哪份权重"。
-本方案把所有权重收进单一根目录、用 manifest 索引，并通过 Hugging Face Hub 分发。
+所有权重收进单一根目录、用 manifest 索引，通过 Hugging Face Hub 分发。
 
 ## 1. 目标布局
 
@@ -18,7 +18,7 @@ src/SpecDec_pp/checkpoints/acc_head/   # 第二物理根（SpecDec_pp 子模块�
 ```
 
 为什么不把 acc heads 也搬进主 `checkpoints/`：它们在 `SpecDec_pp` **子模块**里，
-移出会让子模块变脏（或需要改子模块仓库）。因此采用"一个 manifest、两个物理根"：
+移出会让子模块变脏（或需要改子模块仓库）。采用"一个 manifest、两个物理根"：
 
 - manifest 的 `remote_path` 是仓库相对路径（`checkpoints/...` 或
   `src/SpecDec_pp/checkpoints/...`），Hugging Face 仓库保持同样布局；
@@ -233,7 +233,7 @@ python tools/fetch_checkpoints.py --rl-repo <user>/DuoDecoding-checkpoints
 ```
 
 acc heads 的"是否齐全"按 `model.safetensors` / `pytorch_model.bin` 判断，已有目录会跳过；
-manifest 只索引本机已有的文件，因此新 clone 上 acc heads 由 registry 补齐后再跑
+manifest 只索引本机已有的文件，新 clone 上 acc heads 由 registry 补齐后再跑
 `checkpoint_manifest.py --write` 即可纳入 sha 校验。
 
 基础模型（Llama/Qwen 权重、数据集）不在本脚本范围，仍用现有入口：
@@ -262,7 +262,7 @@ python tools/fetch_checkpoints.py --only production
 ### GitHub LFS 备选
 
 GitHub 可达但 LFS 免费额度通常只有 1 GB 存储/带宽，本仓库生产权重约 700 MB、
-历史实验另有 ~900 MB，容易超额；且 LFS 指针与现有 100 个已跟踪二进制叠加会继续
+历史实验另有 ~900 MB，容易超额；LFS 指针与现有 100 个已跟踪二进制叠加会继续
 膨胀历史。**优先 HF**，GitHub 只放 manifest + 脚本。
 
 ## 9. 迁移记录
