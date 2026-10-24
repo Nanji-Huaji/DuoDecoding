@@ -112,3 +112,26 @@ thinking-effort-loaded.json
 
 # 机器生成的 RL 训练状态日志（3977 行数据，非代码，不入版本管理）
 /checkpoints/training_status.json
+
+# Checkpoint binaries are distributed via Hugging Face (see docs/checkpoints.md).
+# Only the manifest / README stay in git; history still contains old blobs.
+checkpoints/*
+!checkpoints/manifest.json
+!checkpoints/README.md
+!checkpoints/MODEL_CARD.md
+
+# Local experiment outputs are consolidated under experiments/ (symlinks keep old paths).
+/experiments/
+/exp
+/exp_logs
+/exp_res
+/experiment_results
+
+# Model weights live under models/; root paths are compatibility symlinks.
+/models/
+/llama
+/qwen
+/Qwen
+/google
+/vicuna
+/unsloth

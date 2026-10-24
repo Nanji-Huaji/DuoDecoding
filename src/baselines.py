@@ -24,6 +24,12 @@ from .communication import (
     cuhlm_uplink_payload_bytes,
     tk_slt_uplink_payload_bytes,
 )
+from .checkpoint_provenance import (
+    describe_dir,
+    describe_path,
+    record as record_checkpoint,
+    summary_line,
+)
 from .decoding_ops import (
     apply_rollback,
     build_rollback_plan,
@@ -747,6 +753,23 @@ def compute_stage_reward(
     return reward
 
 
+def _rl_train_paths(output_dir, role: str, model_path: str, best_model_path: str):
+    """训练 checkpoint 的落盘路径。
+
+    ``--rl_output_dir`` 为空时沿用生产路径；设置后写到
+    ``<output_dir>/<role>/<pair>/{latest,best}.pth``，由
+    ``tools/promote_checkpoint.py`` 显式晋升，训练过程不再改生产文件。
+    """
+    if not output_dir:
+        return model_path, best_model_path
+    pair = os.path.basename(os.path.dirname(str(model_path)))
+    base = os.path.join(str(output_dir), role, pair)
+    return (
+        os.path.join(base, os.path.basename(str(model_path))),
+        os.path.join(base, os.path.basename(str(best_model_path))),
+    )
+
+
 class Baselines(Decoding):
     """
     用于实验的方法。
@@ -807,6 +830,7 @@ class Baselines(Decoding):
             )
             init_seed = getattr(args, "rl_init_seed", None)
             init_strategy = getattr(args, "rl_init_strategy", "resume")
+            rl_output_dir = getattr(args, "rl_output_dir", None)
             legacy_load_paths = eval_mode != "cee_sd_opportunistic"
             opportunistic = eval_mode == "cee_sd_opportunistic"
             little_prefers_latest = opportunistic and not getattr(
@@ -853,12 +877,26 @@ class Baselines(Decoding):
                         " experiment_results/ceesd_gamma_threshold_probe.md）。"
                         "训练请考虑 --rl_threshold_candidates 扩格。"
                     )
+                _main_model_path = (
+                    getattr(args, "main_rl_path", None) or main_spec.latest_path
+                )
+                _main_best_path = (
+                    getattr(args, "main_rl_best_path", None) or main_spec.best_path
+                )
+                _main_model_path, _main_best_path = _rl_train_paths(
+                    rl_output_dir, ROLE_MAIN, _main_model_path, _main_best_path
+                )
+                _info = describe_path(_main_model_path)
+                record_checkpoint(args, "rl_main", _info)
+                print(summary_line("rl_main", _info))
+                if os.path.exists(_main_best_path):
+                    record_checkpoint(
+                        args, "rl_main_best", describe_path(_main_best_path)
+                    )
                 self.rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "main_rl_path", None)
-                    or main_spec.latest_path,
-                    best_model_path=getattr(args, "main_rl_best_path", None)
-                    or main_spec.best_path,
+                    model_path=_main_model_path,
+                    best_model_path=_main_best_path,
                     agent_name=main_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -898,12 +936,27 @@ class Baselines(Decoding):
                     target_model=args.target_model,
                     checkpoint_root=checkpoint_root,
                 )
+                _little_model_path = (
+                    getattr(args, "little_rl_path", None) or little_spec.latest_path
+                )
+                _little_best_path = (
+                    getattr(args, "little_rl_best_path", None)
+                    or little_spec.best_path
+                )
+                _little_model_path, _little_best_path = _rl_train_paths(
+                    rl_output_dir, ROLE_LITTLE, _little_model_path, _little_best_path
+                )
+                _info = describe_path(_little_model_path)
+                record_checkpoint(args, "rl_little", _info)
+                print(summary_line("rl_little", _info))
+                if os.path.exists(_little_best_path):
+                    record_checkpoint(
+                        args, "rl_little_best", describe_path(_little_best_path)
+                    )
                 self.little_rl_adapter = RLNetworkAdapter(
                     args,
-                    model_path=getattr(args, "little_rl_path", None)
-                    or little_spec.latest_path,
-                    best_model_path=getattr(args, "little_rl_best_path", None)
-                    or little_spec.best_path,
+                    model_path=_little_model_path,
+                    best_model_path=_little_best_path,
                     agent_name=little_spec.agent_name,
                     legacy_load_paths=[
                         path
@@ -1070,6 +1123,9 @@ class Baselines(Decoding):
         if _acc == "draft_target":
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.acc_head_path = args.acc_head_path
+            _info = describe_dir(self.acc_head_path)
+            record_checkpoint(args, "acc_head", _info)
+            print(summary_line("acc_head", _info))
             self.acc_head = load_acceptance_prediction_head(
                 self.acc_head_path,
             )
@@ -1085,6 +1141,9 @@ class Baselines(Decoding):
             small_draft_threshold: float | int = self.args.small_draft_threshold
             draft_target_threshold: float | int = self.args.draft_target_threshold
             self.small_draft_acc_head_path = args.small_draft_acc_head_path
+            _info = describe_dir(self.small_draft_acc_head_path)
+            record_checkpoint(args, "acc_head_small_draft", _info)
+            print(summary_line("acc_head_small_draft", _info))
             self.small_draft_acc_head = load_acceptance_prediction_head(
                 self.small_draft_acc_head_path,
             )
@@ -1092,6 +1151,9 @@ class Baselines(Decoding):
             if hasattr(self, "little_model"):
                 self.small_draft_acc_head.to(self.little_model.device)
             self.draft_target_acc_head_path = args.draft_target_acc_head_path
+            _info = describe_dir(self.draft_target_acc_head_path)
+            record_checkpoint(args, "acc_head_draft_target", _info)
+            print(summary_line("acc_head_draft_target", _info))
             self.draft_target_acc_head = load_acceptance_prediction_head(
                 self.draft_target_acc_head_path,
             )
