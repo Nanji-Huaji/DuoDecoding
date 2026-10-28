@@ -5,6 +5,11 @@
 
 import json
 import os
+from functools import lru_cache
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_REPOS = ROOT / "configs" / "model_repos.json"
 
 
 def get_vocab_size(model_name: str) -> int:
@@ -37,6 +42,43 @@ def get_vocab_size(model_name: str) -> int:
         pass
 
     raise ValueError(f"Vocab size not found in config for model {model_name}.")
+
+
+@lru_cache(maxsize=1)
+def load_model_repos() -> dict:
+    if not MODEL_REPOS.is_file():
+        return {"models": {}}
+    return json.loads(MODEL_REPOS.read_text(encoding="utf-8"))
+
+
+def resolve_model(name: str, source: str, legacy_zoo: dict) -> tuple[str, str, dict]:
+    """按 --model_source 解析别名；返回 (resolved, kind, entry)。
+
+    kind: local（本地目录/文件）/ hub（HF repo id）/ legacy（旧硬编码映射或原样）。
+    """
+    if source == "legacy":
+        return legacy_zoo.get(name, name), "legacy", {}
+    entry = load_model_repos().get("models", {}).get(name)
+    if entry is None:
+        return legacy_zoo.get(name, name), "legacy", {}
+    local_dir = entry.get("local_dir")
+    local_path = ROOT / local_dir if local_dir else None
+    has_local = bool(local_path and local_path.exists())
+    hf_repo = entry.get("hf_repo")
+    if source == "hub":
+        if hf_repo:
+            return hf_repo, "hub", entry
+        return (str(local_path) if has_local else name), "local" if has_local else "legacy", entry
+    if source == "local":
+        if local_path:
+            return str(local_path), "local", entry
+        return name, "legacy", entry
+    # auto：本地存在优先，否则用 HF repo id（首次运行由 transformers 下载）
+    if has_local:
+        return str(local_path), "local", entry
+    if hf_repo:
+        return hf_repo, "hub", entry
+    return name, "legacy", entry
 
 
 def model_zoo(args):
@@ -138,14 +180,34 @@ def model_zoo(args):
     # 之后，键是别名而值已变成本地路径/HF id，最常用别名全部 miss，每次
     # parse 都落 get_vocab_size 读 config.json 或走网络回退。
     draft_alias = args.draft_model
-    args.draft_model = zoo.get(args.draft_model, args.draft_model)
-    args.target_model = zoo.get(args.target_model, args.target_model)
-    args.little_model = (
-        zoo.get(args.little_model, args.little_model)
-        if hasattr(args, "little_model")
-        else args.draft_model
-    )
-    args.vocab_size = vocab_size.get(
-        draft_alias,
-        vocab_size.get(args.draft_model, get_vocab_size(args.draft_model)),
-    )
+    source = getattr(args, "model_source", "auto")
+    _prov: dict[str, dict] = {}
+    for role, attr in (
+        ("draft", "draft_model"),
+        ("target", "target_model"),
+        ("little", "little_model"),
+    ):
+        if not hasattr(args, attr):
+            continue
+        alias = getattr(args, attr)
+        resolved, kind, entry = resolve_model(alias, source, zoo)
+        setattr(args, attr, resolved)
+        _prov[role] = {
+            "alias": alias,
+            "resolved": resolved,
+            "source": kind,
+            "hf_repo": (entry or {}).get("hf_repo"),
+            "hf_revision": (entry or {}).get("hf_revision"),
+            "modelscope_id": (entry or {}).get("modelscope_id"),
+        }
+    if not hasattr(args, "little_model"):
+        args.little_model = args.draft_model
+    args._model_provenance = _prov
+    # 注意不要写成 dict.get(a, dict.get(b, get_vocab_size(b)))：默认参数会
+    # 被立即求值，hub id 在离线环境下会触发网络回退。
+    if draft_alias in vocab_size:
+        args.vocab_size = vocab_size[draft_alias]
+    elif args.draft_model in vocab_size:
+        args.vocab_size = vocab_size[args.draft_model]
+    else:
+        args.vocab_size = get_vocab_size(args.draft_model)

@@ -15,8 +15,8 @@ cd "$(dirname "$0")/.."
 GPU_ID=${1:-3}
 PORT_BASE=29630
 ACC_ROOT=src/SpecDec_pp/checkpoints/acc_head
-OLD_MAIN=checkpoints_llama/rl_adapter_main.pth
-OLD_LITTLE=checkpoints_llama/rl_adapter_little.pth
+OLD_MAIN=archive/checkpoints_llama/rl_adapter_main.pth
+OLD_LITTLE=archive/checkpoints_llama/rl_adapter_little.pth
 
 COMMON=(
   --eval_mode adaptive_tridecoding

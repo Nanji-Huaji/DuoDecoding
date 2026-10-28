@@ -1254,12 +1254,20 @@ class RLNetworkAdapter:
         if new_best:
             self.best_tps = current_tps
         self.agent.best_tps = self.best_tps
+
+        # 训练只产出 latest；"best" 是晋升决策，不再由单样本训练吞吐决定
+        # （旧行为会把噪声当成最优，并在续训时优先加载它）。
         self.agent.save(self.model_path, extras=self._grid_extras())
 
-        if new_best:
-            self.agent.save(self.best_model_path, extras=self._grid_extras())
+        # 可选的诊断产物：训练吞吐最优，不参与加载。
+        if getattr(self.args, "rl_track_best_tps", False) and new_best:
+            best_tps_path = os.path.join(
+                os.path.dirname(self.model_path), "best_tps.pth"
+            )
+            self.agent.save(best_tps_path, extras=self._grid_extras())
             print(
-                f"[{self.agent.name}] New Best TPS: {current_tps:.2f}! Saved to {self.best_model_path}"
+                f"[{self.agent.name}] New best train TPS {current_tps:.2f}"
+                f"（诊断用，写入 {best_tps_path}；不参与加载）"
             )
 
         # 每 100 次更新备份一次（可选）

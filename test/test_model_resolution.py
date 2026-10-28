@@ -12,6 +12,7 @@ Historical bugs:
 
 import warnings
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -61,8 +62,9 @@ class TestModelZoo:
             model_zoo(_ns(target_model="vicuna-7b-v1.3"))
 
     def test_vocab_hit_by_alias_and_path_mapping(self):
-        # B22: vocab 用原始别名命中（不读 config.json/不走网络），路径照常映射
-        args = _ns()
+        # B22: vocab 用原始别名命中（不读 config.json/不走网络）；
+        # legacy 模式保留旧的相对映射
+        args = _ns(model_source="legacy")
         model_zoo(args)
         assert args.draft_model == "llama/tiny-llama-1.1b"
         assert args.target_model == "llama/Llama-2-13b-hf"
@@ -70,10 +72,34 @@ class TestModelZoo:
         assert args.vocab_size == 32000
 
     def test_qwen_vocab(self):
-        args = _ns(draft_model="qwen-3-0.6b", target_model="qwen-3-1.7b")
+        args = _ns(
+            draft_model="qwen-3-0.6b",
+            target_model="qwen-3-1.7b",
+            model_source="hub",
+        )
         model_zoo(args)
         assert args.draft_model == "Qwen/Qwen3-0.6B"
         assert args.vocab_size == 151936
+
+    def test_auto_prefers_existing_local_dir(self):
+        args = _ns(model_source="auto")
+        model_zoo(args)
+        assert args.draft_model.endswith("models/llama/tiny-llama-1.1b")
+        assert args.target_model.endswith("models/llama/Llama-2-13b-hf")
+        assert args.little_model.endswith("models/llama/llama-68m")
+
+    def test_local_source_forces_local_paths(self):
+        args = _ns(model_source="local")
+        model_zoo(args)
+        assert args.draft_model.startswith(str(Path.cwd()))
+
+    def test_hub_source_uses_repo_ids(self):
+        args = _ns(model_source="hub")
+        model_zoo(args)
+        assert args.draft_model == "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+        assert args.target_model == "meta-llama/Llama-2-13b-hf"
+        assert args.little_model == "JackFram/llama-68m"
+        assert args._model_provenance["draft"]["source"] == "hub"
 
 
 class TestFewShotWarning:
