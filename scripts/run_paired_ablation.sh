@@ -53,7 +53,7 @@ wait_idle() {
       echo "[wait] timeout after ${WAIT_TIMEOUT_SECONDS}s" >&2
       return 1
     fi
-    read -r free util < <(
+    IFS=',' read -r free util < <(
       nvidia-smi -i "$GPU" --query-gpu=memory.free,utilization.gpu \
         --format=csv,noheader,nounits | tr -d ' '
     )
