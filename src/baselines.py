@@ -5198,6 +5198,7 @@ class Baselines(Decoding):
 
         current_tokens = prefix.clone()
         prefix_ops = CEETriPrefix(prefix)
+        prefix = prefix_ops.tensor
 
         start_event.record(stream=torch.cuda.current_stream())
 
@@ -5603,6 +5604,7 @@ class Baselines(Decoding):
         prefix_ops = CEETriPrefix(
             prefix, capacity=max_tokens + self.args.gamma1 + self.args.gamma2 + 1
         )
+        prefix = prefix_ops.tensor
 
         start_event.record(stream=torch.cuda.current_stream())
 

@@ -1,0 +1,74 @@
+{
+  "path": "src/cee_prefix.py",
+  "include": [],
+  "rev": "WORKTREE",
+  "entries": {
+    "CEETriPrefix.__init__": {
+      "events": 11,
+      "sha256_16": "3bca4cabe52ec6f7",
+      "surface": {
+        "assign_self": {
+          "_buffer": 2,
+          "_buffered": 1,
+          "_capacity": 1,
+          "_length": 1,
+          "_tensor": 2
+        },
+        "call": {
+          "ValueError": 1,
+          "empty": 1,
+          "tuple": 1
+        },
+        "raise": {
+          "": 1
+        }
+      }
+    },
+    "CEETriPrefix.assign": {
+      "events": 10,
+      "sha256_16": "ec5be52ea13fc66e",
+      "surface": {
+        "assign_self": {
+          "_length": 1,
+          "_tensor": 2
+        },
+        "boolop": {
+          "And": 1
+        },
+        "call": {
+          "ValueError": 2,
+          "tuple": 1
+        },
+        "raise": {
+          "": 2
+        },
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "CEETriPrefix.append": {
+      "events": 9,
+      "sha256_16": "882cf016193e428a",
+      "surface": {
+        "assign_self": {
+          "_length": 2,
+          "_tensor": 2
+        },
+        "boolop": {
+          "And": 1
+        },
+        "call": {
+          "ValueError": 1,
+          "cat": 1
+        },
+        "raise": {
+          "": 1
+        },
+        "return": {
+          "": 1
+        }
+      }
+    }
+  }
+}
