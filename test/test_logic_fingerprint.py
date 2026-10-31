@@ -30,6 +30,7 @@ import logic_fingerprint as lf  # noqa: E402
 FIXTURES = {
     "src/baselines.py": ROOT / "test/golden/logic/baselines.json",
     "src/engine.py": ROOT / "test/golden/logic/engine.json",
+    "src/cee_prefix.py": ROOT / "test/golden/logic/cee_prefix.json",
 }
 
 
