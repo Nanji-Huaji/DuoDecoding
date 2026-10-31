@@ -4611,6 +4611,264 @@ class Baselines(Decoding):
         )
 
     # Two-stage CUHLM variant using uncertainty-gated acceptance on both layers.
+    def _cee_first_stage_dssd(
+        self,
+        prefix,
+        *,
+        prefix_ops,
+        prefix_len: int,
+        current_proposal_top_k,
+        little_model_cache,
+        draft_model_cache,
+        comm_simulator,
+        little_device,
+        draft_device,
+        transfer_top_k,
+        charge_residual: bool,
+        little_model_forward_times: int,
+        draft_model_forward_times: int,
+        total_little_model_generated_tokens: int,
+        total_little_model_accepted_tokens: int,
+    ):
+        """CEE 第一层（little proposal + verify + reject）；与内联块逐语句等价。"""
+        little_stage_probs: Optional[torch.Tensor] = None
+
+        # --- Layer 1: Little -> Draft (Serial) ---
+        x, little_rebuilt_probs, little_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
+            little_model_cache,
+            prefix.to(little_device),
+            self.args.gamma2,
+            current_proposal_top_k,
+            need_topk_metadata=True,
+        )
+        # Sync with Draft Model
+        _ = draft_model_cache.generate(x.to(draft_device), 1)
+
+        little_model_forward_times += self.args.gamma2
+        draft_model_forward_times += 1
+        total_little_model_generated_tokens += self.args.gamma2
+
+        n1: int = prefix_len + self.args.gamma2 - 1
+
+        if self.args.gamma2 > 0:
+            little_stage_probs = stage_prob_history(
+                little_model_cache,
+                prefix_len,
+                little_rebuilt_probs,
+            )
+            draft_tokens, draft_probs = collect_verification_payload(
+                little_stage_probs,
+                x,
+                prefix_len,
+                self.args.gamma2,
+            )
+            comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
+            little_stage_kwargs = {
+                "proposer_cache": little_model_cache,
+                "verifier_cache": draft_model_cache,
+                "x": x,
+                "prefix_len": prefix_len,
+                "gamma": self.args.gamma2,
+                "output_device": little_device,
+                "draft_probs_override": cast(torch.Tensor, little_stage_probs),
+            }
+            little_topk_history = stage_topk_proposal_history(
+                little_rebuilt_meta,
+                self.args.gamma2,
+            )
+            if little_topk_history is not None:
+                little_stage_kwargs["draft_topk_history"] = little_topk_history
+            (
+                little_accepted_this_iter,
+                n1,
+                t,
+                little_all_accepted,
+            ) = resolve_stage_verification(**little_stage_kwargs)
+            if not little_all_accepted:
+                comm_simulator.send_reject_message("edge_end")
+        else:
+            little_accepted_this_iter = 0
+            t = sample_accept_token(
+                draft_model_cache.prob_history[:, -1, : self.vocab_size],
+                output_device=little_device,
+            )
+            little_all_accepted = True
+
+        total_little_model_accepted_tokens += little_accepted_this_iter
+
+        assert n1 >= prefix_len - 1
+        prefix = prefix_ops.assign(x, n1 + 1)
+
+        if not little_all_accepted:
+            # Reject, resample from Draft
+            comm_simulator.transfer(
+                None,
+                cast(torch.Tensor, little_stage_probs)[:, n1, : self.vocab_size],
+                "edge_end",
+                transfer_top_k is not None and transfer_top_k > 0,
+                transfer_top_k,
+            )
+            if charge_residual:
+                # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
+                comm_simulator.simulate_transfer(
+                    reject_tail_scalar_bytes(
+                        cast(torch.Tensor, little_stage_probs)[
+                            :, n1, : self.vocab_size
+                        ],
+                        transfer_top_k,
+                    ),
+                    "edge_end",
+                )
+
+        # Transfer sampled token index back
+        _send_downlink_token(comm_simulator, t, "edge_end")
+
+        prefix = prefix_ops.append(t)
+
+        # New tokens generated in Layer 1
+        new_generated_token_layer1 = prefix[:, prefix_len:]
+        return (
+            prefix,
+            new_generated_token_layer1,
+            little_model_forward_times,
+            draft_model_forward_times,
+            total_little_model_generated_tokens,
+            total_little_model_accepted_tokens,
+        )
+
+    def _cee_first_stage_dsd(
+        self,
+        prefix,
+        *,
+        prefix_ops,
+        prefix_len: int,
+        current_proposal_top_k,
+        little_model_cache,
+        draft_model_cache,
+        comm_simulator,
+        little_device,
+        draft_device,
+        transfer_top_k,
+        charge_residual: bool,
+        little_model_forward_times: int,
+        draft_model_forward_times: int,
+        total_little_model_generated_tokens: int,
+        total_little_model_accepted_tokens: int,
+    ):
+        """CEE 第一层（little proposal + verify + reject）；与内联块逐语句等价。"""
+
+        # --- Layer 1: Little -> Draft (Parallel) ---
+        if current_proposal_top_k is not None and hasattr(
+            little_model_cache, "generate_with_topk_metadata_only"
+        ):
+            x, little_topk_history = little_model_cache.generate_with_topk_metadata_only(
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+            )
+        else:
+            x, little_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
+                little_model_cache,
+                prefix.to(little_device),
+                self.args.gamma2,
+                current_proposal_top_k,
+                need_topk_metadata=False,
+            )[:2]
+            little_topk_history = None
+
+        # Launch draft verification on GPU immediately (overlaps with CPU comm below)
+        _ = draft_model_cache.generate(x.to(draft_device), 1)
+
+        # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+        comm_simulator.transfer(x, None, "edge_end")
+
+        little_model_forward_times += self.args.gamma2
+        draft_model_forward_times += 1
+        total_little_model_generated_tokens += self.args.gamma2
+
+        n1: int = prefix_len + self.args.gamma2 - 1
+
+        little_accepted_this_iter = 0
+        if self.args.gamma2 > 0:
+            l1_actual_gamma = min(self.args.gamma2, x.shape[1] - prefix_len)
+            if l1_actual_gamma <= 0:
+                little_accepted_this_iter = 0
+                n1 = prefix_len - 1
+                t = sample(
+                    draft_model_cache.prob_history[
+                        :, -1, : draft_model_cache.vocab_size
+                    ]
+                ).to(little_device)
+                little_all_accepted = True
+                little_model_cache.rollback(n1 + 1)
+                draft_model_cache.rollback(n1 + 2)
+            else:
+                _simulate_topk_prob_transfer(
+                    comm_simulator,
+                    link_type="edge_end",
+                    draft_len=l1_actual_gamma,
+                    transfer_top_k=transfer_top_k,
+                    prob_dtype=draft_model_cache.prob_history.dtype,
+                )
+                little_stage_kwargs = {
+                    "proposer_cache": little_model_cache,
+                    "verifier_cache": draft_model_cache,
+                    "x": x,
+                    "prefix_len": prefix_len,
+                    "gamma": self.args.gamma2,
+                    "output_device": little_device,
+                }
+                if little_topk_history is not None:
+                    little_stage_kwargs["draft_topk_history"] = little_topk_history
+                (
+                    little_accepted_this_iter,
+                    n1,
+                    t,
+                    little_all_accepted,
+                ) = resolve_stage_verification(**little_stage_kwargs)
+                if not little_all_accepted:
+                    comm_simulator.send_reject_message("edge_end")
+                    if charge_residual:
+                        # 统一口径（§3.4）：legacy 只发 6B 拒绝信号，拒绝
+                        # 位置的残差分布被无声省掉；honest 补
+                        # k*(4+元素)+元素（行取验证方 draft 在 n1 的分布）。
+                        comm_simulator.simulate_transfer(
+                            reject_residual_payload_bytes(
+                                draft_model_cache.prob_history[
+                                    :, n1, : self.vocab_size
+                                ],
+                                transfer_top_k,
+                            ),
+                            "edge_end",
+                        )
+        else:
+            t = sample_accept_token(
+                draft_model_cache.prob_history[:, -1, : self.vocab_size],
+                output_device=little_device,
+            )
+            little_all_accepted = True
+
+        total_little_model_accepted_tokens += little_accepted_this_iter
+
+        assert n1 >= prefix_len - 1
+        n1_plus1 = n1 + 1
+        prefix = prefix_ops.assign(x, n1_plus1)
+
+        # Transfer sampled token index + token back (merged)
+        _send_downlink_token(comm_simulator, t, "edge_end")
+
+        prefix = prefix_ops.append(t)
+
+        new_generated_token_layer1 = prefix[:, prefix_len:]
+        return (
+            prefix,
+            new_generated_token_layer1,
+            little_model_forward_times,
+            draft_model_forward_times,
+            total_little_model_generated_tokens,
+            total_little_model_accepted_tokens,
+        )
+
     @Register.register_decoding("cee_cuhlm")
     @torch.no_grad()
     def cee_cuhlm(
@@ -5217,103 +5475,31 @@ class Baselines(Decoding):
             comm_simulator.set_round(idx)
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
-            little_stage_probs: Optional[torch.Tensor] = None
             draft_stage_probs: Optional[torch.Tensor] = None
-
-            # --- Layer 1: Little -> Draft (Serial) ---
-            x, little_rebuilt_probs, little_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
-                little_model_cache,
-                prefix.to(little_device),
-                self.args.gamma2,
-                current_proposal_top_k,
-                need_topk_metadata=True,
+            (
+                prefix,
+                new_generated_token_layer1,
+                little_model_forward_times,
+                draft_model_forward_times,
+                total_little_model_generated_tokens,
+                total_little_model_accepted_tokens,
+            ) = self._cee_first_stage_dssd(
+                prefix,
+                prefix_ops=prefix_ops,
+                prefix_len=prefix_len,
+                current_proposal_top_k=current_proposal_top_k,
+                little_model_cache=little_model_cache,
+                draft_model_cache=draft_model_cache,
+                comm_simulator=comm_simulator,
+                little_device=little_device,
+                draft_device=draft_device,
+                transfer_top_k=transfer_top_k,
+                charge_residual=charge_residual,
+                little_model_forward_times=little_model_forward_times,
+                draft_model_forward_times=draft_model_forward_times,
+                total_little_model_generated_tokens=total_little_model_generated_tokens,
+                total_little_model_accepted_tokens=total_little_model_accepted_tokens,
             )
-            # Sync with Draft Model
-            _ = draft_model_cache.generate(x.to(draft_device), 1)
-
-            little_model_forward_times += self.args.gamma2
-            draft_model_forward_times += 1
-            total_little_model_generated_tokens += self.args.gamma2
-
-            n1: int = prefix_len + self.args.gamma2 - 1
-
-            if self.args.gamma2 > 0:
-                little_stage_probs = stage_prob_history(
-                    little_model_cache,
-                    prefix_len,
-                    little_rebuilt_probs,
-                )
-                draft_tokens, draft_probs = collect_verification_payload(
-                    little_stage_probs,
-                    x,
-                    prefix_len,
-                    self.args.gamma2,
-                )
-                comm_simulator.transfer(draft_tokens, draft_probs, "edge_end")
-                little_stage_kwargs = {
-                    "proposer_cache": little_model_cache,
-                    "verifier_cache": draft_model_cache,
-                    "x": x,
-                    "prefix_len": prefix_len,
-                    "gamma": self.args.gamma2,
-                    "output_device": little_device,
-                    "draft_probs_override": cast(torch.Tensor, little_stage_probs),
-                }
-                little_topk_history = stage_topk_proposal_history(
-                    little_rebuilt_meta,
-                    self.args.gamma2,
-                )
-                if little_topk_history is not None:
-                    little_stage_kwargs["draft_topk_history"] = little_topk_history
-                (
-                    little_accepted_this_iter,
-                    n1,
-                    t,
-                    little_all_accepted,
-                ) = resolve_stage_verification(**little_stage_kwargs)
-                if not little_all_accepted:
-                    comm_simulator.send_reject_message("edge_end")
-            else:
-                little_accepted_this_iter = 0
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
-                little_all_accepted = True
-
-            total_little_model_accepted_tokens += little_accepted_this_iter
-
-            assert n1 >= prefix_len - 1
-            prefix = prefix_ops.assign(x, n1 + 1)
-
-            if not little_all_accepted:
-                # Reject, resample from Draft
-                comm_simulator.transfer(
-                    None,
-                    cast(torch.Tensor, little_stage_probs)[:, n1, : self.vocab_size],
-                    "edge_end",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                )
-                if charge_residual:
-                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
-                    comm_simulator.simulate_transfer(
-                        reject_tail_scalar_bytes(
-                            cast(torch.Tensor, little_stage_probs)[
-                                :, n1, : self.vocab_size
-                            ],
-                            transfer_top_k,
-                        ),
-                        "edge_end",
-                    )
-
-            # Transfer sampled token index back
-            _send_downlink_token(comm_simulator, t, "edge_end")
-
-            prefix = prefix_ops.append(t)
-
-            # New tokens generated in Layer 1
-            new_generated_token_layer1 = prefix[:, prefix_len:]
 
             # --- Layer 2: Draft -> Target (Serial) ---
             # Pre-launch GPU work (draft + target) to overlap with CPU comm simulation
@@ -5623,110 +5809,30 @@ class Baselines(Decoding):
             comm_simulator.set_round(idx)
             prefix_len = prefix.shape[1]
             current_proposal_top_k = proposal_top_k(transfer_top_k)
-
-            # --- Layer 1: Little -> Draft (Parallel) ---
-            if current_proposal_top_k is not None and hasattr(
-                little_model_cache, "generate_with_topk_metadata_only"
-            ):
-                x, little_topk_history = little_model_cache.generate_with_topk_metadata_only(
-                    prefix.to(little_device),
-                    self.args.gamma2,
-                    current_proposal_top_k,
-                )
-            else:
-                x, little_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
-                    little_model_cache,
-                    prefix.to(little_device),
-                    self.args.gamma2,
-                    current_proposal_top_k,
-                    need_topk_metadata=False,
-                )[:2]
-                little_topk_history = None
-
-            # Launch draft verification on GPU immediately (overlaps with CPU comm below)
-            _ = draft_model_cache.generate(x.to(draft_device), 1)
-
-            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
-            comm_simulator.transfer(x, None, "edge_end")
-
-            little_model_forward_times += self.args.gamma2
-            draft_model_forward_times += 1
-            total_little_model_generated_tokens += self.args.gamma2
-
-            n1: int = prefix_len + self.args.gamma2 - 1
-
-            little_accepted_this_iter = 0
-            if self.args.gamma2 > 0:
-                l1_actual_gamma = min(self.args.gamma2, x.shape[1] - prefix_len)
-                if l1_actual_gamma <= 0:
-                    little_accepted_this_iter = 0
-                    n1 = prefix_len - 1
-                    t = sample(
-                        draft_model_cache.prob_history[
-                            :, -1, : draft_model_cache.vocab_size
-                        ]
-                    ).to(little_device)
-                    little_all_accepted = True
-                    little_model_cache.rollback(n1 + 1)
-                    draft_model_cache.rollback(n1 + 2)
-                else:
-                    _simulate_topk_prob_transfer(
-                        comm_simulator,
-                        link_type="edge_end",
-                        draft_len=l1_actual_gamma,
-                        transfer_top_k=transfer_top_k,
-                        prob_dtype=draft_model_cache.prob_history.dtype,
-                    )
-                    little_stage_kwargs = {
-                        "proposer_cache": little_model_cache,
-                        "verifier_cache": draft_model_cache,
-                        "x": x,
-                        "prefix_len": prefix_len,
-                        "gamma": self.args.gamma2,
-                        "output_device": little_device,
-                    }
-                    if little_topk_history is not None:
-                        little_stage_kwargs["draft_topk_history"] = little_topk_history
-                    (
-                        little_accepted_this_iter,
-                        n1,
-                        t,
-                        little_all_accepted,
-                    ) = resolve_stage_verification(**little_stage_kwargs)
-                    if not little_all_accepted:
-                        comm_simulator.send_reject_message("edge_end")
-                        if charge_residual:
-                            # 统一口径（§3.4）：legacy 只发 6B 拒绝信号，拒绝
-                            # 位置的残差分布被无声省掉；honest 补
-                            # k*(4+元素)+元素（行取验证方 draft 在 n1 的分布）。
-                            comm_simulator.simulate_transfer(
-                                reject_residual_payload_bytes(
-                                    draft_model_cache.prob_history[
-                                        :, n1, : self.vocab_size
-                                    ],
-                                    transfer_top_k,
-                                ),
-                                "edge_end",
-                            )
-            else:
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
-                little_all_accepted = True
-
-            total_little_model_accepted_tokens += little_accepted_this_iter
-
-            assert n1 >= prefix_len - 1
-            n1_plus1 = n1 + 1
-            prefix = prefix_ops.assign(x, n1_plus1)
-
-            # Transfer sampled token index + token back (merged)
-            _send_downlink_token(comm_simulator, t, "edge_end")
-
-            prefix = prefix_ops.append(t)
-
-            new_generated_token_layer1 = prefix[:, prefix_len:]
+            (
+                prefix,
+                new_generated_token_layer1,
+                little_model_forward_times,
+                draft_model_forward_times,
+                total_little_model_generated_tokens,
+                total_little_model_accepted_tokens,
+            ) = self._cee_first_stage_dsd(
+                prefix,
+                prefix_ops=prefix_ops,
+                prefix_len=prefix_len,
+                current_proposal_top_k=current_proposal_top_k,
+                little_model_cache=little_model_cache,
+                draft_model_cache=draft_model_cache,
+                comm_simulator=comm_simulator,
+                little_device=little_device,
+                draft_device=draft_device,
+                transfer_top_k=transfer_top_k,
+                charge_residual=charge_residual,
+                little_model_forward_times=little_model_forward_times,
+                draft_model_forward_times=draft_model_forward_times,
+                total_little_model_generated_tokens=total_little_model_generated_tokens,
+                total_little_model_accepted_tokens=total_little_model_accepted_tokens,
+            )
 
             # --- Layer 2: Draft -> Target (Parallel) ---
             # Pre-launch GPU work (draft) to overlap with CPU comm simulation
