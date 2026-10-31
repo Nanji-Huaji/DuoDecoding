@@ -72,3 +72,28 @@ python tools/analyze_paired_ab.py <root> --markdown-out summary.md --json-out su
 
 输出 median、B/A paired ratio、`forwards/token`、`bytes/token`、逐轮 token 一致率。
 吞吐只看 paired ratio；结构指标用于跨设备对照。
+
+## 远端运行（tmux）
+
+远端没有 sudo 时，tmux 可以用户级安装：
+
+```bash
+cd /tmp && apt-get download tmux libevent-core-2.1-7t64
+mkdir -p ~/opt/tmux ~/bin
+dpkg-deb -x tmux_*.deb ~/opt/tmux
+dpkg-deb -x libevent-core*.deb ~/opt/tmux
+cat > ~/bin/tmux <<'SH'
+#!/bin/bash
+export LD_LIBRARY_PATH=$HOME/opt/tmux/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
+exec $HOME/opt/tmux/usr/bin/tmux "$@"
+SH
+chmod +x ~/bin/tmux
+```
+
+长任务放进 session，SSH 断开也不会被 SIGHUP：
+
+```bash
+~/bin/tmux new-session -d -s paired_ab 'bash scripts/run_paired_ablation.sh > /tmp/paired_ab.log 2>&1'
+~/bin/tmux ls
+~/bin/tmux attach -t paired_ab
+```
