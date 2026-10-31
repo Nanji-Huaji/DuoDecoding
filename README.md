@@ -9,12 +9,11 @@ RL-based threshold selection, and adaptive candidate lengths (SpecDec++).
 
 - **Python** &ge; 3.10
 - **CUDA**-capable GPU(s) with sufficient VRAM for the models you intend to run
-- **HuggingFace Hub** access (for downloading models — a [HF token](https://huggingface.co/settings/tokens) may be required for gated models such as Llama 2)
+- **HuggingFace Hub** access (for downloading models; a [HF token](https://huggingface.co/settings/tokens) may be required for gated models such as Llama 2)
 
 ### Environment
 
-The project uses `uv` for dependency management. If you prefer plain `pip`, a
-`requirements.txt` is also provided.
+The project uses `uv` for dependency management. A `requirements.txt` is also provided if you prefer plain `pip`.
 
 ```bash
 # Clone and enter the repository
@@ -126,7 +125,7 @@ are downloaded by `scripts/download_models.py --checkpoints`.
 
 ## Usage
 
-There are two main ways to use this repository now:
+There are two main ways to use this repository:
 
 1. Run a single evaluation script in `eval/` with `accelerate launch`.
 2. Run a batch of predefined experiments through `exp.py`.
