@@ -5369,6 +5369,346 @@ class Baselines(Decoding):
 
         return prefix, metrics
 
+    def _cee_second_stage_dssd(
+        self,
+        prefix,
+        *,
+        prefix_ops,
+        prefix_len: int,
+        new_generated_token_layer1,
+        current_proposal_top_k,
+        draft_model_cache,
+        target_model_cache,
+        little_model_cache,
+        comm_simulator,
+        draft_device,
+        target_device,
+        transfer_top_k,
+        charge_residual: bool,
+        idx: int,
+        batch_delay: float,
+        draft_model_forward_times: int,
+        target_model_forward_times: int,
+        total_draft_model_generated_tokens: int,
+        total_draft_model_accepted_tokens: int,
+        queuing_time: float,
+    ):
+        """CEE 第二层（draft proposal + verify + reject + prefix 更新）；与内联块逐语句等价。"""
+        # --- Layer 2: Draft -> Target (Serial) ---
+        # Pre-launch GPU work (draft + target) to overlap with CPU comm simulation
+
+        x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
+            draft_model_cache,
+            prefix.to(draft_device),
+            self.args.gamma1,
+            current_proposal_top_k,
+            need_topk_metadata=True,
+        )
+
+        queuing_time += batch_delay
+        # Sync with Target Model (runs on GPU, overlaps with CPU comm below)
+        _ = target_model_cache.generate(x.to(target_device), 1)
+
+        # Communication simulation (pure CPU): overlaps with target GPU forward above
+        if idx == 1:
+            comm_simulator.transfer(prefix, None, "edge_cloud")
+        else:
+            comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
+
+        draft_model_forward_times += self.args.gamma1
+        target_model_forward_times += 1
+        total_draft_model_generated_tokens += (
+            new_generated_token_layer1.shape[1] + self.args.gamma1
+        )
+
+        n2: int = (
+            prefix_len + new_generated_token_layer1.shape[1] + self.args.gamma1 - 1
+        )
+        draft_accepted_this_iter = 0
+
+        # Iterate over both new tokens from Layer 1 and Draft speculation
+        total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
+
+        if total_gamma_layer2 > 0:
+            draft_stage_probs = stage_prob_history(
+                draft_model_cache,
+                prefix_len + new_generated_token_layer1.shape[1],
+                draft_rebuilt_probs,
+            )
+            draft_tokens_second, draft_probs_second = collect_verification_payload(
+                draft_stage_probs,
+                x,
+                prefix_len,
+                total_gamma_layer2,
+            )
+            comm_simulator.transfer(
+                draft_tokens_second,
+                draft_probs_second,
+                "edge_cloud",
+            )
+            draft_stage_kwargs = {
+                "proposer_cache": draft_model_cache,
+                "verifier_cache": target_model_cache,
+                "x": x,
+                "prefix_len": prefix_len,
+                "gamma": total_gamma_layer2,
+                "output_device": draft_device,
+                "draft_probs_override": cast(torch.Tensor, draft_stage_probs),
+            }
+            prefix_topk_history_dssd = None
+            if new_generated_token_layer1.shape[1] > 0:
+                prefix_prob_rows = draft_model_cache.prob_history[
+                    :,
+                    prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
+                    :,
+                ]
+                prefix_topk_history_dssd = build_stage_prefix_topk_history(
+                    prefix_prob_rows,
+                    current_proposal_top_k,
+                )
+            draft_stage_topk_history = merge_stage_topk_histories(
+                prefix_topk_history_dssd,
+                stage_topk_proposal_history(
+                    draft_rebuilt_meta,
+                    self.args.gamma1,
+                ),
+            )
+            draft_stage_topk_history = stage_topk_proposal_history(
+                draft_stage_topk_history,
+                total_gamma_layer2,
+            )
+            if draft_stage_topk_history is not None:
+                draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
+            (
+                draft_accepted_this_iter,
+                n2,
+                t,
+                draft_all_accepted,
+            ) = resolve_stage_verification(**draft_stage_kwargs)
+            if not draft_all_accepted:
+                comm_simulator.send_reject_message("edge_cloud")
+        else:
+            draft_accepted_this_iter = 0
+            t = sample_accept_token(
+                target_model_cache.prob_history[:, -1, : self.vocab_size],
+                output_device=draft_device,
+            )
+            draft_all_accepted = True
+
+        total_draft_model_accepted_tokens += draft_accepted_this_iter
+
+        assert n2 >= prefix_len - 1
+        prefix = prefix_ops.assign(x, n2 + 1)
+        if n2 <= little_model_cache.current_length:
+            little_model_cache.rollback(n2 + 1)
+
+        if not draft_all_accepted:
+            # Reject, resample from Target
+            comm_simulator.transfer(
+                None,
+                cast(torch.Tensor, draft_stage_probs)[:, n2, : self.vocab_size],
+                "edge_cloud",
+                transfer_top_k is not None and transfer_top_k > 0,
+                transfer_top_k,
+            )
+            if charge_residual:
+                # 统一口径（§3.4）：同阶段一，补尾部标量。
+                comm_simulator.simulate_transfer(
+                    reject_tail_scalar_bytes(
+                        cast(torch.Tensor, draft_stage_probs)[
+                            :, n2, : self.vocab_size
+                        ],
+                        transfer_top_k,
+                    ),
+                    "edge_cloud",
+                )
+
+        prefix = prefix_ops.append(t)
+
+        # Transfer index back
+        _send_downlink_token(comm_simulator, t, "edge_cloud")
+        _send_downlink_token(comm_simulator, t, "edge_end")
+
+        return (
+            prefix,
+            draft_model_forward_times,
+            target_model_forward_times,
+            total_draft_model_generated_tokens,
+            total_draft_model_accepted_tokens,
+            queuing_time,
+        )
+
+    def _cee_second_stage_dsd(
+        self,
+        prefix,
+        *,
+        prefix_ops,
+        prefix_len: int,
+        new_generated_token_layer1,
+        current_proposal_top_k,
+        draft_model_cache,
+        target_model_cache,
+        little_model_cache,
+        comm_simulator,
+        draft_device,
+        target_device,
+        transfer_top_k,
+        charge_residual: bool,
+        idx: int,
+        batch_delay: float,
+        draft_model_forward_times: int,
+        target_model_forward_times: int,
+        total_draft_model_generated_tokens: int,
+        total_draft_model_accepted_tokens: int,
+        queuing_time: float,
+    ):
+        """CEE 第二层（draft proposal + verify + reject + prefix 更新）；与内联块逐语句等价。"""
+        # --- Layer 2: Draft -> Target (Parallel) ---
+        # Pre-launch GPU work (draft) to overlap with CPU comm simulation
+
+        if current_proposal_top_k is not None and hasattr(
+            draft_model_cache, "generate_with_topk_metadata_only"
+        ):
+            x, draft_topk_history = draft_model_cache.generate_with_topk_metadata_only(
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+            )
+        else:
+            x, draft_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
+                draft_model_cache,
+                prefix.to(draft_device),
+                self.args.gamma1,
+                current_proposal_top_k,
+                need_topk_metadata=False,
+            )[:2]
+            draft_topk_history = None
+
+        # Transfer generated tokens by draft model (CPU: overlaps with GPU above)
+        speculated_tokens = x[:, -self.args.gamma1 :]
+
+        # Communication simulation (pure CPU): overlaps with draft.generate GPU above
+        if idx == 1:
+            comm_simulator.transfer(prefix, None, "edge_cloud")
+        else:
+            comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
+        comm_simulator.transfer(speculated_tokens, None, "edge_cloud")
+
+        queuing_time += batch_delay
+        # Sync with Target Model (runs on GPU while CPU does verification prep below)
+        _ = target_model_cache.generate(x.to(target_device), 1)
+
+        draft_model_forward_times += self.args.gamma1
+        target_model_forward_times += 1
+        total_draft_model_generated_tokens += (
+            new_generated_token_layer1.shape[1] + self.args.gamma1
+        )
+
+        total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
+        n2: int = prefix_len + total_gamma_layer2 - 1
+
+        draft_accepted_this_iter = 0
+
+        if total_gamma_layer2 > 0:
+            l2_actual_gamma = min(total_gamma_layer2, x.shape[1] - prefix_len)
+            if l2_actual_gamma <= 0:
+                draft_accepted_this_iter = 0
+                n2 = prefix_len - 1
+                t = sample(
+                    target_model_cache.prob_history[
+                        :, -1, : target_model_cache.vocab_size
+                    ]
+                ).to(draft_device)
+                draft_all_accepted = True
+                draft_model_cache.rollback(n2 + 1)
+                target_model_cache.rollback(n2 + 2)
+            else:
+                _simulate_topk_prob_transfer(
+                    comm_simulator,
+                    link_type="edge_cloud",
+                    draft_len=l2_actual_gamma,
+                    transfer_top_k=transfer_top_k,
+                    prob_dtype=target_model_cache.prob_history.dtype,
+                )
+                prefix_topk_history = None
+                if new_generated_token_layer1.shape[1] > 0:
+                    prefix_prob_rows = draft_model_cache.prob_history[
+                        :,
+                        prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
+                        :,
+                    ]
+                    prefix_topk_history = build_stage_prefix_topk_history(
+                        prefix_prob_rows,
+                        current_proposal_top_k,
+                    )
+                draft_stage_topk_history = merge_stage_topk_histories(
+                    prefix_topk_history,
+                    draft_topk_history,
+                )
+                draft_stage_topk_history = stage_topk_proposal_history(
+                    draft_stage_topk_history,
+                    total_gamma_layer2,
+                )
+                draft_stage_kwargs = {
+                    "proposer_cache": draft_model_cache,
+                    "verifier_cache": target_model_cache,
+                    "x": x,
+                    "prefix_len": prefix_len,
+                    "gamma": total_gamma_layer2,
+                    "output_device": draft_device,
+                }
+                if draft_stage_topk_history is not None:
+                    draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
+                (
+                    draft_accepted_this_iter,
+                    n2,
+                    t,
+                    draft_all_accepted,
+                ) = resolve_stage_verification(**draft_stage_kwargs)
+                if not draft_all_accepted:
+                    comm_simulator.send_reject_message("edge_cloud")
+                    if charge_residual:
+                        # 统一口径（§3.4）：同阶段一，残差取验证方 target
+                        # 在 n2 的分布。
+                        comm_simulator.simulate_transfer(
+                            reject_residual_payload_bytes(
+                                target_model_cache.prob_history[
+                                    :, n2, : self.vocab_size
+                                ],
+                                transfer_top_k,
+                            ),
+                            "edge_cloud",
+                        )
+        else:
+            t = sample_accept_token(
+                target_model_cache.prob_history[:, -1, : self.vocab_size],
+                output_device=draft_device,
+            )
+            draft_all_accepted = True
+
+        total_draft_model_accepted_tokens += draft_accepted_this_iter
+
+        assert n2 >= prefix_len - 1
+        n2_plus1 = n2 + 1
+        prefix = prefix_ops.assign(x, n2_plus1)
+        if n2 <= little_model_cache.current_length:
+            little_model_cache.rollback(n2_plus1)
+
+        prefix = prefix_ops.append(t)
+
+        # Transfer index + token back to both links (merged)
+        _send_downlink_token(comm_simulator, t, "edge_cloud")
+        _send_downlink_token(comm_simulator, t, "edge_end")
+
+        return (
+            prefix,
+            draft_model_forward_times,
+            target_model_forward_times,
+            total_draft_model_generated_tokens,
+            total_draft_model_accepted_tokens,
+            queuing_time,
+        )
+
     @Register.register_decoding("cee_dssd")
     @torch.no_grad()
     def cee_dssd(
@@ -5501,141 +5841,35 @@ class Baselines(Decoding):
                 total_little_model_accepted_tokens=total_little_model_accepted_tokens,
             )
 
-            # --- Layer 2: Draft -> Target (Serial) ---
-            # Pre-launch GPU work (draft + target) to overlap with CPU comm simulation
-
-            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = self._generate_with_optional_rebuilt_proposal(
-                draft_model_cache,
-                prefix.to(draft_device),
-                self.args.gamma1,
-                current_proposal_top_k,
-                need_topk_metadata=True,
+            (
+                prefix,
+                draft_model_forward_times,
+                target_model_forward_times,
+                total_draft_model_generated_tokens,
+                total_draft_model_accepted_tokens,
+                queuing_time,
+            ) = self._cee_second_stage_dssd(
+                prefix,
+                prefix_ops=prefix_ops,
+                prefix_len=prefix_len,
+                new_generated_token_layer1=new_generated_token_layer1,
+                current_proposal_top_k=current_proposal_top_k,
+                draft_model_cache=draft_model_cache,
+                target_model_cache=target_model_cache,
+                little_model_cache=little_model_cache,
+                comm_simulator=comm_simulator,
+                draft_device=draft_device,
+                target_device=target_device,
+                transfer_top_k=transfer_top_k,
+                charge_residual=charge_residual,
+                idx=idx,
+                batch_delay=batch_delay,
+                draft_model_forward_times=draft_model_forward_times,
+                target_model_forward_times=target_model_forward_times,
+                total_draft_model_generated_tokens=total_draft_model_generated_tokens,
+                total_draft_model_accepted_tokens=total_draft_model_accepted_tokens,
+                queuing_time=queuing_time,
             )
-
-            queuing_time += batch_delay
-            # Sync with Target Model (runs on GPU, overlaps with CPU comm below)
-            _ = target_model_cache.generate(x.to(target_device), 1)
-
-            # Communication simulation (pure CPU): overlaps with target GPU forward above
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
-
-            draft_model_forward_times += self.args.gamma1
-            target_model_forward_times += 1
-            total_draft_model_generated_tokens += (
-                new_generated_token_layer1.shape[1] + self.args.gamma1
-            )
-
-            n2: int = (
-                prefix_len + new_generated_token_layer1.shape[1] + self.args.gamma1 - 1
-            )
-            draft_accepted_this_iter = 0
-
-            # Iterate over both new tokens from Layer 1 and Draft speculation
-            total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
-
-            if total_gamma_layer2 > 0:
-                draft_stage_probs = stage_prob_history(
-                    draft_model_cache,
-                    prefix_len + new_generated_token_layer1.shape[1],
-                    draft_rebuilt_probs,
-                )
-                draft_tokens_second, draft_probs_second = collect_verification_payload(
-                    draft_stage_probs,
-                    x,
-                    prefix_len,
-                    total_gamma_layer2,
-                )
-                comm_simulator.transfer(
-                    draft_tokens_second,
-                    draft_probs_second,
-                    "edge_cloud",
-                )
-                draft_stage_kwargs = {
-                    "proposer_cache": draft_model_cache,
-                    "verifier_cache": target_model_cache,
-                    "x": x,
-                    "prefix_len": prefix_len,
-                    "gamma": total_gamma_layer2,
-                    "output_device": draft_device,
-                    "draft_probs_override": cast(torch.Tensor, draft_stage_probs),
-                }
-                prefix_topk_history_dssd = None
-                if new_generated_token_layer1.shape[1] > 0:
-                    prefix_prob_rows = draft_model_cache.prob_history[
-                        :,
-                        prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
-                        :,
-                    ]
-                    prefix_topk_history_dssd = build_stage_prefix_topk_history(
-                        prefix_prob_rows,
-                        current_proposal_top_k,
-                    )
-                draft_stage_topk_history = merge_stage_topk_histories(
-                    prefix_topk_history_dssd,
-                    stage_topk_proposal_history(
-                        draft_rebuilt_meta,
-                        self.args.gamma1,
-                    ),
-                )
-                draft_stage_topk_history = stage_topk_proposal_history(
-                    draft_stage_topk_history,
-                    total_gamma_layer2,
-                )
-                if draft_stage_topk_history is not None:
-                    draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
-                (
-                    draft_accepted_this_iter,
-                    n2,
-                    t,
-                    draft_all_accepted,
-                ) = resolve_stage_verification(**draft_stage_kwargs)
-                if not draft_all_accepted:
-                    comm_simulator.send_reject_message("edge_cloud")
-            else:
-                draft_accepted_this_iter = 0
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=draft_device,
-                )
-                draft_all_accepted = True
-
-            total_draft_model_accepted_tokens += draft_accepted_this_iter
-
-            assert n2 >= prefix_len - 1
-            prefix = prefix_ops.assign(x, n2 + 1)
-            if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(n2 + 1)
-
-            if not draft_all_accepted:
-                # Reject, resample from Target
-                comm_simulator.transfer(
-                    None,
-                    cast(torch.Tensor, draft_stage_probs)[:, n2, : self.vocab_size],
-                    "edge_cloud",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                )
-                if charge_residual:
-                    # 统一口径（§3.4）：同阶段一，补尾部标量。
-                    comm_simulator.simulate_transfer(
-                        reject_tail_scalar_bytes(
-                            cast(torch.Tensor, draft_stage_probs)[
-                                :, n2, : self.vocab_size
-                            ],
-                            transfer_top_k,
-                        ),
-                        "edge_cloud",
-                    )
-
-            prefix = prefix_ops.append(t)
-
-            # Transfer index back
-            _send_downlink_token(comm_simulator, t, "edge_cloud")
-            _send_downlink_token(comm_simulator, t, "edge_end")
-
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
             ):
@@ -5834,143 +6068,35 @@ class Baselines(Decoding):
                 total_little_model_accepted_tokens=total_little_model_accepted_tokens,
             )
 
-            # --- Layer 2: Draft -> Target (Parallel) ---
-            # Pre-launch GPU work (draft) to overlap with CPU comm simulation
-
-            if current_proposal_top_k is not None and hasattr(
-                draft_model_cache, "generate_with_topk_metadata_only"
-            ):
-                x, draft_topk_history = draft_model_cache.generate_with_topk_metadata_only(
-                    prefix.to(draft_device),
-                    self.args.gamma1,
-                    current_proposal_top_k,
-                )
-            else:
-                x, draft_rebuilt_probs = self._generate_with_optional_rebuilt_proposal(
-                    draft_model_cache,
-                    prefix.to(draft_device),
-                    self.args.gamma1,
-                    current_proposal_top_k,
-                    need_topk_metadata=False,
-                )[:2]
-                draft_topk_history = None
-
-            # Transfer generated tokens by draft model (CPU: overlaps with GPU above)
-            speculated_tokens = x[:, -self.args.gamma1 :]
-
-            # Communication simulation (pure CPU): overlaps with draft.generate GPU above
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-            else:
-                comm_simulator.transfer(new_generated_token_layer1, None, "edge_cloud")
-            comm_simulator.transfer(speculated_tokens, None, "edge_cloud")
-
-            queuing_time += batch_delay
-            # Sync with Target Model (runs on GPU while CPU does verification prep below)
-            _ = target_model_cache.generate(x.to(target_device), 1)
-
-            draft_model_forward_times += self.args.gamma1
-            target_model_forward_times += 1
-            total_draft_model_generated_tokens += (
-                new_generated_token_layer1.shape[1] + self.args.gamma1
+            (
+                prefix,
+                draft_model_forward_times,
+                target_model_forward_times,
+                total_draft_model_generated_tokens,
+                total_draft_model_accepted_tokens,
+                queuing_time,
+            ) = self._cee_second_stage_dsd(
+                prefix,
+                prefix_ops=prefix_ops,
+                prefix_len=prefix_len,
+                new_generated_token_layer1=new_generated_token_layer1,
+                current_proposal_top_k=current_proposal_top_k,
+                draft_model_cache=draft_model_cache,
+                target_model_cache=target_model_cache,
+                little_model_cache=little_model_cache,
+                comm_simulator=comm_simulator,
+                draft_device=draft_device,
+                target_device=target_device,
+                transfer_top_k=transfer_top_k,
+                charge_residual=charge_residual,
+                idx=idx,
+                batch_delay=batch_delay,
+                draft_model_forward_times=draft_model_forward_times,
+                target_model_forward_times=target_model_forward_times,
+                total_draft_model_generated_tokens=total_draft_model_generated_tokens,
+                total_draft_model_accepted_tokens=total_draft_model_accepted_tokens,
+                queuing_time=queuing_time,
             )
-
-            total_gamma_layer2 = new_generated_token_layer1.shape[1] + self.args.gamma1
-            n2: int = prefix_len + total_gamma_layer2 - 1
-
-            draft_accepted_this_iter = 0
-
-            if total_gamma_layer2 > 0:
-                l2_actual_gamma = min(total_gamma_layer2, x.shape[1] - prefix_len)
-                if l2_actual_gamma <= 0:
-                    draft_accepted_this_iter = 0
-                    n2 = prefix_len - 1
-                    t = sample(
-                        target_model_cache.prob_history[
-                            :, -1, : target_model_cache.vocab_size
-                        ]
-                    ).to(draft_device)
-                    draft_all_accepted = True
-                    draft_model_cache.rollback(n2 + 1)
-                    target_model_cache.rollback(n2 + 2)
-                else:
-                    _simulate_topk_prob_transfer(
-                        comm_simulator,
-                        link_type="edge_cloud",
-                        draft_len=l2_actual_gamma,
-                        transfer_top_k=transfer_top_k,
-                        prob_dtype=target_model_cache.prob_history.dtype,
-                    )
-                    prefix_topk_history = None
-                    if new_generated_token_layer1.shape[1] > 0:
-                        prefix_prob_rows = draft_model_cache.prob_history[
-                            :,
-                            prefix_len - 1 : prefix_len - 1 + new_generated_token_layer1.shape[1],
-                            :,
-                        ]
-                        prefix_topk_history = build_stage_prefix_topk_history(
-                            prefix_prob_rows,
-                            current_proposal_top_k,
-                        )
-                    draft_stage_topk_history = merge_stage_topk_histories(
-                        prefix_topk_history,
-                        draft_topk_history,
-                    )
-                    draft_stage_topk_history = stage_topk_proposal_history(
-                        draft_stage_topk_history,
-                        total_gamma_layer2,
-                    )
-                    draft_stage_kwargs = {
-                        "proposer_cache": draft_model_cache,
-                        "verifier_cache": target_model_cache,
-                        "x": x,
-                        "prefix_len": prefix_len,
-                        "gamma": total_gamma_layer2,
-                        "output_device": draft_device,
-                    }
-                    if draft_stage_topk_history is not None:
-                        draft_stage_kwargs["draft_topk_history"] = draft_stage_topk_history
-                    (
-                        draft_accepted_this_iter,
-                        n2,
-                        t,
-                        draft_all_accepted,
-                    ) = resolve_stage_verification(**draft_stage_kwargs)
-                    if not draft_all_accepted:
-                        comm_simulator.send_reject_message("edge_cloud")
-                        if charge_residual:
-                            # 统一口径（§3.4）：同阶段一，残差取验证方 target
-                            # 在 n2 的分布。
-                            comm_simulator.simulate_transfer(
-                                reject_residual_payload_bytes(
-                                    target_model_cache.prob_history[
-                                        :, n2, : self.vocab_size
-                                    ],
-                                    transfer_top_k,
-                                ),
-                                "edge_cloud",
-                            )
-            else:
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=draft_device,
-                )
-                draft_all_accepted = True
-
-            total_draft_model_accepted_tokens += draft_accepted_this_iter
-
-            assert n2 >= prefix_len - 1
-            n2_plus1 = n2 + 1
-            prefix = prefix_ops.assign(x, n2_plus1)
-            if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(n2_plus1)
-
-            prefix = prefix_ops.append(t)
-
-            # Transfer index + token back to both links (merged)
-            _send_downlink_token(comm_simulator, t, "edge_cloud")
-            _send_downlink_token(comm_simulator, t, "edge_end")
-
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
             ):
