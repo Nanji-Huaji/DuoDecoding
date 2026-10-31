@@ -78,10 +78,13 @@ python tools/analyze_paired_ab.py <root> --markdown-out summary.md --json-out su
 远端没有 sudo 时，tmux 可以用户级安装：
 
 ```bash
-cd /tmp && apt-get download tmux libevent-core-2.1-7t64
+# Ubuntu 24.04 用 t64 后缀；22.04/20.04 改为 libevent-2.1-7
+cd /tmp
+apt-get download tmux libevent-core-2.1-7t64 libutempter0
 mkdir -p ~/opt/tmux ~/bin
-dpkg-deb -x tmux_*.deb ~/opt/tmux
-dpkg-deb -x libevent-core*.deb ~/opt/tmux
+dpkg-deb -x tmux_3.4-1ubuntu0.2_amd64.deb ~/opt/tmux
+dpkg-deb -x libevent-core-2.1-7t64_*_amd64.deb ~/opt/tmux
+dpkg-deb -x libutempter0_*_amd64.deb ~/opt/tmux
 cat > ~/bin/tmux <<'SH'
 #!/bin/bash
 export LD_LIBRARY_PATH=$HOME/opt/tmux/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
@@ -90,10 +93,19 @@ SH
 chmod +x ~/bin/tmux
 ```
 
-长任务放进 session，SSH 断开也不会被 SIGHUP：
+`dpkg-deb -x` 一次只接受一个 .deb；`/tmp` 里有旧包时用完整文件名，别用 `*.deb`。
+
+长任务放进 session，SSH 断开也不会被 SIGHUP。注意 `new-session` 继承的是
+tmux **server** 的 cwd/env，而不是当前 shell 的；用 `-c` 显式指定仓库目录，
+并把 `GPU/REPS/COMMON` 等变量交给一个会自己导出的包装脚本来设置：
 
 ```bash
-~/bin/tmux new-session -d -s paired_ab 'bash scripts/run_paired_ablation.sh > /tmp/paired_ab.log 2>&1'
-~/bin/tmux ls
-~/bin/tmux attach -t paired_ab
+cd /path/to/DuoDecoding
+tmux new-session -d -s paired_ab -c "$PWD" \
+  'bash /path/to/paired_ab_run.sh > /tmp/paired_ab.log 2>&1'
+tmux ls
+tmux attach -t paired_ab
 ```
+
+如果 tmux server 已在跑，当前 shell 新 export 的变量不会自动进入新 session；
+用包装脚本（在脚本内 export）最稳。
