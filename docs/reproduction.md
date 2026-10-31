@@ -49,3 +49,26 @@ RESULT PASS
 ## 已知缺口
 
 metrics 还没有 `runtime` 字段（GPU 型号、torch/CUDA、transformers、attention backend）。跨机器 run 目前要从日志/环境记录反推，后续应补进 `get_save_dict`。
+
+## Paired A/B（共享 GPU 上的吞吐比较）
+
+单次 throughput 在共享卡上不可比，用交替多轮：
+
+```bash
+GPU=1 REPS=3 OUT_ROOT=/data/user2/paired_ab \
+A_NAME=cee_sd A_MODE=adaptive_tridecoding A_EXTRA="$ACC_ARGS" \
+B_NAME=cee_sd_no_arp B_MODE=cee_sd_no_arp B_EXTRA="" \
+COMMON="--protocol paper_table5 --comm_accounting honest ..." \
+bash scripts/run_paired_ablation.sh
+```
+
+- 脚本先等 `nvidia-smi` 的 free/util 双阈值连续满足，再开跑；
+- 每轮 A/B 或 B/A 交替，输出 `rep<N>/{A,B}/metrics.json + run.jsonl`；
+- 汇总：
+
+```bash
+python tools/analyze_paired_ab.py <root> --markdown-out summary.md --json-out summary.json
+```
+
+输出 median、B/A paired ratio、`forwards/token`、`bytes/token`、逐轮 token 一致率。
+吞吐只看 paired ratio；结构指标用于跨设备对照。
