@@ -857,8 +857,8 @@
       }
     },
     "Baselines.cee_dssd": {
-      "events": 118,
-      "sha256_16": "314cfe50b3aa7fb9",
+      "events": 121,
+      "sha256_16": "fe959e6a96091386",
       "surface": {
         "boolop": {
           "And": 4
@@ -867,6 +867,7 @@
           "": 2
         },
         "call": {
+          "CEETriPrefix": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
           "KVCacheModel": 3,
@@ -876,10 +877,11 @@
           "_graph_mode_cache_kwargs": 1,
           "_stop_at_eos": 1,
           "acquire_graph_caches": 1,
+          "append": 2,
           "apply_transfer_top_k_cap": 1,
+          "assign": 2,
           "build_stage_prefix_topk_history": 1,
           "cast": 6,
-          "cat": 2,
           "clone": 1,
           "collect_verification_payload": 2,
           "copy": 3,
@@ -935,8 +937,8 @@
       }
     },
     "Baselines.cee_dsd": {
-      "events": 121,
-      "sha256_16": "a5628502810fbaf5",
+      "events": 125,
+      "sha256_16": "ded8e207f38c6a81",
       "surface": {
         "boolop": {
           "And": 4
@@ -945,6 +947,7 @@
           "": 2
         },
         "call": {
+          "CEETriPrefix": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
           "KVCacheModel": 3,
@@ -955,14 +958,15 @@
           "_simulate_topk_prob_transfer": 2,
           "_stop_at_eos": 1,
           "acquire_graph_caches": 1,
+          "append": 2,
           "apply_transfer_top_k_cap": 1,
+          "assign": 2,
           "build_stage_prefix_topk_history": 1,
           "clone": 1,
           "copy": 3,
           "current_stream": 2,
           "elapsed_time": 1,
           "element_size": 3,
-          "empty": 1,
           "generate": 2,
           "generate_with_topk_metadata_only": 2,
           "get": 3,

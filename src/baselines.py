@@ -24,6 +24,7 @@ from .communication import (
     cuhlm_uplink_payload_bytes,
     tk_slt_uplink_payload_bytes,
 )
+from .cee_prefix import CEETriPrefix
 from .checkpoint_provenance import (
     describe_dir,
     describe_path,
@@ -5196,6 +5197,7 @@ class Baselines(Decoding):
         end_event = torch.cuda.Event(enable_timing=True)
 
         current_tokens = prefix.clone()
+        prefix_ops = CEETriPrefix(prefix)
 
         start_event.record(stream=torch.cuda.current_stream())
 
@@ -5281,7 +5283,7 @@ class Baselines(Decoding):
             total_little_model_accepted_tokens += little_accepted_this_iter
 
             assert n1 >= prefix_len - 1
-            prefix = x[:, : n1 + 1]
+            prefix = prefix_ops.assign(x, n1 + 1)
 
             if not little_all_accepted:
                 # Reject, resample from Draft
@@ -5307,7 +5309,7 @@ class Baselines(Decoding):
             # Transfer sampled token index back
             _send_downlink_token(comm_simulator, t, "edge_end")
 
-            prefix = torch.cat((prefix, t), dim=1)
+            prefix = prefix_ops.append(t)
 
             # New tokens generated in Layer 1
             new_generated_token_layer1 = prefix[:, prefix_len:]
@@ -5416,7 +5418,7 @@ class Baselines(Decoding):
             total_draft_model_accepted_tokens += draft_accepted_this_iter
 
             assert n2 >= prefix_len - 1
-            prefix = x[:, : n2 + 1]
+            prefix = prefix_ops.assign(x, n2 + 1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2 + 1)
 
@@ -5441,7 +5443,7 @@ class Baselines(Decoding):
                         "edge_cloud",
                     )
 
-            prefix = torch.cat((prefix, t), dim=1)
+            prefix = prefix_ops.append(t)
 
             # Transfer index back
             _send_downlink_token(comm_simulator, t, "edge_cloud")
@@ -5598,13 +5600,9 @@ class Baselines(Decoding):
 
         # Pre-allocate prefix buffer to avoid O(n²) torch.cat during generation
         # x can grow up to max_tokens + gamma2 + gamma1 + 1 inside the loop
-        buffer_size = max_tokens + self.args.gamma1 + self.args.gamma2 + 1
-        prefix_buffer = torch.empty(
-            1, buffer_size, dtype=prefix.dtype, device=prefix.device
+        prefix_ops = CEETriPrefix(
+            prefix, capacity=max_tokens + self.args.gamma1 + self.args.gamma2 + 1
         )
-        prefix_len_tracker = prefix.shape[1]
-        prefix_buffer[:, :prefix_len_tracker] = prefix
-        prefix = prefix_buffer[:, :prefix_len_tracker]
 
         start_event.record(stream=torch.cuda.current_stream())
 
@@ -5719,15 +5717,12 @@ class Baselines(Decoding):
 
             assert n1 >= prefix_len - 1
             n1_plus1 = n1 + 1
-            prefix_buffer[:, :n1_plus1] = x[:, :n1_plus1]
-            prefix_len_tracker = n1_plus1
+            prefix = prefix_ops.assign(x, n1_plus1)
 
             # Transfer sampled token index + token back (merged)
             _send_downlink_token(comm_simulator, t, "edge_end")
 
-            prefix_buffer[:, prefix_len_tracker : prefix_len_tracker + t.shape[1]] = t
-            prefix_len_tracker += t.shape[1]
-            prefix = prefix_buffer[:, :prefix_len_tracker]
+            prefix = prefix_ops.append(t)
 
             new_generated_token_layer1 = prefix[:, prefix_len:]
 
@@ -5858,14 +5853,11 @@ class Baselines(Decoding):
 
             assert n2 >= prefix_len - 1
             n2_plus1 = n2 + 1
-            prefix_buffer[:, :n2_plus1] = x[:, :n2_plus1]
-            prefix_len_tracker = n2_plus1
+            prefix = prefix_ops.assign(x, n2_plus1)
             if n2 <= little_model_cache.current_length:
                 little_model_cache.rollback(n2_plus1)
 
-            prefix_buffer[:, prefix_len_tracker : prefix_len_tracker + t.shape[1]] = t
-            prefix_len_tracker += t.shape[1]
-            prefix = prefix_buffer[:, :prefix_len_tracker]
+            prefix = prefix_ops.append(t)
 
             # Transfer index + token back to both links (merged)
             _send_downlink_token(comm_simulator, t, "edge_cloud")
