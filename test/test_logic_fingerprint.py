@@ -35,8 +35,16 @@ FIXTURES = {
 
 
 def _entries(relative: str) -> dict:
-    source = (ROOT / relative).read_text(encoding="utf-8")
-    return lf.load_entries({relative: source})
+    """加载入口文件及其 fixture 声明的 include 语料。
+
+    多文件指纹：fixture 的 ``include`` 字段列出需要参与展开/解析的额外文件；
+    以前这里只读单文件，导致 helper 移出 baselines.py 后指纹假性变化。
+    """
+    fixture = json.loads(FIXTURES[relative].read_text(encoding="utf-8"))
+    sources = {relative: (ROOT / relative).read_text(encoding="utf-8")}
+    for include in fixture.get("include", []) or []:
+        sources[include] = (ROOT / include).read_text(encoding="utf-8")
+    return lf.load_entries(sources)
 
 
 @pytest.mark.parametrize("path", sorted(FIXTURES))
