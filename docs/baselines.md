@@ -208,12 +208,14 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须按新实现
 整体重跑，不能与旧数字混用**。
 
-### 5) `ceesd_without_arp`（3 模型，消融：无 ARP）
+### 5) `ceesd_without_arp`（legacy：旧血缘，仅历史复现）
 
-行为要点：
-
-- 不加载/不使用 ARP head（但允许 RL adapter 仅调整 top-k 等配置）
-- 结构仍是两层（Little→Draft→Target）投机与通信
+- 实现已迁到 `src/legacy/ceesd_without_arp.py`（`baselines.py` 只留薄 wrapper）；
+- 不加载/不使用 ARP head（允许 RL adapter 仅调整 top-k）；
+- 结构仍是两层（Little→Draft→Target）投机与通信；
+- **不要用它做新消融**：旧验证/回滚路径与当前 CEE-SD 不同，且缺少后续口径修复。
+  新的无 ARP 消融请用 `--eval_mode cee_sd_no_arp`
+  （`adaptive_tridecoding(_ablation="no_arp")`，保留 RL top-k、只关 ARP head）。
 
 ### 6) `adaptive_decoding`（2 模型 + ARP）
 
