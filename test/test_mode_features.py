@@ -26,12 +26,12 @@ OLD_DUAL = {
 OLD_TRI = {
     "tridecoding", "adaptive_tridecoding", "target_only",
     "cee_sd", "cee_sd_opportunistic", "ceesd_without_arp",
-    "ceesd_w/o_arp", "cee_cuhlm", "cee_dsd", "cee_dssd",
+    "ceesd_w/o_arp", "cee_cuhlm", "cee_dsd", "cee_dssd", "cee_sd_no_arp",
 }
 OLD_USES_MAIN_RL = {
     "adaptive_decoding", "adaptive_tridecoding", "cee_sd",
     "cee_sd_opportunistic", "cee_cuhlm", "cee_dsd", "cee_dssd",
-    "ceesd_without_arp", "ceesd_w/o_arp",
+    "ceesd_without_arp", "ceesd_w/o_arp", "cee_sd_no_arp",
 }
 OLD_USES_LITTLE_RL = OLD_USES_MAIN_RL - {"adaptive_decoding"}
 OLD_ACC_BOTH = {
