@@ -73,6 +73,7 @@ _STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
     # 的 wrapper：运行时内省会跟随调用，消费集与主方法一致。
     "tridecoding": ACCOUNTING_SWITCHES,
     "ceesd_without_arp": _BASELINE_ACCOUNTING,
+    "cee_sd_no_arp": ACCOUNTING_SWITCHES,
     "ceesd_w/o_arp": _BASELINE_ACCOUNTING,
     "adaptive_decoding": _BASELINE_ACCOUNTING,
     "cee_dssd": _BASELINE_ACCOUNTING,
@@ -140,6 +141,7 @@ _STATIC_DEPTH_KEYS: dict[str, tuple[str, ...]] = {
     "cee_dsd": ("gamma1", "gamma2"),
     "cee_dssd": ("gamma1", "gamma2"),
     "ceesd_without_arp": ("gamma1", "gamma2"),
+    "cee_sd_no_arp": ("gamma1", "gamma2"),
     "ceesd_w/o_arp": ("gamma1", "gamma2"),
 }
 

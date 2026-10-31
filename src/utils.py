@@ -262,7 +262,8 @@ def _dest_to_flags(parser: argparse.ArgumentParser) -> dict[str, list[str]]:
 LEGACY_EVAL_MODES: dict[str, str] = {
     "ceesd_without_arp": (
         "旧验证/回滚路径的实现，不是 CEE-SD 的有效消融；"
-        "论文消融应使用 adaptive_tridecoding 的 _ablation profile（待实现）。"
+        "新的无 ARP 消融请用 --eval_mode cee_sd_no_arp"
+        "（adaptive_tridecoding(_ablation=\"no_arp\")）。"
     ),
 }
 

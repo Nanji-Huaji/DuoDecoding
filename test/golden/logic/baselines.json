@@ -491,87 +491,31 @@
         }
       }
     },
-    "Baselines.ceesd_without_arp": {
-      "events": 123,
-      "sha256_16": "6f182522d0194c75",
+    "Baselines.cee_sd_no_arp": {
+      "events": 2,
+      "sha256_16": "85cd22843c836269",
       "surface": {
-        "boolop": {
-          "And": 4
-        },
-        "break": {
-          "": 2
-        },
         "call": {
-          "CommunicationSimulator": 1,
-          "Event": 2,
-          "KVCacheModel": 3,
-          "PreciseCommunicationSimulator": 1,
-          "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 2,
-          "_graph_mode_cache_kwargs": 1,
-          "_reward_comm_s": 2,
-          "_stop_at_eos": 1,
-          "acquire_graph_caches": 1,
-          "apply_transfer_top_k_cap": 1,
-          "cast": 1,
-          "cat": 2,
-          "clone": 1,
-          "collect_verification_payload": 2,
-          "copy": 3,
-          "current_stream": 2,
-          "elapsed_time": 1,
-          "element_size": 3,
-          "exp": 2,
-          "generate": 2,
-          "get": 3,
-          "get_empty_metrics": 1,
-          "get_model_input_device": 3,
-          "int": 6,
-          "list": 1,
-          "min": 2,
-          "numel": 3,
-          "proposal_top_k": 1,
-          "record": 2,
-          "reject_tail_scalar_bytes": 2,
-          "resolve_stage_verification": 2,
-          "rollback": 1,
-          "select_config": 2,
-          "stage_prob_history": 4,
-          "stage_topk_proposal_history": 1,
-          "state_entropy": 2,
-          "step": 2,
-          "synchronize": 1,
-          "time": 4,
-          "to": 4
-        },
-        "comm": {
-          "flush_round": 1,
-          "send_reject_message": 2,
-          "set_round": 1,
-          "simulate_transfer": 5,
-          "transfer": 7
-        },
-        "flag": {
-          "gamma1": 1,
-          "gamma2": 1,
-          "max_tokens": 1,
-          "temp": 3,
-          "top_k": 1,
-          "top_p": 2
-        },
-        "flag_getattr": {
-          "disable_rl_update": 4,
-          "gamma1": 1,
-          "gamma2": 1
-        },
-        "loop": {
-          "while": 1
+          "adaptive_tridecoding": 1
         },
         "return": {
           "": 1
+        }
+      }
+    },
+    "Baselines.ceesd_without_arp": {
+      "events": 4,
+      "sha256_16": "68c0dc0e7e8e35e8",
+      "surface": {
+        "call": {
+          "_legacy_run": 1
         },
-        "rng": {
-          "sample_accept_token": 2
+        "flag": {
+          "gamma1": 1,
+          "gamma2": 1
+        },
+        "return": {
+          "": 1
         }
       }
     },
@@ -673,8 +617,8 @@
       }
     },
     "Baselines.adaptive_tridecoding": {
-      "events": 311,
-      "sha256_16": "ad5575a5ee31ed00",
+      "events": 315,
+      "sha256_16": "3f1133ec9c65796f",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -682,8 +626,8 @@
           "_team_reward_buffer": 1
         },
         "boolop": {
-          "And": 18,
-          "Or": 9
+          "And": 20,
+          "Or": 11
         },
         "break": {
           "": 3

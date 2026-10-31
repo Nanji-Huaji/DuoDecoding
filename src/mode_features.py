@@ -88,9 +88,11 @@ MODE_FEATURES = {
             "cee_dssd",
         )
     },
-    # "无 ARP"变体（两种拼写）：用 RL、不带头
+    # "无 ARP"变体（legacy 两种拼写）：用 RL、不带头
     "ceesd_without_arp": ModeSpec(**_TRI_RL_NO_HEAD),
     "ceesd_w/o_arp": ModeSpec(**_TRI_RL_NO_HEAD),
+    # 当前实现上的无 ARP 消融：adaptive_tridecoding(_ablation="no_arp")
+    "cee_sd_no_arp": ModeSpec(**_TRI_RL_NO_HEAD),
 }
 
 
