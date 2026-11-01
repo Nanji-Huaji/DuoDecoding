@@ -123,3 +123,20 @@ def _cee_three_layer(self, prefix, *, split: bool, ...):
    是否还要删除这个注册名？
 2. protocols 的跟随方案选 1（wrapper 只读引用）还是 2（扩展 `_collect`）？推荐 2。
 3. 论文 Table VIII/IX 是否还需要 cee_dsd/cee_dssd 的历史逐 token 对照。
+
+## 8. 实际落地（2026-10-31 收尾）
+
+状态已推进到 H5c 完成，wrapper/protocols 暂停：
+
+| 阶段 | 实际结果 |
+|---|---|
+| H5a | `CEETriPrefix` 已合入（PR #21, 65b3a77） |
+| H5b | 第一层 `_cee_first_stage_dsd/dssd` 已合入（PR #25, f1a2075）；cee_dsd/cee_dssd 421/397 → 332/327 |
+| H5c 第二层 | `_cee_second_stage_dsd/dssd` 已合入（PR #26, ca7fa3d）；两方法 332/327 → 224/221 |
+| S0 | 指纹 fixture `include` 多文件语料已合入（PR #24, a39dd33） |
+| S1 | 26 个模块级 helper 搬到 `src/baselines_helpers.py`（PR #27, 9fde8d4）；baselines 6,161 → 5,732（−429） |
+
+- H5b/H5c/H5c2 三轮 4090 同机 A/B：`cee_dsd`/`cee_dssd` 均 20/20 逐 token 一致，计数/bytes/comm_time delta=0；
+- 当前 `src/baselines.py` 5,732 行、`baselines_helpers.py` 492 行，合计 6,224（起点 6,849，−625）；
+- H5c 原本计划的“统一 wrapper + protocols 跟随”暂停：两个方法已降到 ~220 行，继续合并循环只会增加代码量，收益不足；
+- S2/S3（`src/baselines/` 包化、类进 core.py）和 `adaptive_tridecoding`（1,054 行）另开专题。

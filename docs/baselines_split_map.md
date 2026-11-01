@@ -245,3 +245,11 @@ LOCKED 零漂移、tokens 逐位一致**。
 ## 8. 后续（2026-10-31）
 
 - H5 细化设计见 `docs/h5_cee_core_design.md`：顶层 93.5% 相同，但验证/payload/prefix 更新分叉，不能机械抽取；建议按钩子分阶段重构，并用 enine 同机 A/B 替代指纹门禁。
+
+## 9. 2026-10-31 进展
+
+- H5b/H5c：CEE 第一/第二层块钩子已落地；`cee_dsd`/`cee_dssd` 421/397 → 224/221 行；
+- S0：指纹 fixture 支持 `include` 多文件语料；
+- S1：26 个模块级 helper 搬到 `src/baselines_helpers.py`，`baselines.py` 6,161 → 5,732（−429）；
+- 验证：4090 同机 A/B 三轮均 20/20 token 一致；本地 543 tests；
+- 未做：S2/S3 包目录化、H5c wrapper/protocols、`adaptive_tridecoding`（1,054 行）。
