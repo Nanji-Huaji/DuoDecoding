@@ -8,7 +8,7 @@
 import ast
 import pathlib
 
-SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "baselines.py"
+SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "baselines" / "core.py"
 
 
 def _method(name: str):
@@ -17,7 +17,7 @@ def _method(name: str):
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return src, node
-    raise AssertionError(f"src/baselines.py 里找不到方法 {name}")
+    raise AssertionError(f"src/baselines/core.py 里找不到方法 {name}")
 
 
 def test_target_only_deliberately_skips_cuda_graph():

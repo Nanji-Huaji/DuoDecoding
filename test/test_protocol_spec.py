@@ -91,15 +91,18 @@ def _python_docstring_lines(path: Path) -> set[int]:
 
 
 def _tracked_files() -> list[str]:
-    """受版本控制的 .py/.sh（排除 vendored 包），供全仓静态扫描用。
+    """工作区的已跟踪及未忽略新 .py/.sh（排除 vendored 包）。
 
+    同时跳过未暂存的删除，避免包化时读旧文件、漏掉新实现；无需先 git add。
     不用 `os.walk`：仓库里有 `data/`、`.venv/`、`SpecDec_pp/.venv`，遍历会慢到超时。
     """
     files = _git_ls_files()
     return [
         f
         for f in files
-        if f.endswith((".py", ".sh")) and not f.startswith(_VENDORED)
+        if f.endswith((".py", ".sh"))
+        and not f.startswith(_VENDORED)
+        and (ROOT / f).is_file()
     ]
 
 
@@ -107,13 +110,36 @@ def _git_ls_files() -> list[str]:
     import subprocess
 
     proc = subprocess.run(
-        ["git", "ls-files", "*.py", "*.sh"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.py", "*.sh"],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
-    return [line for line in proc.stdout.split("\n") if line]
+    return [name for name in proc.stdout.split("\0") if name]
+
+
+def test_source_scan_includes_unstaged_package_move(tmp_path, monkeypatch):
+    """扫描真实工作区状态：旧 tracked 文件已移走，新的 core 尚未暂存。"""
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    old = root / "baselines.py"
+    kept = root / "kept.py"
+    old.write_text("pass\n", encoding="utf-8")
+    kept.write_text("pass\n", encoding="utf-8")
+    subprocess.run(["git", "add", "baselines.py", "kept.py"], cwd=root, check=True)
+    new = root / "baselines" / "core.py"
+    new.parent.mkdir()
+    assert old.resolve().parent == root.resolve() and not new.exists()
+    old.rename(new)
+    (root / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (root / "ignored.py").write_text("pass\n", encoding="utf-8")
+    (root / "run.sh").write_text("true\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "ROOT", root)
+    assert set(_tracked_files()) == {"kept.py", "baselines/core.py", "run.sh"}
 
 
 def _arg_records() -> list[tuple[str, tuple[str, ...], int]]:

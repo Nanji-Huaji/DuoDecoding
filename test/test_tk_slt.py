@@ -290,12 +290,12 @@ class TkSltLoopTestBase(unittest.TestCase):
     def _run(self, prefix, transfer_top_k=K, **overrides):
         self.args.__dict__.update(overrides)
         with (
-            patch("src.baselines.KVCacheModel", _FakeCacheRouter()),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.PreciseCommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCacheRouter()),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.PreciseCommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             return self.instance.tk_slt(prefix, transfer_top_k=transfer_top_k)
 
@@ -404,7 +404,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.prepare_verification_inputs", spy):
+        with patch("src.baselines.core.prepare_verification_inputs", spy):
             output, _ = self._run(prefix, max_tokens=3)
 
         self.assertEqual(len(overrides), 1)
@@ -434,7 +434,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         # 目标在验证行 0（drafted token 0 的位置）的概率：token 0 上为 0
         reject_router = _FakeCacheRouter(target_extra_rows={0: [0.0, 0.9, 0.1, 0.0]})
 
-        with patch("src.baselines.KVCacheModel", reject_router):
+        with patch("src.baselines.core.KVCacheModel", reject_router):
             output, metrics = self._run_manual(prefix, transfer_top_k=K)
 
         self.assertEqual(tuple(output.shape), (1, 3))
@@ -472,7 +472,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.prepare_verification_inputs", spy):
+        with patch("src.baselines.core.prepare_verification_inputs", spy):
             # gamma=1, max_tokens=4 ⇒ 两个完整 DSD 轮
             output, metrics = self._run(prefix, max_tokens=4, gamma=1)
 
@@ -509,11 +509,11 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
     def _run_manual(self, prefix, **dec_kwargs):
         """不走 _run 的 KVCacheModel patch（调用方自带 router）时用这个。"""
         with (
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.PreciseCommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.PreciseCommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             return self.instance.tk_slt(prefix, **dec_kwargs)
 
@@ -523,7 +523,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         """ODLD 开启：首轮用 --gamma 兜底，此后逐轮用 γ*。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
         with patch(
-            "src.baselines.tk_slt_select_speculative",
+            "src.baselines.core.tk_slt_select_speculative",
             return_value=(True, 3, 1.5),
         ) as sel:
             output, metrics = self._run(
@@ -542,7 +542,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         """AS² 判 S*<=1 的轮次：target 直出、无上行分布，只回 0 字节下行。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
         with patch(
-            "src.baselines.tk_slt_select_speculative",
+            "src.baselines.core.tk_slt_select_speculative",
             return_value=(False, 1, 0.5),
         ):
             output, metrics = self._run(

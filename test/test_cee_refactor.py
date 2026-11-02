@@ -282,13 +282,13 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
         ):
@@ -328,13 +328,13 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
         ):
@@ -371,13 +371,13 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
         ):
@@ -391,13 +391,13 @@ class CeeRefactorTests(unittest.TestCase):
         prefix = torch.tensor([[0]], dtype=torch.long)
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=AssertionError(
                     "resolve_stage_verification should not be used in cee_cuhlm"
                 ),
@@ -425,11 +425,11 @@ class CeeRefactorTests(unittest.TestCase):
         _FakeCommSimulator.instances = []
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             # use_precise_comm_sim 默认 True 会绕过被 patch 的 CUHLM 名字
             # （PreciseCUHLM 未被 patch）——显式关掉，让带记录的 fake 生效。
@@ -461,11 +461,11 @@ class CeeRefactorTests(unittest.TestCase):
         instance.little_rl_adapter = _UnexpectedRLAdapter()
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             output, _ = instance.cee_cuhlm(prefix)
 
@@ -481,11 +481,11 @@ class CeeRefactorTests(unittest.TestCase):
                 return False, 2
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CUHLM", _AlwaysAcceptComm),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CUHLM", _AlwaysAcceptComm),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             _, metrics = instance.cee_cuhlm(prefix)
 
@@ -516,11 +516,11 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch(
-                "src.baselines.sample_reject_token",
+                "src.baselines.core.sample_reject_token",
                 return_value=torch.tensor([[2]], dtype=torch.long),
             ) as reject_mock,
             patch(
-                "src.baselines.sample_accept_token",
+                "src.baselines.core.sample_accept_token",
                 return_value=torch.tensor([[1]], dtype=torch.long),
             ) as accept_mock,
         ):
@@ -564,11 +564,11 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch(
-                "src.baselines.sample_reject_token",
+                "src.baselines.core.sample_reject_token",
                 return_value=torch.tensor([[2]], dtype=torch.long),
             ) as reject_mock,
             patch(
-                "src.baselines.sample_accept_token",
+                "src.baselines.core.sample_accept_token",
                 return_value=torch.tensor([[1]], dtype=torch.long),
             ) as accept_mock,
         ):
@@ -600,11 +600,11 @@ class CeeRefactorTests(unittest.TestCase):
             return cache
 
         with (
-            patch("src.baselines.KVCacheModel", side_effect=fake_cache_ctor),
-            patch("src.baselines.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", side_effect=fake_cache_ctor),
+            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             instance.cee_cuhlm(prefix)
 
@@ -645,16 +645,16 @@ class CeeRefactorTests(unittest.TestCase):
                 return False, 0
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _NoTransferComm),
-            patch("src.baselines.PreciseCommunicationSimulator", _NoTransferComm),
-            patch("src.baselines.CUHLM", _NoTransferComm),
-            patch("src.baselines.PreciseCUHLM", _NoTransferComm),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _NoTransferComm),
+            patch("src.baselines.core.PreciseCommunicationSimulator", _NoTransferComm),
+            patch("src.baselines.core.CUHLM", _NoTransferComm),
+            patch("src.baselines.core.PreciseCUHLM", _NoTransferComm),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
         ):
@@ -710,16 +710,16 @@ class CeeRefactorTests(unittest.TestCase):
                 return True, 2
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _TransferComm),
-            patch("src.baselines.PreciseCommunicationSimulator", _TransferComm),
-            patch("src.baselines.CUHLM", _TransferComm),
-            patch("src.baselines.PreciseCUHLM", _TransferComm),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _TransferComm),
+            patch("src.baselines.core.PreciseCommunicationSimulator", _TransferComm),
+            patch("src.baselines.core.CUHLM", _TransferComm),
+            patch("src.baselines.core.PreciseCUHLM", _TransferComm),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
         ):

@@ -1,5 +1,5 @@
 {
-  "path": "src/baselines.py",
+  "path": "src/baselines/core.py",
   "include": [
     "src/baselines_helpers.py"
   ],

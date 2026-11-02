@@ -1,5 +1,8 @@
 # `src/baselines.py` 拆分地图（只读分析，2026-10-19）
 
+> 当前实现已在 S2 WIP 中迁到 `src/baselines/core.py`，兼容入口为
+> `src/baselines/__init__.py`。前文保留历史路径与度量；最新进展见 §13。
+
 > 基线：`main@b594290`（PR #12 合并后）。本文只做分析，不改代码。
 >
 > **进展（2026-10-19）**：H1、H2、H2b 已在 `refactor/baselines-shared-helpers` 落地
@@ -189,6 +192,8 @@ caches、counters、events、prefix、comm_simulator…）。抽成 helper 必�
 
 ## 6. 模块拆分（第二阶段，包化）
 
+以下是历史的完整拆包方向（接近 S3），不是本轮 S2 的实际布局。
+S2 只建立 `__init__.py` + `core.py`，不拆方法族，见 §13。
 在 H1–H3 之后，`Baselines` 可移到包：
 
 ```
@@ -222,7 +227,7 @@ src/baselines/tk_slt.py     # tk_slt
 | 2 | H2 仿真器工厂（tri/cee 4 + 对称 4） | 2 | ✅ 指纹不变 + 3 次 smoke |
 | 3 | H3 上下文准备 | — | ⏭ 跳过（前置段差异大，净收益 ~15 行） |
 | 4 | H5 CEE 公共核心 | — | ⏸ 判定不适合机械抽取，等设计评审 |
-| 5 | 包化（shim 优先） | 2 | 未开始；需先解决指纹多文件键 |
+| 5 | 包化（shim 优先） | — | S2 WIP 已完成，见 §13；S3 未开始，尚未提交 |
 
 每一步都遵循：**一次一个逻辑提交；指纹变化必须能逐事件解释；golden
 LOCKED 零漂移、tokens 逐位一致**。
@@ -253,3 +258,190 @@ LOCKED 零漂移、tokens 逐位一致**。
 - S1：26 个模块级 helper 搬到 `src/baselines_helpers.py`，`baselines.py` 6,161 → 5,732（−429）；
 - 验证：4090 同机 A/B 三轮均 20/20 token 一致；本地 543 tests；
 - 未做：S2/S3 包目录化、H5c wrapper/protocols、`adaptive_tridecoding`（1,054 行）。
+
+## 10. 2026-11-02 WIP：`adaptive_tridecoding` 诊断段原点抽取（未提交）
+
+工作树基于 `main@50c43ba`；§1/§7/§9 的历史数字保持原样，本节保留诊断抽取阶段的快照，最新进展见 §13。
+这一步**不是** Phase 0.3 的 `verify_and_commit_round` 拆分（该函数尚不存在），
+只是把方法里的三段纯诊断代码原地搬到同模块 helper。
+
+| 项 | 抽取前 | 抽取后 | 依据 |
+|---|---:|---:|---|
+| `adaptive_tridecoding` | 1,062 行（3094–4155） | 944 行（3094–4037） | AST `end_lineno - lineno + 1` |
+| `_trace_adaptive_cache_preverify` | — | 38 行（4039–4076） | 同上 |
+| `_trace_adaptive_calibration` | — | 114 行（4078–4191） | 同上 |
+| `src/baselines.py` | 5,732 行 | 5,768 行 | `wc -l` |
+
+两个 helper 合计 152 行（含 def/docstring/类型标注），方法跨度净减 118 行，
+文件净 **+36** 行（还包含 def 前后空行）。**别把总行数当收益**：这是同模块原位抽取，收益在
+方法体可读性，文件反而略增。§1 的 1,054 是 2026-10-19（b594290）口径，本节
+按当前 AST 重数为 1,062。
+
+搬走的三段（执行点与语义原样）：
+
+1. `CACHE_CHECK_TRACE` 缓存一致性自检：仍在 `actual_gamma1 > 0` 分支内、
+   `resolve_stage_verification` 之前，写 `where="pre_verify"`；
+2. `ARP_CALIB_TRACE`：逐位 `(arp, tok, pd, pt, ratio, gmatch)`，ARP 取
+   `draft_target_adapter.step_acc_probs`（只取 `draft_target` 主级头）；
+3. `TOPK_TRACE`：top-k 累计质量/目标 token 秩/熵；`logits_history` 有值时用
+   softmax 真分布，否则用 `prob_history` 重建并标 `obj="rebuilt"`。
+
+口径不变（逐条核对过）：
+
+- 内省：helper 不读 `self.args` / `_comm.*`，`live_mode_consumption` 不受影响；
+- 计费：helper 体内无 `transfer` / `simulate_transfer` / `_residual_payload_bytes`；
+- 采样：无 `sample*` / `torch.rand`，RNG 次数不变；
+- 异常：三处各自的 `try/except Exception: pass` 作用范围原样保留；
+- 接口：两个 helper 都用 keyword-only 参数，显式区分 draft/target cache，
+  不引入通用诊断框架，不新增跨文件依赖。
+
+门禁状态：
+
+- 指纹：`diff src/baselines.py --base main` 判定 PASS，冻结条目
+  `Baselines.adaptive_tridecoding` 的事件序列一致；两个 helper 以展开形式
+  计入该条目，**不单独冻结**，`test/golden/logic/baselines.json` 未改（15 条）。
+- 轮级行为门禁：新文件 `test/test_adaptive_tridecoding_rounds.py`（untracked）
+  只走公开入口，真实 `resolve_stage_verification` + 真实
+  `CommunicationSimulator`（测试子类在 `simulate_transfer` 记请求账、
+  `_charge_transfer` 记结算账，含 round/link/bytes/topk/draft_len，
+  实际计费仍由父类完成），
+  KV 用脚本化 fake 但保留 `prob_history` 行语义与 rollback 截断。已写断言：
+  `per_transfer` + `residual=False` 与默认 `per_round` + `residual=True`
+  各自的三轮全接受和两阶段拒绝；同时锁定请求/结算账、残差字节、rollback、
+  flush 顺序及默认口径的确定性通信时间。
+- 诊断用例：`test/test_adaptive_tridecoding.py` 用非对称且相邻不同的概率行
+  区分 proposer/verifier 和行索引；覆盖两轮 JSONL 追加、true logits、rebuilt
+  降级，以及路径不可写时继续解码。交换缓存（两种）、错移概率行、覆盖写
+  四种内存变异均被断言捕获；不改变共享的单轮 fake。
+
+缺口（不夸大）：
+
+- Phase 0.3 的 round 固件（固定张量 → `verify_and_commit_round` 精确输出）
+  **没有**落地，函数不存在；本轮也没动两级验证/拒绝/缓存推进与计费路径，
+  §9 的「`adaptive_tridecoding` 未做」只在诊断段这一小块上推进，S6 主循环原样。
+- 轮级测试当前只跑 `_ablation="static"`，不证明 RL/ARP、no_arp、
+  opportunistic、EOS 或图缓存复用等价；下一批触碰这些路径前需补相应用例。
+  未跑 gammar golden，无远端 GPU 验收；本节不写测试通过数量。
+- 行号以 2026-11-02 工作树为准，后续任何再抽取都会移位；新文件尚未提交。
+
+## 11. 2026-11-02 续做 WIP：主级 RL 动作选择与应用
+
+本节保留 921 行阶段的快照，最新进展见 §13。
+
+承接 §10，不做 S2/S3、不提交，也不引入完整 layer-step 或
+`verify_and_commit_round`。下一刀选在第二层生成及 target 前向之后、验证之前：
+把主侧 `bandwidth/latency/acc_probs/task → select_config → top-k cap → ARP 阈值
+→ 下一轮 gamma` 连续块原位抽为 `_select_adaptive_main_config`。
+
+- Interface：五个 keyword-only 输入（通信仿真器、已计算的熵、本轮 gamma、
+  top-k cap、no-ARP 标志），只返回 `transfer_top_k`；副作用仍是更新主 ARP
+  阈值和可选的 `self._next_gamma1`。不引入通用 action/state 对象。
+- 顺序：外层 RL/static 条件、`dra_start` 和耗时累计仍在调用方。当前 proposal
+  已按旧 top-k/gamma/threshold 生成；选出的 top-k 供本轮后续结算及下一轮
+  proposal 使用，gamma 仅下一轮生成生效。little 侧策略与奖励路径未抽取。
+- 内省：所有 `_comm.*` 与 `args.gamma1/gamma2` 读取留在入口；唯一随
+  `select_config` 移入 helper 的 `args.disable_rl_update` 不是通信/深度消费键，
+  且调用方奖励段仍读取它。与 main 的 code-object 消费集比较保持四个通信键
+  加 `gamma1/gamma2`，注册别名及两个 wrapper 的运行时内省也保持不变。
+- 不移动两级验证、残差载荷、rollback、EOS、下行与 flush。尤其保留原行为：
+  第一层 EOS 在 edge-end 下行计费后退出；第二层 EOS 在 edge-cloud 合并消息
+  和 edge-end 下行之前退出；本批不修正历史计费口径。
+
+AST 度量（同一工作树，不混用历史口径）：方法 944 → **921 行**
+（3094–4014），新 helper **46 行**（4016–4061）；含此前诊断抽取，
+方法从 main 的 1,062 行共缩短 141 行。文件 5,768 → 5,792 行，净增 24 行，
+不是总行数压缩。
+
+结构验证不只看指纹：将三个 helper 的 body 在调用点展开（去 docstring 和
+尾返回、核对实参同名绑定及返回目标），整个 `adaptive_tridecoding` body 的
+AST（含条件、参数和表达式，不含行号）与 main **完全相同**。具体归一化是
+`ast.dump(ast.Module(body=method.body, type_ignores=[]), include_attributes=False)`，
+以其 UTF-8 编码计算 SHA256（main 与展开后两侧相同）：
+`9632a2c687de9d92aaa22940d4ee2a7638c9db350e1bccaa02c4081a60189932`。
+这仍需人工核对局部变量活跃范围，不是 Python 任意重构的通用等价证明。
+逻辑指纹 PASS，冻结 fixture 不变；后续门禁及审阅结果见
+`docs/verification_gates.md` §8。
+
+## 12. 2026-11-02 第三批 WIP：little 策略与两层拒绝概率计费
+
+本节保留包化前的快照；S2 的最新布局和兼容合同见 §13。
+
+在 §11 的 921 行基础上继续拆层内连续块，不引入通用 stage 框架：
+
+| 抽取 | Interface / 职责 | 调用点 |
+|---|---|---|
+| `_select_adaptive_little_config` | 4 个 keyword-only 输入，无局部输出；选择 little 动作并写阈值/`_next_gamma2`，故意不应用 little top-k | 第一级生成后、机会门控前 |
+| `_adaptive_rejection_prob_bytes` | 概率行 + 当轮 top-k → 拒绝概率载荷字节；共享元素宽度/top-k 估算、量化调用及 bits 覆盖 | 两层各一个拒绝分支 |
+
+两处 caller 仍各自选择概率行、写 `reject_overhead=6`、执行 EOS/传输；后者
+不是完整残差载荷/通信结算模块，**量化张量仍按历史实现只在局部使用，不回传**。
+`prob_payload_bits` 在公共 helper 的原执行点经 `self.comm_config` 读取；它仍
+在方法里的两个上行点显式读取，四个协议消费键与 `gamma1/gamma2` 未移出。
+little 的 RL/static 条件及两个计时采样点留在 caller，机会门控仍能在同轮
+看到新阈值，gamma 下一轮才生效。
+
+| 项 | 上批 WIP | 本批 WIP |
+|---|---:|---:|
+| `adaptive_tridecoding` | 921 行 | **888 行**（3094–3981） |
+| little 策略 helper | — | 37 行（4011–4047） |
+| 拒绝概率字节 helper | — | 27 行（3983–4009），两处复用 |
+| `src/baselines.py` | 5,792 行 | 5,825 行 |
+
+方法本批净减 33 行，累计从 main 的 1,062 行减少 174 行；文件本批净增
+33 行。收益是策略职责命名和重复计费内芯收拢，**不是整层拆分完成**。
+机会判定仍留在入口：它依赖刚写入的可变阈值，且计算不确定度会消费 RNG；
+只包成 5 入参 bool helper 会隐藏这两条合同。整层验证目前需要十多个输入
+并会牵涉通信 trace 的栈帧记录，也不在本批硬拆。
+
+验证使用 `.venv/bin/python`（Python 3.10.18）：五个 helper 共六个调用点展开
+后，整个方法 body AST 与 main 相同，归一化 SHA256 仍为 §11 的值；AST dump
+序列化依赖 Python 版本，不把别的版本哈希不同当行为漂移。调用方独立单文件
+足迹仍为 308 事件，指纹 PASS，冻结 fixture 未改。全量 **569 passed、7 skipped、
+90 subtests passed**，默认/importlib 两种模式一致；扩展用例换回 main 原方法也
+通过（32 passed、5 subtests passed）。细项与剩余边界见 `docs/verification_gates.md` §9。
+
+该批结束时尚未完成：完整第一/第二层步骤模块、真实 GPU/gammar 验收、S2/S3 包化；未提交。
+
+## 13. 2026-11-02 S2 WIP：最小兼容包化
+
+本批只改变物理位置与导入/测试接线，不做 S3，不继续拆方法、不改算法。
+包化前比较基点是 §12 的 5,825 行工作树，而不是 main 的 5,732 行：
+归一化源码 SHA256 为 `a642db78916433cabe05bb11251634fa0df8ebf133f074118a91e950708f71a6`。
+
+```text
+src/baselines/__init__.py   # eager 导入 core，保留历史导入面
+src/baselines/core.py       # 原 5,825 行实现，adaptive 仍为 888 行
+src/baselines_helpers.py    # S1 helper，位置不动
+```
+
+旧 `src/baselines.py` 已移走。core 文本只改 20 个相对 import（19 个顶层、1 个
+legacy 方法内导入）各增加一级；逐字归一化和**完整模块 AST**对照均相同。
+公开方法、装饰器与调用顺序不变，`Baselines.__module__` 现在为
+`src.baselines.core`，这是包化的预期元数据变化，不伪造旧模块身份。
+
+### 兼容合同
+
+- `from src.baselines import Baselines` 保持；历史下划线 helper、模块属性读取、
+  `dir()` 和星号导入均保留。包入口 eager 导入 core，24 个注册名及别名对象
+  身份不变；重载入口不会重复执行 core 注册。
+- 包化前冻结的 **105 个显式可读名字 / 79 个星号名字**已持久化到
+  `test/golden/baselines_exports.json`，不是拿迁移后的导出集合自证。
+- 兼容层是导入 Adapter，不是模块 globals 写透代理；patch 实现依赖应使用
+  `src.baselines.core.X`，测试的原依赖替换点已迁移，公开 import 保持旧入口。
+  `vars(src.baselines)` / 包 `__dict__` 不包含虚拟导出名，这一边界明确保留。
+- 新 pickle 引用 core；旧的 `src.baselines` 全局 pickle 名仍能解析。
+  包 `__file__` 指向 `__init__.py`，真实定义/inspect 源码指向 core。
+- `COMM_TRACE.caller` 的文件名从 **baselines.py → core.py**，本批行号不变、
+  调用栈深度及 kind 判据不变。跨版本 trace 聚合需归一化 caller，不宣称文本相同。
+
+### 门禁和工具
+
+四个源码/AST 守卫扫描真实 core 而非空壳；旧源码门禁的工作区文件枚举同时
+处理未暂存删除与未忽略新文件，不靠 `git add` 才变绿。
+逻辑指纹 fixture 仅 `path` 改为 core，`include/rev/15 条 entries` 全部保持。
+工具 `diff --base-path` 仅映射旧侧入口，使当前 core 能与 main 的旧文件比较；
+新增 CLI 用例锁定改名、真实漂移、路径错误及旧侧 include 的 git 来源。
+
+全量与兼容性验收、独立审阅见 `docs/verification_gates.md` §10。
+未提交/暂存；未跑 GPU/gammar。S2 只完成包入口与实现迁移，S3 方法族拆分、
+完整第一/第二层步骤模块均仍未完成。

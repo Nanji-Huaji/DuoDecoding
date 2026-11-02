@@ -44,7 +44,7 @@ def _call(**overrides):
 
 
 def test_precise_path_keeps_historical_channel_bandwidth():
-    with patch("src.baselines.PreciseCommunicationSimulator") as precise:
+    with patch("src.baselines.core.PreciseCommunicationSimulator") as precise:
         _call(precise=True)
     kwargs = precise.call_args.kwargs
     assert kwargs["bandwidth_hz"] == 1e7  # 迁移前逐字值，勿改成 1e6
@@ -57,7 +57,7 @@ def test_precise_path_keeps_historical_channel_bandwidth():
 
 
 def test_regular_path_passes_links_and_topk():
-    with patch("src.baselines.CommunicationSimulator") as sim:
+    with patch("src.baselines.core.CommunicationSimulator") as sim:
         _call(transfer_top_k=300)
     kwargs = sim.call_args.kwargs
     assert kwargs["bandwidth_edge_cloud"] == 46.0
@@ -71,14 +71,14 @@ def test_regular_path_passes_links_and_topk():
 
 def test_transfer_top_k_omitted_when_none():
     """未给 top-k 时不传，交给构造器默认（与抽取前逐字等价）。"""
-    with patch("src.baselines.CommunicationSimulator") as sim:
+    with patch("src.baselines.core.CommunicationSimulator") as sim:
         _call(transfer_top_k=None)
     assert "transfer_top_k" not in sim.call_args.kwargs
 
 
 def test_symmetric_path_forces_infinite_edge_links():
     """DSSD/DSD/TK-SLT/adaptive_decoding 只建模 edge-cloud；远端链路取 inf。"""
-    with patch("src.baselines.CommunicationSimulator") as sim:
+    with patch("src.baselines.core.CommunicationSimulator") as sim:
         _make_symmetric_comm_simulator(
             _env(),
             precise=False,
@@ -94,7 +94,7 @@ def test_symmetric_path_forces_infinite_edge_links():
 
 
 def test_symmetric_precise_path_uses_historical_channel_bandwidth():
-    with patch("src.baselines.PreciseCommunicationSimulator") as precise:
+    with patch("src.baselines.core.PreciseCommunicationSimulator") as precise:
         _make_symmetric_comm_simulator(
             _env(),
             precise=True,
@@ -113,7 +113,7 @@ def test_topk_cap_is_defined_in_methods_that_use_it():
     import ast
     from pathlib import Path
 
-    src = Path(__file__).resolve().parents[1] / "src" / "baselines.py"
+    src = Path(__file__).resolve().parents[1] / "src" / "baselines" / "core.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
     offenders = []
     for node in ast.walk(tree):

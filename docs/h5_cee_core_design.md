@@ -90,9 +90,10 @@ def _cee_three_layer(self, prefix, *, split: bool, ...):
 
 原稿的“必须重建指纹”前提已修正：
 
-1. **本地零差异门禁**：核心与块钩子都放 `src/baselines.py`，保持同模块、
-   无 early return；`python tools/logic_fingerprint.py diff src/baselines.py --base main`
-   应 PASS。若必须重建，只在最终合并点重建一次，并在 PR 说明。
+1. **本地零差异门禁**：S2 后核心与块钩子同放 `src/baselines/core.py`，
+   保持同模块、无 early return；`python tools/logic_fingerprint.py diff src/baselines/core.py --base main --base-path src/baselines.py --include src/baselines_helpers.py`
+   应 PASS。若比较基点也已包化则省略 `--base-path`。若必须重建，只在最终
+   合并点重建一次，并在 PR 说明。
 2. **fake-based 行为门禁**：`test/test_cee_refactor.py:303-388` 已有两个
    方法的 fake 运行，可作为本地首选回归；补充 `gamma=0`、EOS、
    `l1_actual_gamma<=0`、`charge_residual`、`transfer_top_k_cap`、

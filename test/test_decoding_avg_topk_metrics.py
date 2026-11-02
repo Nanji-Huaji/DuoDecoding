@@ -234,16 +234,16 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         self.instance.little_rl_adapter = None
 
     def _enter_common_patches(self, stack: ExitStack):
-        stack.enter_context(patch("src.baselines.KVCacheModel", _FakeCache))
+        stack.enter_context(patch("src.baselines.core.KVCacheModel", _FakeCache))
         stack.enter_context(
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator)
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator)
         )
-        stack.enter_context(patch("src.baselines.torch.cuda.Event", _FakeCudaEvent))
+        stack.enter_context(patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent))
         stack.enter_context(
-            patch("src.baselines.torch.cuda.current_stream", return_value=None)
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None)
         )
         stack.enter_context(
-            patch("src.baselines.torch.cuda.synchronize", return_value=None)
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None)
         )
 
     def test_dssd_reports_average_active_top_k(self):

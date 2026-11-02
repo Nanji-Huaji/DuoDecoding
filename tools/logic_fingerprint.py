@@ -19,11 +19,14 @@
 
 用法（仓库根目录）：
 
-    # 快照当前指纹
-    python tools/logic_fingerprint.py dump src/baselines.py --out /tmp/fp.json
+    # 快照当前指纹（baselines 已包化，实现位于 core.py）
+    python tools/logic_fingerprint.py dump src/baselines/core.py --out /tmp/fp.json
 
-    # PR 前后对比（旧版本从 git 读）
-    python tools/logic_fingerprint.py diff src/baselines.py --base HEAD
+    # PR 前后对比（旧版本从 git 读）。包化提交之后，工作区是
+    # src/baselines/core.py，而 base 修订上仍是 src/baselines.py，
+    # 所以旧侧需要 --base-path 指回旧路径：
+    python tools/logic_fingerprint.py diff src/baselines/core.py --base HEAD \\
+        --base-path src/baselines.py
 
 退出码：diff 有差异 = 1；无差异 = 0。
 """
@@ -376,6 +379,11 @@ def selected(all_names: list[str], spec: str | None) -> list[str]:
     return wanted
 
 
+def entry_names(source: str) -> set[str]:
+    """入口文件自身定义的条目名（不含 ``--include`` 语料）。"""
+    return {name for name, _ in iter_entries(ast.parse(source))}
+
+
 def _read_sources(path: str, includes: list[str], rev: str | None) -> dict[str, str]:
     sources = {path: read_source(path, rev)}
     for extra in includes:
@@ -413,8 +421,29 @@ def _first_divergence(old: list[list[str]], new: list[list[str]]) -> int | None:
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
-    old_entries = load_entries(_read_sources(args.path, args.include, args.base))
-    new_entries = load_entries(_read_sources(args.path, args.include, None))
+    # 包化改名时，旧侧文件名与新侧不同：只有旧侧入口可覆盖，
+    # include 语料仍按仓库相对路径从 base 修订读取。
+    old_path = args.base_path or args.path
+    old_sources = _read_sources(old_path, args.include, args.base)
+    new_sources = _read_sources(args.path, args.include, None)
+    old_entries = load_entries(old_sources)
+    new_entries = load_entries(new_sources)
+
+    # 显式给了 --base-path 时，若两侧入口文件连一个同名条目都没有，几乎
+    # 一定是路径指错文件。只比较入口文件自身，不能把 include 里共同的
+    # helper 条目算进重叠——否则错误路径仍会因 helper 同名而静默 PASS。
+    # 合法改名/抽取仍有大量同名入口（新增 helper 只是并集里多出来的项）。
+    if args.base_path and not (
+        entry_names(old_sources[old_path]) & entry_names(new_sources[args.path])
+    ):
+        print(
+            "  ✗ 旧侧与工作区入口文件没有任何同名条目；"
+            f"--base-path={old_path!r} 可能不是被改名前的同一实现",
+            file=sys.stderr,
+        )
+        print("\n  判定: FAIL（--base-path 可疑）")
+        return 1
+
     names = selected(sorted(set(old_entries) | set(new_entries)), args.entries)
 
     failed = 0
@@ -467,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
     diff = sub.add_parser("diff", help="对比 base 与工作区的逻辑足迹")
     diff.add_argument("path")
     diff.add_argument("--base", required=True, help="git 修订，如 HEAD / main")
+    diff.add_argument(
+        "--base-path",
+        default=None,
+        help="旧侧读取路径（默认同 path）；包化改名后指向 src/baselines.py",
+    )
     diff.add_argument("--include", action="append", default=[], help="额外参与展开的文件")
     diff.add_argument("--entries", default=None)
     diff.set_defaults(func=cmd_diff)

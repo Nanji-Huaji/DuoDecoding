@@ -8,14 +8,14 @@ from typing import Callable, Dict, List, Optional, Tuple, cast
 import torch
 import transformers
 
-from .SpecDec_pp.specdec_pp.wrap_model import AcceptancePredictionHead
+from ..SpecDec_pp.specdec_pp.wrap_model import AcceptancePredictionHead
 
 transformers.utils.logging.set_verbosity(40)
 warnings.filterwarnings("ignore")
 
-from .adapter import DecodingAdapter
-from .comm_accounting import CommEnv
-from .communication import (
+from ..adapter import DecodingAdapter
+from ..comm_accounting import CommEnv
+from ..communication import (
     CUHLM,
     CommunicationSimulator,
     PreciseCommunicationSimulator,
@@ -24,14 +24,14 @@ from .communication import (
     cuhlm_uplink_payload_bytes,
     tk_slt_uplink_payload_bytes,
 )
-from .cee_prefix import CEETriPrefix
-from .checkpoint_provenance import (
+from ..cee_prefix import CEETriPrefix
+from ..checkpoint_provenance import (
     describe_dir,
     describe_path,
     record as record_checkpoint,
     summary_line,
 )
-from .decoding_ops import (
+from ..decoding_ops import (
     apply_rollback,
     build_rollback_plan,
     collect_verification_payload,
@@ -47,16 +47,16 @@ from .decoding_ops import (
     sample_reject_token_from_topk_proposal,
     verify_draft_sequence_result,
 )
-from .acc_head_registry import anchor_repo_path, is_usable_acc_head_dir
-from .engine import Decoding
-from .graph_decode import (  # B19：CUDA Graph 接线的单一入口
+from ..acc_head_registry import anchor_repo_path, is_usable_acc_head_dir
+from ..engine import Decoding
+from ..graph_decode import (  # B19：CUDA Graph 接线的单一入口
     acquire_graph_caches,
     graph_mode_cache_kwargs as _graph_mode_cache_kwargs,
 )
-from .metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
-from .model_gpu import KVCacheModel
-from .mode_features import MODE_FEATURES
-from .proposal_utils import (
+from ..metrics import INT_SIZE, DecodingMetrics, get_empty_metrics
+from ..model_gpu import KVCacheModel
+from ..mode_features import MODE_FEATURES
+from ..proposal_utils import (
     apply_transfer_top_k_cap,
     build_stage_prefix_topk_history,
     build_draft_probs_override,
@@ -67,15 +67,15 @@ from .proposal_utils import (
     stage_topk_proposal_history,
     stage_prob_history,
 )
-from .register import Register
-from .rl_agent_registry import (
+from ..register import Register
+from ..rl_agent_registry import (
     ROLE_LITTLE,
     ROLE_MAIN,
     get_rl_agent_spec,
     resolve_legacy_rl_agent_load_path,
 )
-from .rl_adapter import RLNetworkAdapter
-from .utils import (
+from ..rl_adapter import RLNetworkAdapter
+from ..utils import (
     max_fn,
     norm_logits,
     rebuild_topk_uniform_probs,
@@ -106,7 +106,7 @@ def _uplink_prob_payload(
     return _quantize_probs_logspace(probs, bits), bits
 
 
-from .baselines_helpers import (
+from ..baselines_helpers import (
     _add_comm_accounting_metrics,
     _add_per_model_wall_time,
     _compute_token_vocab_rank,
@@ -2528,7 +2528,7 @@ class Baselines(Decoding):
 
         仅用于复现历史 run；新的无 ARP 消融请用 ``cee_sd_no_arp``。
         """
-        from .legacy.ceesd_without_arp import run as _legacy_run
+        from ..legacy.ceesd_without_arp import run as _legacy_run
 
         # 兼容协议内省：实现已移到 legacy 模块，但 protocols.mode_consumption
         # 通过 co_names 判断本模式消费哪些计费/深度开关。这里保留只读引用，
@@ -3384,30 +3384,12 @@ class Baselines(Decoding):
 
             if self.little_rl_adapter is not None and not _static:
                 dra_start = time.time()
-                bandwidth = comm_simulator.bandwidth_edge_end_mbps
-                latency = comm_simulator.ntt_edge_end_ms
-                _little_adapter = getattr(self, "small_draft_adapter", None)
-                acc_probs = getattr(_little_adapter, "step_acc_probs", [])
-
-                task_name = getattr(self, "task", "unknown")
-                next_topk, next_threshold = self.little_rl_adapter.select_config(
-                    bandwidth,
-                    latency,
-                    acc_probs,
-                    little_entropy,
-                    task_name,
-                    training=not getattr(self.args, "disable_rl_update", False),
+                self._select_adaptive_little_config(
+                    comm_simulator=comm_simulator,
+                    little_entropy=little_entropy,
+                    gamma2_used=gamma2_used,
+                    no_arp=_no_arp,
                 )
-                # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
-                # transfer_top_k = next_topk  # edge-end 通常不压缩
-                if not _no_arp and _little_adapter is not None:
-                    _little_adapter.threshold = next_threshold
-                # 同主适配器：只有动作空间含 gamma 时才覆盖（本路径下第一级被
-                # opportunistic 接管，gamma2 实际恒为 1，见诊断文档 F7）。
-                if getattr(self.little_rl_adapter, "gamma_dim", 1) > 1:
-                    self._next_gamma2 = int(
-                        getattr(self.little_rl_adapter, "last_gamma", None) or gamma2_used
-                    )
                 dra_overhead_time += time.time() - dra_start
 
             actual_gamma2 = x.shape[1] - prefix_len
@@ -3610,18 +3592,10 @@ class Baselines(Decoding):
                     prob_data = cast(torch.Tensor, little_stage_probs)[
                         :, n1, : self.vocab_size
                     ]
-                prob_bytes = prob_data.element_size() * prob_data.numel()
-                if transfer_top_k is not None and transfer_top_k > 0:
-                    prob_bytes = transfer_top_k * prob_data.element_size()
-                # B15：位宽决策走原子 helper——此前只按 bits 计费却从不
-                # 量化（"收 bits 钱、传全宽信息"的活跃实例）
-                prob_data, _pb_bits = _uplink_prob_payload(
-                    prob_data, self.comm_config.prob_payload_bits
+                prob_bytes = self._adaptive_rejection_prob_bytes(
+                    prob_data=prob_data,
+                    transfer_top_k=transfer_top_k,
                 )
-                if _pb_bits is not None:
-                    _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
-                          else prob_data.numel())
-                    prob_bytes = int(_n) * _pb_bits / 8.0
 
                 reject_overhead = 6.0
 
@@ -3703,36 +3677,13 @@ class Baselines(Decoding):
 
             if self.rl_adapter is not None and not _static:
                 dra_start = time.time()
-                bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
-                latency = comm_simulator.ntt_edge_cloud_ms
-                _main_adapter = getattr(self, "draft_target_adapter", None)
-                acc_probs = getattr(_main_adapter, "step_acc_probs", [])
-
-                # q 可能为 None（未开 top-k 压缩）；RL 的熵特征已在上面由
-                # state_entropy(q, draft_model_cache) 取到，这里不需要 q。
-                task_name = getattr(self, "task", "unknown")
-                next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth,
-                    latency,
-                    acc_probs,
-                    draft_entropy,
-                    task_name,
-                    training=not getattr(self.args, "disable_rl_update", False),
+                transfer_top_k = self._select_adaptive_main_config(
+                    comm_simulator=comm_simulator,
+                    draft_entropy=draft_entropy,
+                    gamma1_used=gamma1_used,
+                    topk_cap=_topk_cap,
+                    no_arp=_no_arp,
                 )
-                # 更新 top-k 压缩参数和 ARP 阈值
-                transfer_top_k = next_topk
-                if _topk_cap > 0 and transfer_top_k is not None:
-                    transfer_top_k = min(int(transfer_top_k), _topk_cap)
-                if not _no_arp and _main_adapter is not None:
-                    _main_adapter.threshold = next_threshold
-                # 只有动作空间真的包含 gamma 时才覆盖固定超参。legacy 适配器
-                # （gamma_dim == 1）的 last_gamma 只是 gamma_candidates[0]（默认 2），
-                # 无条件赋值会把 --gamma1 悄悄改掉 —— 这个 bug 曾让 A/B 的基线全部
-                # 跑在 gamma=2 上，从而虚增了扩展动作空间的收益（诊断文档 F14）。
-                if getattr(self.rl_adapter, "gamma_dim", 1) > 1:
-                    self._next_gamma1 = int(
-                        getattr(self.rl_adapter, "last_gamma", None) or gamma1_used
-                    )
                 dra_overhead_time += time.time() - dra_start
 
             draft_model_forward_times += actual_gamma1
@@ -3793,34 +3744,13 @@ class Baselines(Decoding):
                 )
 
             if actual_gamma1 > 0:
-                # 缓存一致性自检（CACHE_CHECK_TRACE）：验证者 cache 里应当恰好有
-                # prefix_len 个 token（= 已确认的上下文）。若实际长度与之不符，
-                # 说明此前的 rollback 截断位置错了，后续前向会在错误的上下文上
-                # 计算 logits —— 恒等检验里"模型把 prompt 又写一遍"的分歧就是
-                # 这种失配的典型症状。
-                _cache_trace = os.environ.get("CACHE_CHECK_TRACE")
-                if _cache_trace:
-                    try:
-                        with open(_cache_trace, "a") as _fh:
-                            _fh.write(
-                                json.dumps(
-                                    {
-                                        "where": "pre_verify",
-                                        "x_len": int(x.shape[1]),
-                                        "prefix_len": int(prefix_len),
-                                        "target_cache_len": int(
-                                            target_model_cache.current_length
-                                        ),
-                                        "draft_cache_len": int(
-                                            draft_model_cache.current_length
-                                        ),
-                                        "actual_gamma1": int(actual_gamma1),
-                                    }
-                                )
-                                + "\n"
-                            )
-                    except Exception:
-                        pass
+                self._trace_adaptive_cache_preverify(
+                    x=x,
+                    prefix_len=prefix_len,
+                    draft_model_cache=draft_model_cache,
+                    target_model_cache=target_model_cache,
+                    actual_gamma1=actual_gamma1,
+                )
                 (
                     draft_accepted_this_iter,
                     n2,
@@ -3855,110 +3785,13 @@ class Baselines(Decoding):
                     output_device=draft_device,
                 )
                 draft_all_accepted = True
-            # ARP_CALIB_TRACE: 逐位配对 (ARP预测, 真接受概率) —— 校准诊断专用。
-            # 真值 = min(1, p_t(x_i)/p_d(x_i))（采样域）与 argmax 匹配（贪心域），
-            # 两个都dump，分析端按温度取用。arp 行只取 draft_target 头（主级）。
-            _calib_path = os.environ.get("ARP_CALIB_TRACE")
-            _calib_adapter = getattr(self, "draft_target_adapter", None)
-            _acc_probs_calib = list(
-                getattr(_calib_adapter, "step_acc_probs", []) or []
+            self._trace_adaptive_calibration(
+                x=x,
+                prefix_len=prefix_len,
+                draft_model_cache=draft_model_cache,
+                target_model_cache=target_model_cache,
+                draft_accepted_this_iter=draft_accepted_this_iter,
             )
-            if _calib_path and _acc_probs_calib:
-                try:
-                    _g_calib = len(_acc_probs_calib)
-                    _toks_calib = x[0, prefix_len : prefix_len + _g_calib].tolist()
-                    _rows_calib = []
-                    for _i, _ap in enumerate(_acc_probs_calib):
-                        _tok = int(_toks_calib[_i])
-                        _row_d = draft_model_cache.prob_history[
-                            0, prefix_len - 1 + _i
-                        ]
-                        _row_t = target_model_cache.prob_history[
-                            0, prefix_len - 1 + _i
-                        ]
-                        _pd = float(_row_d[_tok])
-                        _pt = float(_row_t[_tok])
-                        _rows_calib.append(
-                            json.dumps(
-                                {
-                                    "arp": float(_ap),
-                                    "tok": _tok,
-                                    "pd": _pd,
-                                    "pt": _pt,
-                                    "ratio": (
-                                        min(1.0, _pt / _pd) if _pd > 0 else 1.0
-                                    ),
-                                    "gmatch": int(
-                                        int(_row_t.argmax().item()) == _tok
-                                    ),
-                                }
-                            )
-                        )
-                    with open(_calib_path, "a") as _fh:
-                        _fh.write("\n".join(_rows_calib) + "\n")
-                except Exception:
-                    pass
-            # TOPK_TRACE: 逐位 dump 草稿分布形状（排序质量/熵/目标token秩）——
-            # top-k 集中度诊断用。与 ARP_CALIB_TRACE 同点位同索引, 独立 env 门控。
-            _topk_path = os.environ.get("TOPK_TRACE")
-            if _topk_path and _acc_probs_calib:
-                try:
-                    _kg = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-                    _rows_tk = []
-                    for _i in range(len(_acc_probs_calib)):
-                        _tok = int(x[0, prefix_len + _i].item())
-                        # 优先取真实分布（logits→softmax）；prob_history 在该
-                        # 路径可能已被重建/截断对象覆盖（传输侧视图），降级时标记。
-                        _lh_tk = draft_model_cache.logits_history
-                        if _lh_tk is not None:
-                            _rd = torch.softmax(
-                                _lh_tk[0, prefix_len - 1 + _i, : self.vocab_size]
-                                .float(),
-                                dim=-1,
-                            )
-                            _obj_tk = "true"
-                        else:
-                            _rd = draft_model_cache.prob_history[
-                                0, prefix_len - 1 + _i
-                            ]
-                            _obj_tk = "rebuilt"
-                        _rt = target_model_cache.prob_history[
-                            0, prefix_len - 1 + _i
-                        ]
-                        _srt, _ord = _rd.sort(descending=True)
-                        _cum = torch.cumsum(_srt, 0)[
-                            [k - 1 for k in _kg if k <= _srt.numel()]
-                        ]
-                        _tok_rank = int((_rd > _rd[_tok]).sum().item()) + 1
-                        _tam = int(_rt.argmax().item())
-                        _tam_rank = int((_rd > _rd[_tam]).sum().item()) + 1
-                        _ent = float(
-                            -(_rd[_rd > 0] * _rd[_rd > 0].log()).sum().item()
-                        )
-                        _rows_tk.append(
-                            json.dumps(
-                                {
-                                    "k_grid": _kg[: len(_cum)],
-                                    "cum_mass": [round(float(v), 5) for v in _cum],
-                                    "tok": _tok,
-                                    "tok_rank": _tok_rank,
-                                    "tok_pd": float(_rd[_tok]),
-                                    "t_argmax": _tam,
-                                    "t_argmax_rank": _tam_rank,
-                                    "gmatch": int(_tam == _tok),
-                                    "acc": int(_i < draft_accepted_this_iter),
-                                    "obj": _obj_tk,
-                                    "entropy": round(_ent, 4),
-                                    "top20": [
-                                        round(float(v), 5) for v in _srt[:20]
-                                    ],
-                                }
-                            )
-                        )
-                    with open(_topk_path, "a") as _fh:
-                        _fh.write("\n".join(_rows_tk) + "\n")
-                except Exception:
-                    pass
             total_draft_model_accepted_tokens += draft_accepted_this_iter
             draft_accept_rate_history.append(
                 draft_accepted_this_iter / total_gamma if total_gamma > 0 else 0.0
@@ -4047,17 +3880,10 @@ class Baselines(Decoding):
                 prob_data = cast(torch.Tensor, draft_stage_probs)[
                     :, n2, : self.vocab_size
                 ]
-                prob_bytes = prob_data.element_size() * prob_data.numel()
-                if transfer_top_k is not None and transfer_top_k > 0:
-                    prob_bytes = transfer_top_k * prob_data.element_size()
-                # B15：位宽决策走原子 helper（同 stage-1 拒绝点）
-                prob_data, _pb_bits = _uplink_prob_payload(
-                    prob_data, self.comm_config.prob_payload_bits
+                prob_bytes = self._adaptive_rejection_prob_bytes(
+                    prob_data=prob_data,
+                    transfer_top_k=transfer_top_k,
                 )
-                if _pb_bits is not None:
-                    _n = (transfer_top_k if (transfer_top_k is not None and transfer_top_k > 0)
-                          else prob_data.numel())
-                    prob_bytes = int(_n) * _pb_bits / 8.0
 
                 reject_overhead = 6.0
                 new_generated_token = prefix[:, prefix_len:]
@@ -4153,6 +3979,273 @@ class Baselines(Decoding):
         _finalize_comm_metrics(metrics, comm_simulator, self.args)
 
         return prefix, metrics
+
+    def _adaptive_rejection_prob_bytes(
+        self,
+        *,
+        prob_data: torch.Tensor,
+        transfer_top_k: Optional[int],
+    ) -> float:
+        """两层共用的拒绝概率载荷字节；不包含索引、token 或拒绝报文开销。
+
+        保留先按元素宽度/top-k 估算、再做原子量化并按位宽覆盖的顺序。
+        量化张量仅局部用于计数、不回传；验证/上行载荷仍由调用方处理。
+        调用方选择概率行并负责计费；这里不移动任何通信或 EOS 点位。
+        """
+        prob_bytes = prob_data.element_size() * prob_data.numel()
+        if transfer_top_k is not None and transfer_top_k > 0:
+            prob_bytes = transfer_top_k * prob_data.element_size()
+        # B15：实际量化与位宽计费保持原子决策，不只改变计费数字。
+        prob_data, _pb_bits = _uplink_prob_payload(
+            prob_data, self.comm_config.prob_payload_bits
+        )
+        if _pb_bits is not None:
+            _n = (
+                transfer_top_k
+                if (transfer_top_k is not None and transfer_top_k > 0)
+                else prob_data.numel()
+            )
+            prob_bytes = int(_n) * _pb_bits / 8.0
+        return prob_bytes
+
+    def _select_adaptive_little_config(
+        self,
+        *,
+        comm_simulator: CommunicationSimulator,
+        little_entropy: float,
+        gamma2_used: int,
+        no_arp: bool,
+    ) -> None:
+        """生成后选择 little 动作；只应用阈值/下一轮 gamma，不应用 top-k。
+
+        调用方保留 RL/static 门控与计时，机会门控在本次阈值写回之后运行。
+        固定深度及通信口径不在此读取；训练开关仍随 select_config 原点读取。
+        """
+        bandwidth = comm_simulator.bandwidth_edge_end_mbps
+        latency = comm_simulator.ntt_edge_end_ms
+        _little_adapter = getattr(self, "small_draft_adapter", None)
+        acc_probs = getattr(_little_adapter, "step_acc_probs", [])
+
+        task_name = getattr(self, "task", "unknown")
+        next_topk, next_threshold = self.little_rl_adapter.select_config(
+            bandwidth,
+            latency,
+            acc_probs,
+            little_entropy,
+            task_name,
+            training=not getattr(self.args, "disable_rl_update", False),
+        )
+        # 小模型层面的 top-k 压缩（如果需要）和 ARP 阈值
+        # transfer_top_k = next_topk  # edge-end 通常不压缩
+        if not no_arp and _little_adapter is not None:
+            _little_adapter.threshold = next_threshold
+        # 同主适配器：只有动作空间含 gamma 时才覆盖（本路径下第一级被
+        # opportunistic 接管，gamma2 实际恒为 1，见诊断文档 F7）。
+        if getattr(self.little_rl_adapter, "gamma_dim", 1) > 1:
+            self._next_gamma2 = int(
+                getattr(self.little_rl_adapter, "last_gamma", None) or gamma2_used
+            )
+
+    def _select_adaptive_main_config(
+        self,
+        *,
+        comm_simulator: CommunicationSimulator,
+        draft_entropy: float,
+        gamma1_used: int,
+        topk_cap: int,
+        no_arp: bool,
+    ) -> Optional[int]:
+        """生成后选择主级动作：top-k 本轮结算用，gamma/ARP 留待后续生成。
+
+        调用方持有 RL/static 门控与计时；这里不推进缓存、不做 token 采样或计费。
+        仅训练开关 disable_rl_update 随 select_config 在原点读取；通信口径与
+        固定深度留在调用方，勿在此新增这些读取（协议内省不跟随普通 helper）。
+        """
+        bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
+        latency = comm_simulator.ntt_edge_cloud_ms
+        _main_adapter = getattr(self, "draft_target_adapter", None)
+        acc_probs = getattr(_main_adapter, "step_acc_probs", [])
+
+        # q 可能为 None（未开 top-k 压缩）；RL 的熵特征已在上面由
+        # state_entropy(q, draft_model_cache) 取到，这里不需要 q。
+        task_name = getattr(self, "task", "unknown")
+        next_topk, next_threshold = self.rl_adapter.select_config(
+            bandwidth,
+            latency,
+            acc_probs,
+            draft_entropy,
+            task_name,
+            training=not getattr(self.args, "disable_rl_update", False),
+        )
+        # 更新 top-k 压缩参数和 ARP 阈值
+        transfer_top_k = next_topk
+        if topk_cap > 0 and transfer_top_k is not None:
+            transfer_top_k = min(int(transfer_top_k), topk_cap)
+        if not no_arp and _main_adapter is not None:
+            _main_adapter.threshold = next_threshold
+        # 只有动作空间真的包含 gamma 时才覆盖固定超参。legacy 适配器
+        # （gamma_dim == 1）的 last_gamma 只是 gamma_candidates[0]（默认 2），
+        # 无条件赋值会把 --gamma1 悄悄改掉 —— 这个 bug 曾让 A/B 的基线全部
+        # 跑在 gamma=2 上，从而虚增了扩展动作空间的收益（诊断文档 F14）。
+        if getattr(self.rl_adapter, "gamma_dim", 1) > 1:
+            self._next_gamma1 = int(
+                getattr(self.rl_adapter, "last_gamma", None) or gamma1_used
+            )
+        return transfer_top_k
+
+    def _trace_adaptive_cache_preverify(
+        self,
+        *,
+        x: torch.Tensor,
+        prefix_len: int,
+        draft_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        actual_gamma1: int,
+    ) -> None:
+        """CACHE_CHECK_TRACE 启用时追加验证前缓存长度诊断。"""
+        # 缓存一致性自检（CACHE_CHECK_TRACE）：验证者 cache 里应当恰好有
+        # prefix_len 个 token（= 已确认的上下文）。若实际长度与之不符，
+        # 说明此前的 rollback 截断位置错了，后续前向会在错误的上下文上
+        # 计算 logits —— 恒等检验里"模型把 prompt 又写一遍"的分歧就是
+        # 这种失配的典型症状。
+        _cache_trace = os.environ.get("CACHE_CHECK_TRACE")
+        if _cache_trace:
+            try:
+                with open(_cache_trace, "a") as _fh:
+                    _fh.write(
+                        json.dumps(
+                            {
+                                "where": "pre_verify",
+                                "x_len": int(x.shape[1]),
+                                "prefix_len": int(prefix_len),
+                                "target_cache_len": int(
+                                    target_model_cache.current_length
+                                ),
+                                "draft_cache_len": int(
+                                    draft_model_cache.current_length
+                                ),
+                                "actual_gamma1": int(actual_gamma1),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+
+    def _trace_adaptive_calibration(
+        self,
+        *,
+        x: torch.Tensor,
+        prefix_len: int,
+        draft_model_cache: KVCacheModel,
+        target_model_cache: KVCacheModel,
+        draft_accepted_this_iter: int,
+    ) -> None:
+        """按各自环境开关追加 ARP 校准及同索引的 top-k 分布诊断。"""
+        # ARP_CALIB_TRACE: 逐位配对 (ARP预测, 真接受概率) —— 校准诊断专用。
+        # 真值 = min(1, p_t(x_i)/p_d(x_i))（采样域）与 argmax 匹配（贪心域），
+        # 两个都dump，分析端按温度取用。arp 行只取 draft_target 头（主级）。
+        _calib_path = os.environ.get("ARP_CALIB_TRACE")
+        _calib_adapter = getattr(self, "draft_target_adapter", None)
+        _acc_probs_calib = list(
+            getattr(_calib_adapter, "step_acc_probs", []) or []
+        )
+        if _calib_path and _acc_probs_calib:
+            try:
+                _g_calib = len(_acc_probs_calib)
+                _toks_calib = x[0, prefix_len : prefix_len + _g_calib].tolist()
+                _rows_calib = []
+                for _i, _ap in enumerate(_acc_probs_calib):
+                    _tok = int(_toks_calib[_i])
+                    _row_d = draft_model_cache.prob_history[
+                        0, prefix_len - 1 + _i
+                    ]
+                    _row_t = target_model_cache.prob_history[
+                        0, prefix_len - 1 + _i
+                    ]
+                    _pd = float(_row_d[_tok])
+                    _pt = float(_row_t[_tok])
+                    _rows_calib.append(
+                        json.dumps(
+                            {
+                                "arp": float(_ap),
+                                "tok": _tok,
+                                "pd": _pd,
+                                "pt": _pt,
+                                "ratio": (
+                                    min(1.0, _pt / _pd) if _pd > 0 else 1.0
+                                ),
+                                "gmatch": int(
+                                    int(_row_t.argmax().item()) == _tok
+                                ),
+                            }
+                        )
+                    )
+                with open(_calib_path, "a") as _fh:
+                    _fh.write("\n".join(_rows_calib) + "\n")
+            except Exception:
+                pass
+        # TOPK_TRACE: 逐位 dump 草稿分布形状（排序质量/熵/目标token秩）——
+        # top-k 集中度诊断用。与 ARP_CALIB_TRACE 同点位同索引, 独立 env 门控。
+        _topk_path = os.environ.get("TOPK_TRACE")
+        if _topk_path and _acc_probs_calib:
+            try:
+                _kg = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+                _rows_tk = []
+                for _i in range(len(_acc_probs_calib)):
+                    _tok = int(x[0, prefix_len + _i].item())
+                    # 优先取真实分布（logits→softmax）；prob_history 在该
+                    # 路径可能已被重建/截断对象覆盖（传输侧视图），降级时标记。
+                    _lh_tk = draft_model_cache.logits_history
+                    if _lh_tk is not None:
+                        _rd = torch.softmax(
+                            _lh_tk[0, prefix_len - 1 + _i, : self.vocab_size]
+                            .float(),
+                            dim=-1,
+                        )
+                        _obj_tk = "true"
+                    else:
+                        _rd = draft_model_cache.prob_history[
+                            0, prefix_len - 1 + _i
+                        ]
+                        _obj_tk = "rebuilt"
+                    _rt = target_model_cache.prob_history[
+                        0, prefix_len - 1 + _i
+                    ]
+                    _srt, _ord = _rd.sort(descending=True)
+                    _cum = torch.cumsum(_srt, 0)[
+                        [k - 1 for k in _kg if k <= _srt.numel()]
+                    ]
+                    _tok_rank = int((_rd > _rd[_tok]).sum().item()) + 1
+                    _tam = int(_rt.argmax().item())
+                    _tam_rank = int((_rd > _rd[_tam]).sum().item()) + 1
+                    _ent = float(
+                        -(_rd[_rd > 0] * _rd[_rd > 0].log()).sum().item()
+                    )
+                    _rows_tk.append(
+                        json.dumps(
+                            {
+                                "k_grid": _kg[: len(_cum)],
+                                "cum_mass": [round(float(v), 5) for v in _cum],
+                                "tok": _tok,
+                                "tok_rank": _tok_rank,
+                                "tok_pd": float(_rd[_tok]),
+                                "t_argmax": _tam,
+                                "t_argmax_rank": _tam_rank,
+                                "gmatch": int(_tam == _tok),
+                                "acc": int(_i < draft_accepted_this_iter),
+                                "obj": _obj_tk,
+                                "entropy": round(_ent, 4),
+                                "top20": [
+                                    round(float(v), 5) for v in _srt[:20]
+                                ],
+                            }
+                        )
+                    )
+                with open(_topk_path, "a") as _fh:
+                    _fh.write("\n".join(_rows_tk) + "\n")
+            except Exception:
+                pass
 
     @Register.register_decoding("cee_sd_opportunistic")
     @torch.no_grad()

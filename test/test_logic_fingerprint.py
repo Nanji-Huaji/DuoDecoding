@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import logic_fingerprint as lf  # noqa: E402
 
 FIXTURES = {
-    "src/baselines.py": ROOT / "test/golden/logic/baselines.json",
+    "src/baselines/core.py": ROOT / "test/golden/logic/baselines.json",
     "src/engine.py": ROOT / "test/golden/logic/engine.json",
     "src/cee_prefix.py": ROOT / "test/golden/logic/cee_prefix.json",
 }
@@ -50,6 +50,7 @@ def _entries(relative: str) -> dict:
 @pytest.mark.parametrize("path", sorted(FIXTURES))
 def test_frozen_fingerprint_matches(path: str) -> None:
     frozen = json.loads(FIXTURES[path].read_text(encoding="utf-8"))
+    assert frozen["path"] == path, "fixture 必须指向真实实现文件"
     entries = _entries(path)
     for name, expected in frozen["entries"].items():
         assert name in entries, f"{path}:{name} 不见了——入口被改名或删除"
@@ -61,8 +62,8 @@ def test_frozen_fingerprint_matches(path: str) -> None:
 
 
 def test_fingerprint_is_deterministic() -> None:
-    first = lf.load_entries({"src/baselines.py": (ROOT / "src/baselines.py").read_text(encoding="utf-8")})
-    second = lf.load_entries({"src/baselines.py": (ROOT / "src/baselines.py").read_text(encoding="utf-8")})
+    first = lf.load_entries({"src/baselines/core.py": (ROOT / "src/baselines/core.py").read_text(encoding="utf-8")})
+    second = lf.load_entries({"src/baselines/core.py": (ROOT / "src/baselines/core.py").read_text(encoding="utf-8")})
     assert first == second
 
 
