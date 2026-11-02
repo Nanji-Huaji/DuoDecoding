@@ -291,8 +291,8 @@ class TkSltLoopTestBase(unittest.TestCase):
         self.args.__dict__.update(overrides)
         with (
             patch("src.baselines.core.KVCacheModel", _FakeCacheRouter()),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.core.PreciseCommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -509,8 +509,8 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
     def _run_manual(self, prefix, **dec_kwargs):
         """不走 _run 的 KVCacheModel patch（调用方自带 router）时用这个。"""
         with (
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.core.PreciseCommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),

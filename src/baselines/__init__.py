@@ -1,7 +1,8 @@
 """Compatibility imports for the baselines package.
 
-Implementation globals live in ``src.baselines.core``. Patch that module when
-replacing model/cache/simulator dependencies; exports here do not write through.
+Patch dependencies in their defining module: decoding methods use
+``src.baselines.core``; simulator factories use ``src.baselines.simulators``.
+Exports here do not write through to either implementation module.
 Legacy names are visible through imports/getattr/dir, not this package's __dict__.
 """
 

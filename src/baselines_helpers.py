@@ -1,7 +1,8 @@
 """从 baselines.py 抽出的模块级 helper（S1）。
 
-只允许依赖叶子模块；不 import src.baselines。baselines.py 通过
-``from .baselines_helpers import (...)`` re-export，保持 src.baselines.X 兼容。
+只允许依赖叶子模块；不 import src.baselines。S2/S3a 后由 baselines.core
+导入并经 src.baselines 包兼容入口提供旧名字；patch 应指向函数实际定义模块，
+不能依赖兼容包上的赋值写透。此模块仍是独立叶子模块，位置不变。
 """
 
 from __future__ import annotations

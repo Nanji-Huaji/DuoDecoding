@@ -236,7 +236,7 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
     def _enter_common_patches(self, stack: ExitStack):
         stack.enter_context(patch("src.baselines.core.KVCacheModel", _FakeCache))
         stack.enter_context(
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator)
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator)
         )
         stack.enter_context(patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent))
         stack.enter_context(

@@ -1,7 +1,8 @@
 {
   "path": "src/baselines/core.py",
   "include": [
-    "src/baselines_helpers.py"
+    "src/baselines_helpers.py",
+    "src/baselines/simulators.py"
   ],
   "rev": "WORKTREE",
   "entries": {

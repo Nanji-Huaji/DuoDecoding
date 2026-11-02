@@ -13,6 +13,7 @@ import pytest
 import torch
 
 import src.baselines as baselines
+import src.baselines.simulators as simulators
 from src.baselines import Baselines, _make_comm_simulator, _uplink_prob_payload, core
 from src.register import Register
 
@@ -77,7 +78,9 @@ def test_package_metadata_and_missing_names_do_not_leak_core_metadata():
     assert Path(baselines.__file__).name == "__init__.py"
     assert Path(core.__file__).name == "core.py"
     assert Baselines.__module__ == "src.baselines.core"
-    assert core._make_comm_simulator.__globals__ is vars(core)
+    assert core._make_comm_simulator is simulators._make_comm_simulator
+    assert simulators._make_comm_simulator.__globals__ is vars(simulators)
+    assert core._make_comm_simulator.__module__ == "src.baselines.simulators"
     assert inspect.unwrap(Baselines.adaptive_tridecoding).__globals__ is vars(core)
     with pytest.raises(AttributeError, match="missing_s2_symbol"):
         getattr(baselines, "missing_s2_symbol")
@@ -117,6 +120,9 @@ def test_legacy_pickle_global_names_still_resolve():
         ["src.baselines", "src.baselines.core"],
         ["src.baselines.core", "src.baselines"],
         ["src.register", "src.engine", "src.baselines"],
+        ["src.baselines.simulators", "src.baselines"],
+        ["src.baselines.core", "src.baselines.simulators", "src.baselines"],
+        ["src.register", "src.baselines.simulators", "src.baselines.core"],
     ],
 )
 def test_cold_import_orders_preserve_registry_and_alias_identity(order):
@@ -124,9 +130,11 @@ def test_cold_import_orders_preserve_registry_and_alias_identity(order):
 import importlib, json, sys
 for name in json.loads(sys.argv[1]):
     importlib.import_module(name)
-from src.baselines import Baselines, core
+from src.baselines import Baselines, core, simulators, _make_comm_simulator
 from src.register import Register
 assert Baselines is core.Baselines
+assert _make_comm_simulator is core._make_comm_simulator
+assert _make_comm_simulator is simulators._make_comm_simulator
 registry = Register._DECODING_REGISTRY
 for left, right in (
     ('cee_sd', 'adaptive_tridecoding'),

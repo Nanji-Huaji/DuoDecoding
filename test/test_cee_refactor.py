@@ -283,7 +283,7 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -329,7 +329,7 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -372,7 +372,7 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
