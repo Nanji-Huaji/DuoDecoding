@@ -41,7 +41,7 @@ _step(): comm_simulator.transfer(1); sample(2)
 # S2 后：当前实现已包化，main 上仍是旧文件；映射只作用于旧侧入口
 .venv/bin/python tools/logic_fingerprint.py diff src/baselines/core.py \
     --base main --base-path src/baselines.py \
-    --include src/baselines_helpers.py
+    --include src/baselines_helpers.py --include src/baselines/simulators.py
 
 # 若比较基点也已包化，省略 --base-path；后续跨文件抽取追加相应 --include。
 ```
@@ -148,7 +148,7 @@ python test/golden/compare.py llama_free_g8 <new_metrics.json>
 ```bash
 .venv/bin/python tools/logic_fingerprint.py diff src/baselines/core.py \
     --base main --base-path src/baselines.py \
-    --include src/baselines_helpers.py                              # 逻辑
+    --include src/baselines_helpers.py --include src/baselines/simulators.py # 逻辑
 python test/golden/compare.py --tokens <tag> <new.jsonl>              # 决策
 ```
 
@@ -311,7 +311,8 @@ adaptive 抽取的改动混算为 S2。core 仍 5,825 行，adaptive 仍 888 行
 `Baselines.__module__` / 新 pickle 定义路径是 `src.baselines.core`，包 `__file__`
 指向 `__init__.py`；历史显式导入仍支持，但不保证包的 `vars()` / `__dict__`
 列出虚拟导出名。`COMM_TRACE.caller` 的 basename 从 **baselines.py → core.py**，
-行号及调用栈深度不变；trace 分析器按 caller 分组，跨版本比较应归一化该标签。
+仅相对 S2 包化前 5,825 行 WIP 的行号及栈深不变；相对 main 还包含此前
+抽取的行号变化。trace 分析器按 caller 分组，跨版本应归一化调用点标签。
 不改 `communication.py` 伪造旧文件名，也不宣称 trace 原文全等。
 
 生产/导入面与测试/工具分别由 `byr-llm-gw / deepseek-v4.1-flash` 独立审阅。
@@ -320,4 +321,39 @@ adaptive 抽取的改动混算为 S2。core 仍 5,825 行，adaptive 仍 888 行
 
 本批未跑 GPU/gammar，不新增真实权重/reward/CUDA Graph 的结论；算法等价性
 依赖归一化文本/AST、既有行为门禁及导入/注册/patch 契约，不以“包化成功”代替
-真实模型端到端数值验收。S3 未开始；未暂存、未提交。
+真实模型端到端数值验收。以上是 S2 完成时快照，随后已收口为本地 `59b80ec`；
+最新 S3a 与夜间实验见下节，不把两个阶段的行号/提交状态混在一起。
+
+## 11. 2026-11-03 夜间 S3a 与真实模型回归门禁
+
+S3a 独立源码提交 `8836b06`：两个通信构造工厂原样迁入
+`src/baselines/simulators.py`，core 5,825 → 5,736，整类 `Baselines` 文本/AST
+和 adaptive 888 行保持。每个类方法的源码行号统一 −89，包化前的“行号不变”
+合同不能外推到 S3a。原 15 个冻结 entries 不变，仅 include 追加新工厂模块。
+
+```bash
+# S3a 与前一提交：两侧入口路径已相同
+.venv/bin/python tools/logic_fingerprint.py diff src/baselines/core.py \
+  --base 59b80ec --include src/baselines_helpers.py \
+  --include src/baselines/simulators.py
+# 与最初 main 比还需 --base-path src/baselines.py
+```
+
+两个基点均 PASS（68 入口）；省略新 include 会 FAIL（8 个入口变化），证明
+门禁实际展开了工厂而非漏读。105/79 导出、24 注册与六种冷启动顺序保留。
+工厂依赖 patch 改指 simulators，方法体直接构造仍指 core；不得盲目全替换。
+独立审阅者还以 fake constructor 实际命中次数验证 DSSD、CEE、legacy 与 TK-SLT。
+
+新增 `tools/run_refactor_smoke.py` / `tools/compare_refactor_smoke.py`（`1f1d5e3`）：
+真实模型、固定 12 prompt、完整新增 token 序列；严格验证版本/配置/环境/资产、
+数量/身份/seed、EOS/预算、全部非计时 metric 与通信账；仅显式白名单计时字段
+可不同。双空配置、双缺字段、无二层通信、非 UTF-8、NaN、重复键等必须拒绝。
+单个第一层 EOS 可合法无 edge-cloud，但整 run 不能完全没二层验证与通信。
+
+Driver 39 个 CPU 用例、比较器 43 个用例，均经独立缺陷审阅并关闭修复项；
+不能拿这些 CPU 用例替代真实 GPU 验收。远端仅物理 GPU1、单进程、Graph off、
+不启 RL/head、不更新 checkpoint；不动占用中的 GPU3，也不动 0/2。
+完整运行记录与最终全量数字见 `docs/nightly_refactor_20261103.md`。
+
+第一层验证接口设计见 `docs/adaptive_first_stage_design.md`，尚未引入新类型或
+改变验证返回形状；若继续实现，要先补特征测试并评审新增指纹事件。

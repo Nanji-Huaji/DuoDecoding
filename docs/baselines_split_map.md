@@ -1,7 +1,7 @@
 # `src/baselines.py` 拆分地图（只读分析，2026-10-19）
 
 > 当前实现已在 S2 WIP 中迁到 `src/baselines/core.py`，兼容入口为
-> `src/baselines/__init__.py`。前文保留历史路径与度量；最新进展见 §13。
+> `src/baselines/__init__.py`。前文保留历史路径与度量；最新进展见 §14。
 
 > 基线：`main@b594290`（PR #12 合并后）。本文只做分析，不改代码。
 >
@@ -227,7 +227,7 @@ src/baselines/tk_slt.py     # tk_slt
 | 2 | H2 仿真器工厂（tri/cee 4 + 对称 4） | 2 | ✅ 指纹不变 + 3 次 smoke |
 | 3 | H3 上下文准备 | — | ⏭ 跳过（前置段差异大，净收益 ~15 行） |
 | 4 | H5 CEE 公共核心 | — | ⏸ 判定不适合机械抽取，等设计评审 |
-| 5 | 包化（shim 优先） | — | S2 WIP 已完成，见 §13；S3 未开始，尚未提交 |
+| 5 | 包化（shim 优先） | — | S2 已收口为 `59b80ec`；S3a 工厂模块化见 §14，方法族未拆 |
 
 每一步都遵循：**一次一个逻辑提交；指纹变化必须能逐事件解释；golden
 LOCKED 零漂移、tokens 逐位一致**。
@@ -261,7 +261,7 @@ LOCKED 零漂移、tokens 逐位一致**。
 
 ## 10. 2026-11-02 WIP：`adaptive_tridecoding` 诊断段原点抽取（未提交）
 
-工作树基于 `main@50c43ba`；§1/§7/§9 的历史数字保持原样，本节保留诊断抽取阶段的快照，最新进展见 §13。
+工作树基于 `main@50c43ba`；§1/§7/§9 的历史数字保持原样，本节保留诊断抽取阶段的快照，最新进展见 §14。
 这一步**不是** Phase 0.3 的 `verify_and_commit_round` 拆分（该函数尚不存在），
 只是把方法里的三段纯诊断代码原地搬到同模块 helper。
 
@@ -326,7 +326,7 @@ LOCKED 零漂移、tokens 逐位一致**。
 
 ## 11. 2026-11-02 续做 WIP：主级 RL 动作选择与应用
 
-本节保留 921 行阶段的快照，最新进展见 §13。
+本节保留 921 行阶段的快照，最新进展见 §14。
 
 承接 §10，不做 S2/S3、不提交，也不引入完整 layer-step 或
 `verify_and_commit_round`。下一刀选在第二层生成及 target 前向之后、验证之前：
@@ -431,8 +431,9 @@ legacy 方法内导入）各增加一级；逐字归一化和**完整模块 AST*
   `vars(src.baselines)` / 包 `__dict__` 不包含虚拟导出名，这一边界明确保留。
 - 新 pickle 引用 core；旧的 `src.baselines` 全局 pickle 名仍能解析。
   包 `__file__` 指向 `__init__.py`，真实定义/inspect 源码指向 core。
-- `COMM_TRACE.caller` 的文件名从 **baselines.py → core.py**，本批行号不变、
-  调用栈深度及 kind 判据不变。跨版本 trace 聚合需归一化 caller，不宣称文本相同。
+- `COMM_TRACE.caller` 的文件名从 **baselines.py → core.py**；仅 S2 相对包化前
+  5,825 行 WIP 的行号不变，不是相对 main。调用栈深度及 kind 判据保持，
+  跨版本 trace 聚合需归一化 caller，不宣称文本相同。
 
 ### 门禁和工具
 
@@ -443,5 +444,33 @@ legacy 方法内导入）各增加一级；逐字归一化和**完整模块 AST*
 新增 CLI 用例锁定改名、真实漂移、路径错误及旧侧 include 的 git 来源。
 
 全量与兼容性验收、独立审阅见 `docs/verification_gates.md` §10。
-未提交/暂存；未跑 GPU/gammar。S2 只完成包入口与实现迁移，S3 方法族拆分、
-完整第一/第二层步骤模块均仍未完成。
+该快照时未暂存/提交、未跑 GPU/gammar；夜间已收口为本地 `59b80ec`。
+S2 只完成包入口与实现迁移；S3a 后续见 §14，方法族与完整 layer 仍未拆。
+
+## 14. 2026-11-03 S3a：通信工厂模块化与下一步设计
+
+用户批准扩大夜间范围后，增加一个受限的实际源码拆分，独立提交为
+`8836b06`（本地分支，未 push）。不是只对旧改动补测试：
+
+- 两个模块级工厂 `_make_comm_simulator` / `_make_symmetric_comm_simulator`
+  从 core 原样移到 `src/baselines/simulators.py`（107 行），core 私有 re-export。
+- core **5,825 → 5,736（−89 行）**；`Baselines` 整类源码/AST 逐字相同，
+  `adaptive_tridecoding` 仍 888 行。两个工厂的签名、docstring、函数体也逐字相同。
+  这是职责归属改善，不是消除 89 行逻辑：包总源码有 import/docstring 净增。
+- 新模块只依赖 communication/comm_accounting，不反向 import core；105/79 导出、
+  24 注册名不变。新增三种 simulators-first 冷启动顺序，合计六种顺序锁定注册。
+- 工厂的真实 globals / 新 pickle 模块是 `src.baselines.simulators`；原 facade
+  和 core 导入仍返回同一函数，旧 pickle 名可解析。工厂 constructor patch 应用
+  `src.baselines.simulators.X`，方法体直接构造点仍用 `src.baselines.core.X`。
+- 指纹 include 新增 simulators，原 15 条 entries 不动；对 `59b80ec` 和原
+  `50c43ba` 都 PASS（68 入口）。省掉新 include 会真实 FAIL，不是扫空壳。
+- 所有类方法整体前移 89 行；COMM_TRACE basename 仍 core.py，调用栈和 kind
+  不变，但 caller 行号变化，不要求跨版本原文相同。
+
+本地回归与指纹见 `docs/verification_gates.md` §11；夜间提交、双轴审阅和真实
+模型实验的最终范围以 `docs/nightly_refactor_20261103.md` 为准。
+
+另已完成 `docs/adaptive_first_stage_design.md`：只设计验证接缝，不把通信、reward、
+EOS 或 `_comm` 消费隐藏进大 context。独审纠正了二次位宽量化、跨轮 top-k、
+cache 预热/行索引和残差计费条件等合同；`StageVerification` 尚未实现，是否接受
+新增返回类型/指纹事件仍需确认。下一步先补特征测试，不能直接宣称整层可搬。

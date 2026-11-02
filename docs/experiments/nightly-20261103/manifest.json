@@ -1,0 +1,553 @@
+{
+  "schema_version": 1,
+  "source_base": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+  "source_candidate": "8836b06acf1a268b079438da5c2914f58150660e",
+  "tools_commit": "1f1d5e3ab9eaef33943c72c048035f15f2dfaf45",
+  "plan": {
+    "schema_version": 1,
+    "root": "/home/tiantianyi/duodecoding-nightly/20261103-0143",
+    "checksums": {
+      "input/base-full-50c43ba.tar.gz": "83bf53c4ff31bc646a91de56b698f8be67139dee48859cf15cd63dbfcc205a2b",
+      "input/candidate-8836b06.tar.gz": "1335b3bfcfa943b0aafd3c1aa6796af6626ffdc77d54bb872141f22e6d748e89",
+      "input/specdec-d340008.tar.gz": "043a224d9a65f17c60d97b5d3cee4302d618dfe297a8d181aeff75331b2b1fbc",
+      "input/assets-smoke.json": "c20a712bb066ee7d0b66caefb022fa4736ef22408b409d341267ee1723f28288",
+      "shared/run_refactor_smoke-final.py": "dbc9ed3af9d7915f52a162839c2cb8c6ff226ae2be259ab1d91899dc9787bbf4"
+    },
+    "arms": [
+      [
+        "A1",
+        "base-full",
+        "50c43bad233bb1c2807ffe9a838123b3b22ae4da"
+      ],
+      [
+        "B1",
+        "candidate",
+        "8836b06acf1a268b079438da5c2914f58150660e"
+      ],
+      [
+        "B2",
+        "candidate",
+        "8836b06acf1a268b079438da5c2914f58150660e"
+      ],
+      [
+        "A2",
+        "base-full",
+        "50c43bad233bb1c2807ffe9a838123b3b22ae4da"
+      ]
+    ],
+    "environment": {
+      "CUDA_VISIBLE_DEVICES": "1",
+      "NCCL_P2P_DISABLE": "1",
+      "NCCL_IB_DISABLE": "1",
+      "HF_HUB_OFFLINE": "1",
+      "TRANSFORMERS_OFFLINE": "1",
+      "HF_DATASETS_OFFLINE": "1",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONPATH": "",
+      "PYTHONHASHSEED": "20261103",
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "OMP_NUM_THREADS": "4",
+      "MKL_NUM_THREADS": "4",
+      "TOKENIZERS_PARALLELISM": "false"
+    }
+  },
+  "assets": {
+    "schema_version": 1,
+    "models": {
+      "small": {
+        "path": "/home/tiantianyi/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca",
+        "files": [
+          {
+            "name": "config.json",
+            "size": 726,
+            "sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd"
+          },
+          {
+            "name": "generation_config.json",
+            "size": 239,
+            "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+          },
+          {
+            "name": "merges.txt",
+            "size": 1671853,
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+          },
+          {
+            "name": "model.safetensors",
+            "size": 1503300328,
+            "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b"
+          },
+          {
+            "name": "tokenizer.json",
+            "size": 11422654,
+            "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+          },
+          {
+            "name": "tokenizer_config.json",
+            "size": 9732,
+            "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+          },
+          {
+            "name": "vocab.json",
+            "size": 2776833,
+            "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+          }
+        ]
+      },
+      "target": {
+        "path": "/home/tiantianyi/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+        "files": [
+          {
+            "name": "config.json",
+            "size": 726,
+            "sha256": "1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197"
+          },
+          {
+            "name": "generation_config.json",
+            "size": 239,
+            "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+          },
+          {
+            "name": "merges.txt",
+            "size": 1671853,
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+          },
+          {
+            "name": "model-00001-of-00002.safetensors",
+            "size": 3441185608,
+            "sha256": "169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5"
+          },
+          {
+            "name": "model-00002-of-00002.safetensors",
+            "size": 622329984,
+            "sha256": "912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9"
+          },
+          {
+            "name": "model.safetensors.index.json",
+            "size": 25605,
+            "sha256": "0d660e94b165eb912669a5249dff44b83188c4777a07ddb9611fb78d91b0578d"
+          },
+          {
+            "name": "tokenizer.json",
+            "size": 11422654,
+            "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+          },
+          {
+            "name": "tokenizer_config.json",
+            "size": 9732,
+            "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+          },
+          {
+            "name": "vocab.json",
+            "size": 2776833,
+            "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+          }
+        ]
+      }
+    },
+    "tokenizer_vocab_sha256": "c96fa22dee2dd9c98c4f0c73ea423e21907bc96abda81fa5c6b2e24a670c66bf",
+    "submodule_commit": "d340008fb03fd9a8e766ba83e932f0e5600d9d0d",
+    "submodule_bundle_sha256": "043a224d9a65f17c60d97b5d3cee4302d618dfe297a8d181aeff75331b2b1fbc",
+    "model_metadata": {
+      "small": {
+        "vocab_size": 151936,
+        "model_type": "qwen3"
+      },
+      "target": {
+        "vocab_size": 151936,
+        "model_type": "qwen3"
+      }
+    }
+  },
+  "run_status": {
+    "started": "2026-11-02T18:38:48.842692+00:00",
+    "finished": "2026-11-02T18:48:11.202293+00:00",
+    "complete": true,
+    "runs": [
+      {
+        "name": "legacy_static-A1",
+        "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+        "started": "2026-11-02T18:38:48.880332+00:00",
+        "finished": "2026-11-02T18:39:51.544132+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/base-full",
+          "--revision",
+          "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "--case",
+          "legacy_static",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-A1.json"
+        ],
+        "pid": 1846471,
+        "returncode": 0
+      },
+      {
+        "name": "legacy_static-B1",
+        "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+        "started": "2026-11-02T18:39:53.628474+00:00",
+        "finished": "2026-11-02T18:40:56.301283+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/candidate",
+          "--revision",
+          "8836b06acf1a268b079438da5c2914f58150660e",
+          "--case",
+          "legacy_static",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-B1.json"
+        ],
+        "pid": 1846973,
+        "returncode": 0
+      },
+      {
+        "name": "legacy_static-B2",
+        "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+        "started": "2026-11-02T18:40:56.340058+00:00",
+        "finished": "2026-11-02T18:42:00.525785+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/candidate",
+          "--revision",
+          "8836b06acf1a268b079438da5c2914f58150660e",
+          "--case",
+          "legacy_static",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-B2.json"
+        ],
+        "pid": 1847441,
+        "returncode": 0
+      },
+      {
+        "name": "legacy_static-A2",
+        "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+        "started": "2026-11-02T18:42:02.595487+00:00",
+        "finished": "2026-11-02T18:43:02.815238+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/base-full",
+          "--revision",
+          "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "--case",
+          "legacy_static",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-A2.json"
+        ],
+        "pid": 1847944,
+        "returncode": 0
+      },
+      {
+        "name": "honest_int8-A1",
+        "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+        "started": "2026-11-02T18:43:02.853300+00:00",
+        "finished": "2026-11-02T18:44:20.061278+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/base-full",
+          "--revision",
+          "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "--case",
+          "honest_int8",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-A1.json"
+        ],
+        "pid": 1848404,
+        "returncode": 0
+      },
+      {
+        "name": "honest_int8-B1",
+        "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+        "started": "2026-11-02T18:44:22.146250+00:00",
+        "finished": "2026-11-02T18:45:39.756090+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/candidate",
+          "--revision",
+          "8836b06acf1a268b079438da5c2914f58150660e",
+          "--case",
+          "honest_int8",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-B1.json"
+        ],
+        "pid": 1848983,
+        "returncode": 0
+      },
+      {
+        "name": "honest_int8-B2",
+        "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+        "started": "2026-11-02T18:45:39.796236+00:00",
+        "finished": "2026-11-02T18:46:54.602266+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/candidate",
+          "--revision",
+          "8836b06acf1a268b079438da5c2914f58150660e",
+          "--case",
+          "honest_int8",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-B2.json"
+        ],
+        "pid": 1849577,
+        "returncode": 0
+      },
+      {
+        "name": "honest_int8-A2",
+        "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+        "started": "2026-11-02T18:46:54.643990+00:00",
+        "finished": "2026-11-02T18:48:11.201270+00:00",
+        "command": [
+          "/home/tiantianyi/code/DuoDecoding/.venv/bin/python",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/shared/run_refactor_smoke-final.py",
+          "--repo-root",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/trees/base-full",
+          "--revision",
+          "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "--case",
+          "honest_int8",
+          "--asset-manifest",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/input/assets-smoke.json",
+          "--samples",
+          "12",
+          "--max-tokens",
+          "48",
+          "--seed",
+          "20261103",
+          "--output",
+          "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-A2.json"
+        ],
+        "pid": 1850384,
+        "returncode": 0
+      }
+    ],
+    "error": null
+  },
+  "artifacts": {
+    "legacy_static-A1.json": {
+      "sha256": "f99b17f74273c9404d42f1fe770402f70768f5d5221603e7f3f6e84b7d5e9ea3",
+      "bytes": 89115,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-A1.json"
+    },
+    "legacy_static-B1.json": {
+      "sha256": "11393650a76c0d0817c7177831fba502e30590f3884fd13a991268a0a60576ab",
+      "bytes": 89113,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-B1.json"
+    },
+    "legacy_static-B2.json": {
+      "sha256": "0c6237ed751afab7eaee898d40434b9aaa08c4e3df7d70a8b697ba7f89563b17",
+      "bytes": 89109,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-B2.json"
+    },
+    "legacy_static-A2.json": {
+      "sha256": "7cd84295330b57ab682606788c21888632dc6664a09d9eeee1cf6a23d719e6ea",
+      "bytes": 89101,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/legacy_static-A2.json"
+    },
+    "honest_int8-A1.json": {
+      "sha256": "0a71050ac37a6fd5db2f6cc6d819f6e2f0c476f1b0bf96ee86992fd2c9913753",
+      "bytes": 64137,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-A1.json"
+    },
+    "honest_int8-B1.json": {
+      "sha256": "82790674cd0b5a947ab5e24b69ef220bf8b5a55b72f6f597c4cb37884b02a305",
+      "bytes": 64177,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-B1.json"
+    },
+    "honest_int8-B2.json": {
+      "sha256": "30138bfbbf8950703e4f2c4b8baa43e92743d265f1c606159042f82e95675c69",
+      "bytes": 64156,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-B2.json"
+    },
+    "honest_int8-A2.json": {
+      "sha256": "2a10cfd34aa8aa9128b68dfee5ec8de04c33fce7c5d3b72f40b962494f625bff",
+      "bytes": 64150,
+      "remote_path": "/home/tiantianyi/duodecoding-nightly/20261103-0143/results/honest_int8-A2.json"
+    }
+  },
+  "local_gates": {
+    "pytest": 672,
+    "skipped": 7,
+    "subtests": 90,
+    "modes": [
+      "default",
+      "importlib"
+    ],
+    "fingerprint_entries": 68,
+    "frozen_entries": 15,
+    "adaptive_expanded_ast_sha256": "9632a2c687de9d92aaa22940d4ee2a7638c9db350e1bccaa02c4081a60189932"
+  },
+  "post_run_verification": {
+    "checked_at": "2026-11-02T19:01:17.090691+00:00",
+    "model_file_checks": {
+      "small": [
+        {
+          "name": "config.json",
+          "sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+          "unchanged": true
+        },
+        {
+          "name": "generation_config.json",
+          "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+          "unchanged": true
+        },
+        {
+          "name": "merges.txt",
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+          "unchanged": true
+        },
+        {
+          "name": "model.safetensors",
+          "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+          "unchanged": true
+        },
+        {
+          "name": "tokenizer.json",
+          "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+          "unchanged": true
+        },
+        {
+          "name": "tokenizer_config.json",
+          "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+          "unchanged": true
+        },
+        {
+          "name": "vocab.json",
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "unchanged": true
+        }
+      ],
+      "target": [
+        {
+          "name": "config.json",
+          "sha256": "1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197",
+          "unchanged": true
+        },
+        {
+          "name": "generation_config.json",
+          "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+          "unchanged": true
+        },
+        {
+          "name": "merges.txt",
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+          "unchanged": true
+        },
+        {
+          "name": "model-00001-of-00002.safetensors",
+          "sha256": "169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5",
+          "unchanged": true
+        },
+        {
+          "name": "model-00002-of-00002.safetensors",
+          "sha256": "912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9",
+          "unchanged": true
+        },
+        {
+          "name": "model.safetensors.index.json",
+          "sha256": "0d660e94b165eb912669a5249dff44b83188c4777a07ddb9611fb78d91b0578d",
+          "unchanged": true
+        },
+        {
+          "name": "tokenizer.json",
+          "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+          "unchanged": true
+        },
+        {
+          "name": "tokenizer_config.json",
+          "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+          "unchanged": true
+        },
+        {
+          "name": "vocab.json",
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "unchanged": true
+        }
+      ]
+    },
+    "gpu": {
+      "physical_index": 1,
+      "uuid": "GPU-1081b666-dc44-95ea-ead9-832937f52281",
+      "utilization_percent": 0,
+      "used_mib": 11,
+      "free_mib": 24205,
+      "compute_pids": []
+    }
+  },
+  "gpu_driver_version": "535.154.05",
+  "evidence_archive": {
+    "local_path": "._____temp/nightly-refactor-20261103-0143/nightly-refactor-artifacts.zip",
+    "sha256": "f19932fe453a450a5e2e02eecb5897d28bc121a62b8323f2738675c0d6f0b2f1",
+    "bytes": 2905066,
+    "members": 40,
+    "model_weights_included": false
+  }
+}

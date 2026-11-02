@@ -10,14 +10,17 @@
 - `src/baselines/__init__.py` 是导入兼容入口，仍支持
   `from src.baselines import Baselines`，以及历史下划线 helper 的显式导入。
 - 实现原样迁入 `src/baselines/core.py`；仅相对 import 增加一级，不拆方法族。
-  `src/baselines_helpers.py` 不移动，S3 尚未开始。
-- 替换实现依赖时必须 patch `src.baselines.core.X`；旧的
-  `patch("src.baselines.X")` 只会改兼容包对象，不会影响 core 函数的 globals。
+  `src/baselines_helpers.py` 不移动。S3a 仅把两个通信构造工厂迁至
+  `src/baselines/simulators.py`；方法族拆分尚未开始。
+- 替换依赖必须 patch 真实定义模块：解码方法的直接构造点用
+  `src.baselines.core.X`，S3a 通信工厂用 `src.baselines.simulators.X`。
+  `patch("src.baselines.X")` 只改兼容包对象，不会写透到任一实现模块。
 - 兼容导出通过 `getattr`/`dir`/导入可见，不保证直接查包的 `__dict__`。
   `Baselines.__module__` 与新 pickle 路径为 `src.baselines.core`，旧全局 pickle
   名字仍可解析；`src.baselines.__file__` 现在指向兼容入口。
-- `COMM_TRACE` 的 caller 文件名由 `baselines.py` 变为 `core.py`；行号不变，
-  不宣称跨包化前后的 caller 文本逐字节一致。
+- `COMM_TRACE` 的 caller 文件名由 `baselines.py` 变为 `core.py`；**仅 S2 相对
+  包化前 5,825 行 WIP 的行号不变**。与 main 比还包含此前抽取的行号变化，
+  S3a 又使类整体前移 89 行；跨版本应按调用点归一化，不能逐字比较 caller。
 
 ## 入口与调用方式
 
@@ -223,7 +226,7 @@ vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须�
 
 ### 5) `ceesd_without_arp`（legacy：旧血缘，仅历史复现）
 
-- 实现已迁到 `src/legacy/ceesd_without_arp.py`（`baselines.py` 只留薄 wrapper）；
+- 实现已迁到 `src/legacy/ceesd_without_arp.py`（`src/baselines/core.py` 只留薄 wrapper）；
 - 不加载/不使用 ARP head（允许 RL adapter 仅调整 top-k）；
 - 结构仍是两层（Little→Draft→Target）投机与通信；
 - **不要用它做新消融**：旧验证/回滚路径与当前 CEE-SD 不同，且缺少后续口径修复。
