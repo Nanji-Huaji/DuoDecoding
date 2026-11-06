@@ -221,3 +221,21 @@ S2 相对包化前的 5,825 行 WIP 只改相对 import 层级，计费调用、
 同机真实模型 A/B 的 byte/connect/逐消息账与 token 都严格比较，通信模拟时间
 也属于 LOCKED，而非一概把名字带 time 的字段忽略；只有明确列出的墙钟/模型
 计算/策略开销与吞吐字段可漂移。实验覆盖与限制见夜间验收记录。
+
+## 12. 2026-11-06：两模型 adaptive_decoding 的阶段接口
+
+计费开关和 gamma 读取仍在注册入口；[core.py](<src/baselines/core.py>)的真实通信位置改为：
+
+| 报文/操作 | 所属阶段 |
+|---|---|
+| 每个待验证 token 及其 proposal 概率 | `_adaptive_decoding_verify` |
+| 真正发生 token 拒绝后的拒绝消息 | `_adaptive_decoding_verify` |
+| 拒绝位置的 q 载荷与可选 tail scalar | `_adaptive_decoding_next_token` |
+| round 设置、最终 flush、下行调度 | 公开入口 |
+
+`COMM_TRACE.caller` 仍是 `core.py:<line>`，行号现在落在相应阶段函数内。
+正常样本核对报文种类、上行先于拒绝的因果顺序和实际账本；跨版本分析按阶段归类，使用真实帧位置。
+
+本轮按逻辑正确性修正了旧 bounds 分支：验证上下文不完整时直接报错，
+不会发送拒绝后又将整段计为接受。q 使用生成时的 proposal 分布，合法重建 q
+不受 raw draft history 长度误判影响。完整说明与测试见[本轮记录](<docs/adaptive_decoding_refactor_20261106.md>)。

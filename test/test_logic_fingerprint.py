@@ -240,3 +240,16 @@ def test_single_arm_return_extraction_is_detected() -> None:
     inline = lf.load_entries({"m.py": SINGLE_ARM_RETURN_INLINE})["Runner.run"]
     extracted = lf.load_entries({"m.py": SINGLE_ARM_RETURN_EXTRACTED})["Runner.run"]
     assert inline != extracted
+
+
+def test_adaptive_verification_bills_the_proposal_before_signaling_rejection():
+    """Check protocol stages, not equivalence to the old bounds/clock bugs."""
+    events = _entries("src/baselines/core.py")["Baselines.adaptive_decoding"]
+    payload = events.index(["call", "collect_verification_payload"])
+    draw = events.index(["rng", "rand"])
+    transfer = events.index(["comm", "transfer"])
+    reject = events.index(["comm", "send_reject_message"])
+    residual = events.index(["call", "compute_residual_distribution"])
+    assert payload < draw < transfer < reject < residual
+    # Invalid histories raise; only an actual token rejection sends this message.
+    assert events.count(["comm", "send_reject_message"]) == 1
