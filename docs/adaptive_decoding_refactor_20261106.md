@@ -4,7 +4,7 @@
 
 ## 结构变化
 
-[core.py](<src/baselines/core.py>) 的公开方法从 **387 行缩为 179 行**。它保留初始化、每轮调度、reward、草稿回滚、EOS、早停和下行的可见顺序，五个私有方法分别负责：
+[core.py](<../src/baselines/core.py>) 的公开方法从 **387 行缩为 179 行**。它保留初始化、每轮调度、reward、草稿回滚、EOS、早停和下行的可见顺序，五个私有方法分别负责：
 
 | 方法 | 职责 |
 |---|---|
@@ -14,7 +14,7 @@
 | `_trace_adaptive_decoding_append` | 追加现有逐轮诊断记录 |
 | `_adaptive_decoding_finalize` | 最终长度处理、metrics、checkpoint 守卫和通信账 |
 
-[内部状态类型](<src/baselines/_adaptive_state.py>)只有两种：四字段的 `AdaptiveProposal` 保存 tokens、实际概率、前缀长度和草稿长度；`AdaptiveDecodeStats` 保存八个数值统计项。缓存、通信和策略对象不放入状态包。
+[内部状态类型](<../src/baselines/_adaptive_state.py>)只有两种：四字段的 `AdaptiveProposal` 保存 tokens、实际概率、前缀长度和草稿长度；`AdaptiveDecodeStats` 保存八个数值统计项。缓存、通信和策略对象不放入状态包。
 
 现有公共 helper 继续承担通信工厂、缓存获取、top-k 重建、概率载荷收集、残差分布、下行与最终记账。其余原有 **37 个 Baselines 方法的 AST 未变**，兼容导入、79 个 star exports 和 24 个注册项保留。
 
@@ -38,12 +38,12 @@ bonus 显式读取 `L+gamma-1` 行。拒绝采样使用现有 `compute_residual_
 
 ## 验收方式
 
-- [独立正确性契约](<test/test_adaptive_decoding_contracts.py>)直接断言接受边界、真实 q、残差权重、bonus 行、缓存位置和错误输入；不用历史输出推导期望。
-- [公开入口回归](<test/test_adaptive_decoding_rounds.py>)对正常输入保留旧版辅助差分：真实 torch RNG、真实模拟通信账、输出、全部 metrics、RL 和停止动作。只归一时钟观察与等效回滚请求，不丢弃实际缓存 before/after、通信或奖励差异。
-- [冻结旧方法](<test/golden/adaptive_decoding/baseline_a9a61cc.py.txt>)带 SHA-256 校验；只编译该方法，不执行旧模块，也不依赖完整 Git 历史。
-- [值对象测试](<test/test_adaptive_decoding_state.py>)覆盖字段冻结、数值统计隔离和构造不消费 RNG。
-- [平均 top-k 测试](<test/test_decoding_avg_topk_metrics.py>)的旧 fake cache 原来把刚采样但未 forward 的 token 也写入历史；本轮将 fixture 对齐真实缓存协议，原指标断言保留。
-- [指纹门禁](<test/test_logic_fingerprint.py>)与[快照](<test/golden/logic/baselines.json>)仅更新 `adaptive_decoding` 条目，逐项记录新增验证和有意修正；其余 14 个冻结条目保持。
+- [独立正确性契约](<../test/test_adaptive_decoding_contracts.py>)直接断言接受边界、真实 q、残差权重、bonus 行、缓存位置和错误输入；不用历史输出推导期望。
+- [公开入口回归](<../test/test_adaptive_decoding_rounds.py>)对正常输入保留旧版辅助差分：真实 torch RNG、真实模拟通信账、输出、全部 metrics、RL 和停止动作。只归一时钟观察与等效回滚请求，不丢弃实际缓存 before/after、通信或奖励差异。
+- [冻结旧方法](<../test/golden/adaptive_decoding/baseline_a9a61cc.py.txt>)带 SHA-256 校验；只编译该方法，不执行旧模块，也不依赖完整 Git 历史。
+- [值对象测试](<../test/test_adaptive_decoding_state.py>)覆盖字段冻结、数值统计隔离和构造不消费 RNG。
+- [平均 top-k 测试](<../test/test_decoding_avg_topk_metrics.py>)的旧 fake cache 原来把刚采样但未 forward 的 token 也写入历史；本轮将 fixture 对齐真实缓存协议，原指标断言保留。
+- [指纹门禁](<../test/test_logic_fingerprint.py>)与[快照](<../test/golden/logic/baselines.json>)仅更新 `adaptive_decoding` 条目，逐项记录新增验证和有意修正；其余 14 个冻结条目保持。
 
 新增两批协作共五个子代理任务，均使用 `byr-llm-gw / deepseek-v4.1-flash`，分别核对算法、实现契约测试、检查简化机会和进行对抗审阅。审阅覆盖 eager/graph 缓存语义及跨设备静态路径。
 

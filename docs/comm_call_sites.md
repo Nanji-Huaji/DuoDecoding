@@ -224,7 +224,7 @@ S2 相对包化前的 5,825 行 WIP 只改相对 import 层级，计费调用、
 
 ## 12. 2026-11-06：两模型 adaptive_decoding 的阶段接口
 
-计费开关和 gamma 读取仍在注册入口；[core.py](<src/baselines/core.py>)的真实通信位置改为：
+计费开关和 gamma 读取仍在注册入口；[core.py](<../src/baselines/core.py>)的真实通信位置改为：
 
 | 报文/操作 | 所属阶段 |
 |---|---|
@@ -238,4 +238,4 @@ S2 相对包化前的 5,825 行 WIP 只改相对 import 层级，计费调用、
 
 本轮按逻辑正确性修正了旧 bounds 分支：验证上下文不完整时直接报错，
 不会发送拒绝后又将整段计为接受。q 使用生成时的 proposal 分布，合法重建 q
-不受 raw draft history 长度误判影响。完整说明与测试见[本轮记录](<docs/adaptive_decoding_refactor_20261106.md>)。
+不受 raw draft history 长度误判影响。完整说明与测试见[本轮记录](<adaptive_decoding_refactor_20261106.md>)。
