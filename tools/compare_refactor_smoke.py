@@ -33,10 +33,22 @@ RUNTIME_KEYS = frozenset(
 SAMPLE_KEYS = frozenset(
     "sample_id prompt prompt_sha256 seed prefix_ids gen_ids metrics".split()
 )
+# schema v1: all non-timing fields emitted by src.metrics.get_empty_metrics().
+# Keep this literal so the comparator remains standalone across archived revisions.
 REQUIRED_METRICS = frozenset(
     "generated_tokens little_forward_times draft_forward_times target_forward_times "
+    "little_generated_tokens draft_generated_tokens little_accepted_tokens "
+    "draft_accepted_tokens loop_times each_loop_draft_tokens comm_energy accuracy "
+    "avg_top_k avg_draft_len "
     "edge_cloud_data_bytes edge_end_data_bytes cloud_end_data_bytes "
     "communication_time edge_end_comm_time queuing_time connect_times "
+    "edge_cloud_bandwidth_history edge_cloud_ntt_history edge_cloud_topk_history "
+    "edge_cloud_draft_len_history little_entropy_history draft_entropy_history "
+    "little_accept_rate_history draft_accept_rate_history "
+    "little_accepted_vocab_rank_history draft_accepted_vocab_rank_history "
+    "little_accepted_in_transfer_topk_history draft_accepted_in_transfer_topk_history "
+    "little_accepted_transfer_topk_rank_history "
+    "draft_accepted_transfer_topk_rank_history "
     "comm_trace_edge_cloud".split()
 )
 TIMING_FIELDS = frozenset(
@@ -265,6 +277,12 @@ def _check_trace(value: Any, edge_cloud_bytes: float, path: str) -> None:
         )
     if edge_cloud_bytes > 0:
         _need(bool(value), path, "must be non-empty when edge_cloud_data_bytes > 0")
+    traced = sum(float(entry[0]) for entry in value)
+    _need(
+        math.isclose(traced, edge_cloud_bytes, rel_tol=0.0, abs_tol=1e-6),
+        path,
+        f"trace bytes {traced} != edge_cloud_data_bytes {edge_cloud_bytes}",
+    )
 
 
 def _check_config(config: Any, case: str, expect: int) -> None:
