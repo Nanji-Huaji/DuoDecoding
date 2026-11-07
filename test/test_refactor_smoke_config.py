@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import importlib.util
 import json
 import os
 import sys
 import types
+import uuid
 from pathlib import Path
 
 import pytest
@@ -723,6 +725,240 @@ def test_assets_require_every_existing_file_declared(tmp_path):
     with pytest.raises(driver.SmokeError) as excinfo:
         driver.validate_assets(payload)
     assert "extra.safetensors" in str(excinfo.value)
+
+
+GPU1_UUID = "GPU-1081b666-dc44-95ea-ead9-832937f52281"
+GPU0_UUID = "GPU-00000000-0000-0000-0000-000000000000"
+GPU_NAME = "NVIDIA GeForce RTX 4090"
+
+
+@pytest.fixture
+def fake_run(tmp_path, monkeypatch):
+    """Exercise run() without importing frameworks or accessing any GPU/model."""
+    events = []
+    props = types.SimpleNamespace(name=GPU_NAME, uuid=GPU1_UUID)
+    torch = types.SimpleNamespace(
+        __version__="2.6.0+cu124",
+        version=types.SimpleNamespace(cuda="12.4"),
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            device_count=lambda: 1,
+            get_device_properties=lambda index: props,
+        ),
+    )
+
+    class Runner:
+        def __init__(self, namespace):
+            events.append("Runner")
+            self.tokenizer = types.SimpleNamespace(eos_token_id=9)
+
+        def load_tokenizer(self):
+            events.append("tokenizer")
+
+        def load_model(self):
+            events.append("model")
+
+    modules = {
+        "torch": torch,
+        "src.baselines": types.SimpleNamespace(Baselines=object),
+        "src.engine": types.SimpleNamespace(attn_impl="sdpa"),
+        "src.fixed_prefix_probe_runner": types.SimpleNamespace(
+            FixedPrefixProbeRunner=Runner
+        ),
+        "src.utils": types.SimpleNamespace(model_zoo=lambda ns: None),
+        "transformers": types.SimpleNamespace(__version__="4.57.6"),
+    }
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in modules:
+            events.append(("import", name, os.environ.get("CUDA_VISIBLE_DEVICES")))
+            return modules[name]
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
+        monkeypatch.setenv(key, "0")
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
+    monkeypatch.setattr(driver, "insert_repo_on_sys_path", lambda root: None)
+    monkeypatch.setattr(driver, "query_pids", lambda: [])
+    monkeypatch.setattr(driver, "query_identity", lambda: (GPU_NAME, GPU1_UUID))
+
+    def snapshot_self_pids():
+        events.append("snapshot")
+        return (os.getpid(),)
+
+    def collect_samples(**kwargs):
+        events.append("collect")
+        assert kwargs["baseline_pids"] == (os.getpid(),)
+        return _samples(1)
+
+    monkeypatch.setattr(driver, "snapshot_self_pids", snapshot_self_pids)
+    monkeypatch.setattr(
+        driver, "definition_info", lambda *args: _output_kwargs()["code"]
+    )
+    monkeypatch.setattr(driver, "assert_models", lambda *args: None)
+    monkeypatch.setattr(driver, "collect_samples", collect_samples)
+    manifest = tmp_path / "assets.json"
+    manifest.write_text(json.dumps(_manifest(tmp_path / "assets")), encoding="utf-8")
+    args = driver.parse_args(
+        [
+            "--repo-root",
+            str(ROOT),
+            "--revision",
+            "a" * 40,
+            "--case",
+            "legacy_static",
+            "--asset-manifest",
+            str(manifest),
+            "--samples",
+            "1",
+            "--output",
+            str(tmp_path / "out.json"),
+        ]
+    )
+    return types.SimpleNamespace(args=args, props=props, events=events, torch=torch)
+
+
+def test_run_rejects_same_name_wrong_uuid_before_allocation(fake_run):
+    fake_run.props.uuid = GPU0_UUID
+    with pytest.raises(driver.SmokeError, match="UUID"):
+        driver.run(fake_run.args)
+    assert not {"Runner", "tokenizer", "model"}.intersection(fake_run.events)
+    assert not Path(fake_run.args.output).exists()
+
+
+@pytest.mark.parametrize(
+    "missing_uuid", [None, "", "GPU-1081", "not-a-uuid", b"invalid", b"\xff" * 17]
+)
+def test_run_rejects_unavailable_torch_uuid_before_allocation(fake_run, missing_uuid):
+    if missing_uuid is None:
+        del fake_run.props.uuid
+    else:
+        fake_run.props.uuid = missing_uuid
+    with pytest.raises(driver.SmokeError, match="UUID"):
+        driver.run(fake_run.args)
+    assert not {"Runner", "tokenizer", "model"}.intersection(fake_run.events)
+    assert not Path(fake_run.args.output).exists()
+
+
+@pytest.mark.parametrize("missing_uuid", [None, "", "GPU-1081"])
+def test_run_rejects_unavailable_nvml_uuid_before_runtime(
+    fake_run, monkeypatch, missing_uuid
+):
+    monkeypatch.setattr(driver, "query_identity", lambda: (GPU_NAME, missing_uuid))
+    with pytest.raises(driver.SmokeError, match="UUID"):
+        driver.run(fake_run.args)
+    assert fake_run.events == []
+    assert not Path(fake_run.args.output).exists()
+
+
+def test_run_rejects_ineffective_uuid_visibility_before_runtime(fake_run, monkeypatch):
+    class UnchangedVisibility(dict):
+        def __setitem__(self, key, value):
+            if key != "CUDA_VISIBLE_DEVICES":
+                super().__setitem__(key, value)
+
+    monkeypatch.setattr(os, "environ", UnchangedVisibility(os.environ))
+    with pytest.raises(driver.SmokeError, match="CUDA_VISIBLE_DEVICES"):
+        driver.run(fake_run.args)
+    assert fake_run.events == []
+    assert not Path(fake_run.args.output).exists()
+
+
+def test_run_rejects_preimported_torch_before_runtime(fake_run, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", fake_run.torch)
+    with pytest.raises(driver.SmokeError, match="torch.*UUID"):
+        driver.run(fake_run.args)
+    assert fake_run.events == []
+    assert not Path(fake_run.args.output).exists()
+
+
+@pytest.mark.parametrize("bad_visibility", ["0", "2", "0,1", "", None])
+def test_run_rejects_faulty_initial_visibility_before_runtime(
+    fake_run, monkeypatch, bad_visibility
+):
+    if bad_visibility is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", bad_visibility)
+    with pytest.raises(driver.SmokeError, match="CUDA_VISIBLE_DEVICES"):
+        driver.run(fake_run.args)
+    assert fake_run.events == []
+    assert not Path(fake_run.args.output).exists()
+
+
+def test_run_rejects_runtime_visibility_change_before_allocation(fake_run, monkeypatch):
+    original_load = driver._load_runtime
+
+    def load_runtime():
+        runtime = original_load()
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        return runtime
+
+    monkeypatch.setattr(driver, "_load_runtime", load_runtime)
+    with pytest.raises(driver.SmokeError, match="CUDA_VISIBLE_DEVICES"):
+        driver.run(fake_run.args)
+    assert not {"Runner", "tokenizer", "model"}.intersection(fake_run.events)
+    assert not Path(fake_run.args.output).exists()
+
+
+@pytest.mark.parametrize("guard", ["busy", "name", "count", "unavailable"])
+def test_run_preserves_supplementary_gpu_guards(fake_run, monkeypatch, guard):
+    if guard == "busy":
+        monkeypatch.setattr(driver, "query_pids", lambda: [os.getpid() + 1])
+    elif guard == "name":
+        fake_run.props.name = "different GPU model"
+    elif guard == "count":
+        fake_run.torch.cuda.device_count = lambda: 2
+    else:
+        fake_run.torch.cuda.is_available = lambda: False
+    with pytest.raises(driver.SmokeError):
+        driver.run(fake_run.args)
+    assert not {"Runner", "tokenizer", "model"}.intersection(fake_run.events)
+    assert not Path(fake_run.args.output).exists()
+
+
+@pytest.mark.parametrize(
+    "torch_uuid",
+    [
+        GPU1_UUID,
+        GPU1_UUID.removeprefix("GPU-"),
+        uuid.UUID("1081b666-dc44-95ea-ead9-832937f52281"),
+        bytes.fromhex("1081b666dc4495eaead9832937f52281"),
+        GPU1_UUID.encode("ascii"),
+    ],
+)
+def test_run_binds_uuid_before_runtime_and_preserves_loaded_snapshot(
+    fake_run, monkeypatch, torch_uuid
+):
+    fake_run.props.uuid = torch_uuid
+    original_load = driver._load_runtime
+
+    def load_runtime():
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == GPU1_UUID
+        assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        fake_run.events.append("runtime")
+        return original_load()
+
+    monkeypatch.setattr(driver, "_load_runtime", load_runtime)
+    payload = driver.run(fake_run.args)
+    assert fake_run.events[0] == "runtime"
+    imported = [event for event in fake_run.events if isinstance(event, tuple)]
+    assert imported and all(event[2] == GPU1_UUID for event in imported)
+    assert [event for event in fake_run.events if isinstance(event, str)] == [
+        "runtime",
+        "Runner",
+        "tokenizer",
+        "model",
+        "snapshot",
+        "collect",
+    ]
+    assert payload["runtime"]["gpu_uuid"] == GPU1_UUID
+    assert json.loads(Path(fake_run.args.output).read_text()) == payload
 
 
 def test_cli_defaults():

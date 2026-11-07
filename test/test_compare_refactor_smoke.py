@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from src.metrics import get_empty_metrics
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import compare_refactor_smoke as smoke  # noqa: E402
 
@@ -18,6 +20,17 @@ REV_B = "b" * 40
 EOS_ID = 2
 MAX_TOKENS = 4
 SEED = 1234
+# Independent producer contract: never derive fixture/required keys from the comparator.
+NON_TIMING_METRICS = set(get_empty_metrics()) - {
+    "wall_time",
+    "throughput",
+    "computation_time",
+    "little_computation_time",
+    "draft_computation_time",
+    "target_computation_time",
+    "arp_overhead_time",
+    "dra_overhead_time",
+}
 PROFILES = {
     "legacy_static": {
         "temp": 0.0,
@@ -52,6 +65,30 @@ def _metrics(
         trace = [[edge_bytes, 1]] if edge_bytes > 0 else []
     return {
         "generated_tokens": len(tokens),
+        "little_generated_tokens": 2,
+        "draft_generated_tokens": 2,
+        "little_accepted_tokens": 1,
+        "draft_accepted_tokens": 1,
+        "loop_times": 1,
+        "each_loop_draft_tokens": 2.0,
+        "comm_energy": 0.1,
+        "accuracy": None,
+        "avg_top_k": 32.0,
+        "avg_draft_len": 2.0,
+        "edge_cloud_bandwidth_history": [],
+        "edge_cloud_ntt_history": [],
+        "edge_cloud_topk_history": [],
+        "edge_cloud_draft_len_history": [],
+        "little_entropy_history": [],
+        "draft_entropy_history": [],
+        "little_accept_rate_history": [],
+        "draft_accept_rate_history": [],
+        "little_accepted_vocab_rank_history": [],
+        "draft_accepted_vocab_rank_history": [],
+        "little_accepted_in_transfer_topk_history": [],
+        "draft_accepted_in_transfer_topk_history": [],
+        "little_accepted_transfer_topk_rank_history": [],
+        "draft_accepted_transfer_topk_rank_history": [],
         "little_forward_times": 1,
         "draft_forward_times": 2,
         "target_forward_times": target,
@@ -384,6 +421,19 @@ def test_missing_required_metric_in_one_or_both_is_invalid() -> None:
     _invalid(_run(base, cand), "target_forward_times")
 
 
+def test_metric_fixture_covers_producer_non_timing_schema() -> None:
+    assert NON_TIMING_METRICS <= set(_metrics([10, EOS_ID]))
+
+
+@pytest.mark.parametrize("missing", sorted(NON_TIMING_METRICS))
+def test_each_emitted_non_timing_metric_is_required_in_both_arms(missing: str) -> None:
+    base, cand = _payload(REV_A), _payload(REV_B)
+    for arm in (base, cand):
+        for sample in arm["samples"]:
+            del sample["metrics"][missing]
+    _invalid(_run(base, cand), missing)
+
+
 def test_new_metric_key_on_one_side_is_invalid() -> None:
     cand = _payload(REV_B)
     cand["samples"][0]["metrics"]["new_counter"] = 1
@@ -528,6 +578,60 @@ def test_per_sample_bytes_positive_requires_trace() -> None:
     _invalid(_run(_payload(REV_A), cand), "must be non-empty")
 
 
+@pytest.mark.parametrize(
+    ("sample_index", "edge_bytes", "trace"),
+    [
+        (0, 12.0, [[0.0, 1]]),
+        (0, 12.0, [[11.0, 1]]),
+        (0, 12.0, [[13.0, 1]]),
+        (1, 0.0, [[1.0, 1]]),
+        (0, 1.0, [[1.000002, 1]]),
+        (0, 1_000_000_000.0, [[1_000_000_001.0, 1]]),
+    ],
+)
+def test_inconsistent_trace_is_invalid_even_when_identical_in_both_arms(
+    sample_index: int, edge_bytes: float, trace: list
+) -> None:
+    base, cand = _payload(REV_A), _payload(REV_B)
+    for arm in (base, cand):
+        metrics = arm["samples"][sample_index]["metrics"]
+        metrics["edge_cloud_data_bytes"] = edge_bytes
+        metrics["comm_trace_edge_cloud"] = copy.deepcopy(trace)
+    _invalid(_run(base, cand), "trace bytes")
+
+
+@pytest.mark.parametrize(
+    ("edge_bytes", "trace"),
+    [
+        (0.3, [[0.1, 1], [0.2, 1]]),
+        (1.0, [[1.0000005, 1]]),
+    ],
+)
+def test_trace_sum_allows_float_rounding_within_absolute_tolerance(
+    edge_bytes: float, trace: list
+) -> None:
+    base, cand = _payload(REV_A), _payload(REV_B)
+    for arm in (base, cand):
+        metrics = arm["samples"][0]["metrics"]
+        metrics["edge_cloud_data_bytes"] = edge_bytes
+        metrics["comm_trace_edge_cloud"] = copy.deepcopy(trace)
+    report = _run(base, cand)
+    assert report["verdict"] == "PASS", report
+
+
+def test_consistent_byte_accounting_drift_is_fail_not_invalid() -> None:
+    base, cand = _payload(REV_A), _payload(REV_B)
+    metrics = cand["samples"][0]["metrics"]
+    metrics["edge_cloud_data_bytes"] = 13.0
+    metrics["comm_trace_edge_cloud"] = [[13.0, 1]]
+    report = _run(base, cand)
+    assert report["verdict"] == "FAIL", report
+    assert {item["field"] for item in report["mismatches"]} == {
+        "edge_cloud_data_bytes",
+        "comm_trace_edge_cloud",
+    }
+
+
 def test_connect_times_and_trace_shapes_are_strict() -> None:
     cand = _payload(REV_B)
     del cand["samples"][0]["metrics"]["connect_times"]["cloud_end"]
@@ -614,6 +718,16 @@ def test_cli_exit_codes_and_json_out(tmp_path: Path) -> None:
     drift["samples"][0]["gen_ids"][0] = 999
     cand_path.write_text(json.dumps(drift), encoding="utf-8")
     assert smoke.main(argv) == 1
+    # Internally valid accounting drift is a comparison failure, not bad input.
+    drift = copy.deepcopy(cand)
+    drift["samples"][0]["metrics"]["edge_cloud_data_bytes"] = 13.0
+    drift["samples"][0]["metrics"]["comm_trace_edge_cloud"] = [[13.0, 1]]
+    cand_path.write_text(json.dumps(drift), encoding="utf-8")
+    assert smoke.main(argv) == 1
+    # The same well-shaped ledger with an unchanged aggregate is invalid evidence.
+    drift["samples"][0]["metrics"]["comm_trace_edge_cloud"] = [[0.0, 1]]
+    cand_path.write_text(json.dumps(drift), encoding="utf-8")
+    assert smoke.main(argv) == 2
     bad_argv = list(argv)
     bad_argv[bad_argv.index("--base-revision") + 1] = "bad"
     out = tmp_path / "report.json"

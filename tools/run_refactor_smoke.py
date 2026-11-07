@@ -26,7 +26,9 @@ tokenizer_vocab_sha256、submodule_commit（其余字段原样保留）。目录
 sort_keys=True, separators=(",", ":")).encode())，small 与 target 必须相等。
 
 安全：import src 前 sys.path 只插 --repo-root 且 Baselines 定义须在 repo 内；离线 env
-先置位；GPU1 开跑前零 compute、加载后只有自己、采样后出现新 pid 立即报错退出（不
+先置位；须使用尚未 import torch 的新进程。输入 CUDA_VISIBLE_DEVICES=1 仅为准入条件，
+实际在 import torch 前改绑 NVML GPU1 的完整 UUID；构造 Runner 前须验证 torch UUID。
+GPU1 开跑前零 compute、加载后只有自己、采样后出现新 pid 立即报错退出（不
 kill）；不写 checkpoint。完整性：len(gen_ids)<=max_tokens，短于 max_tokens 时 gen_ids
 必须含 EOS（只验结果，不加提前终止）。
 """
@@ -42,6 +44,7 @@ import platform
 import subprocess
 import sys
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -111,7 +114,8 @@ def normalize_revision(text: str | None) -> str:
 def validate_cuda_visible_devices(value: str | None) -> str:
     if value != "1":
         raise SmokeError(
-            f"CUDA_VISIBLE_DEVICES 必须恰好是 '1'（只暴露物理 GPU1），当前 {value!r}"
+            f"CUDA_VISIBLE_DEVICES 准入值必须恰好是 '1'，当前 {value!r}；"
+            "执行时将按 NVML 物理 GPU1 UUID 绑定"
         )
     return "1"
 
@@ -761,6 +765,41 @@ def collect_samples(
     return results
 
 
+def normalize_gpu_uuid(value: Any) -> str:
+    """Accept only a full GPU UUID, never a model name or ordinal."""
+    if isinstance(value, uuid.UUID):
+        return f"GPU-{value}"
+    if isinstance(value, bytes):
+        if len(value) == 16:
+            return f"GPU-{uuid.UUID(bytes=value)}"
+        try:
+            value = value.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise SmokeError(f"无法解析完整 GPU UUID: {value!r}") from exc
+    if not isinstance(value, str):
+        raise SmokeError(f"无法取得完整 GPU UUID: {value!r}")
+    text = value.removeprefix("GPU-")
+    try:
+        canonical = str(uuid.UUID(text))
+    except ValueError as exc:
+        raise SmokeError(f"无法解析完整 GPU UUID: {value!r}") from exc
+    if text.lower() != canonical:
+        raise SmokeError(f"要求完整 GPU UUID: {value!r}")
+    return f"GPU-{canonical}"
+
+
+def _load_runtime() -> tuple[Any, Any, Any, Any, Any]:
+    """Import frameworks only after binding visibility to physical GPU1's UUID."""
+    import torch
+
+    from src.baselines import Baselines
+    from src.engine import attn_impl
+    from src.fixed_prefix_probe_runner import FixedPrefixProbeRunner
+    from src.utils import model_zoo
+
+    return torch, Baselines, attn_impl, FixedPrefixProbeRunner, model_zoo
+
+
 def run(args: argparse.Namespace) -> dict:
     case = resolve_case(args.case)
     revision = normalize_revision(args.revision)
@@ -782,18 +821,32 @@ def run(args: argparse.Namespace) -> dict:
             "开跑前 GPU1 上已有 compute 进程（不 kill），拒绝采样"
         )
 
-    import torch
-
-    from src.baselines import Baselines
-    from src.engine import attn_impl
-    from src.fixed_prefix_probe_runner import FixedPrefixProbeRunner
-    from src.utils import model_zoo
-
+    gpu_name, selected_uuid = query_identity()
+    gpu_uuid = normalize_gpu_uuid(selected_uuid)
+    if "torch" in sys.modules:
+        raise SmokeError("torch 已 import：无法保证 GPU UUID 绑定先于 CUDA 初始化")
+    # CUDA ordinal 1 need not mean NVML physical GPU1 under FASTEST_FIRST.
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+    if os.environ.get("CUDA_VISIBLE_DEVICES") != gpu_uuid:
+        raise SmokeError("CUDA_VISIBLE_DEVICES 未绑定选定 GPU UUID，拒绝加载 runtime")
+    torch, Baselines, attn_impl, FixedPrefixProbeRunner, model_zoo = _load_runtime()
+    if os.environ.get("CUDA_VISIBLE_DEVICES") != gpu_uuid:
+        raise SmokeError("runtime 改写了 CUDA_VISIBLE_DEVICES GPU UUID 绑定")
     if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
         raise SmokeError(
-            "要求恰好 1 张可见 GPU（CUDA_VISIBLE_DEVICES='1'），"
+            f"要求恰好 1 张可见 GPU（CUDA_VISIBLE_DEVICES={gpu_uuid!r}），"
             f"实际 available={torch.cuda.is_available()} "
             f"count={torch.cuda.device_count()}"
+        )
+    props = torch.cuda.get_device_properties(0)
+    actual_uuid = normalize_gpu_uuid(getattr(props, "uuid", None))
+    if actual_uuid != gpu_uuid:
+        raise SmokeError(
+            f"torch GPU UUID 与物理 GPU1 不一致：{actual_uuid!r} vs {gpu_uuid!r}"
+        )
+    if str(getattr(props, "name", "")).strip() != gpu_name:
+        raise SmokeError(
+            f"torch 看到的 GPU 与物理 GPU1 不一致：{props.name!r} vs {gpu_name!r}"
         )
     code = definition_info(Baselines, repo_root)
     models = {
@@ -810,12 +863,6 @@ def run(args: argparse.Namespace) -> dict:
     assert_models(decoder, torch, assets, models["small"])
 
     baseline_pids = snapshot_self_pids()
-    gpu_name, gpu_uuid = query_identity()
-    props = torch.cuda.get_device_properties(0)
-    if str(getattr(props, "name", "")).strip() != gpu_name:
-        raise SmokeError(
-            f"torch 看到的 GPU 与物理 GPU1 不一致：{props.name!r} vs {gpu_name!r}"
-        )
     import transformers
 
     runtime = {
