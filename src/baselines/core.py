@@ -138,6 +138,11 @@ from ..baselines_helpers import (
 
 
 
+from ._adaptive_state import (
+    AdaptiveDecodeStats as _AdaptiveDecodeStats,
+    AdaptiveProposal as _AdaptiveProposal,
+)
+
 # 私有 re-export：实现已移到 simulators.py；保留 core 全局名，
 # 让既有 src.baselines 导入和调用方的方法体继续解析到同一个函数。
 from .simulators import (
@@ -2632,96 +2637,59 @@ class Baselines(Decoding):
         )
         self.color_print(f"Using transfer_top_k: {transfer_top_k}", 2)
 
-        # 统一计费口径（docs/protocol.md §3）：与 adaptive_tridecoding 同一套
-        # 开关。CUHLM 系（uncertainty_decoding / cee_cuhlm）按决策暂不接。
-        # 口径在 self.comm_config 构造一次；属性名与开关名逐字一致，
-        # protocols.py 的运行时内省才看得见（docs/comm_call_sites.md §4.1）。
+        # Keep accounting/depth reads here: protocol introspection visits this entry.
         _comm = self.comm_config
         comm_simulator.coalesce_rounds = _comm.comm_round_trip_mode == "per_round"
         charge_residual = _comm.charge_residual_payload
-        # RL 在循环里改写 transfer_top_k 后，要再用同一个 cap 钳位
-        # （与 adaptive_tridecoding 阶段二一致）；此前这里没有定义
-        # _topk_cap，--use_rl_adapter 时循环内直接 NameError。
         _topk_cap = _comm.transfer_top_k_cap
         transfer_top_k = apply_transfer_top_k_cap(transfer_top_k, _topk_cap)
         comm_simulator.transfer_top_k = transfer_top_k
-
         batch_delay = self.comm_env.batch_delay
-        queuing_time = 0.0
-
         max_tokens = prefix.shape[1] + self.args.max_tokens
-
         draft_device = self.get_model_input_device(self.draft_model)
         target_device = self.get_model_input_device(self.target_model)
-
-        # 使用 transfer_top_k 作为草稿模型的 top-k 压缩参数
         draft_top_k = (
             transfer_top_k
             if (transfer_top_k is not None and transfer_top_k > 0)
             else self.args.top_k
         )
-
-        # CUDA Graph：草稿缓存跑 γ 步多 token 前向是图收益点；target 每步只做
-        # 单 token 前向，开图无收益反而多占显存（与 dsd/dssd 的取舍一致）。
-        # B19：此前 adaptive_decoding 完全没接线 —— 命令行开了 --use_cuda_graph
-        # 对它毫无效果，而 exp.py 的扫描恰恰硬编码了 use_cuda_graph=True。
         _graph_kw = _graph_mode_cache_kwargs(
             self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
         )
         approx_model_cache, target_model_cache = self._acquire_draft_target_caches(
-            "_adaptive_decoding_caches",
-            _graph_kw,
-            draft_top_k,
-            0,
-            0.0,  # 目标模型不压缩
+            "_adaptive_decoding_caches", _graph_kw, draft_top_k, 0, 0.0
         )
-
-        draft_forward_times = 0
-        target_forward_times = 0
-        total_accepted_tokens = 0
-        total_drafted_tokens = 0
-
+        stats = _AdaptiveDecodeStats()
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
-
-        current_tokens = prefix.clone()
-
         start_event.record(stream=torch.cuda.current_stream())
-
-        idx: int = 0
-
-        total_draft_steps = 0
-        sum_draft_len = 0.0
-        sum_top_k = 0.0
-
+        idx = 0
         prompt_len = prefix.shape[1]
+
         while prefix.shape[1] < max_tokens:
             prefix_len = prefix.shape[1]
-
+            for role, cache in (
+                ("draft", approx_model_cache),
+                ("target", target_model_cache),
+            ):
+                cached_length = getattr(cache, "current_length", None)
+                if cached_length is not None and cached_length > prefix_len:
+                    raise ValueError(
+                        f"adaptive {role} cache is ahead of prefix: "
+                        f"cached={cached_length}, prefix_len={prefix_len}"
+                    )
             idx += 1
             comm_simulator.set_round(idx)
-
-            step_start_time = time.time()
-            step_comm_time_start = comm_simulator.edge_cloud_comm_time
             current_proposal_top_k = proposal_top_k(transfer_top_k)
-
-            # 确保不会生成超过max_tokens的token
             remaining_tokens = max_tokens - prefix_len
-            if remaining_tokens <= 0:
-                break
-
-            # 调整gamma以不超过剩余的token数量
-            current_gamma = min(
-                self.args.gamma, remaining_tokens - 1
-            )  # 减1是为了留给最后的采样token
+            current_gamma = min(self.args.gamma, remaining_tokens - 1)
             if current_gamma <= 0:
-                # 如果只剩1个token，直接用target model生成
-                queuing_time += batch_delay
+                # The target-only tail has no rollback, trace, or downlink.
+                stats.queuing_time += batch_delay
                 _ = target_model_cache.generate(prefix.to(target_device), 1)
-                target_forward_times += 1
+                stats.target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
-
                 t = sample(
                     target_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(prefix.device)
@@ -2729,252 +2697,343 @@ class Baselines(Decoding):
                 self.num_acc_tokens.append(1)
                 break
 
+            # Price the proposal and serial verification before resampling.
             step_start_time = time.time()
-            step_comm_time_start = comm_simulator.edge_cloud_comm_time
-
-            self.adapter.reset_step()
-            x, rebuilt_draft_probs, _, q = self._generate_with_optional_rebuilt_proposal(
-                approx_model_cache,
-                prefix.to(draft_device),
-                current_gamma,
-                current_proposal_top_k,
-                adapter=self.adapter,
+            proposal, transfer_top_k = self._adaptive_decoding_propose(
+                prefix=prefix,
+                prefix_len=prefix_len,
+                current_gamma=current_gamma,
+                current_proposal_top_k=current_proposal_top_k,
+                transfer_top_k=transfer_top_k,
+                topk_cap=_topk_cap,
+                approx_model_cache=approx_model_cache,
+                comm_simulator=comm_simulator,
+                draft_device=draft_device,
             )
-
-            if self.rl_adapter is not None:
-                bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
-                latency = comm_simulator.ntt_edge_cloud_ms
-                acc_probs = getattr(self.adapter, "step_acc_probs", [])
-
-                # q 可能为 None（未开 top-k/无 adapter）；熵来自缓存的 last_entropy
-                entropy = state_entropy(q, approx_model_cache)
-                task_name = getattr(self, "task", "unknown")
-                next_topk, next_threshold = self.rl_adapter.select_config(
-                    bandwidth,
-                    latency,
-                    acc_probs,
-                    entropy,
-                    task_name,
-                    training=not getattr(self.args, "disable_rl_update", False),
-                )
-
-                # 更新 top-k 压缩参数和 ARP 阈值
-                transfer_top_k = next_topk
-                # 统一口径：RL 选出的 top-k 同样受 cap 约束
-                #（与 adaptive_tridecoding 阶段二的写法一致）
-                if _topk_cap > 0 and transfer_top_k is not None:
-                    transfer_top_k = min(int(transfer_top_k), _topk_cap)
-                self.adapter.threshold = next_threshold
-
-            actual_gamma = x.shape[1] - prefix_len  # 实际生成的token
-            current_gamma = actual_gamma  # 更新current_gamma为实际生成的数量
-            stage_probs = stage_prob_history(
-                approx_model_cache,
-                prefix_len,
-                rebuilt_draft_probs,
-            )
-
-            total_draft_steps += 1
-            sum_draft_len += current_gamma
-            sum_top_k += (
+            current_gamma = proposal.gamma
+            stats.draft_steps += 1
+            stats.sum_draft_len += current_gamma
+            stats.sum_top_k += (
                 current_proposal_top_k if current_proposal_top_k is not None else 0
             )
-
-            draft_forward_times += current_gamma
-            total_drafted_tokens += current_gamma
-
-            queuing_time += batch_delay
-            _ = target_model_cache.generate(x.to(target_device), 1)
-
-            target_forward_times += 1
-
+            stats.draft_forward_times += current_gamma
+            stats.drafted_tokens += current_gamma
+            stats.queuing_time += batch_delay
+            _ = target_model_cache.generate(proposal.tokens.to(target_device), 1)
+            stats.target_forward_times += 1
             if self.accelerator.is_main_process:
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            n = prefix_len + current_gamma - 1
-            for i in range(current_gamma):
-                # 检查索引是否合法
-                draft_idx = prefix_len + i - 1
-                target_idx = prefix_len + i - 1
-
-                if draft_idx >= approx_model_cache.prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-                if target_idx >= target_model_cache.prob_history.shape[1]:
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
-                r = torch.rand(1, device=draft_device)
-                j = x[:, prefix_len + i]
-
-                # 传输 token id 和 prob 用于 rejection sampling
-                comm_simulator.transfer(
-                    j,
-                    stage_probs[:, draft_idx, j],
-                    "edge_cloud",
-                )
-
-                if (
-                    r
-                    > (
-                        target_model_cache.prob_history.to(draft_device)[
-                            :, target_idx, j
-                        ]
-                    )
-                    / (stage_probs[:, draft_idx, j])
-                ):
-                    n = prefix_len + i - 1
-                    comm_simulator.send_reject_message("edge_cloud")
-                    break
-
+            n = self._adaptive_decoding_verify(
+                proposal=proposal,
+                target_model_cache=target_model_cache,
+                comm_simulator=comm_simulator,
+                draft_device=draft_device,
+            )
             this_step_accepted_tokens = n - prefix_len + 1
-            total_accepted_tokens += this_step_accepted_tokens
-
+            stats.accepted_tokens += this_step_accepted_tokens
             self.num_acc_tokens.append(this_step_accepted_tokens)
-
             step_end_time = time.time()
             if self.rl_adapter is not None:
+                # Reward observes verification, before rollback and reject payloads.
                 step_time = step_end_time - step_start_time
-                # 与其余方法同一个口径入口：nominal/off 由 _reward_comm_s 决定。
-                # 直接读已结算计数器会有两个洞：per_round 下轮内差值恒 0
-                # （nominal 看不到通信成本）；per_transfer 下 off 也关不掉。
-                step_comm_time = _reward_comm_s(
-                    self.args, comm_simulator, "edge_cloud"
-                )
-
-                # 去掉分子 +1：只有真正产生 accepted tokens 才有 TPS 基础奖励
+                step_comm_time = _reward_comm_s(self.args, comm_simulator, "edge_cloud")
                 tps_part = this_step_accepted_tokens / (
                     step_time + step_comm_time + 1e-9
                 )
-                # 使用带上限的指数激励
                 reward = math.exp(min(tps_part, 100) / 20.0)
-
-                # 平滑的幂次惩罚：取代硬截断，让模型感知准确率的连续变化
-                # 只有在预测长度 > 1 时才惩罚低命中率，鼓励模型在不确定时收缩长度
                 if current_gamma > 1:
                     acc_rate = this_step_accepted_tokens / current_gamma
                     reward *= acc_rate**2
-
                 if not getattr(self.args, "disable_rl_update", False):
                     self.rl_adapter.step(reward)
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x[:, : n + 1]
-
+            prefix = proposal.tokens[:, : n + 1]
             approx_model_cache.rollback(n + 1)
-
-            # 检查是否还有空间添加一个token
             if prefix.shape[1] >= max_tokens:
                 break
-
-            if n < prefix_len + current_gamma - 1:
-                # reject someone, sample from the pos n
-
-                # 发生拒绝，传输被拒绝的 token 的 full prob 用于采样
-                comm_simulator.transfer(
-                    None,
-                    stage_probs[:, n, : self.vocab_size],
-                    "edge_cloud",
-                    transfer_top_k is not None and transfer_top_k > 0,
-                    transfer_top_k,
-                )
-                if charge_residual:
-                    # 统一口径（§3.4）：压缩行已含 k×(4+元素)，补尾部标量。
-                    comm_simulator.simulate_transfer(
-                        reject_tail_scalar_bytes(
-                            stage_probs[:, n, : self.vocab_size], transfer_top_k
-                        ),
-                        "edge_cloud",
-                    )
-
-                t = sample(
-                    max_fn(
-                        target_model_cache.prob_history[:, n, : self.vocab_size].to(
-                            draft_device
-                        )
-                        - stage_probs[:, n, : self.vocab_size]
-                    )
-                )
-
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
-
-                target_model_cache.rollback(n + 1)
-            else:
-                # all approx model decoding accepted
-                t = sample(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                target_model_cache.rollback(n + 2)
-
-                new_generated_tokens = prefix.shape[1] - current_tokens.shape[1] + 1
-
-            # 最后检查添加token后是否会超出限制
-            if prefix.shape[1] < max_tokens:
-                t = t.to(prefix.device)
-                prefix = torch.cat((prefix, t), dim=1)
-                prefix, _eos_hit = self._stop_at_eos(prefix, prompt_len)
-                if _eos_hit:
-                    break
-                # 逐迭代轨迹（APPEND_TRACE）：记录每一步确认下来的 token 与
-                # 验证者的接受情况，用于把"输出与 target_only 分歧"定位到具体
-                # 某一步的接受/重采样/上下文记账上。
-                _append_trace = os.environ.get("APPEND_TRACE")
-                if _append_trace:
-                    try:
-                        with open(_append_trace, "a") as _fh:
-                            _fh.write(
-                                json.dumps(
-                                    {
-                                        "iter": int(idx),
-                                        "prefix_len_before": int(prefix_len),
-                                        "gamma": int(current_gamma),
-                                        "n": int(n),
-                                        "accepted": int(this_step_accepted_tokens),
-                                        "appended_token": int(t.item()),
-                                        "prefix_len_after": int(prefix.shape[1]),
-                                    }
-                                )
-                                + "\n"
-                            )
-                    except Exception:
-                        pass
-
+            t = self._adaptive_decoding_next_token(
+                proposal=proposal,
+                n=n,
+                target_model_cache=target_model_cache,
+                comm_simulator=comm_simulator,
+                transfer_top_k=transfer_top_k,
+                charge_residual=charge_residual,
+                draft_device=draft_device,
+            )
+            t = t.to(prefix.device)
+            prefix = torch.cat((prefix, t), dim=1)
+            prefix, _eos_hit = self._stop_at_eos(prefix, prompt_len)
+            if _eos_hit:
+                break
+            self._trace_adaptive_decoding_append(
+                idx=idx,
+                proposal=proposal,
+                n=n,
+                accepted=this_step_accepted_tokens,
+                token=t,
+                prefix=prefix,
+            )
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
             ):
                 break
-
-            # 传输新生成的 token id 与其位置索引（B17：合并为一次往返；
-            # 此前只付了 INT_SIZE，token 本体没计）
             _send_downlink_token(comm_simulator, t, "edge_cloud")
 
-        comm_simulator.flush_round()  # 结算最后一轮（按轮合并模式下必须）
+        comm_simulator.flush_round()
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
+        prefix, metrics = self._adaptive_decoding_finalize(
+            prefix=prefix,
+            prompt_len=prompt_len,
+            max_tokens=max_tokens,
+            stats=stats,
+            comm_simulator=comm_simulator,
+            elapsed_time=elapsed_time,
+        )
+        return prefix, metrics
 
+    def _adaptive_decoding_propose(
+        self,
+        *,
+        prefix: torch.Tensor,
+        prefix_len: int,
+        current_gamma: int,
+        current_proposal_top_k: Optional[int],
+        transfer_top_k: Optional[int],
+        topk_cap: int,
+        approx_model_cache: KVCacheModel,
+        comm_simulator: CommunicationSimulator,
+        draft_device: torch.device,
+    ) -> Tuple[_AdaptiveProposal, Optional[int]]:
+        """Generate with the old policy, then select the top-k for settlement.
+
+        The proposal keeps its pre-selection probability rows. RL updates the
+        next proposal/top-k and adapter threshold, not the simulator's default.
+        """
+        self.adapter.reset_step()
+        x, rebuilt_draft_probs, _, q = self._generate_with_optional_rebuilt_proposal(
+            approx_model_cache,
+            prefix.to(draft_device),
+            current_gamma,
+            current_proposal_top_k,
+            adapter=self.adapter,
+        )
+        if self.rl_adapter is not None:
+            bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
+            latency = comm_simulator.ntt_edge_cloud_ms
+            acc_probs = getattr(self.adapter, "step_acc_probs", [])
+            entropy = state_entropy(q, approx_model_cache)
+            task_name = getattr(self, "task", "unknown")
+            next_topk, next_threshold = self.rl_adapter.select_config(
+                bandwidth,
+                latency,
+                acc_probs,
+                entropy,
+                task_name,
+                training=not getattr(self.args, "disable_rl_update", False),
+            )
+            transfer_top_k = next_topk
+            if topk_cap > 0 and transfer_top_k is not None:
+                transfer_top_k = min(int(transfer_top_k), topk_cap)
+            self.adapter.threshold = next_threshold
+        actual_gamma = x.shape[1] - prefix_len
+        stage_probs = stage_prob_history(
+            approx_model_cache, prefix_len, rebuilt_draft_probs
+        )
+        return _AdaptiveProposal(
+            x, stage_probs, prefix_len, actual_gamma
+        ), transfer_top_k
+
+    def _adaptive_decoding_verify(
+        self,
+        *,
+        proposal: _AdaptiveProposal,
+        target_model_cache: KVCacheModel,
+        comm_simulator: CommunicationSimulator,
+        draft_device: torch.device,
+    ) -> int:
+        """Verify against the sampled proposal, with complete target context.
+
+        Rebuilt proposal rows are authoritative even when the raw draft history
+        is shorter. Incomplete inputs are an error, not an accepted draft. Target
+        history must also include the row used to sample an all-accepted bonus.
+        """
+        prefix_len = proposal.prefix_len
+        current_gamma = proposal.gamma
+        x = proposal.tokens
+        stage_probs = proposal.probabilities
+        target_probs = target_model_cache.prob_history
+        if x.ndim != 2 or x.shape[0] != 1:
+            raise ValueError("adaptive_decoding requires batch_size=1 token sequences")
+        if (
+            prefix_len < 1
+            or current_gamma <= 0
+            or x.shape[1] != prefix_len + current_gamma
+        ):
+            raise ValueError(
+                "adaptive proposal length does not match prefix_len + gamma"
+            )
+        if (
+            stage_probs is None
+            or stage_probs.ndim != 3
+            or stage_probs.shape[0] != 1
+            or stage_probs.shape[1] < prefix_len + current_gamma - 1
+            or stage_probs.shape[2] < self.vocab_size
+        ):
+            raise ValueError("proposal probability history does not cover the draft")
+        if (
+            target_probs is None
+            or target_probs.ndim != 3
+            or target_probs.shape[0] != 1
+            or target_probs.shape[1] != x.shape[1]
+            or target_probs.shape[2] < self.vocab_size
+        ):
+            raise ValueError(
+                "target probability history must cover exactly the draft and bonus "
+                "context: history="
+                f"{None if target_probs is None else tuple(target_probs.shape)}, "
+                f"tokens={tuple(x.shape)}, prefix_len={prefix_len}, "
+                f"gamma={current_gamma}"
+            )
+
+        draft_tokens, selected_q = collect_verification_payload(
+            stage_probs, x, prefix_len, current_gamma
+        )
+        if not torch.isfinite(selected_q).all() or (selected_q <= 0).any():
+            raise ValueError("proposal has non-positive or non-finite selected support")
+        # Copy only this proposal's verification rows, once per round.
+        target_rows = target_probs[
+            :, prefix_len - 1 : prefix_len + current_gamma - 1, : self.vocab_size
+        ].to(draft_device)
+        n = prefix_len + current_gamma - 1
+        for i in range(current_gamma):
+            r = torch.rand(1, device=draft_device)
+            j = draft_tokens[:, i]
+            q_token = selected_q[:, i : i + 1]
+            comm_simulator.transfer(j, q_token, "edge_cloud")
+            if r >= target_rows[:, i, j] / q_token:
+                n = prefix_len + i - 1
+                comm_simulator.send_reject_message("edge_cloud")
+                break
+        return n
+
+    def _adaptive_decoding_next_token(
+        self,
+        *,
+        proposal: _AdaptiveProposal,
+        n: int,
+        target_model_cache: KVCacheModel,
+        comm_simulator: CommunicationSimulator,
+        transfer_top_k: Optional[int],
+        charge_residual: bool,
+        draft_device: torch.device,
+    ) -> torch.Tensor:
+        """Bill a rejection if needed, sample one token, then roll back target.
+
+        Draft rollback and reward are already complete in the caller. The target
+        retains only the accepted prefix: the newly sampled token has not been
+        forwarded through either cache yet.
+        """
+        if not proposal.prefix_len - 1 <= n <= proposal.prefix_len + proposal.gamma - 1:
+            raise ValueError("accepted position is outside the adaptive proposal")
+        stage_probs = proposal.probabilities
+        if n < proposal.prefix_len + proposal.gamma - 1:
+            comm_simulator.transfer(
+                None,
+                stage_probs[:, n, : self.vocab_size],
+                "edge_cloud",
+                transfer_top_k is not None and transfer_top_k > 0,
+                transfer_top_k,
+            )
+            if charge_residual:
+                comm_simulator.simulate_transfer(
+                    reject_tail_scalar_bytes(
+                        stage_probs[:, n, : self.vocab_size], transfer_top_k
+                    ),
+                    "edge_cloud",
+                )
+            t = sample(
+                compute_residual_distribution(
+                    target_model_cache.prob_history[:, n, : self.vocab_size].to(
+                        draft_device
+                    ),
+                    stage_probs[:, n, : self.vocab_size],
+                )
+            )
+        else:
+            bonus_row = proposal.prefix_len + proposal.gamma - 1
+            t = sample(
+                target_model_cache.prob_history[:, bonus_row, : self.vocab_size]
+            ).to(draft_device)
+        target_model_cache.rollback(n + 1)
+        return t
+
+    def _trace_adaptive_decoding_append(
+        self,
+        *,
+        idx: int,
+        proposal: _AdaptiveProposal,
+        n: int,
+        accepted: int,
+        token: torch.Tensor,
+        prefix: torch.Tensor,
+    ) -> None:
+        """Append the existing per-round diagnostic after EOS, before early stop."""
+        _append_trace = os.environ.get("APPEND_TRACE")
+        if _append_trace:
+            try:
+                with open(_append_trace, "a") as _fh:
+                    _fh.write(
+                        json.dumps(
+                            {
+                                "iter": int(idx),
+                                "prefix_len_before": int(proposal.prefix_len),
+                                "gamma": int(proposal.gamma),
+                                "n": int(n),
+                                "accepted": int(accepted),
+                                "appended_token": int(token.item()),
+                                "prefix_len_after": int(prefix.shape[1]),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+
+    def _adaptive_decoding_finalize(
+        self,
+        *,
+        prefix: torch.Tensor,
+        prompt_len: int,
+        max_tokens: int,
+        stats: _AdaptiveDecodeStats,
+        comm_simulator: CommunicationSimulator,
+        elapsed_time: float,
+    ) -> Tuple[torch.Tensor, DecodingMetrics]:
+        """Apply final length limits and publish metrics, checkpoint guard, ledger."""
         prefix, _ = self._stop_at_eos(prefix, prompt_len)
-        # 同上：按 max_tokens 截断，保证长度契约与基线一致
         if prefix.shape[1] > max_tokens:
             prefix = prefix[:, :max_tokens]
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-
+        generated_tokens = prefix.shape[1] - prompt_len
         metrics = get_empty_metrics()
         metrics["avg_top_k"] = (
-            sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+            stats.sum_top_k / stats.draft_steps if stats.draft_steps > 0 else 0
         )
         metrics["avg_draft_len"] = (
-            sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
+            stats.sum_draft_len / stats.draft_steps if stats.draft_steps > 0 else 0
         )
-        metrics["draft_forward_times"] = draft_forward_times
-        metrics["target_forward_times"] = target_forward_times
+        metrics["draft_forward_times"] = stats.draft_forward_times
+        metrics["target_forward_times"] = stats.target_forward_times
         metrics["generated_tokens"] = generated_tokens
-        metrics["draft_generated_tokens"] = total_drafted_tokens
-        metrics["draft_accepted_tokens"] = total_accepted_tokens
-        metrics["queuing_time"] = queuing_time
+        metrics["draft_generated_tokens"] = stats.drafted_tokens
+        metrics["draft_accepted_tokens"] = stats.accepted_tokens
+        metrics["queuing_time"] = stats.queuing_time
         metrics["wall_time"] = (
-            elapsed_time + comm_simulator.edge_cloud_comm_time + queuing_time
+            elapsed_time + comm_simulator.edge_cloud_comm_time + stats.queuing_time
         )
         metrics["throughput"] = (
             generated_tokens / metrics["wall_time"] if metrics["wall_time"] > 0 else 0
@@ -2983,20 +3042,14 @@ class Baselines(Decoding):
             metrics,
             elapsed_time=elapsed_time,
             comm_time=comm_simulator.edge_cloud_comm_time,
-            queuing_time=queuing_time,
+            queuing_time=stats.queuing_time,
         )
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
         metrics["edge_cloud_data_bytes"] = comm_simulator.edge_cloud_data
-
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-
-        # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
         self._save_adaptive_rl_checkpoints(metrics.get("throughput"))
-
-        # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
         _finalize_comm_metrics(metrics, comm_simulator, self.args)
-
         return prefix, metrics
 
     @Register.register_decoding("adaptive_tridecoding")

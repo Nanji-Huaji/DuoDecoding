@@ -3,6 +3,9 @@
 配套计划：`docs/refactor_baselines_plan.md`。本文只回答一个问题——
 **改完之后，凭什么说行为没变。**
 
+> 2026-11-06 补充：两模型 `adaptive_decoding` 以逻辑不变量验收，
+> 轨迹差分作为辅助；最新规则和有意修正见 §12。历史章节保留当时的验收目标。
+
 结论先写：
 
 | 变换 | 能断言什么 | 手段 |
@@ -357,3 +360,23 @@ Driver 39 个 CPU 用例、比较器 43 个用例，均经独立缺陷审阅并�
 
 第一层验证接口设计见 `docs/adaptive_first_stage_design.md`，尚未引入新类型或
 改变验证返回形状；若继续实现，要先补特征测试并评审新增指纹事件。
+
+## 12. 2026-11-06：逻辑契约优先的 adaptive_decoding
+
+基点为 `a9a61cc`。本轮新增[独立算法契约](<../test/test_adaptive_decoding_contracts.py>)与
+[公开入口辅助差分](<../test/test_adaptive_decoding_rounds.py>)：
+
+- 验证使用实际采样分布 q；缺失/多余 target 行和不合法 selected support 在验证 RNG/通信前报错。后续采样另行校验接受位置。
+- `r < p/q` 接受，覆盖 `p=0,r=0` 与 `p=q,r<1`；拒绝残差直接断言 `norm((p-q)+)`。
+- target 仅保留已 forward 的前缀，bonus 显式取对齐行；允许完整 prefix cache hit，拒绝领先 prefix 的缓存。
+- 正常样本继续比较输出、metrics、真实通信账、实际缓存状态、RL 与停止动作。
+  时钟观察和等效的回滚请求归一化；这组回归是辅助证据，不替代上述独立期望。
+- 旧方法作为带 SHA 的[源码数据](<../test/golden/adaptive_decoding/baseline_a9a61cc.py.txt>)提交，浅克隆可运行；
+  oracle 不执行旧模块，也不调用本轮新增阶段 helper。
+
+[指纹快照](<../test/golden/logic/baselines.json>)只更新 `Baselines.adaptive_decoding`：
+122 → 142 事件，`4c4ae47fdaac3c85`。新增输入验证、概率载荷收集和值对象，
+移除旧 bounds 的伪拒绝、重复时钟与 clone，合并 target 回滚，并复用残差分布 helper；
+其余 14 个冻结条目和 37 个原有方法 AST 保持。条件与参数的数值正确性由实际契约测试核对。
+
+完整代码结构、通信帧变化与验证结果见[本轮记录](<adaptive_decoding_refactor_20261106.md>)。

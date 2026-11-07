@@ -1,7 +1,6 @@
 import unittest
 from argparse import Namespace
 from contextlib import ExitStack
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
@@ -120,7 +119,7 @@ class _FakeCache:
         self.logits_history[:, :, 1] = 8.0
 
     def _forward_with_kvcache(self, x):
-        self.current_length = x.shape[1] + 1
+        self.current_length = x.shape[1]
         probs = self._uniform_probs()
         logits = self._uniform_logits()
         if self.prob_history is None:
@@ -136,14 +135,15 @@ class _FakeCache:
         return probs
 
     def generate(self, prefix, gamma):
-        self.current_length = prefix.shape[1] + gamma
-        if gamma > 0:
-            extra = torch.ones(
-                (prefix.shape[0], gamma), dtype=prefix.dtype, device=prefix.device
-            )
-            prefix = torch.cat((prefix, extra), dim=1)
-        self._set_uniform_history(prefix)
-        return prefix
+        # A sampled token is appended to the result before it is forwarded.
+        # Like KVCacheModel.generate, history ends one token before the result.
+        x = prefix.clone()
+        for _ in range(gamma):
+            self.current_length = x.shape[1]
+            self._set_uniform_history(x)
+            extra = torch.ones((x.shape[0], 1), dtype=x.dtype, device=x.device)
+            x = torch.cat((x, extra), dim=1)
+        return x
 
     def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
         # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
@@ -178,12 +178,15 @@ class _FakeCache:
             prompt_logits[:, :, 1] = 8.0
             self.prob_history = torch.cat((prompt_probs, self.prob_history), dim=1)
             self.logits_history = torch.cat((prompt_logits, self.logits_history), dim=1)
-        self._set_uniform_history(x)
+        self._set_uniform_history(x[:, :-1])
         rebuilt = None if not rebuilt_rows else torch.cat(rebuilt_rows, dim=1)
         return x, rebuilt
 
     def rollback(self, end_pos):
-        self.current_length = end_pos
+        self.current_length = min(end_pos, self.current_length)
+        if self.prob_history is not None:
+            self.prob_history = self.prob_history[:, : self.current_length]
+            self.logits_history = self.logits_history[:, : self.current_length]
 
 
 class DecodingAvgTopKMetricTests(unittest.TestCase):
@@ -238,7 +241,9 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         stack.enter_context(
             patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator)
         )
-        stack.enter_context(patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent))
+        stack.enter_context(
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent)
+        )
         stack.enter_context(
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None)
         )
@@ -281,6 +286,7 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
         self.assertGreater(output.shape[1], prefix.shape[1])
         self.assertEqual(metrics["avg_top_k"], 7)
         self.assertEqual(metrics["avg_draft_len"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
