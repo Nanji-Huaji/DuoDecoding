@@ -1,11 +1,25 @@
+import json
+import os
+import tempfile
 import unittest
 from argparse import Namespace
+from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
 
 from src.baselines import Baselines
 from src.utils import rebuild_topk_uniform_probs, sample
+
+#: 三个诊断 JSONL 门控 -> 输出文件名。单开用例按这张表构造 env：
+#: 表内其余开关必须**显式置空**（只看"是否设置"不够——外部 shell/CI 可能
+#: 已经导出了某个路径），并据此断言"其余两个文件不存在"。
+DIAGNOSTIC_TRACE_FILES = {
+    "CACHE_CHECK_TRACE": "cache.jsonl",
+    "ARP_CALIB_TRACE": "calib.jsonl",
+    "TOPK_TRACE": "topk.jsonl",
+}
 
 
 class _TestBaselines(Baselines):
@@ -242,15 +256,15 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             return gamma, prefix_len + gamma - 1, token, True
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             output, metrics = self.instance.adaptive_tridecoding(prefix)
 
@@ -291,15 +305,15 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             return gamma, prefix_len + gamma - 1, token, True
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             self.instance.adaptive_tridecoding(prefix)
             default_constructor_kwargs = [
@@ -334,15 +348,15 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             return gamma, prefix_len + gamma - 1, token, True
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CommunicationSimulator", return_value=fake_comm),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CommunicationSimulator", return_value=fake_comm),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             self.instance.adaptive_tridecoding(prefix)
 
@@ -406,15 +420,15 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             return accepted, prefix_len + accepted - 1, token, True
 
         with (
-            patch("src.baselines.KVCacheModel", _ShortSecondStageCache),
-            patch("src.baselines.CommunicationSimulator", return_value=fake_comm),
+            patch("src.baselines.core.KVCacheModel", _ShortSecondStageCache),
+            patch("src.baselines.core.CommunicationSimulator", return_value=fake_comm),
             patch(
-                "src.baselines.resolve_stage_verification",
+                "src.baselines.core.resolve_stage_verification",
                 side_effect=fake_stage_verify,
             ),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             self.instance.adaptive_tridecoding(prefix)
 
@@ -431,6 +445,281 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             payload_calls[0]["probs"].shape[1],
         )
         self.assertLessEqual(payload_calls[0]["tokens"].shape[1], 3)
+
+
+    def _run_diagnostic_traces(
+        self,
+        *,
+        rebuilt=False,
+        unavailable_path=False,
+        enabled=tuple(DIAGNOSTIC_TRACE_FILES),
+        directory=None,
+    ):
+        """跑一轮解码，只打开 ``enabled`` 里的诊断开关（默认三者全开）。
+
+        ``enabled`` 之外的开关被**显式置空**，而不是"不设置"：外部 shell/CI
+        若已导出某个 TRACE 路径，不设置会让它继续生效，单开用例就失去隔离性。
+        ``patch.dict`` 退出时会恢复外部原值（原本不存在的键会被删除）。
+
+        ``directory`` 由调用方提供时不会被删除，单开用例据此在解码结束后
+        断言"其余开关的文件没有生成"。
+        """
+        enabled = set(enabled)
+        unknown = sorted(enabled - set(DIAGNOSTIC_TRACE_FILES))
+        if unknown:
+            raise ValueError(f"未知诊断开关: {unknown}")
+
+        class _TraceCache(_FakeCache):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.logits_history = None
+
+            def _forward_with_kvcache(self, x):
+                # The original one-round fake does not fill a longer prefix.
+                self._set_uniform_history(x)
+                return super()._forward_with_kvcache(x)
+
+        def fake_stage_verify(
+            *, proposer_cache, verifier_cache, x, prefix_len, gamma,
+            output_device, **kwargs,
+        ):
+            if verifier_cache.model.kind == "target":
+                # Distinct caches and adjacent rows make swapped caches and
+                # prefix_len vs prefix_len-1 errors observable in JSONL.
+                rows = x.shape[1] + 1
+                proposer_cache.prob_history = torch.tensor(
+                    [[[0.25, 0.125, 0.125, 0.5]]] * rows
+                ).transpose(0, 1)
+                verifier_cache.prob_history = torch.tensor(
+                    [[[0.5, 0.125, 0.25, 0.125]]] * rows
+                ).transpose(0, 1)
+                proposer_cache.prob_history[0, prefix_len - 1] = torch.tensor(
+                    [0.125, 0.5, 0.25, 0.125]
+                )
+                verifier_cache.prob_history[0, prefix_len - 1] = torch.tensor(
+                    [0.125, 0.25, 0.5, 0.125]
+                )
+                proposer_cache.logits_history = (
+                    None if rebuilt else proposer_cache.prob_history.log()
+                )
+            return (
+                gamma,
+                prefix_len + gamma - 1,
+                torch.tensor([[1]], dtype=torch.long, device=output_device),
+                True,
+            )
+
+        self.instance.args.max_tokens = 8
+        with ExitStack() as stack:
+            if directory is None:
+                directory = stack.enter_context(tempfile.TemporaryDirectory())
+            base = Path(directory)
+            if unavailable_path:
+                base = base / "missing"
+            paths = {
+                key: base / filename
+                for key, filename in DIAGNOSTIC_TRACE_FILES.items()
+            }
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        key: (str(paths[key]) if key in enabled else "")
+                        for key in DIAGNOSTIC_TRACE_FILES
+                    },
+                ),
+                patch("src.baselines.core.KVCacheModel", _TraceCache),
+                patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+                patch(
+                    "src.baselines.core.resolve_stage_verification",
+                    side_effect=fake_stage_verify,
+                ),
+                patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+                patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+                patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
+            ):
+                output, metrics = self.instance.adaptive_tridecoding(
+                    torch.tensor([[0]], dtype=torch.long)
+                )
+
+            if unavailable_path:
+                for key in enabled:
+                    self.assertFalse(paths[key].exists(), msg=key)
+                return output, metrics, [], [], []
+            traces = {
+                key: [
+                    json.loads(row)
+                    for row in paths[key].read_text().splitlines()
+                ]
+                for key in enabled
+            }
+        return (
+            output,
+            metrics,
+            traces.get("CACHE_CHECK_TRACE"),
+            traces.get("ARP_CALIB_TRACE"),
+            traces.get("TOPK_TRACE"),
+        )
+
+    def test_diagnostic_traces_append_asymmetric_rows_and_true_logits(self):
+        _, _, cache, calib, topk = self._run_diagnostic_traces()
+        self.assertEqual(cache, [
+            {"where": "pre_verify", "x_len": 4, "prefix_len": 1,
+             "target_cache_len": 5, "draft_cache_len": 4, "actual_gamma1": 1},
+            {"where": "pre_verify", "x_len": 8, "prefix_len": 5,
+             "target_cache_len": 9, "draft_cache_len": 8, "actual_gamma1": 1},
+        ])
+        self.assertEqual(calib, [
+            {"arp": 1.0, "tok": 1, "pd": 0.5, "pt": 0.25,
+             "ratio": 0.5, "gmatch": 0},
+        ] * 2)
+        self.assertEqual(len(topk), 2)
+        for row in topk:
+            self.assertEqual(row["obj"], "true")
+            self.assertEqual(row["tok"], 1)
+            self.assertEqual(row["tok_rank"], 1)
+            self.assertAlmostEqual(row["tok_pd"], 0.5)
+            self.assertEqual(row["t_argmax"], 2)
+            self.assertEqual(row["t_argmax_rank"], 2)
+            self.assertEqual(row["gmatch"], 0)
+            self.assertEqual(row["acc"], 1)
+            self.assertEqual(row["k_grid"], [1, 2, 4])
+            self.assertEqual(row["cum_mass"], [0.5, 0.75, 1.0])
+            self.assertEqual(row["top20"], [0.5, 0.25, 0.125, 0.125])
+            self.assertEqual(row["entropy"], 1.213)
+
+
+    def test_topk_trace_falls_back_to_rebuilt_probabilities(self):
+        _, _, _, _, topk = self._run_diagnostic_traces(rebuilt=True)
+        self.assertEqual(len(topk), 2)
+        for row in topk:
+            self.assertEqual(row["obj"], "rebuilt")
+            self.assertEqual(row["tok_pd"], 0.5)
+            self.assertEqual(row["cum_mass"], [0.5, 0.75, 1.0])
+
+    def test_unavailable_trace_paths_do_not_interrupt_decoding(self):
+        output, metrics, _, _, _ = self._run_diagnostic_traces(unavailable_path=True)
+        self.assertEqual(output.tolist(), [[0] + [1] * 8])
+        self.assertEqual(metrics["generated_tokens"], 8)
+
+    def test_each_diagnostic_switch_enabled_alone_writes_only_its_own_file(self):
+        # 非对称行 fake 的完整期望（与三开关全开的用例同源）：单开时每一行
+        # 必须仍然是同一份内容，否则"文件存在"可能只是写了个空壳。
+        expected_rows = {
+            "CACHE_CHECK_TRACE": [
+                {
+                    "where": "pre_verify",
+                    "x_len": 4,
+                    "prefix_len": 1,
+                    "target_cache_len": 5,
+                    "draft_cache_len": 4,
+                    "actual_gamma1": 1,
+                },
+                {
+                    "where": "pre_verify",
+                    "x_len": 8,
+                    "prefix_len": 5,
+                    "target_cache_len": 9,
+                    "draft_cache_len": 8,
+                    "actual_gamma1": 1,
+                },
+            ],
+            "ARP_CALIB_TRACE": [
+                {
+                    "arp": 1.0,
+                    "tok": 1,
+                    "pd": 0.5,
+                    "pt": 0.25,
+                    "ratio": 0.5,
+                    "gmatch": 0,
+                }
+            ]
+            * 2,
+            "TOPK_TRACE": [
+                {
+                    "obj": "true",
+                    "tok": 1,
+                    "tok_rank": 1,
+                    "tok_pd": 0.5,
+                    "t_argmax": 2,
+                    "t_argmax_rank": 2,
+                    "gmatch": 0,
+                    "acc": 1,
+                    "k_grid": [1, 2, 4],
+                    "cum_mass": [0.5, 0.75, 1.0],
+                    "top20": [0.5, 0.25, 0.125, 0.125],
+                    "entropy": 1.213,
+                }
+            ]
+            * 2,
+        }
+
+        external_env = {
+            key: os.environ.get(key) for key in DIAGNOSTIC_TRACE_FILES
+        }
+        with tempfile.TemporaryDirectory() as sentinel_dir:
+            # 三个开关都预先导出成外部"哨兵"路径：单开某一个时，其余两个必须
+            # 被显式置空（而不是"恰好没设置"），否则哨兵路径会被写入。
+            sentinel = {
+                key: str(Path(sentinel_dir) / f"external-{filename}")
+                for key, filename in DIAGNOSTIC_TRACE_FILES.items()
+            }
+            with patch.dict(os.environ, sentinel):
+                for env_name in DIAGNOSTIC_TRACE_FILES:
+                    with self.subTest(switch=env_name):
+                        with tempfile.TemporaryDirectory() as directory:
+                            directory = Path(directory)
+                            output, metrics, cache, calib, topk = (
+                                self._run_diagnostic_traces(
+                                    enabled=(env_name,), directory=directory
+                                )
+                            )
+                            # 解码路径与开关组合无关：仍然 2 轮 / 8 token。
+                            self.assertEqual(output.tolist(), [[0] + [1] * 8])
+                            self.assertEqual(metrics["generated_tokens"], 8)
+                            traces = {
+                                "CACHE_CHECK_TRACE": cache,
+                                "ARP_CALIB_TRACE": calib,
+                                "TOPK_TRACE": topk,
+                            }
+                            rows = traces[env_name]
+                            self.assertIsNotNone(rows, msg=env_name)
+                            # 两轮各一条日志（每轮一次 pre_verify / 校准）。
+                            self.assertEqual(len(rows), 2, msg=env_name)
+                            for row, expected in zip(
+                                rows, expected_rows[env_name], strict=True
+                            ):
+                                for key, value in expected.items():
+                                    self.assertEqual(
+                                        row[key], value, msg=f"{env_name}.{key}"
+                                    )
+                            for other_env in DIAGNOSTIC_TRACE_FILES:
+                                if other_env == env_name:
+                                    continue
+                                # 其余两个开关：文件不生成、账本为空、外部导出
+                                # 的哨兵路径也没有被写。
+                                self.assertFalse(
+                                    (
+                                        directory
+                                        / DIAGNOSTIC_TRACE_FILES[other_env]
+                                    ).exists(),
+                                    msg=f"{env_name} 单开时 {other_env} 写出了文件",
+                                )
+                                self.assertFalse(
+                                    Path(sentinel[other_env]).exists(),
+                                    msg=f"{env_name} 单开时 {other_env} 用了外部值",
+                                )
+                                self.assertIsNone(traces[other_env], msg=other_env)
+                                # patch 退出后，被显式置空的开关恢复成外部值。
+                                self.assertEqual(
+                                    os.environ.get(other_env), sentinel[other_env]
+                                )
+                            self.assertEqual(
+                                os.environ.get(env_name), sentinel[env_name]
+                            )
+        # 外层 patch 退出后，进程环境回到测试开始时的原值。
+        for key, value in external_env.items():
+            self.assertEqual(os.environ.get(key), value, msg=key)
 
 
 if __name__ == "__main__":

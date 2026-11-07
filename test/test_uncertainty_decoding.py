@@ -192,11 +192,11 @@ class UncertaintyDecodingTests(unittest.TestCase):
         prefix = torch.tensor([[7]], dtype=torch.long)
 
         with (
-            patch("src.baselines.KVCacheModel", _FakeCache),
-            patch("src.baselines.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             output, metrics = self.instance.uncertainty_decoding(prefix)
 

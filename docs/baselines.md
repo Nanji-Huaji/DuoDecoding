@@ -3,16 +3,32 @@
 
 > [!warning] 本文档由AI生成，未经人工审阅
 
-本仓库中与“对比基线 / 组合方法”相关的解码实现集中在 `src/baselines.py`，核心类为 `Baselines(Decoding)`。评测脚本（例如 `eval/eval_gsm8k.py`、`eval/eval_mt_bench*.py`）会继承 `Baselines`，并通过 `args.eval_mode` 选择具体解码方法执行。
+本仓库中与“对比基线 / 组合方法”相关的解码实现集中在 `src/baselines/core.py`，核心类为 `Baselines(Decoding)`。评测脚本（例如 `eval/eval_gsm8k.py`、`eval/eval_mt_bench*.py`）会继承 `Baselines`，并通过 `args.eval_mode` 选择具体解码方法执行。
+
+### S2 包入口（2026-11-02 WIP）
+
+- `src/baselines/__init__.py` 是导入兼容入口，仍支持
+  `from src.baselines import Baselines`，以及历史下划线 helper 的显式导入。
+- 实现原样迁入 `src/baselines/core.py`；仅相对 import 增加一级，不拆方法族。
+  `src/baselines_helpers.py` 不移动。S3a 仅把两个通信构造工厂迁至
+  `src/baselines/simulators.py`；方法族拆分尚未开始。
+- 替换依赖必须 patch 真实定义模块：解码方法的直接构造点用
+  `src.baselines.core.X`，S3a 通信工厂用 `src.baselines.simulators.X`。
+  `patch("src.baselines.X")` 只改兼容包对象，不会写透到任一实现模块。
+- 兼容导出通过 `getattr`/`dir`/导入可见，不保证直接查包的 `__dict__`。
+  `Baselines.__module__` 与新 pickle 路径为 `src.baselines.core`，旧全局 pickle
+  名字仍可解析；`src.baselines.__file__` 现在指向兼容入口。
+- `COMM_TRACE` 的 caller 文件名由 `baselines.py` 变为 `core.py`；**仅 S2 相对
+  包化前 5,825 行 WIP 的行号不变**。与 main 比还包含此前抽取的行号变化，
+  S3a 又使类整体前移 89 行；跨版本应按调用点归一化，不能逐字比较 caller。
 
 ## 入口与调用方式
 
 ### 1) 通过 `--eval_mode` 选择方法
 
-`Decoding` 继承自 `Register`，`Register.get_decoding_method()` 会按如下顺序取方法：
-
-1. 优先从注册表 `_DECODING_REGISTRY` 中查找 `eval_mode`（由 `@Register.register_decoding("...")` 注册）。
-2. 兜底：如果类上存在同名方法，则用 `getattr(self, eval_mode)`。
+`Decoding` 继承自 `Register`，`Register.get_decoding_method()` 只从注册表
+`_DECODING_REGISTRY` 查找 `eval_mode`（由 `@Register.register_decoding("...")`
+注册）；未知名称直接抛出 `NotImplementedError`，没有 `getattr` 兜底。
 
 因此，`Baselines` 中大量方法会通过装饰器同时注册多个别名（例如 `dssd` 与 `dist_split_spec`）。
 
@@ -43,7 +59,7 @@ output_ids, metrics = decoding(input_ids)
 
 > 下面的 “模型需求” 指 `load_model()` 会加载哪些模型；2 模型方法使用 `draft_model + target_model`，3 模型方法使用 `little_model + draft_model + target_model`。
 
-| eval_mode（别名） | 模型需求 | 方法名（`src/baselines.py`） | 核心特征（高层） |
+| eval_mode（别名） | 模型需求 | 方法名（`src/baselines/core.py`） | 核心特征（高层） |
 |---|---:|---|---|
 | `dssd`, `dist_split_spec` | 2 | `dist_split_spec` | DSSD：uplink 仅传 `token id + q(x)` 标量；reject 时下发整行 `P(x)` 并在端侧按 `max(P-Q,0)` 重采样 |
 | `dsd`, `dist_spec` | 2 | `dist_spec` | DSD：传 draft token 序列 +（可 top-k）draft 概率窗口，批量验证 accept/reject |
@@ -113,7 +129,7 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 
 ## 各方法说明（API + 行为）
 
-下面仅描述 `src/baselines.py` 中注册的方法；`sd`（标准 speculative decoding）位于 `src/engine.py`。
+下面仅描述 `src/baselines/core.py` 中注册的方法；`sd`（标准 speculative decoding）位于 `src/engine.py`。
 
 ### 1) `dssd` / `dist_split_spec`（DSSD，2 模型）
 
@@ -210,7 +226,7 @@ vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须�
 
 ### 5) `ceesd_without_arp`（legacy：旧血缘，仅历史复现）
 
-- 实现已迁到 `src/legacy/ceesd_without_arp.py`（`baselines.py` 只留薄 wrapper）；
+- 实现已迁到 `src/legacy/ceesd_without_arp.py`（`src/baselines/core.py` 只留薄 wrapper）；
 - 不加载/不使用 ARP head（允许 RL adapter 仅调整 top-k）；
 - 结构仍是两层（Little→Draft→Target）投机与通信；
 - **不要用它做新消融**：旧验证/回滚路径与当前 CEE-SD 不同，且缺少后续口径修复。

@@ -60,9 +60,9 @@ def test_opportunistic_mode_uses_isolated_root_and_threshold_only_little_agent(
     args = _opportunistic_args(tmp_path / "cee_sd_opportunistic")
 
     with (
-        patch("src.baselines.Decoding.__init__", return_value=None),
-        patch("src.baselines.RLNetworkAdapter") as adapter,
-        patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+        patch("src.baselines.core.Decoding.__init__", return_value=None),
+        patch("src.baselines.core.RLNetworkAdapter") as adapter,
+        patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
     ):
         _TestBaselines(args)
 
@@ -89,9 +89,9 @@ def test_prefer_latest_is_reserved_for_trainable_opportunistic_little(tmp_path):
     calls_by_args = []
     for args in (opportunistic_training, opportunistic_evaluation, standard):
         with (
-            patch("src.baselines.Decoding.__init__", return_value=None),
-            patch("src.baselines.RLNetworkAdapter") as adapter,
-            patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+            patch("src.baselines.core.Decoding.__init__", return_value=None),
+            patch("src.baselines.core.RLNetworkAdapter") as adapter,
+            patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
         ):
             _TestBaselines(args)
             calls_by_args.append(adapter.call_args_list)

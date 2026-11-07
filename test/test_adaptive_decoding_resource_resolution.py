@@ -94,10 +94,10 @@ class AdaptiveDecodingRLInitTests(unittest.TestCase):
         )
 
         with (
-            patch("src.baselines.Decoding.__init__", return_value=None),
-            patch("src.baselines.get_rl_agent_spec") as get_spec,
-            patch("src.baselines.RLNetworkAdapter") as rl_adapter,
-            patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+            patch("src.baselines.core.Decoding.__init__", return_value=None),
+            patch("src.baselines.core.get_rl_agent_spec") as get_spec,
+            patch("src.baselines.core.RLNetworkAdapter") as rl_adapter,
+            patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
         ):
             get_spec.return_value = type(
                 "Spec",
@@ -129,9 +129,9 @@ class AdaptiveTriDecodingAcceptanceHeadInitTests(unittest.TestCase):
         )
 
         with (
-            patch("src.baselines.Decoding.__init__", return_value=None),
-            patch("src.baselines.load_acceptance_prediction_head") as load_head,
-            patch("src.baselines.DecodingAdapter") as adapter,
+            patch("src.baselines.core.Decoding.__init__", return_value=None),
+            patch("src.baselines.core.load_acceptance_prediction_head") as load_head,
+            patch("src.baselines.core.DecodingAdapter") as adapter,
         ):
             instance = _TestBaselines(args)
             instance.args = args

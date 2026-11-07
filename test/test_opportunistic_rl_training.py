@@ -196,9 +196,9 @@ def test_opportunistic_mode_forwards_pilot_agent_configuration(tmp_path):
 
     # When: Baselines constructs its main and Little adapters.
     with (
-        patch("src.baselines.Decoding.__init__", return_value=None),
-        patch("src.baselines.RLNetworkAdapter") as adapter,
-        patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+        patch("src.baselines.core.Decoding.__init__", return_value=None),
+        patch("src.baselines.core.RLNetworkAdapter") as adapter,
+        patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
     ):
         _TestBaselines(args)
 
@@ -217,9 +217,9 @@ def test_opportunistic_mode_uses_frozen_main_and_trainable_little_pilot_defaults
 
     # When: Baselines constructs its adapters.
     with (
-        patch("src.baselines.Decoding.__init__", return_value=None),
-        patch("src.baselines.RLNetworkAdapter") as adapter,
-        patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+        patch("src.baselines.core.Decoding.__init__", return_value=None),
+        patch("src.baselines.core.RLNetworkAdapter") as adapter,
+        patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
     ):
         _TestBaselines(args)
 
@@ -241,9 +241,9 @@ def test_other_rl_modes_retain_historical_agent_defaults(tmp_path):
 
     # When: Baselines constructs its adapters.
     with (
-        patch("src.baselines.Decoding.__init__", return_value=None),
-        patch("src.baselines.RLNetworkAdapter") as adapter,
-        patch("src.baselines.resolve_legacy_rl_agent_load_path", return_value=None),
+        patch("src.baselines.core.Decoding.__init__", return_value=None),
+        patch("src.baselines.core.RLNetworkAdapter") as adapter,
+        patch("src.baselines.core.resolve_legacy_rl_agent_load_path", return_value=None),
     ):
         _TestBaselines(args)
 

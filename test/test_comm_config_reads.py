@@ -5,7 +5,7 @@
 （src/protocols.py 模块头）。迁移后统一经 ``Baselines.comm_config``
 （或 ``_comm = self.comm_config`` 局部别名）；本测试防止回退。
 
-扫描两个注册解码方法所在文件：``src/baselines.py`` 与 ``src/engine.py``
+扫描两个注册解码方法所在文件：``src/baselines/core.py`` 与 ``src/engine.py``
 （历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，2026-10-19
 补入）。同时守 ``CommEnv`` 的 9 个通信数值键：迁移前它们在 ~20 处
 构造点各自 ``getattr(self.args, ..., 默认)``，现在只许经 ``self.comm_env``。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI 合法性校验
@@ -39,7 +39,7 @@ SWITCHES = {
 SRC = Path(__file__).resolve().parents[1] / "src"
 # 所有注册解码方法所在文件：Baselines 一族 + engine.py 的历史方法
 # （speculative_decoding_with_bandwidth 曾漏在审计外，2026-10-19 补上）。
-SOURCES = (SRC / "baselines.py", SRC / "engine.py")
+SOURCES = (SRC / "baselines" / "core.py", SRC / "engine.py")
 
 
 def _trees() -> dict[Path, ast.Module]:
@@ -47,7 +47,7 @@ def _trees() -> dict[Path, ast.Module]:
 
 
 def _tree() -> ast.Module:
-    return ast.parse((SRC / "baselines.py").read_text(encoding="utf-8"))
+    return ast.parse((SRC / "baselines" / "core.py").read_text(encoding="utf-8"))
 
 
 def _is_self_args(node: ast.AST) -> bool:
@@ -95,7 +95,7 @@ def test_every_switch_is_still_read_somewhere():
         }
     missing = SWITCHES - attrs
     assert not missing, (
-        "以下开关在 src/baselines.py 里完全找不到属性读取，"
+        "以下开关在 src/baselines/core.py 里完全找不到属性读取，"
         f"可能是被别名隐藏或整段删掉了：{missing}"
     )
 

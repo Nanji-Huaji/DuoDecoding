@@ -28,7 +28,8 @@
 - CUHLM / TK-SLT 系只读 `comm_round_trip_mode`（统一往返），
   `cee_cuhlm` 一个都不读——与静态快照一致；
 - `prob_payload_bits` 只有一处（`_uplink_prob_payload`），所有方法共用；
-  迁移后该 helper 收 int，8 个调用点传 `self.comm_config.prob_payload_bits`。
+  迁移后该 helper 收 int，8 个调用点传 `self.comm_config.prob_payload_bits`
+  是 2026-10-19 的快照，不是后续 helper 搬移后的源码调用点计数，见 §9。
 
 ## 2. 读取点总表
 
@@ -129,7 +130,7 @@ getattr(cfg, "comm_round_trip_mode")       # 字符串常量 → 命中
    `CommConfig.from_args(self.args)`，不改 `__init__`；
 2. 方法内把 `getattr(self.args, "<switch>", <fallback>)` 换成
    `self.comm_config.<switch>`——**字段名 = 开关名**；
-3. 跑 `python3 tools/logic_fingerprint.py diff src/baselines.py --entries <方法>`
+3. 跑 `python3 tools/logic_fingerprint.py diff src/baselines/core.py --base main --base-path src/baselines.py --include src/baselines_helpers.py --include src/baselines/simulators.py --entries <方法>`
    ——必然红（flag_getattr 事件消失），逐条列出变化；
 4. 因为 4.1，`test_protocol_spec` 与 `live_mode_consumption` 必须保持不变；
 5. 数字验收：同一条固定命令跑 before / after 两次，除 timing 与 git_*
@@ -173,3 +174,50 @@ alias 方法（如 `cfg.per_round()`）看起来更整齐，代价是内省失�
 - 命令与产物：`.refactor/logs/q15_g5_calib.log`、
   `dist_spec_{before,after}.log`、`dist_spec_before_metrics.json`；
   worktree 的 `exp/gammar/` 下有三次 run 的完整产物。
+
+## 9. 2026-11-02 WIP：adaptive 两处拒绝概率计费共同段
+
+`adaptive_tridecoding` 的两处拒绝分支改为调用
+`_adaptive_rejection_prob_bytes(prob_data=..., transfer_top_k=...)`；原来两次
+`self.comm_config.prob_payload_bits` 读取各自在 helper 展开后的位置执行，
+不预读、不移动到入口，也不改成裸 args 读取。方法体里的两个上行载荷读取
+仍保留，四个协议计费键与深度键没有挪入普通 helper，运行时消费集保持不变。
+
+该 helper 只返回**拒绝概率部分**的计费字节，量化张量不返回给 caller；真实
+验证/上行载荷在原位置另行处理，不能把这个返回值当成“已量化的传输载荷”。
+索引/token/6 B 拒绝开销、残差消息和 `simulate_transfer` 仍由 caller 持有。
+因此通信 trace 的 caller 归属函数与 kind 判据不变；caller 字符串中的源码
+行号仍会随抽取缩短而变化，不宣称 trace 文本逐字节相同。本批 CPU 门禁新增
+bits=8 两层拒绝及 bits=16 对照，不代替 GPU/gammar 数值验收。
+
+## 10. 2026-11-02 S2：实现路径与 trace 标签
+
+实现从 `src/baselines.py` 原样移到 `src/baselines/core.py`，兼容入口保留旧导入。
+S2 相对包化前的 5,825 行 WIP 只改相对 import 层级，计费调用、参数、顺序、
+行号和栈深不变；若与 main 比较，还包含此前 helper 抽取造成的行号移动。
+但 `COMM_TRACE.caller` 使用代码文件 basename，因此明确从
+**`baselines.py:<line>` 变为 `core.py:<line>`**。`scripts/analyze_comm_trace.py`
+按 caller 分组，跨版本 join/对照应先归一化这一标签，不直接比较 trace 文本。
+`kind` 仍由原调用栈判定，不为保留旧标签修改通信实现。
+
+模块全局依赖替换应 patch `src.baselines.core.X`，而不是只改兼容包上的 `X`。
+源码读取/指纹入口也指向 core；旧 main 的映射用 `--base-path src/baselines.py`，
+`--include src/baselines_helpers.py` 仍需保留。详细兼容边界见
+`docs/baselines.md` 与 `docs/verification_gates.md` §10。
+
+## 11. 2026-11-03 S3a：构造工厂与真实定义模块
+
+仅两个构造工厂迁到 `src/baselines/simulators.py`，所有 `Baselines` 方法体保持；
+方法内 transfer/simulate_transfer 的帧位置和 kind 不变，caller basename 仍
+`core.py`，但整类源码行号统一前移 89 行。旧 S2“行号不变”只针对包化前 WIP，
+不针对整个重构或这次 S3a。
+
+工厂内部的 constructor patch 应指 `src.baselines.simulators.X`；
+`adaptive_tridecoding`/CUHLM 的直接构造点仍指 `src.baselines.core.X`。
+`src.baselines._make_comm_simulator` 与 core 私有 re-export 都是同一工厂对象，
+不因此获得 globals 写透语义。新的指纹调用必须同时保留
+`--include src/baselines_helpers.py --include src/baselines/simulators.py`。
+
+同机真实模型 A/B 的 byte/connect/逐消息账与 token 都严格比较，通信模拟时间
+也属于 LOCKED，而非一概把名字带 time 的字段忽略；只有明确列出的墙钟/模型
+计算/策略开销与吞吐字段可漂移。实验覆盖与限制见夜间验收记录。

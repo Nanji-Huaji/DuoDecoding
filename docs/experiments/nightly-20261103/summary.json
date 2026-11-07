@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "overall_verdict": "PASS",
+  "arms": 8,
+  "sample_generations": 96,
+  "comparisons": {
+    "legacy-main-repeat": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 120
+    },
+    "legacy-candidate-repeat": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 119
+    },
+    "legacy-main-vs-candidate": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 116
+    },
+    "int8-main-repeat": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 118
+    },
+    "int8-candidate-repeat": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 120
+    },
+    "int8-main-vs-candidate": {
+      "verdict": "PASS",
+      "samples": 12,
+      "mismatches": 0,
+      "ignored_timing_differences": 120
+    }
+  },
+  "cases": {
+    "legacy_static": {
+      "samples_per_arm": 12,
+      "max_new_tokens": 48,
+      "arms": {
+        "A1": {
+          "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "generated_tokens": 576,
+          "token_sha256": "b110ad7dcea277d25b233d9bcbd88b63c676f9b8018ca4e1ea0baeea54df20dc",
+          "locked_metrics_sha256": "4c8662f5f5c7d8d6704b77308e5c5cd524c2fc9e05378ee133af33d6d65cc3bd",
+          "edge_cloud_data_bytes": 32000.0,
+          "edge_end_data_bytes": 9640.0,
+          "target_forward_times": 153,
+          "edge_cloud_messages": 459
+        },
+        "B1": {
+          "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+          "generated_tokens": 576,
+          "token_sha256": "b110ad7dcea277d25b233d9bcbd88b63c676f9b8018ca4e1ea0baeea54df20dc",
+          "locked_metrics_sha256": "4c8662f5f5c7d8d6704b77308e5c5cd524c2fc9e05378ee133af33d6d65cc3bd",
+          "edge_cloud_data_bytes": 32000.0,
+          "edge_end_data_bytes": 9640.0,
+          "target_forward_times": 153,
+          "edge_cloud_messages": 459
+        },
+        "B2": {
+          "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+          "generated_tokens": 576,
+          "token_sha256": "b110ad7dcea277d25b233d9bcbd88b63c676f9b8018ca4e1ea0baeea54df20dc",
+          "locked_metrics_sha256": "4c8662f5f5c7d8d6704b77308e5c5cd524c2fc9e05378ee133af33d6d65cc3bd",
+          "edge_cloud_data_bytes": 32000.0,
+          "edge_end_data_bytes": 9640.0,
+          "target_forward_times": 153,
+          "edge_cloud_messages": 459
+        },
+        "A2": {
+          "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "generated_tokens": 576,
+          "token_sha256": "b110ad7dcea277d25b233d9bcbd88b63c676f9b8018ca4e1ea0baeea54df20dc",
+          "locked_metrics_sha256": "4c8662f5f5c7d8d6704b77308e5c5cd524c2fc9e05378ee133af33d6d65cc3bd",
+          "edge_cloud_data_bytes": 32000.0,
+          "edge_end_data_bytes": 9640.0,
+          "target_forward_times": 153,
+          "edge_cloud_messages": 459
+        }
+      },
+      "configuration": {
+        "eval_mode": "tridecoding",
+        "model_source": "local",
+        "model_dtype": "bf16",
+        "little_quantization": "none",
+        "draft_quantization": "none",
+        "target_quantization": "none",
+        "temp": 0.0,
+        "top_k": 0,
+        "top_p": 0.0,
+        "gamma": 3,
+        "gamma1": 3,
+        "gamma2": 2,
+        "max_tokens": 48,
+        "seed": 20261103,
+        "transfer_top_k": 32,
+        "transfer_top_k_cap": 0,
+        "prob_payload_bits": 16,
+        "force_full_vocab_transfer": false,
+        "comm_round_trip_mode": "per_transfer",
+        "charge_residual_payload": false,
+        "edge_cloud_bandwidth": 20.0,
+        "edge_end_bandwidth": 100.0,
+        "cloud_end_bandwidth": 100.0,
+        "min_bandwidth_mbps": 5.0,
+        "comm_bw_model": "instant",
+        "ntt_ms_edge_cloud": 10.0,
+        "ntt_ms_edge_end": 1.0,
+        "batch_delay": 0.0,
+        "use_stochastic_comm": false,
+        "use_early_stopping": false,
+        "use_cuda_graph": false,
+        "use_rl_adapter": false,
+        "disable_rl_update": true,
+        "disable_eos_stop": false,
+        "dump_network_stats": false,
+        "samples": 12,
+        "eos_token_ids": [
+          151645
+        ]
+      }
+    },
+    "honest_int8": {
+      "samples_per_arm": 12,
+      "max_new_tokens": 48,
+      "arms": {
+        "A1": {
+          "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "generated_tokens": 576,
+          "token_sha256": "d6cccf14f584389779278cd80573451e7a69885c1a3c3c3d00fe4608213efc8a",
+          "locked_metrics_sha256": "bcb5004aa3f4d8787cf32893459fa61486cd70480e4f6dc56345225c0b5c711d",
+          "edge_cloud_data_bytes": 27211.0,
+          "edge_end_data_bytes": 10056.0,
+          "target_forward_times": 200,
+          "edge_cloud_messages": 200
+        },
+        "B1": {
+          "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+          "generated_tokens": 576,
+          "token_sha256": "d6cccf14f584389779278cd80573451e7a69885c1a3c3c3d00fe4608213efc8a",
+          "locked_metrics_sha256": "bcb5004aa3f4d8787cf32893459fa61486cd70480e4f6dc56345225c0b5c711d",
+          "edge_cloud_data_bytes": 27211.0,
+          "edge_end_data_bytes": 10056.0,
+          "target_forward_times": 200,
+          "edge_cloud_messages": 200
+        },
+        "B2": {
+          "revision": "8836b06acf1a268b079438da5c2914f58150660e",
+          "generated_tokens": 576,
+          "token_sha256": "d6cccf14f584389779278cd80573451e7a69885c1a3c3c3d00fe4608213efc8a",
+          "locked_metrics_sha256": "bcb5004aa3f4d8787cf32893459fa61486cd70480e4f6dc56345225c0b5c711d",
+          "edge_cloud_data_bytes": 27211.0,
+          "edge_end_data_bytes": 10056.0,
+          "target_forward_times": 200,
+          "edge_cloud_messages": 200
+        },
+        "A2": {
+          "revision": "50c43bad233bb1c2807ffe9a838123b3b22ae4da",
+          "generated_tokens": 576,
+          "token_sha256": "d6cccf14f584389779278cd80573451e7a69885c1a3c3c3d00fe4608213efc8a",
+          "locked_metrics_sha256": "bcb5004aa3f4d8787cf32893459fa61486cd70480e4f6dc56345225c0b5c711d",
+          "edge_cloud_data_bytes": 27211.0,
+          "edge_end_data_bytes": 10056.0,
+          "target_forward_times": 200,
+          "edge_cloud_messages": 200
+        }
+      },
+      "configuration": {
+        "eval_mode": "tridecoding",
+        "model_source": "local",
+        "model_dtype": "bf16",
+        "little_quantization": "none",
+        "draft_quantization": "none",
+        "target_quantization": "none",
+        "temp": 0.7,
+        "top_k": 0,
+        "top_p": 0.0,
+        "gamma": 3,
+        "gamma1": 3,
+        "gamma2": 2,
+        "max_tokens": 48,
+        "seed": 20261103,
+        "transfer_top_k": 8,
+        "transfer_top_k_cap": 0,
+        "prob_payload_bits": 8,
+        "force_full_vocab_transfer": false,
+        "comm_round_trip_mode": "per_round",
+        "charge_residual_payload": true,
+        "edge_cloud_bandwidth": 20.0,
+        "edge_end_bandwidth": 100.0,
+        "cloud_end_bandwidth": 100.0,
+        "min_bandwidth_mbps": 5.0,
+        "comm_bw_model": "instant",
+        "ntt_ms_edge_cloud": 10.0,
+        "ntt_ms_edge_end": 1.0,
+        "batch_delay": 0.0,
+        "use_stochastic_comm": false,
+        "use_early_stopping": false,
+        "use_cuda_graph": false,
+        "use_rl_adapter": false,
+        "disable_rl_update": true,
+        "disable_eos_stop": false,
+        "dump_network_stats": false,
+        "samples": 12,
+        "eos_token_ids": [
+          151645
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "python": "3.10.12",
+    "torch": "2.6.0+cu124",
+    "cuda": "12.4",
+    "transformers": "4.57.6",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "gpu_uuid": "GPU-1081b666-dc44-95ea-ead9-832937f52281",
+    "attention_backend": "sdpa"
+  },
+  "timing_fields": [
+    "arp_overhead_time",
+    "computation_time",
+    "dra_overhead_time",
+    "draft_computation_time",
+    "draft_wall_time",
+    "little_computation_time",
+    "little_wall_time",
+    "target_computation_time",
+    "target_wall_time",
+    "throughput",
+    "wall_time"
+  ],
+  "scope": "Same-GPU static tridecoding only; no ARP/RL heads, no CUDA Graph, not GSM8K/gammar or performance acceptance."
+}
