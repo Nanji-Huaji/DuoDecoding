@@ -14,10 +14,10 @@ Seam
 覆盖矩阵：per_transfer（逐消息结算）× {全接受多轮, 两级拒绝,
 两级拒绝 + 拒绝残差载荷}；per_round + charge_residual_payload=True
 （每轮合并结算 + 拒绝残差载荷）× {全接受多轮, 两级拒绝,
-拒绝轮之后继续跑一轮并在轮 2 触发 EOS 停机}；EOS 门禁 × {第一层在
-edge_end 计费后停机, 第二层在 edge_cloud 合并计费与下行之前停机,
-轮 2 的第一层停机（轮 1 已在 set_round(2) 结算）} × {per_transfer,
-per_round+residual}；prob_payload_bits=8 的量化拒绝 × {per_transfer
+拒绝轮之后继续跑一轮并在轮 2 触发 EOS 停机}；EOS 门禁覆盖内层 EOS
+被 target 验证接受、target bonus EOS，以及轮 2 的内层 EOS；所有 terminal
+response/downlink 都在停机前计费，并覆盖 per_transfer/per_round+residual。
+prob_payload_bits=8 的量化拒绝 × {per_transfer
 两级拒绝（补充 bits=16 对照组）, transfer_top_k=None/0 整行拒绝载荷}。
 
 量化拒绝用例不是"先拒绝再倒推字节"：stage-2 的 bonus 位置是否拒绝由
@@ -39,9 +39,9 @@ per_round+residual}；prob_payload_bits=8 的量化拒绝 × {per_transfer
 * CommunicationSimulator：继承真实实现，只增加有序账本；计费/统计仍由
   _charge_transfer 完成。
 
-**绝不**替换 src.baselines.core.resolve_stage_verification 或
-src.decoding_ops.resolve_stage_verification：所有测试都走真实的
-acceptance 判定、拒绝残差采样与 rollback。拒绝测试只固定 acceptance 判据里
+**绝不**替换 CEE 的 proposal/verification stage 或共享采样/回滚实现：
+所有测试都走真实的 strict acceptance、拒绝残差采样与 rollback。
+拒绝测试只固定 acceptance 判据里
 的均匀随机数 torch.rand（r=0.75），不触碰验证逻辑本身。
 _ablation="static" 只关闭 RL/ARP 策略头（否则需要真实 GPU 适配器），
 验证、KV 缓存推进/rollback 与逐轮计费路径仍是生产代码。
@@ -65,7 +65,6 @@ from src.proposal_utils import (
 )
 from src.utils import rebuild_topk_uniform_probs, sample
 
-
 VOCAB_SIZE = 4
 
 #: 三个诊断 JSONL 门控。外部 shell 若设置它们，生产代码会在固定点位写文件
@@ -79,8 +78,8 @@ ALL_ACCEPT_LEDGER = [
     # prompt 在 while 之前传输一次，此时尚未 set_round -> round=None
     (None, "transfer", "edge_end", 8, 0, 0),  # prompt 1 token x 8 B
     # round 1: stage-1 1 token；stage-2 4 token
-    (1, "transfer", "edge_end", 12, 0, 0),    # stage-1 payload: 8 B token + 4 B prob
-    (1, "simulate", "edge_end", 12, 0, 0),    # accepted token downlink: 4 B idx + 8 B token
+    (1, "transfer", "edge_end", 12, 0, 0),  # 8 B token + 4 B probability
+    (1, "simulate", "edge_end", 12, 0, 0),  # 4 B index + 8 B accepted token
     (1, "transfer", "edge_cloud", 24, 0, 3),  # up: 3 tokens
     (1, "transfer", "edge_cloud", 48, 0, 4),  # stage-2 payload: 4 tokens + 4 probs
     (1, "simulate", "edge_cloud", 12, 300, 4),
@@ -155,7 +154,7 @@ REJECTION_METRICS = {
 
 REJECTION_ROLLBACKS = {
     "little": [1, 1],   # stage-1 proposer -> n1+1 ; 轮末 n2+1 再次截断
-    "draft": [1, 1],    # stage-1 verifier -> n1+2 (=1) ; stage-2 proposer -> n2+1
+    "draft": [1, 1],    # stage-1 verifier -> n1+1 ; stage-2 proposer -> n2+1
     "target": [1],      # stage-2 verifier -> n2+1 (=1)
 }
 
@@ -294,9 +293,8 @@ PER_ROUND_ACCEPT_METRICS = {
     "edge_cloud_data_bytes": 236,
     "edge_end_comm_time": 0.0040928,
     "communication_time": 0.0342816,
-    # Historical ordering: wall_time is read before the final round is flushed.
-    # It includes prompt + rounds 1/2 comm (0.023192 s) and 0.375 s queuing.
-    "wall_time": 0.398192,
+    # All three rounds are settled before the final wall/throughput snapshot.
+    "wall_time": 0.4092816,
     "connect_times": {"edge_end": 4, "cloud_end": 0, "edge_cloud": 3},
     "comm_trace_edge_cloud": [[84, 1], [76, 2], [76, 3]],
     "edge_cloud_topk_history": [2, 2, 2],
@@ -339,8 +337,8 @@ PER_ROUND_REJECTION_METRICS = {
     "edge_cloud_data_bytes": 78,
     "edge_end_comm_time": 0.002056,
     "communication_time": 0.0121184,
-    # Only the prompt (0.0010064 s) is settled before the final flush.
-    "wall_time": 0.2510064,
+    # Includes final-round communication plus .25s queuing.
+    "wall_time": 0.2621184,
     "connect_times": {"edge_end": 2, "cloud_end": 0, "edge_cloud": 1},
     "comm_trace_edge_cloud": [[78, 1]],
     "edge_cloud_topk_history": [2],
@@ -404,107 +402,33 @@ PER_TRANSFER_RESIDUAL_REJECTION_METRICS = {
     "edge_cloud_bandwidth_history": [10.0, 10.0, 10.0, 10.0],
 }
 
-#: ---- EOS 停机门禁 ------------------------------------------------------
-#: 两层各用一个只可能在目标层生成的 token 当 EOS，避免误触另一层的截断点：
-#:   · stage-1 的被接受 token 永远是 1（one-hot 默认行），stage-1 的 bonus
-#:     token 由脚本行 draft[1] 指定；
-#:   · stage-2 的 bonus token 由脚本行 target[4] 指定（target 缓存本轮的
-#:     最后一行只用于 bonus 采样，不参与 stage-2 验收窗口 0..3）。
+#: ---- Target-verified EOS gates ----------------------------------------
+#: Inner EOS is only a proposal. These scripts give target positive support for
+#: it, so terminal output is retained only AFTER target verification and reply.
 EOS_STAGE1_TOKEN = 2
 EOS_STAGE2_TOKEN = 3
-
-#: 第一层 EOS：edge_end 的三笔消息（prompt / stage-1 payload / 下行 token）
-#: 全部计费完成后才 break，第二层一次通信都不发生。
 EOS_STAGE1_LEDGER = [
-    (None, "transfer", "edge_end", 8, 0, 0),   # prompt
-    (1, "transfer", "edge_end", 12, 0, 0),     # stage-1 payload
-    (1, "simulate", "edge_end", 12, 0, 0),     # 4 B idx + 8 B 下行 token
+    (None, "transfer", "edge_end", 8, 0, 0),
+    (1, "transfer", "edge_end", 12, 0, 0),
+    (1, "simulate", "edge_end", 12, 0, 0),
+    (1, "transfer", "edge_cloud", 24, 0, 3),
+    (1, "transfer", "edge_cloud", 48, 0, 4),
+    (1, "simulate", "edge_cloud", 12, 300, 4),
+    (1, "simulate", "edge_end", 12, 0, 0),
 ]
-
 EOS_STAGE1_CHARGES = [
-    (None, "edge_end", 8),
-    (1, "edge_end", 12),
-    (1, "edge_end", 12),
-]
-
-#: edge_end: 3 次往返 × 1 ms + 32 B / 1.25e6 B/s = 0.0030256。
-#: queuing_time=0：只有 stage-1，未走到第二层的 batch_delay 累加点。
-EOS_STAGE1_METRICS = {
-    "generated_tokens": 2,
-    "little_generated_tokens": 1,
-    "little_accepted_tokens": 1,
-    "draft_generated_tokens": 0,
-    "draft_accepted_tokens": 0,
-    "little_forward_times": 1,
-    "draft_forward_times": 1,
-    "target_forward_times": 0,
-    "queuing_time": 0.0,
-    "edge_end_data_bytes": 32,
-    "edge_cloud_data_bytes": 0,
-    "edge_end_comm_time": 0.0030256,
-    "communication_time": 0.0030256,
-    "wall_time": 0.0030256,
-    "connect_times": {"edge_end": 3, "cloud_end": 0, "edge_cloud": 0},
-    "comm_trace_edge_cloud": [],
-    "edge_cloud_topk_history": [],
-    "edge_cloud_draft_len_history": [],
-    "edge_cloud_bandwidth_history": [],
-}
-
-#: per_round：round 1 的 12+12 B 合并成一笔 24 B；prompt 在 set_round(1)
-#: 结算。最终 flush 发生在停机之后，所以 wall_time 只含 prompt 的往返。
-EOS_STAGE1_PER_ROUND_CHARGES = [
-    (None, "flushed", "edge_end", 8, 0, 0),
-    (1, "flushed", "edge_end", 24, 0, 0),
-]
-
-EOS_STAGE1_PER_ROUND_METRICS = {
-    "generated_tokens": 2,
-    "little_generated_tokens": 1,
-    "little_accepted_tokens": 1,
-    "draft_generated_tokens": 0,
-    "draft_accepted_tokens": 0,
-    "little_forward_times": 1,
-    "draft_forward_times": 1,
-    "target_forward_times": 0,
-    "queuing_time": 0.0,
-    "edge_end_data_bytes": 32,
-    "edge_cloud_data_bytes": 0,
-    "edge_end_comm_time": 0.0020256,
-    "communication_time": 0.0020256,
-    # 只有 prompt（0.0010064 s）在 wall_time 读取前结算。
-    "wall_time": 0.0010064,
-    "connect_times": {"edge_end": 2, "cloud_end": 0, "edge_cloud": 0},
-    "comm_trace_edge_cloud": [],
-    "edge_cloud_topk_history": [],
-    "edge_cloud_draft_len_history": [],
-    "edge_cloud_bandwidth_history": [],
-}
-
-#: 第二层 EOS：stage-2 的 bonus token 就是 EOS，停机点在 edge_cloud 的
-#: “合并计费（reject 载荷 + 概率 + 索引 + token）”与 edge_end 下行之前，
-#: 所以账本止于 stage-2 payload（48 B），没有 12 B 的合并结算与 12 B 下行。
-EOS_STAGE2_LEDGER = [
-    (None, "transfer", "edge_end", 8, 0, 0),    # prompt
-    (1, "transfer", "edge_end", 12, 0, 0),      # stage-1 payload
-    (1, "simulate", "edge_end", 12, 0, 0),      # stage-1 下行 token
-    (1, "transfer", "edge_cloud", 24, 0, 3),    # 上行 prefix [0,1,1]
-    (1, "transfer", "edge_cloud", 48, 0, 4),    # stage-2 payload: 4 token + 4 prob
-]
-
-EOS_STAGE2_CHARGES = [
     (None, "edge_end", 8),
     (1, "edge_end", 12),
     (1, "edge_end", 12),
     (1, "edge_cloud", 24),
     (1, "edge_cloud", 48),
+    (1, "edge_cloud", 12),
+    (1, "edge_end", 12),
 ]
-
-#: edge_end: 3×1 ms + 32/1.25e6 = 0.0030256；
-#: edge_cloud: 2×10 ms + 72/1.25e6 = 0.0200576；
-#: 合计 0.0230832，加 0.125 s 排队 = 0.1480832。
-EOS_STAGE2_METRICS = {
-    "generated_tokens": 5,
+# 44B / 4 edge-end RTTs; 84B / 3 edge-cloud RTTs. The full block
+# is verified/billed even though the committed output ends at inner EOS.
+EOS_STAGE1_METRICS = {
+    "generated_tokens": 2,
     "little_generated_tokens": 1,
     "little_accepted_tokens": 1,
     "draft_generated_tokens": 4,
@@ -513,107 +437,89 @@ EOS_STAGE2_METRICS = {
     "draft_forward_times": 3,
     "target_forward_times": 1,
     "queuing_time": 0.125,
-    "edge_end_data_bytes": 32,
-    "edge_cloud_data_bytes": 72,
-    "edge_end_comm_time": 0.0030256,
-    "communication_time": 0.0230832,
-    "wall_time": 0.1480832,
-    "connect_times": {"edge_end": 3, "cloud_end": 0, "edge_cloud": 2},
-    "comm_trace_edge_cloud": [[24, 1], [48, 1]],
-    "edge_cloud_topk_history": [0, 0],
-    "edge_cloud_draft_len_history": [3, 4],
-    "edge_cloud_bandwidth_history": [10.0, 10.0],
+    "edge_end_data_bytes": 44,
+    "edge_cloud_data_bytes": 84,
+    "edge_end_comm_time": 0.0040352,
+    "communication_time": 0.0341024,
+    "wall_time": 0.1591024,
+    "connect_times": {"edge_end": 4, "cloud_end": 0, "edge_cloud": 3},
+    "comm_trace_edge_cloud": [[24, 1], [48, 1], [12, 1]],
+    "edge_cloud_topk_history": [0, 0, 300],
+    "edge_cloud_draft_len_history": [3, 4, 4],
+    "edge_cloud_bandwidth_history": [10.0, 10.0, 10.0],
 }
-
-#: per_round：edge_cloud 只结算 24+48 = 72 B（没有第三笔下行），
-#: topk=max(0,0)=0、draft_len=3+4=7；edge_end 结算 prompt 8 + 本轮 24。
-EOS_STAGE2_PER_ROUND_CHARGES = [
+EOS_STAGE1_PER_ROUND_CHARGES = [
     (None, "flushed", "edge_end", 8, 0, 0),
-    (1, "flushed", "edge_end", 24, 0, 0),
-    (1, "flushed", "edge_cloud", 72, 0, 7),
+    (1, "flushed", "edge_end", 36, 0, 0),
+    (1, "flushed", "edge_cloud", 84, 300, 11),
 ]
-
-EOS_STAGE2_PER_ROUND_METRICS = {
-    "generated_tokens": 5,
-    "little_generated_tokens": 1,
-    "little_accepted_tokens": 1,
-    "draft_generated_tokens": 4,
-    "draft_accepted_tokens": 4,
-    "little_forward_times": 1,
-    "draft_forward_times": 3,
-    "target_forward_times": 1,
-    "queuing_time": 0.125,
-    "edge_end_data_bytes": 32,
-    "edge_cloud_data_bytes": 72,
-    "edge_end_comm_time": 0.0020256,
-    # 0.0020256 + (0.01 + 72/1.25e6)。
-    "communication_time": 0.0120832,
-    # wall_time 只含 prompt（0.0010064 s）；最终 flush 发生在停机之后。
-    "wall_time": 0.1260064,
+# Coalesced: 2 end RTTs + 1 cloud RTT; final flush precedes derived time.
+EOS_STAGE1_PER_ROUND_METRICS = {
+    **EOS_STAGE1_METRICS,
+    "edge_end_comm_time": 0.0020352,
+    "communication_time": 0.0121024,
+    "wall_time": 0.1371024,
     "connect_times": {"edge_end": 2, "cloud_end": 0, "edge_cloud": 1},
-    "comm_trace_edge_cloud": [[72, 1]],
-    "edge_cloud_topk_history": [0],
-    "edge_cloud_draft_len_history": [7],
+    "comm_trace_edge_cloud": [[84, 1]],
+    "edge_cloud_topk_history": [300],
+    "edge_cloud_draft_len_history": [11],
     "edge_cloud_bandwidth_history": [10.0],
 }
+# Outer bonus EOS has the same requests and billing, but commits all 5 tokens.
+EOS_STAGE2_LEDGER = EOS_STAGE1_LEDGER
+EOS_STAGE2_CHARGES = EOS_STAGE1_CHARGES
+EOS_STAGE2_METRICS = {**EOS_STAGE1_METRICS, "generated_tokens": 5}
+EOS_STAGE2_PER_ROUND_CHARGES = EOS_STAGE1_PER_ROUND_CHARGES
+EOS_STAGE2_PER_ROUND_METRICS = {**EOS_STAGE1_PER_ROUND_METRICS, "generated_tokens": 5}
 
-
-#: ---- 混合多轮门禁：轮 1 两级拒绝 -> 轮 2 第一层接受后 EOS 停机 --------
-#: EOS 取 0：必须避开轮 1 两级拒绝残差采样出的 2 / 3，否则轮 1 就会停机。
-#: 轮 2 的 bonus 行是 draft 缓存的第 2 行（轮 1 截断后从位置 1 继续消费，
-#: 第 2 行正好是本轮 bonus 行）——缓存位置错了就取不到这行。
+#: Round 1 rejects at both levels; round 2's inner EOS is target-accepted.
+#: The target row at absolute position 2 supports that inner EOS explicitly.
 MIXED_ROUND_EOS_TOKEN = 0
-
 MIXED_ROUND_LEDGER = [
-    (None, "transfer", "edge_end", 8, 0, 0),   # prompt（轮外）
-    # 轮 1：两级都拒绝（残差 -> 2，再 -> 3）
+    (None, "transfer", "edge_end", 8, 0, 0),
     (1, "transfer", "edge_end", 12, 0, 0),
-    (1, "simulate", "edge_end", 12, 0, 0),     # stage-1 残差载荷
-    (1, "simulate", "edge_end", 26, 0, 0),     # 合并计费：拒绝位置
-    (1, "transfer", "edge_cloud", 16, 0, 2),   # 上行 prefix [0, 2]
+    (1, "simulate", "edge_end", 12, 0, 0),
+    (1, "simulate", "edge_end", 26, 0, 0),
+    (1, "transfer", "edge_cloud", 16, 0, 2),
     (1, "transfer", "edge_cloud", 24, 0, 2),
-    (1, "simulate", "edge_cloud", 12, 0, 0),   # stage-2 残差载荷
+    (1, "simulate", "edge_cloud", 12, 0, 0),
     (1, "simulate", "edge_cloud", 26, 2, 2),
-    (1, "simulate", "edge_end", 12, 0, 0),     # 下行 stage-2 拒绝 token 3
-    # 轮 2：第一层全接受，bonus = decode 行的 EOS -> edge_end 计费后停机
+    (1, "simulate", "edge_end", 12, 0, 0),
     (2, "transfer", "edge_end", 12, 0, 0),
     (2, "simulate", "edge_end", 12, 0, 0),
+    (2, "transfer", "edge_cloud", 16, 0, 2),
+    (2, "transfer", "edge_cloud", 36, 0, 3),
+    (2, "simulate", "edge_cloud", 12, 2, 3),
+    (2, "simulate", "edge_end", 12, 0, 0),
 ]
-
-#: 轮 1 在 set_round(2) 结算：edge_end = 12+12+26+12 = 62；edge_cloud =
-#: 16+24+12+26 = 78（topk=max(0,0,0,2)=2，draft_len=2+2+0+2=6）。
-#: 轮 2 只结算停机前已发生的 12+12 = 24 B（没有第二层）。
 MIXED_ROUND_CHARGES = [
     (None, "flushed", "edge_end", 8, 0, 0),
     (1, "flushed", "edge_end", 62, 0, 0),
     (1, "flushed", "edge_cloud", 78, 2, 6),
-    (2, "flushed", "edge_end", 24, 0, 0),
+    (2, "flushed", "edge_end", 36, 0, 0),
+    (2, "flushed", "edge_cloud", 64, 2, 8),
 ]
-
-#: edge_end: 3 次往返 × 1 ms + 94 B / 1.25e6 = 0.0030752
-#: edge_cloud: 1 次往返 × 10 ms + 78 B / 1.25e6 = 0.0100624
-#: communication_time = 0.0131376；wall_time 读取时只结算了 prompt 与轮 1
-#: （0.0010064 + 0.0010496 + 0.0100624 = 0.0121184），加 0.125 s 排队。
+# End: 3*.001 +106/1.25e6; cloud:2*.01+142/1.25e6; queue=.25.
 MIXED_ROUND_METRICS = {
     "generated_tokens": 3,
     "little_generated_tokens": 2,
     "little_accepted_tokens": 1,
-    "draft_generated_tokens": 2,
-    "draft_accepted_tokens": 0,
+    "draft_generated_tokens": 5,
+    "draft_accepted_tokens": 3,
     "little_forward_times": 2,
-    "draft_forward_times": 3,
-    "target_forward_times": 1,
-    "queuing_time": 0.125,
-    "edge_end_data_bytes": 94,
-    "edge_cloud_data_bytes": 78,
-    "edge_end_comm_time": 0.0030752,
-    "communication_time": 0.0131376,
-    "wall_time": 0.1371184,
-    "connect_times": {"edge_end": 3, "cloud_end": 0, "edge_cloud": 1},
-    "comm_trace_edge_cloud": [[78, 1]],
-    "edge_cloud_topk_history": [2],
-    "edge_cloud_draft_len_history": [6],
-    "edge_cloud_bandwidth_history": [10.0],
+    "draft_forward_times": 4,
+    "target_forward_times": 2,
+    "queuing_time": 0.25,
+    "edge_end_data_bytes": 106,
+    "edge_cloud_data_bytes": 142,
+    "edge_end_comm_time": 0.0030848,
+    "communication_time": 0.0231984,
+    "wall_time": 0.2731984,
+    "connect_times": {"edge_end": 3, "cloud_end": 0, "edge_cloud": 2},
+    "comm_trace_edge_cloud": [[78, 1], [64, 2]],
+    "edge_cloud_topk_history": [2, 2],
+    "edge_cloud_draft_len_history": [6, 8],
+    "edge_cloud_bandwidth_history": [10.0, 10.0],
 }
 
 
@@ -663,12 +569,12 @@ class _RowScriptedCache:
     instances = []
     scripts = {}
     default_token = 1
-    #: charge_residual_payload=True 时生产代码走 metadata 生成分支的次数。
+    #: Auxiliary old-oracle cache API instrumentation; not a public billing contract.
     metadata_calls = 0
 
     def __init__(self, model, temperature, top_k, top_p, **kwargs):
         self.model = model
-        self.role = getattr(model, "kind")
+        self.role = model.kind
         self.device = model.device
         self.vocab_size = VOCAB_SIZE
         self.constructor_kwargs = kwargs
@@ -694,7 +600,8 @@ class _RowScriptedCache:
 
     def _row(self, position):
         override = type(self).scripts.get(self.role, {}).get(position)
-        values = override if override is not None else _one_hot(type(self).default_token)
+        values = (override if override is not None
+                  else _one_hot(type(self).default_token))
         return torch.tensor([list(values)], dtype=torch.float)
 
     def _consume(self, input_ids):
@@ -738,8 +645,8 @@ class _RowScriptedCache:
     def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
         """与生产 KVCacheModel 同协议：额外返回 TopKProposalHistory。
 
-        charge_residual_payload=True 时，验证方拒绝位置要用 top-k+均匀尾表示
-        计算残差；生产代码据此把 k*(4+元素) 的载荷计费。fake 只用生产
+        旧 oracle 的 residual 路径使用此接口；新 CEE 使用统一的 wire q，
+        该 fixture API 不决定其采样法则或计费分支。fake 只用生产
         proposal_utils 的构造器把每一步 q 变成同一份元数据，不复制算法。
         """
         type(self).metadata_calls += 1
@@ -981,7 +888,7 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         patches = [
             patch("src.baselines.core.KVCacheModel", _RowScriptedCache),
             patch(
-                "src.baselines.core.CommunicationSimulator",
+                "src.baselines.simulators.CommunicationSimulator",
                 _RecordingCommunicationSimulator,
             ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
@@ -1021,11 +928,11 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         self.assertEqual(draft.role, "draft")
         self.assertEqual(target.role, "target")
         # little: stage-1 proposer -> n1+1 = P+1。
-        # draft:  stage-1 verifier -> n1+2 = P+2；stage-2 proposer -> n2+1 = P+4。
-        # target: stage-2 verifier -> n2+2 = P+5。
+        # draft verifier keeps P+1 forwarded positions; outer proposer requests P+4.
+        # target verifier keeps P+4 forwarded positions, excluding sampled bonus.
         self.assertEqual(little.rollback_calls, [2, 7, 12])
-        self.assertEqual(draft.rollback_calls, [3, 5, 8, 10, 13, 15])
-        self.assertEqual(target.rollback_calls, [6, 11, 16])
+        self.assertEqual(draft.rollback_calls, [2, 5, 7, 10, 12, 15])
+        self.assertEqual(target.rollback_calls, [5, 10, 15])
 
     def test_rejection_round_charges_reject_payload_then_rolls_back_caches(self):
         _RowScriptedCache.scripts = {
@@ -1140,7 +1047,7 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
             else:
                 self.assertEqual(metrics[name], value, msg=name)
 
-    def test_all_accept_per_round_residual_metadata_matches_flush_and_comm_time(self):
+    def test_all_accept_per_round_residual_matches_flush_and_comm_time(self):
         output, metrics, simulator = self._run(
             max_tokens=15,
             batch_delay=0.125,
@@ -1150,8 +1057,8 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         )
 
         self.assertEqual(output.tolist(), [[0] + [1] * 15])
-        # 3 轮 × (stage-1 little + stage-2 draft) = 6 次 metadata 生成。
-        self.assertEqual(_RowScriptedCache.metadata_calls, 6)
+        # All requested bytes must be present in settled charges and final metrics.
+        self._assert_settled_accounting(metrics, simulator)
         self._assert_metrics(metrics, PER_ROUND_ACCEPT_METRICS)
         # 逐消息账本：消息顺序与每消息字节不变，只是 simulate 变成 pending。
         self.assertEqual(simulator.ledger, PER_ROUND_ACCEPT_LEDGER)
@@ -1170,8 +1077,8 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
 
         little, draft, target = _RowScriptedCache.instances
         self.assertEqual(little.rollback_calls, [2, 7, 12])
-        self.assertEqual(draft.rollback_calls, [3, 5, 8, 10, 13, 15])
-        self.assertEqual(target.rollback_calls, [6, 11, 16])
+        self.assertEqual(draft.rollback_calls, [2, 5, 7, 10, 12, 15])
+        self.assertEqual(target.rollback_calls, [5, 10, 15])
 
     def test_rejection_per_round_residual_payload_and_flush_order(self):
         _RowScriptedCache.scripts = {
@@ -1191,8 +1098,8 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         )
 
         self.assertEqual(output.tolist(), [[0, 3]])
-        # 两级各一次 metadata 生成（拒绝位置因此能按 top-k 表示采样残差）。
-        self.assertEqual(_RowScriptedCache.metadata_calls, 2)
+        # Residual billing must not leave uncharged or inconsistent ledger bytes.
+        self._assert_settled_accounting(metrics, simulator)
         self._assert_metrics(metrics, PER_ROUND_REJECTION_METRICS)
         # 每个拒绝位置多一条 12 B 的残差消息（2*4 + 4）。
         self.assertEqual(simulator.ledger, PER_ROUND_REJECTION_LEDGER)
@@ -1223,7 +1130,7 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         )
 
         self.assertEqual(output.tolist(), [[0, 3]])
-        self.assertEqual(_RowScriptedCache.metadata_calls, 2)
+        self._assert_settled_accounting(metrics, simulator)
         self._assert_metrics(metrics, PER_TRANSFER_RESIDUAL_REJECTION_METRICS)
         # 残差消息插在"验证完成"与"合并计费"之间：先补 k*4+element=12 B，
         # 再结 26 B = 4 B 索引 + 8 B token + 2*4 B probs + 6 B reject。
@@ -1268,37 +1175,55 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
         for role, expected in REJECTION_ROLLBACKS.items():
             self.assertEqual(by_role[role].rollback_calls, expected, msg=role)
 
-    def test_eos_stage_one_stops_after_edge_end_settlement(self):
-        # 脚本化 stage-1 的 bonus token（draft 缓存本轮最后一行）为 EOS。
-        _RowScriptedCache.scripts = {"draft": {1: _one_hot(EOS_STAGE1_TOKEN)}}
+    def _assert_settled_accounting(self, metrics, simulator):
+        # Dense/sparse cache generation APIs are private. The billing flag's
+        # observable contract is complete, consistent requests/settlement/metrics.
+        for link in ("edge_end", "edge_cloud", "cloud_end"):
+            requested = sum(e[3] for e in simulator.ledger if e[2] == link)
+            charged = sum(e[3] for e in simulator.charge_ledger if e[2] == link)
+            self.assertEqual(metrics[f"{link}_data_bytes"], requested, msg=link)
+            self.assertEqual(charged, requested, msg=link)
+        self.assertEqual(simulator._pending_bytes, {})
+        self.assertEqual(
+            metrics["edge_cloud_data_bytes"],
+            sum(e[0] for e in metrics["comm_trace_edge_cloud"]),
+        )
+
+    def test_eos_inner_is_target_verified_and_terminal_reply_is_paid(self):
+        # Target supports inner EOS explicitly; no inner-layer early commit.
+        _RowScriptedCache.scripts = {
+            "draft": {1: _one_hot(EOS_STAGE1_TOKEN)},
+            "target": {1: _one_hot(EOS_STAGE1_TOKEN)},
+        }
         output, metrics, simulator = self._run(
             max_tokens=15,
             batch_delay=0.125,
             transfer_top_k=300,
+            comm_round_trip_mode="per_transfer",
+            charge_residual=False,
             eos=EOS_STAGE1_TOKEN,
         )
-
-        # EOS 截断包含该 token 本身；第二层连同 batch_delay 都不发生。
         self.assertEqual(output.tolist(), [[0, 1, EOS_STAGE1_TOKEN]])
         self._assert_metrics(metrics, EOS_STAGE1_METRICS)
         self.assertEqual(simulator.ledger, EOS_STAGE1_LEDGER)
-        # per_transfer 下请求即结算：edge_end 三笔都在 break 之前入账。
         self.assertEqual(
-            [(entry[0], entry[2], entry[3]) for entry in simulator.charge_ledger],
-            EOS_STAGE1_CHARGES,
+            [(e[0], e[2], e[3]) for e in simulator.charge_ledger], EOS_STAGE1_CHARGES
         )
         self.assertEqual(simulator.set_round_calls, [1])
         self.assertEqual(simulator.flush_round_calls, [1])
-        self.assertEqual(_RowScriptedCache.metadata_calls, 0)
-
+        self._assert_settled_accounting(metrics, simulator)
         little, draft, target = _RowScriptedCache.instances
-        # 只有 stage-1 的 rollback；target 一次前向都没发生（无 stage-2）。
         self.assertEqual(little.rollback_calls, [2])
-        self.assertEqual(draft.rollback_calls, [3])
-        self.assertEqual(target.rollback_calls, [])
+        self.assertEqual(draft.rollback_calls, [2, 5])
+        self.assertEqual(target.rollback_calls, [5])
+        self.assertEqual([c.current_length for c in (little, draft, target)], [1, 4, 5])
 
-    def test_eos_stage_one_per_round_residual_flushes_round_then_stops(self):
-        _RowScriptedCache.scripts = {"draft": {1: _one_hot(EOS_STAGE1_TOKEN)}}
+    def test_eos_inner_per_round_is_target_verified_and_terminal_reply_is_paid(self):
+        # Target supports inner EOS explicitly; no inner-layer early commit.
+        _RowScriptedCache.scripts = {
+            "draft": {1: _one_hot(EOS_STAGE1_TOKEN)},
+            "target": {1: _one_hot(EOS_STAGE1_TOKEN)},
+        }
         output, metrics, simulator = self._run(
             max_tokens=15,
             batch_delay=0.125,
@@ -1307,54 +1232,49 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
             charge_residual=True,
             eos=EOS_STAGE1_TOKEN,
         )
-
         self.assertEqual(output.tolist(), [[0, 1, EOS_STAGE1_TOKEN]])
-        # 只有 stage-1 的 residual metadata 生成：全接受，不额外补残差字节。
-        self.assertEqual(_RowScriptedCache.metadata_calls, 1)
         self._assert_metrics(metrics, EOS_STAGE1_PER_ROUND_METRICS)
         self.assertEqual(simulator.ledger, EOS_STAGE1_LEDGER)
-        # 结算账：prompt 在 set_round(1) 先结，round 1 的 12+12 B 合并为 24 B。
         self.assertEqual(simulator.charge_ledger, EOS_STAGE1_PER_ROUND_CHARGES)
         self.assertEqual(simulator.set_round_calls, [1])
         self.assertEqual(simulator.flush_round_calls, [None, 1])
-        self.assertAlmostEqual(simulator.edge_cloud_comm_time, 0.0, places=12)
-
+        self._assert_settled_accounting(metrics, simulator)
         little, draft, target = _RowScriptedCache.instances
         self.assertEqual(little.rollback_calls, [2])
-        self.assertEqual(draft.rollback_calls, [3])
-        self.assertEqual(target.rollback_calls, [])
+        self.assertEqual(draft.rollback_calls, [2, 5])
+        self.assertEqual(target.rollback_calls, [5])
+        self.assertEqual([c.current_length for c in (little, draft, target)], [1, 4, 5])
 
-    def test_eos_stage_two_stops_before_cloud_merge_and_downlink(self):
-        # target 缓存本轮最后一行只用于 stage-2 bonus 采样，不参与验收窗口；
-        # 把它脚本成 EOS，第一层 bonus（draft 行 1）保持默认 token 1。
+    def test_eos_target_bonus_is_target_verified_and_terminal_reply_is_paid(self):
+        # Target supports inner EOS explicitly; no inner-layer early commit.
         _RowScriptedCache.scripts = {"target": {4: _one_hot(EOS_STAGE2_TOKEN)}}
         output, metrics, simulator = self._run(
             max_tokens=15,
             batch_delay=0.125,
             transfer_top_k=300,
+            comm_round_trip_mode="per_transfer",
+            charge_residual=False,
             eos=EOS_STAGE2_TOKEN,
         )
-
         self.assertEqual(output.tolist(), [[0, 1, 1, 1, 1, EOS_STAGE2_TOKEN]])
         self._assert_metrics(metrics, EOS_STAGE2_METRICS)
-        # 账本止于 stage-2 payload：没有 edge_cloud 合并结算，也没有下行 token。
         self.assertEqual(simulator.ledger, EOS_STAGE2_LEDGER)
         self.assertEqual(
-            [(entry[0], entry[2], entry[3]) for entry in simulator.charge_ledger],
-            EOS_STAGE2_CHARGES,
+            [(e[0], e[2], e[3]) for e in simulator.charge_ledger], EOS_STAGE2_CHARGES
         )
         self.assertEqual(simulator.set_round_calls, [1])
         self.assertEqual(simulator.flush_round_calls, [1])
-        self.assertEqual(_RowScriptedCache.metadata_calls, 0)
-
+        self._assert_settled_accounting(metrics, simulator)
         little, draft, target = _RowScriptedCache.instances
-        # stage-1 proposer -> 2；stage-1 verifier -> 3、stage-2 proposer -> 5；
-        # stage-2 verifier -> 6（缓存实际长度 5，keep 截断）。
         self.assertEqual(little.rollback_calls, [2])
-        self.assertEqual(draft.rollback_calls, [3, 5])
-        self.assertEqual(target.rollback_calls, [6])
+        self.assertEqual(draft.rollback_calls, [2, 5])
+        self.assertEqual(target.rollback_calls, [5])
+        self.assertEqual([c.current_length for c in (little, draft, target)], [1, 4, 5])
 
-    def test_eos_stage_two_per_round_residual_flushes_only_billed_part(self):
+    def test_eos_target_bonus_per_round_is_target_verified_and_terminal_reply_is_paid(
+        self,
+    ):
+        # Target supports inner EOS explicitly; no inner-layer early commit.
         _RowScriptedCache.scripts = {"target": {4: _one_hot(EOS_STAGE2_TOKEN)}}
         output, metrics, simulator = self._run(
             max_tokens=15,
@@ -1364,33 +1284,25 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
             charge_residual=True,
             eos=EOS_STAGE2_TOKEN,
         )
-
         self.assertEqual(output.tolist(), [[0, 1, 1, 1, 1, EOS_STAGE2_TOKEN]])
-        # 两层各一次 residual metadata；本轮全接受，无残差补账。
-        self.assertEqual(_RowScriptedCache.metadata_calls, 2)
         self._assert_metrics(metrics, EOS_STAGE2_PER_ROUND_METRICS)
         self.assertEqual(simulator.ledger, EOS_STAGE2_LEDGER)
-        # 只结算已发生的 72 B（24 上行 + 48 payload）；topk=0、draft_len=3+4。
         self.assertEqual(simulator.charge_ledger, EOS_STAGE2_PER_ROUND_CHARGES)
         self.assertEqual(simulator.set_round_calls, [1])
         self.assertEqual(simulator.flush_round_calls, [None, 1])
-        self.assertAlmostEqual(simulator.edge_cloud_comm_time, 0.0100576, places=12)
-
+        self._assert_settled_accounting(metrics, simulator)
         little, draft, target = _RowScriptedCache.instances
         self.assertEqual(little.rollback_calls, [2])
-        self.assertEqual(draft.rollback_calls, [3, 5])
-        self.assertEqual(target.rollback_calls, [6])
+        self.assertEqual(draft.rollback_calls, [2, 5])
+        self.assertEqual(target.rollback_calls, [5])
+        self.assertEqual([c.current_length for c in (little, draft, target)], [1, 4, 5])
 
-    def test_eos_in_second_round_flushes_first_round_then_stops(self):
-        # 轮 1：两级都拒绝（残差 -> 2、-> 3），轮末缓存被截断回拒绝位置；
-        # 轮 2：第一层全接受，bonus 行（draft 缓存的第 2 行）脚本成 EOS。
-        # 缓存位置只要错一位，第 2 行就取不到，EOS 也不会命中。
+    def test_eos_in_second_round_flushes_both_target_verified_rounds(self):
+        # Round 1 rejects at both levels. Round 2's inner EOS is now supported
+        # by target as well, so the carried proposal is accepted before stopping.
         _RowScriptedCache.scripts = {
-            "draft": {
-                0: (0.0, 0.5, 0.5, 0.0),
-                2: _one_hot(MIXED_ROUND_EOS_TOKEN),
-            },
-            "target": {0: (0.0, 0.5, 0.25, 0.25)},
+            "draft": {0: (0.0, 0.5, 0.5, 0.0), 2: _one_hot(MIXED_ROUND_EOS_TOKEN)},
+            "target": {0: (0.0, 0.5, 0.25, 0.25), 2: _one_hot(MIXED_ROUND_EOS_TOKEN)},
         }
         output, metrics, simulator = self._run(
             max_tokens=15,
@@ -1402,34 +1314,19 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
             rand_value=0.75,
             eos=MIXED_ROUND_EOS_TOKEN,
         )
-
-        # 轮 1 的拒绝把上下文截成 [0, 3]，轮 2 第一层再追加 1，然后 bonus
-        # 就是 EOS（含在输出里），第二层一次通信都不发生。
         self.assertEqual(output.tolist(), [[0, 3, 1, MIXED_ROUND_EOS_TOKEN]])
-        # 轮 1 两层各一次 metadata；轮 2 只有第一层（停机在第二层之前）。
-        self.assertEqual(_RowScriptedCache.metadata_calls, 3)
         self._assert_metrics(metrics, MIXED_ROUND_METRICS)
         self.assertEqual(simulator.ledger, MIXED_ROUND_LEDGER)
-        # 轮 1 在 set_round(2) 结算（62 + 78），轮 2 只结算停机前已发生的
-        # 24 B —— 停机不会把已计费消息退回，也不会漏掉末端 flush。
         self.assertEqual(simulator.charge_ledger, MIXED_ROUND_CHARGES)
         self.assertEqual(simulator.set_round_calls, [1, 2])
         self.assertEqual(simulator.flush_round_calls, [None, 1, 2])
-        self.assertAlmostEqual(simulator.edge_cloud_comm_time, 0.0100624, places=12)
-
+        self.assertAlmostEqual(simulator.edge_cloud_comm_time, 0.0201136, places=12)
+        self._assert_settled_accounting(metrics, simulator)
         little, draft, target = _RowScriptedCache.instances
-        # 轮 1 stage-1 拒绝 -> little n1+1=1；轮 1 轮末 n2+1=1；
-        # 轮 2 stage-1 接受 -> little n1+1=3（缓存实际 2，按 min 截断）。
         self.assertEqual(little.rollback_calls, [1, 1, 3])
-        # 轮 1 stage-1 验证方 n1+1=1；轮 1 stage-2 提案方 n2+1=1；
-        # 轮 2 stage-1 验证方接受 n1+2=4。
-        self.assertEqual(draft.rollback_calls, [1, 1, 4])
-        self.assertEqual(target.rollback_calls, [1])
-        # rollback 的**效果**（不只是调用序列）：轮 1 的截断必须真的把缓存
-        # 退回 1 个位置，轮 2 才从位置 1 继续消费并取到第 2 行的 EOS。
-        self.assertEqual(little.current_length, 2)
-        self.assertEqual(draft.current_length, 3)
-        self.assertEqual(target.current_length, 1)
+        self.assertEqual(draft.rollback_calls, [1, 1, 3, 5])
+        self.assertEqual(target.rollback_calls, [1, 5])
+        self.assertEqual([c.current_length for c in (little, draft, target)], [2, 4, 5])
 
 
 if __name__ == "__main__":

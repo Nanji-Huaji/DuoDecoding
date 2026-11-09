@@ -39,11 +39,10 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
 
+import test_adaptive_tridecoding_rounds as rounds
 import torch
 
-import test_adaptive_tridecoding_rounds as rounds
 from src.communication import CUHLM as _RealCUHLM
-
 
 PREFIX = torch.tensor([[0]], dtype=torch.long)
 
@@ -317,7 +316,7 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         patches = [
             patch("src.baselines.core.KVCacheModel", _RecordingPolicyCache),
             patch(
-                "src.baselines.core.CommunicationSimulator",
+                "src.baselines.simulators.CommunicationSimulator",
                 rounds._RecordingCommunicationSimulator,
             ),
             patch("src.baselines.core.torch.cuda.Event", rounds._FakeCudaEvent),
@@ -448,8 +447,8 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         draft_cache = caches["draft"]
         target_cache = caches["target"]
         self.assertEqual(little_cache.rollback_calls, [2, 6])
-        self.assertEqual(draft_cache.rollback_calls, [3, 4, 7, 8])
-        self.assertEqual(target_cache.rollback_calls, [5, 9])
+        self.assertEqual(draft_cache.rollback_calls, [2, 4, 6, 8])
+        self.assertEqual(target_cache.rollback_calls, [4, 8])
 
     def test_no_arp_main_policy_topk_is_capped_for_this_round_and_gamma_waits(self):
         main = _RecordingRLPolicy(
@@ -555,8 +554,8 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         draft_cache = caches["draft"]
         target_cache = caches["target"]
         self.assertEqual(little_cache.rollback_calls, [2, 6])
-        self.assertEqual(draft_cache.rollback_calls, [3, 4, 7, 10])
-        self.assertEqual(target_cache.rollback_calls, [5, 11])
+        self.assertEqual(draft_cache.rollback_calls, [2, 4, 6, 10])
+        self.assertEqual(target_cache.rollback_calls, [4, 10])
 
     def test_no_arp_little_gamma_dim_applies_next_round_and_topk_does_not_leak(self):
         """little gamma_dim>1：本轮生成只认上一轮 last_gamma，写回留给下一轮。
@@ -1019,8 +1018,8 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         draft_cache = caches["draft"]
         target_cache = caches["target"]
         self.assertEqual(little_cache.rollback_calls, [2, 6])
-        self.assertEqual(draft_cache.rollback_calls, [3, 4, 7, 8])
-        self.assertEqual(target_cache.rollback_calls, [5, 9])
+        self.assertEqual(draft_cache.rollback_calls, [2, 4, 6, 8])
+        self.assertEqual(target_cache.rollback_calls, [4, 8])
 
     def test_arp_predict_sees_old_threshold_until_next_round_and_gamma_waits(self):
         """gamma>1 时，本轮生成的每一步 predict 都只用上一轮阈值/长度。"""
@@ -1215,8 +1214,8 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         draft_cache = caches["draft"]
         target_cache = caches["target"]
         self.assertEqual(little_cache.rollback_calls, [2, 6])
-        self.assertEqual(draft_cache.rollback_calls, [3, 4, 7, 10])
-        self.assertEqual(target_cache.rollback_calls, [5, 11])
+        self.assertEqual(draft_cache.rollback_calls, [2, 4, 6, 10])
+        self.assertEqual(target_cache.rollback_calls, [4, 10])
 
     def test_opportunistic_skip_keeps_stage_two_verification_real(self):
         small_arp = _RecordingARPHead("small", 0.5)
@@ -1279,11 +1278,11 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         little_cache = caches["little"]
         draft_cache = caches["draft"]
         target_cache = caches["target"]
-        # 第一级没有 resolve_stage_verification -> little 无 rollback；
+        # 第一级跳过真实 draft 验证 -> little 无 rollback；
         # 第二级真实 verify 仍会回滚 draft/target。
         self.assertEqual(little_cache.rollback_calls, [])
         self.assertEqual(draft_cache.rollback_calls, [3])
-        self.assertEqual(target_cache.rollback_calls, [4])
+        self.assertEqual(target_cache.rollback_calls, [3])
 
     def test_opportunistic_transfer_runs_both_real_verification_stages(self):
         small_arp = _RecordingARPHead("small", 0.5)
@@ -1343,8 +1342,8 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         draft_cache = caches["draft"]
         target_cache = caches["target"]
         self.assertEqual(little_cache.rollback_calls, [2])
-        self.assertEqual(draft_cache.rollback_calls, [3, 4])
-        self.assertEqual(target_cache.rollback_calls, [5])
+        self.assertEqual(draft_cache.rollback_calls, [2, 4])
+        self.assertEqual(target_cache.rollback_calls, [4])
 
     def test_opportunistic_gate_reuses_selected_arp_threshold_for_same_round(self):
         """第一级 RL 写回的 ARP 阈值必须在本轮机会门控里立刻复用。
@@ -1504,4 +1503,4 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         # skip 让第一级不跑验证 -> little 无 rollback；第二级每轮各一次。
         self.assertEqual(little_cache.rollback_calls, [])
         self.assertEqual(draft_cache.rollback_calls, [3, 6])
-        self.assertEqual(target_cache.rollback_calls, [4, 7])
+        self.assertEqual(target_cache.rollback_calls, [3, 6])

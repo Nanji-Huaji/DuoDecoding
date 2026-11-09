@@ -380,3 +380,11 @@ Driver 39 个 CPU 用例、比较器 43 个用例，均经独立缺陷审阅并�
 其余 14 个冻结条目和 37 个原有方法 AST 保持。条件与参数的数值正确性由实际契约测试核对。
 
 完整代码结构、通信帧变化与验证结果见[本轮记录](<adaptive_decoding_refactor_20261106.md>)。
+
+## 13. 2026-11-07：CEE-SD 完整本体与正确性门禁
+
+本轮基点 `b72a854`，对象为三模型 `adaptive_tridecoding`/`cee_sd`。当前用户授权已覆盖 §11 所链接的[历史第一层窄方案](<adaptive_first_stage_design.md>)；历史“第一层 EOS 可以无 target 验证就结束”“wall time 先读、最后再 flush”等行为不再是当前算法合同。旧采集器/旧版本的历史验收记录保留，不据此要求新算法重现已确认错误。
+
+当前门禁由[独立正确性契约](<../test/test_cee_sd_contracts.py>)和[编排/oracle 测试](<../test/test_cee_sd_orchestration.py>)共同承担：target 确认 EOS；第一层前缀在 gamma1=0 时仍验证；skip 携带 little q、正常校正携带 raw draft 行；严格接受边界、对齐 bonus/forwarded cache；终止回复/下行计费；最后 flush 先于所有派生时间。`charge_residual_payload` 只影响补计费；bits<16 时同一 wire-qhat 同时用于接受与残差，明确属于有损近似协议，不宣称无偏 target 采样。
+
+[冻结旧方法](<../test/golden/cee_sd/baseline_b72a854.py.txt>)带 SHA 校验、无需 Git 历史，只作为正常路径辅助差分。指纹仅更新本体及真正依赖的入口，不能把源码足迹当作参数/数据流/数学证明；完整结构、快照变化与实际验证状态见[本体重构记录](<cee_sd_body_refactor_20261107.md>)。CPU graph 接线门禁不等同真实 CUDA graph 或跨设备数值验收。

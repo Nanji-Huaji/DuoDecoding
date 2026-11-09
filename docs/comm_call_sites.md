@@ -239,3 +239,18 @@ S2 相对包化前的 5,825 行 WIP 只改相对 import 层级，计费调用、
 本轮按逻辑正确性修正了旧 bounds 分支：验证上下文不完整时直接报错，
 不会发送拒绝后又将整段计为接受。q 使用生成时的 proposal 分布，合法重建 q
 不受 raw draft history 长度误判影响。完整说明与测试见[本轮记录](<adaptive_decoding_refactor_20261106.md>)。
+
+## 13. 2026-11-07：CEE-SD 本体拆分与 wire 分布合同
+
+三模型 `adaptive_tridecoding`/`cee_sd` 现复用[通信工厂](<../src/baselines/simulators.py>)，由可选构造期 `mode` 初始化 trace 来源；这更新了 §11 中“该入口仍直接构造”的历史描述。工厂依赖 patch 指向 `src.baselines.simulators.X`，不是兼容包上的重导出。
+
+| 报文/操作 | 当前所属阶段 |
+|---|---|
+| little 上行、opportunistic skip/accept、第一层残差补计费 | `_cee_first_stage` |
+| 第一层校正回复、WAN 前缀与概率上行、主残差补计费 | 公开入口 |
+| target 最终回复、edge_end 下行、round/flush | 公开入口 |
+| 接受/残差采样与两 cache 回滚 | `_cee_verify_proposal`；不自行伪造通信帧 |
+
+`COMM_TRACE.caller` 记录真实新位置，kind/账本和因果顺序通过行为门禁检查，不要求旧行号或 trace 文本一致。第一层 EOS 不再提前免除 target 验证；最终回复/下行先付费再停止；末轮 flush 先于 wall/throughput/分模型时间计算。
+
+bits>=16 保持按 Tensor 实际宽度计费的 pass-through；bits<16 延续显式有损 wire 协议：同一 qhat 用于接受比与残差，`charge_residual_payload` 只影响补计费，稀疏 metadata 不得换一套验证分布。这不是无偏 target 采样声明。实现与门禁详见[本体重构记录](<cee_sd_body_refactor_20261107.md>)。

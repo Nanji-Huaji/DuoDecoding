@@ -483,26 +483,278 @@
       }
     },
     "Baselines.tridecoding": {
-      "events": 2,
-      "sha256_16": "85cd22843c836269",
+      "events": 287,
+      "sha256_16": "c0405721bac6c3dd",
       "surface": {
+        "assign_self": {
+          "_next_gamma1": 1,
+          "_next_gamma2": 1,
+          "_team_reward_buffer": 1
+        },
+        "boolop": {
+          "And": 19,
+          "Or": 11
+        },
+        "break": {
+          "": 2
+        },
         "call": {
-          "adaptive_tridecoding": 1
+          "CUHLM": 1,
+          "CommunicationSimulator": 1,
+          "Event": 2,
+          "KVCacheModel": 3,
+          "PreciseCommunicationSimulator": 1,
+          "ValueError": 8,
+          "_CeeDecodeStats": 1,
+          "_CeeProposal": 1,
+          "_CeeRollbackPlan": 1,
+          "_CeeVerification": 1,
+          "_cee_first_stage": 1,
+          "_cee_propose": 2,
+          "_check_stopping_criteria": 1,
+          "_graph_mode_cache_kwargs": 1,
+          "_move_token_tensor": 3,
+          "_residual_payload_bytes": 1,
+          "_reward_comm_s": 2,
+          "_save_adaptive_rl_checkpoints": 1,
+          "_stop_at_eos": 2,
+          "_uplink_prob_payload": 3,
+          "_validate_token_range": 2,
+          "acquire_graph_caches": 1,
+          "all": 2,
+          "any": 3,
+          "append": 2,
+          "apply_rollback": 1,
+          "apply_transfer_top_k_cap": 1,
+          "cast": 1,
+          "cat": 3,
+          "clone": 1,
+          "compute_reward": 2,
+          "copy": 3,
+          "cummin": 1,
+          "cumsum": 1,
+          "current_stream": 2,
+          "device": 2,
+          "dumps": 3,
+          "elapsed_time": 1,
+          "element_size": 7,
+          "enumerate": 1,
+          "float": 14,
+          "flush_round": 1,
+          "generate": 1,
+          "get": 6,
+          "get_empty_metrics": 1,
+          "get_model_input_device": 3,
+          "int": 24,
+          "item": 7,
+          "join": 2,
+          "len": 3,
+          "list": 2,
+          "long": 1,
+          "min": 2,
+          "numel": 8,
+          "open": 3,
+          "proposal_top_k": 1,
+          "range": 1,
+          "record": 2,
+          "reset_step": 2,
+          "rollback": 1,
+          "round": 3,
+          "round_bytes": 1,
+          "select_config": 2,
+          "set_round": 1,
+          "simulate_transfer": 3,
+          "softmax": 1,
+          "sort": 1,
+          "squeeze": 3,
+          "state_entropy": 2,
+          "step": 2,
+          "synchronize": 1,
+          "time": 12,
+          "to": 4,
+          "tolist": 1,
+          "transfer": 3,
+          "write": 3
+        },
+        "comm": {
+          "simulate_transfer": 1
+        },
+        "except": {
+          "": 3
+        },
+        "flag": {
+          "gamma1": 2,
+          "gamma2": 2,
+          "max_tokens": 1,
+          "temp": 3,
+          "top_k": 1,
+          "top_p": 2
+        },
+        "flag_getattr": {
+          "comm_trace_mode": 1,
+          "disable_rl_update": 4,
+          "draft_target_threshold": 1,
+          "probe_cache_max_length": 1,
+          "rl_comm_cost_mode": 1,
+          "rl_team_reward": 2,
+          "small_draft_threshold": 1,
+          "uncertainty_threshold": 2
+        },
+        "loop": {
+          "for": 3,
+          "while": 1
+        },
+        "raise": {
+          "": 8
         },
         "return": {
           "": 1
+        },
+        "rng": {
+          "rand": 1,
+          "sample_accept_token": 1,
+          "sample_reject_token": 1
+        },
+        "try": {
+          "": 3
         }
       }
     },
     "Baselines.cee_sd_no_arp": {
-      "events": 2,
-      "sha256_16": "85cd22843c836269",
+      "events": 287,
+      "sha256_16": "c0405721bac6c3dd",
       "surface": {
+        "assign_self": {
+          "_next_gamma1": 1,
+          "_next_gamma2": 1,
+          "_team_reward_buffer": 1
+        },
+        "boolop": {
+          "And": 19,
+          "Or": 11
+        },
+        "break": {
+          "": 2
+        },
         "call": {
-          "adaptive_tridecoding": 1
+          "CUHLM": 1,
+          "CommunicationSimulator": 1,
+          "Event": 2,
+          "KVCacheModel": 3,
+          "PreciseCommunicationSimulator": 1,
+          "ValueError": 8,
+          "_CeeDecodeStats": 1,
+          "_CeeProposal": 1,
+          "_CeeRollbackPlan": 1,
+          "_CeeVerification": 1,
+          "_cee_first_stage": 1,
+          "_cee_propose": 2,
+          "_check_stopping_criteria": 1,
+          "_graph_mode_cache_kwargs": 1,
+          "_move_token_tensor": 3,
+          "_residual_payload_bytes": 1,
+          "_reward_comm_s": 2,
+          "_save_adaptive_rl_checkpoints": 1,
+          "_stop_at_eos": 2,
+          "_uplink_prob_payload": 3,
+          "_validate_token_range": 2,
+          "acquire_graph_caches": 1,
+          "all": 2,
+          "any": 3,
+          "append": 2,
+          "apply_rollback": 1,
+          "apply_transfer_top_k_cap": 1,
+          "cast": 1,
+          "cat": 3,
+          "clone": 1,
+          "compute_reward": 2,
+          "copy": 3,
+          "cummin": 1,
+          "cumsum": 1,
+          "current_stream": 2,
+          "device": 2,
+          "dumps": 3,
+          "elapsed_time": 1,
+          "element_size": 7,
+          "enumerate": 1,
+          "float": 14,
+          "flush_round": 1,
+          "generate": 1,
+          "get": 6,
+          "get_empty_metrics": 1,
+          "get_model_input_device": 3,
+          "int": 24,
+          "item": 7,
+          "join": 2,
+          "len": 3,
+          "list": 2,
+          "long": 1,
+          "min": 2,
+          "numel": 8,
+          "open": 3,
+          "proposal_top_k": 1,
+          "range": 1,
+          "record": 2,
+          "reset_step": 2,
+          "rollback": 1,
+          "round": 3,
+          "round_bytes": 1,
+          "select_config": 2,
+          "set_round": 1,
+          "simulate_transfer": 3,
+          "softmax": 1,
+          "sort": 1,
+          "squeeze": 3,
+          "state_entropy": 2,
+          "step": 2,
+          "synchronize": 1,
+          "time": 12,
+          "to": 4,
+          "tolist": 1,
+          "transfer": 3,
+          "write": 3
+        },
+        "comm": {
+          "simulate_transfer": 1
+        },
+        "except": {
+          "": 3
+        },
+        "flag": {
+          "gamma1": 2,
+          "gamma2": 2,
+          "max_tokens": 1,
+          "temp": 3,
+          "top_k": 1,
+          "top_p": 2
+        },
+        "flag_getattr": {
+          "comm_trace_mode": 1,
+          "disable_rl_update": 4,
+          "draft_target_threshold": 1,
+          "probe_cache_max_length": 1,
+          "rl_comm_cost_mode": 1,
+          "rl_team_reward": 2,
+          "small_draft_threshold": 1,
+          "uncertainty_threshold": 2
+        },
+        "loop": {
+          "for": 3,
+          "while": 1
+        },
+        "raise": {
+          "": 8
         },
         "return": {
           "": 1
+        },
+        "rng": {
+          "rand": 1,
+          "sample_accept_token": 1,
+          "sample_reject_token": 1
+        },
+        "try": {
+          "": 3
         }
       }
     },
@@ -630,8 +882,8 @@
       }
     },
     "Baselines.adaptive_tridecoding": {
-      "events": 315,
-      "sha256_16": "3f1133ec9c65796f",
+      "events": 287,
+      "sha256_16": "760d5b7192f24e4b",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -639,11 +891,11 @@
           "_team_reward_buffer": 1
         },
         "boolop": {
-          "And": 20,
+          "And": 19,
           "Or": 11
         },
         "break": {
-          "": 3
+          "": 2
         },
         "call": {
           "CUHLM": 1,
@@ -651,85 +903,80 @@
           "Event": 2,
           "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
-          "ValueError": 2,
+          "ValueError": 8,
+          "_CeeDecodeStats": 1,
+          "_CeeProposal": 1,
+          "_CeeRollbackPlan": 1,
+          "_CeeVerification": 1,
+          "_cee_first_stage": 1,
+          "_cee_propose": 2,
           "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 2,
-          "_graph_cache_kwargs": 3,
-          "_move_token_tensor": 4,
-          "_record_accepted_token_ranks": 2,
-          "_residual_payload_bytes": 2,
+          "_graph_mode_cache_kwargs": 1,
+          "_move_token_tensor": 3,
+          "_residual_payload_bytes": 1,
           "_reward_comm_s": 2,
           "_save_adaptive_rl_checkpoints": 1,
           "_stop_at_eos": 2,
-          "_uplink_prob_payload": 4,
+          "_uplink_prob_payload": 3,
           "_validate_token_range": 2,
-          "append": 7,
-          "bool": 1,
-          "build_stage_prefix_topk_history": 1,
-          "calculate_uncertainty": 1,
-          "cast": 4,
-          "cat": 2,
+          "acquire_graph_caches": 1,
+          "all": 2,
+          "any": 3,
+          "append": 2,
+          "apply_rollback": 1,
+          "apply_transfer_top_k_cap": 1,
+          "cast": 1,
+          "cat": 3,
           "clone": 1,
-          "collect_verification_payload": 2,
           "compute_reward": 2,
           "copy": 3,
+          "cummin": 1,
           "cumsum": 1,
           "current_stream": 2,
-          "determine_transfer_strategy": 1,
           "device": 2,
-          "dict": 1,
           "dumps": 3,
           "elapsed_time": 1,
           "element_size": 7,
-          "empty": 1,
           "enumerate": 1,
           "float": 14,
-          "generate": 2,
+          "flush_round": 1,
+          "generate": 1,
           "get": 6,
           "get_empty_metrics": 1,
           "get_model_input_device": 3,
-          "int": 27,
-          "isinstance": 1,
+          "int": 24,
           "item": 7,
           "join": 2,
           "len": 3,
           "list": 2,
           "long": 1,
-          "merge_stage_topk_histories": 1,
-          "min": 3,
+          "min": 2,
           "numel": 8,
           "open": 3,
-          "proposal_top_k": 2,
+          "proposal_top_k": 1,
           "range": 1,
           "record": 2,
-          "reset_for_new_sample": 3,
           "reset_step": 2,
-          "resolve_stage_verification": 2,
           "rollback": 1,
           "round": 3,
           "round_bytes": 1,
           "select_config": 2,
-          "setattr": 1,
+          "set_round": 1,
+          "simulate_transfer": 3,
           "softmax": 1,
           "sort": 1,
-          "sorted": 1,
-          "split": 1,
-          "stage_prob_history": 3,
-          "stage_topk_proposal_history": 3,
+          "squeeze": 3,
           "state_entropy": 2,
           "step": 2,
-          "strip": 1,
           "synchronize": 1,
-          "time": 18,
+          "time": 12,
+          "to": 4,
           "tolist": 1,
+          "transfer": 3,
           "write": 3
         },
         "comm": {
-          "flush_round": 1,
-          "send_accept_message": 1,
-          "set_round": 1,
-          "simulate_transfer": 6,
-          "transfer": 5
+          "simulate_transfer": 1
         },
         "except": {
           "": 3
@@ -737,7 +984,7 @@
         "flag": {
           "gamma1": 2,
           "gamma2": 2,
-          "max_tokens": 2,
+          "max_tokens": 1,
           "temp": 3,
           "top_k": 1,
           "top_p": 2
@@ -746,26 +993,26 @@
           "comm_trace_mode": 1,
           "disable_rl_update": 4,
           "draft_target_threshold": 1,
-          "graph_verify_sizes": 1,
           "probe_cache_max_length": 1,
           "rl_comm_cost_mode": 1,
           "rl_team_reward": 2,
           "small_draft_threshold": 1,
-          "uncertainty_threshold": 2,
-          "use_cuda_graph": 1
+          "uncertainty_threshold": 2
         },
         "loop": {
-          "for": 2,
+          "for": 3,
           "while": 1
         },
         "raise": {
-          "": 2
+          "": 8
         },
         "return": {
-          "": 3
+          "": 1
         },
         "rng": {
-          "sample_accept_token": 2
+          "rand": 1,
+          "sample_accept_token": 1,
+          "sample_reject_token": 1
         },
         "try": {
           "": 3
@@ -773,14 +1020,140 @@
       }
     },
     "Baselines.cee_sd_opportunistic": {
-      "events": 2,
-      "sha256_16": "85cd22843c836269",
+      "events": 287,
+      "sha256_16": "c0405721bac6c3dd",
       "surface": {
+        "assign_self": {
+          "_next_gamma1": 1,
+          "_next_gamma2": 1,
+          "_team_reward_buffer": 1
+        },
+        "boolop": {
+          "And": 19,
+          "Or": 11
+        },
+        "break": {
+          "": 2
+        },
         "call": {
-          "adaptive_tridecoding": 1
+          "CUHLM": 1,
+          "CommunicationSimulator": 1,
+          "Event": 2,
+          "KVCacheModel": 3,
+          "PreciseCommunicationSimulator": 1,
+          "ValueError": 8,
+          "_CeeDecodeStats": 1,
+          "_CeeProposal": 1,
+          "_CeeRollbackPlan": 1,
+          "_CeeVerification": 1,
+          "_cee_first_stage": 1,
+          "_cee_propose": 2,
+          "_check_stopping_criteria": 1,
+          "_graph_mode_cache_kwargs": 1,
+          "_move_token_tensor": 3,
+          "_residual_payload_bytes": 1,
+          "_reward_comm_s": 2,
+          "_save_adaptive_rl_checkpoints": 1,
+          "_stop_at_eos": 2,
+          "_uplink_prob_payload": 3,
+          "_validate_token_range": 2,
+          "acquire_graph_caches": 1,
+          "all": 2,
+          "any": 3,
+          "append": 2,
+          "apply_rollback": 1,
+          "apply_transfer_top_k_cap": 1,
+          "cast": 1,
+          "cat": 3,
+          "clone": 1,
+          "compute_reward": 2,
+          "copy": 3,
+          "cummin": 1,
+          "cumsum": 1,
+          "current_stream": 2,
+          "device": 2,
+          "dumps": 3,
+          "elapsed_time": 1,
+          "element_size": 7,
+          "enumerate": 1,
+          "float": 14,
+          "flush_round": 1,
+          "generate": 1,
+          "get": 6,
+          "get_empty_metrics": 1,
+          "get_model_input_device": 3,
+          "int": 24,
+          "item": 7,
+          "join": 2,
+          "len": 3,
+          "list": 2,
+          "long": 1,
+          "min": 2,
+          "numel": 8,
+          "open": 3,
+          "proposal_top_k": 1,
+          "range": 1,
+          "record": 2,
+          "reset_step": 2,
+          "rollback": 1,
+          "round": 3,
+          "round_bytes": 1,
+          "select_config": 2,
+          "set_round": 1,
+          "simulate_transfer": 3,
+          "softmax": 1,
+          "sort": 1,
+          "squeeze": 3,
+          "state_entropy": 2,
+          "step": 2,
+          "synchronize": 1,
+          "time": 12,
+          "to": 4,
+          "tolist": 1,
+          "transfer": 3,
+          "write": 3
+        },
+        "comm": {
+          "simulate_transfer": 1
+        },
+        "except": {
+          "": 3
+        },
+        "flag": {
+          "gamma1": 2,
+          "gamma2": 2,
+          "max_tokens": 1,
+          "temp": 3,
+          "top_k": 1,
+          "top_p": 2
+        },
+        "flag_getattr": {
+          "comm_trace_mode": 1,
+          "disable_rl_update": 4,
+          "draft_target_threshold": 1,
+          "probe_cache_max_length": 1,
+          "rl_comm_cost_mode": 1,
+          "rl_team_reward": 2,
+          "small_draft_threshold": 1,
+          "uncertainty_threshold": 2
+        },
+        "loop": {
+          "for": 3,
+          "while": 1
+        },
+        "raise": {
+          "": 8
         },
         "return": {
           "": 1
+        },
+        "rng": {
+          "rand": 1,
+          "sample_accept_token": 1,
+          "sample_reject_token": 1
+        },
+        "try": {
+          "": 3
         }
       }
     },
@@ -870,11 +1243,12 @@
       }
     },
     "Baselines.cee_dssd": {
-      "events": 121,
-      "sha256_16": "fe959e6a96091386",
+      "events": 122,
+      "sha256_16": "f5216fd3d1b36173",
       "surface": {
         "boolop": {
-          "And": 4
+          "And": 4,
+          "Or": 1
         },
         "break": {
           "": 2
@@ -950,11 +1324,12 @@
       }
     },
     "Baselines.cee_dsd": {
-      "events": 125,
-      "sha256_16": "ded8e207f38c6a81",
+      "events": 126,
+      "sha256_16": "58e38295068be9ad",
       "surface": {
         "boolop": {
-          "And": 4
+          "And": 4,
+          "Or": 1
         },
         "break": {
           "": 2
