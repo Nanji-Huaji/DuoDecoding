@@ -42,8 +42,34 @@ Lead 另补充两种策略、两种 role 顺序的交叉测试，并修正普通
 “缺失+漂移”失败消息误称启用严格模式的问题：先复现 2 failed，修正后
 资产策略与门禁接线共 22 passed。
 
-## 剩余风险
+## 干净远端与隔离安装
 
-- 干净 clone 的 14 项 skip 只表示资产未验收；golden 数字与指纹仍需在有资产的机器上以 strict 模式跑一遍（本批未做干净远程复跑）。
-- `run_cpu_gate` 默认仍允许缺资产 skip；只有显式 `--require-golden-assets` 才算全量资产验收，manifest 记录策略但不会自动升级。
-- `golden_assets.py` 是 `test/` 内的测试 helper，不改变固件与生产代码；probe 子进程使用当前解释器，解释器需已装 torch（与其余 CPU 测试同一前提）。
+远端另建源码副本，在 `b0d1cfbf544211d4779a5d86beb9a2604e2513f2`
+运行门禁；没有补入生产 models、RL checkpoint 或 acc-head 注册表。
+
+| 模式 | 结果 | 耗时 |
+|---|---|---|
+| default | 1386 passed、21 skipped、163 subtests | 188.05s |
+| importlib | 1386 passed、21 skipped、163 subtests | 144.66s |
+
+21 项 skip 包括 14 项缺失权重与 7 项缺失历史 run，日志逐项列明原因。
+两次返回码均为 0、源码端点一致，文件哈希和子模块提交与本机验收版本相同。
+远端再单独开启严格模式，两种导入方式均得到预期的 **14 项缺资产失败**，
+没有 error 或 skip；验证脚本同时核对了失败原因。
+
+解释器来自新建的 `.venv-cpu-isolated`，不是原有共享环境：
+Python 3.10.12、torch 2.6.0、transformers 4.57.6、pytest 9.1.1、ruff 0.15.4。
+先安装开发工具，再以 `uv pip install --require-hashes -r requirements.txt`
+安装锁定生产依赖；`uv pip check` 检查 145 个包通过，Baselines 与
+FastChat 评测模板入口导入成功。离线缓存最初缺 ruff，随后从 PyPI 完成安装；
+没有下载模型或改动原有环境、权重。远端 acc-head 注册表缺失的 warning 保留。
+
+完整远端 CPU 日志已收集到 `.refactor/cpu-portability-20261111/isolated-clean-cpu/`。
+本批 Ruff 检查只报告原有 [文档示例超长行](<../test/test_golden_baselines.py#L23>)，
+未为消除它修改无关内容。
+
+## 使用边界
+
+- 需要完整权重指纹验收时，显式使用 `--require-golden-assets`，避免缺失被跳过。
+- 干净 clone 的 14 项 skip 不算权重验收；本机严格门禁已实际通过这 14 项。
+- 本批不含 GPU 结果，也不改变生产算法或历史 golden 数字。
