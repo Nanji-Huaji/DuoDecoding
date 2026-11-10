@@ -10,15 +10,54 @@ Historical bugs:
 - B33: few-shot 对不支持的 task（如 mt_bench）静默返回空串，--num_shots 无告警。
 """
 
+import json
 import warnings
 from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
+import src.model_zoo as zoo_module
 from eval.few_shot_examples import get_few_shot_prompt
 from src.acc_head_registry import canonicalize_model_name
 from src.utils import model_zoo
+
+REPOS = {
+    "draft_model": (
+        "tiny-llama-1.1b",
+        "models/llama/tiny-llama-1.1b",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    ),
+    "target_model": (
+        "llama-2-13b",
+        "models/llama/Llama-2-13b-hf",
+        "meta-llama/Llama-2-13b-hf",
+    ),
+    "little_model": ("llama-68m", "models/llama/llama-68m", "JackFram/llama-68m"),
+}
+
+
+@pytest.fixture
+def temp_model_repos(tmp_path, monkeypatch):
+    """把 zoo 的仓库根/配置指到临时目录，让 auto 的“存在/不存在”自给自足。"""
+    config = tmp_path / "configs" / "model_repos.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "models": {
+                    alias: {"local_dir": local_dir, "hf_repo": hf_repo}
+                    for alias, local_dir, hf_repo in REPOS.values()
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(zoo_module, "ROOT", tmp_path)
+    monkeypatch.setattr(zoo_module, "MODEL_REPOS", config)
+    zoo_module.load_model_repos.cache_clear()
+    yield tmp_path
+    zoo_module.load_model_repos.cache_clear()
 
 
 def _ns(**overrides) -> Namespace:
@@ -81,12 +120,21 @@ class TestModelZoo:
         assert args.draft_model == "Qwen/Qwen3-0.6B"
         assert args.vocab_size == 151936
 
-    def test_auto_prefers_existing_local_dir(self):
+    def test_auto_prefers_existing_local_dir(self, temp_model_repos):
+        for _, local_dir, _ in REPOS.values():
+            (temp_model_repos / local_dir).mkdir(parents=True)
         args = _ns(model_source="auto")
         model_zoo(args)
-        assert args.draft_model.endswith("models/llama/tiny-llama-1.1b")
-        assert args.target_model.endswith("models/llama/Llama-2-13b-hf")
-        assert args.little_model.endswith("models/llama/llama-68m")
+        for role, (_, local_dir, _) in REPOS.items():
+            assert getattr(args, role) == str(temp_model_repos / local_dir)
+        assert args._model_provenance["draft"]["source"] == "local"
+
+    def test_auto_falls_back_to_hub_without_local_dirs(self, temp_model_repos):
+        args = _ns(model_source="auto")
+        model_zoo(args)
+        for role, (_, _, hf_repo) in REPOS.items():
+            assert getattr(args, role) == hf_repo
+        assert args._model_provenance["draft"]["source"] == "hub"
 
     def test_local_source_forces_local_paths(self):
         args = _ns(model_source="local")

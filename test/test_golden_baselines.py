@@ -28,12 +28,12 @@ H1/H2 之后的下一步（CEE 公共核心）要动 `cee_dsd`/`cee_dssd`，必�
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
 
 import pytest
+from golden_assets import assert_golden_checkpoints
 
 GOLDEN = Path(__file__).parent / "golden"
 SUITE = GOLDEN / "baselines"
@@ -90,13 +90,11 @@ def test_manifest_command_is_complete(tag):
 
 
 @pytest.mark.parametrize("tag", TAGS)
-def test_checkpoint_fingerprint_matches_worktree(tag):
-    """固件绑定 checkpoint；checkpoint 漂移即 golden 失效。"""
-    for role, spec in MANIFEST["tags"][tag]["checkpoints"].items():
-        digest = hashlib.sha256(Path(spec["path"]).read_bytes()).hexdigest()
-        assert digest[:16] == spec["sha256_16"], (
-            f"{tag}/{role}: {spec['path']} 指纹不符，golden 需重新收割"
-        )
+def test_checkpoint_fingerprint_matches_worktree(tag, require_golden_assets):
+    """固件绑定 checkpoint；漂移永远失败，缺失默认 skip（未验收），严格模式失败。"""
+    assert_golden_checkpoints(
+        MANIFEST["tags"][tag]["checkpoints"], require=require_golden_assets
+    )
 
 
 def test_locked_field_perturbation_fails():

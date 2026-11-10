@@ -1,10 +1,14 @@
 """Run the offline CPU gate with the invoking Python, never installing packages.
 
-Usage: .venv/bin/python tools/run_cpu_gate.py [--output-dir NEW_DIRECTORY]
+Usage: .venv/bin/python tools/run_cpu_gate.py \
+           [--output-dir NEW_DIRECTORY] [--require-golden-assets]
 The manifest records main-repository source files, not model weights or a GPU
 acceptance claim. External subproject revisions/dirty state are recorded by Git.
 Snapshots compare run endpoints, not every intermediate state. The caller must
 stop other writers before using these results as frozen-source acceptance.
+By default the 14 historical golden checkpoint checks skip when the external
+weights are absent (skip is not asset acceptance); --require-golden-assets turns
+that absence into failure and the policy is recorded in the manifest.
 """
 
 from __future__ import annotations
@@ -81,19 +85,36 @@ def environment_metadata() -> dict:
     }
 
 
-def pytest_command(executable: str, mode: str, report: Path) -> list[str]:
+GOLDEN_ASSETS_FLAG = "--require-golden-assets"
+
+
+def pytest_command(
+    executable: str,
+    mode: str,
+    report: Path,
+    *,
+    require_golden_assets: bool = False,
+) -> list[str]:
     if mode not in {"default", "importlib"}:
         raise ValueError(f"Unsupported collection mode: {mode}")
     command = [
         executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-        "-o", "addopts=",
+        "-o", "addopts=", "-rs",
     ]
     if mode == "importlib":
         command.append("--import-mode=importlib")
+    if require_golden_assets:
+        command.append(GOLDEN_ASSETS_FLAG)
     return [*command, "test", f"--junitxml={report}"]
 
 
-def run_gate(root: Path, output: Path, executable: str = sys.executable) -> int:
+def run_gate(
+    root: Path,
+    output: Path,
+    executable: str = sys.executable,
+    *,
+    require_golden_assets: bool = False,
+) -> int:
     root, output = root.resolve(), output.resolve()
     # Refuse to merge with old evidence, even if an earlier run failed.
     output.mkdir(parents=True, exist_ok=False)
@@ -101,6 +122,10 @@ def run_gate(root: Path, output: Path, executable: str = sys.executable) -> int:
     manifest = {
         "schema": "duodecoding.cpu-gate.v1",
         "scope": "CPU only; no real-model/CUDA execution acceptance",
+        "golden_assets": {
+            "required": bool(require_golden_assets),
+            "flag": GOLDEN_ASSETS_FLAG,
+        },
         "environment": environment_metadata(),
         "source_before": before,
         "results": [],
@@ -122,7 +147,10 @@ def run_gate(root: Path, output: Path, executable: str = sys.executable) -> int:
         for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
             env.pop(name, None)
         for mode in ("default", "importlib"):
-            command = pytest_command(executable, mode, output / f"{mode}.xml")
+            command = pytest_command(
+                executable, mode, output / f"{mode}.xml",
+                require_golden_assets=require_golden_assets,
+            )
             start = time.monotonic()
             with (output / f"{mode}.log").open("x", encoding="utf-8") as log:
                 result = subprocess.run(
@@ -157,9 +185,16 @@ def run_gate(root: Path, output: Path, executable: str = sys.executable) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        GOLDEN_ASSETS_FLAG,
+        action="store_true",
+        help="缺少历史 golden checkpoint 时让 14 项资产检查失败，而不是跳过。",
+    )
     args = parser.parse_args(argv)
     output = args.output_dir or ROOT / ".refactor" / "cpu-gates" / uuid.uuid4().hex
-    return run_gate(ROOT, output)
+    return run_gate(
+        ROOT, output, require_golden_assets=args.require_golden_assets,
+    )
 
 
 if __name__ == "__main__":
