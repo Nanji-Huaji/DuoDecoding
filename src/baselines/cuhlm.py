@@ -8,11 +8,22 @@ that the server actually holds.
 
 Batch scope (2026-11-11): the migration plus three directed fixes only --
 constructor vocabulary propagation, real draft-token use in the Eq. (26) k*
-solver, and the Eq. (10) strict ``u > threshold`` trigger. Sampling/protocol
-semantics, the explicit legacy verification bridge, no-sampling forward,
-bonus/budget/EOS handling, strict windows and approximate-distribution
-contracts remain for follow-up batches. This path is therefore not claimed to
-be target-distribution exact.
+solver, and the Eq. (10) strict ``u > threshold`` trigger.
+
+Single-token lifecycle (2026-11-11, second batch): paper II-A/IV-B and
+Algorithm 1 finalize exactly one token per round and have no full-accept
+target bonus.  A trigger now calls ``target.forward_context(prefix)`` (no
+sampling, no draft-token forward, no discarded target sample) and then either
+keeps the draft token (accept) or appends one residual token (reject).  Both
+caches end the round at the **old** prefix endpoint; the finalized token is
+not forwarded until a later draft/trigger round.  After skipped rounds the
+target catches up over the whole finalized prefix on its next trigger.
+Rollback is no longer needed because no cache is advanced past the prefix.
+
+Still deliberately retained (not claimed solved): original-history q(d)
+acceptance versus the reconstructed qhat residual (paper-intentional, lossy), the
+compressed-qhat zero-residual degeneracy, and the Eq. (26) k solver's
+fallback.  This path is therefore still not claimed target-distribution exact.
 """
 
 import time
@@ -28,11 +39,8 @@ from ..baselines_helpers import (
 from ..communication import CUHLM, PreciseCUHLM, cuhlm_uplink_payload_bytes
 from ..decoding_ops import (
     _prepare_legacy_verification_inputs,
-    apply_rollback,
-    build_rollback_plan,
     compute_acceptance_result,
     materialize_acceptance,
-    sample_accept_token,
     sample_reject_token,
 )
 from ..graph_decode import (
@@ -260,6 +268,10 @@ class CuhlmMixin:
                     (prefix.to(accepted_token.device), accepted_token), dim=1
                 )
 
+                # 跳过即直接定稿该 draft token：计入 draft_accepted_tokens
+                # （draft 定稿数，不是目标准确率）。目标模型未调用。
+                total_accepted_tokens += 1
+
                 # F-CUHLM：跳过即零通信——不发 accept 消息、不即时上行；
                 # token 计入待同步缓冲，下次触发时随上行捎带（见循环上方口径说明）。
                 _pending_resync += 1
@@ -292,13 +304,21 @@ class CuhlmMixin:
             )
             _pending_resync = 0
 
+            # 单 token 协议（论文 II-A/IV-B、Algorithm 1）：一轮只定稿一个
+            # token。target 只做一次**不采样**的 prefix 前向，取“旧 prefix
+            # 最后一个位置之后”的分布 P 来验证本轮 draft；不 forward draft
+            # token、不产生被丢弃的 target 样本、不做 full-accept bonus。
+            # 两缓存本轮端点都停在旧 prefix_len（其余历史行也到 prefix_len），
+            # 最终定稿的 token 尚未 forward：下一轮由 draft generate 追一格，
+            # 跳过若干轮后由 target 下次触发一次追平整个已定稿 prefix。
             t0 = time.time()
-            _ = target_model_cache.generate(x.to(target_device), 1)
+            _ = target_model_cache.forward_context(prefix.to(target_device))
             target_comp_time += time.time() - t0
             target_forward_times += 1
 
-            # Rejection sampling with compressed probability distribution
-            n = prefix_len + 1 - 1
+            # 验证窗口仍是 legacy clipped 适配器：draft 行 prefix_len-1 =
+            # 本轮 proposal，target 行 prefix_len-1 = 上面刚取的 P。
+            n = prefix_len - 1
 
             verification_inputs = _prepare_legacy_verification_inputs(
                 draft_model_cache=approx_model_cache,
@@ -307,8 +327,12 @@ class CuhlmMixin:
                 prefix_len=prefix_len,
                 gamma=1,
             )
+            if verification_inputs.actual_gamma != 1:
+                # An empty clipped window cannot finalize a token; abort rather
+                # than repeat the same prefix forever without a target bonus.
+                raise ValueError("CUHLM requires exactly one verification position")
             acceptance_result = compute_acceptance_result(verification_inputs)
-            accepted_count, n, _ = materialize_acceptance(
+            accepted_count, n, all_accepted = materialize_acceptance(
                 verification_inputs, acceptance_result
             )
 
@@ -318,19 +342,17 @@ class CuhlmMixin:
 
             # F-CUHLM：压缩分布已在触发时的合并上行中计费（每次触发必传，
             # 与论文一致）；reject 不再有独立的 reject 消息与二次压缩包传输，
-            # 下行只回传最终 token（见下方 _send_downlink_token）。
+            # 下行只回传最终 token（见下方 _send_downlink_index_only）。
             total_accepted_tokens += accepted_count
 
             assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+            # accept: n = prefix_len -> 保留草稿 token 本身（x 的最后一个），
+            # 不额外采 bonus；reject: n = prefix_len-1 -> 只保留旧 prefix，
+            # 下面再追加一个残差 token。
             prefix = x[:, : n + 1]
 
-            rollback_plan = build_rollback_plan(
-                prefix_len,
-                verification_inputs.actual_gamma,
-                n,
-            )
-
-            if not rollback_plan.all_accepted:
+            t = None
+            if not all_accepted:
                 target_prob_row = verification_inputs.target_probs_batch[:, 0, :]
                 # F-CUHLM：重采样基于服务器实际持有的压缩重构分布 x̂
                 # （论文式 (17)，top-k 保留 + 残差均匀）。旧实现用端侧全量
@@ -346,23 +368,13 @@ class CuhlmMixin:
                     _draft_row_hat,
                     output_device=prefix.device,
                 )
-            else:
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=prefix.device,
-                )
-
-            apply_rollback(
-                approx_model_cache,
-                target_model_cache,
-                rollback_plan,
-            )
 
             # F-CUHLM（论文口径）：响应 token 索引 negligible（§II-B）——
             # 0 字节下行报文，保留一次 NTT（见 _send_downlink_index_only）。
             # 旧口径（B17）：INT_SIZE + token 字节。
             _send_downlink_index_only(comm_simulator, "edge_cloud")
-            prefix = torch.cat((prefix, t), dim=1)
+            if t is not None:
+                prefix = torch.cat((prefix, t), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -384,6 +396,10 @@ class CuhlmMixin:
         metrics["target_computation_time"] = target_comp_time
         metrics["generated_tokens"] = prefix.shape[1] - input_len
         metrics["draft_generated_tokens"] = draft_forward_times
+        # draft_accepted_tokens 口径：被**直接定稿的 draft token 数**——既含
+        # 触发轮里被 target 接受的 draft，也含机会跳过时直接追加的 draft；
+        # 拒绝轮不计（该轮没有 draft token 成为输出）。它不是目标准确率：
+        # 生成守恒为 generated_tokens = draft_accepted_tokens + 拒绝轮数。
         metrics["draft_accepted_tokens"] = total_accepted_tokens
         metrics["queuing_time"] = queuing_time
         metrics["wall_time"] = (
