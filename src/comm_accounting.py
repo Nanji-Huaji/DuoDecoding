@@ -19,7 +19,7 @@ Baselines 与 engine.py 的历史方法共用）读字段；模块助手
 
 本模块做三件事：
 
-1. ``CommConfig``：把五个计费开关读成一个不可变对象；
+1. ``CommConfig``：把五个计费开关读成一个不可变对象；a
 2. ``CommEnv``：把通信数值层（带宽 / 地板 / 发射模型 / NTT trace / 排队）
    也收成一个对象——迁移前这些值在 ~20 处 ``CommunicationSimulator(...)``
    构造点各自 ``getattr(self.args, ..., 默认)``，默认值被复制了多份；

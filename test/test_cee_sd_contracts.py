@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from src import communication
-from src.baselines import Baselines, core
+from src.baselines import Baselines, cee, runtime
 from src.communication import CUHLM
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,9 +81,9 @@ def run_cee(monkeypatch):
             scripts = rows or {}
             metadata_calls = 0
 
-            def _forward_with_kvcache(self, prefix):
+            def forward_context(self, prefix):
                 self.hidden_states = torch.zeros((1, 1, 1))
-                return self._consume(prefix)
+                return super().forward_context(prefix)
 
             def generate(self, prefix, gamma):
                 # The real KV cache does no forward at all for gamma=0.
@@ -149,12 +149,11 @@ def run_cee(monkeypatch):
             samples.append(probs.clone())
             return real_multinomial(probs, *args, **kwargs)
 
-        monkeypatch.setattr(core, "KVCacheModel", Cache)
-        monkeypatch.setattr(core, "CommunicationSimulator", Simulator)
+        monkeypatch.setattr(runtime, "KVCacheModel", Cache)
         monkeypatch.setattr(
             "src.baselines.simulators.CommunicationSimulator", Simulator
         )
-        monkeypatch.setattr(core, "CUHLM", SkipLittleVerification)
+        monkeypatch.setattr(cee, "CUHLM", SkipLittleVerification)
         monkeypatch.setattr(torch, "rand", rand)
         monkeypatch.setattr(torch, "multinomial", multinomial)
         decoder = object.__new__(support._TestBaselines)
@@ -213,6 +212,22 @@ def run_cee(monkeypatch):
         )
 
     return run
+
+
+@pytest.mark.parametrize("gamma1,gamma2", [(2, 1), (0, 1), (2, 0), (0, 0)])
+def test_verification_and_zero_candidate_context_do_not_sample(run_cee, gamma1, gamma2):
+    # One round: little/draft proposals plus one genuine correction/bonus at each
+    # stage. Neither verifier may secretly draw an extra token, even at gamma=0.
+    result = run_cee(gamma1=gamma1, gamma2=gamma2, budget=1)
+    assert len(result.samples) == gamma1 + gamma2 + 2
+    assert result.metrics["target_forward_times"] == 1
+    assert result.caches["target"].current_length == 1 + gamma2 + 1 + gamma1
+
+
+def test_opportunistic_skip_keeps_only_real_proposal_and_correction_samples(run_cee):
+    result = run_cee(gamma1=2, gamma2=1, budget=1, opportunistic=True)
+    assert len(result.samples) == 1 + 2 + 1  # no inner correction on skipped stage
+    assert result.metrics["target_forward_times"] == 1
 
 
 def test_full_accept_bonus_has_not_been_forwarded(run_cee):

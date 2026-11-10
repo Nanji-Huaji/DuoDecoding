@@ -648,6 +648,124 @@ class KVCacheModel:
 
         return self._decode_step(last_input_id)
 
+    def _validate_context_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """校验 ``forward_context`` 的输入并统一成 long。
+
+        batch>1 在本阶段**显式拒绝**：真实管线是 bs=1，旧私有路径对 batch>1
+        只有“能跑但无人验证”的泛化；公开入口不能只处理第一个样本却伪装成
+        批处理成功（见 docs/refactor_roadmap_20261110.md 的 A3 边界）。
+        """
+        if not isinstance(input_ids, torch.Tensor):
+            raise TypeError(
+                "forward_context 需要 torch.Tensor 输入，"
+                f"实际为 {type(input_ids).__name__}"
+            )
+        if input_ids.dim() != 2:
+            raise ValueError(
+                "forward_context 需要 (batch, seq_len) 的二维输入，"
+                f"实际 shape={tuple(input_ids.shape)}"
+            )
+
+        batch_size, seq_len = input_ids.shape
+        if batch_size != 1:
+            raise ValueError(
+                "forward_context 只支持单条序列（batch=1）："
+                f"实际 batch={batch_size}。本阶段不新增 batch>1 支持，"
+                "请逐样本调用，不要静默只取第一个样本"
+            )
+        if seq_len < 1:
+            raise ValueError(
+                "forward_context 需要非空的完整 token 前缀（seq_len ≥ 1）；"
+                "空输入不会推进上下文。如需复用当前缓存，请传入等长前缀"
+            )
+
+        integer_dtypes = (
+            torch.uint8,
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+        )
+        if input_ids.dtype not in integer_dtypes:
+            raise TypeError(
+                "forward_context 需要整型 token id，"
+                f"实际 dtype={input_ids.dtype}；bool/浮点/复数均不接受"
+            )
+        return input_ids if input_ids.dtype == torch.long else input_ids.to(torch.long)
+
+    @torch.inference_mode()
+    def forward_context(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """不做采样的上下文前向：推进/复用 KV 上下文并返回下一 token 概率。
+
+        这是给生成算法用的公开入口：算法自己决定何时采样、采样几次。本方法
+        只做 prefill/extend/复用，返回 ``(1, vocab_size)`` 的下一 token 概率
+        （按构造时的 temperature/top-k/top-p 归一化），**不调用 sample、
+        不消耗 torch RNG**；hidden state 与概率/logits 历史仍按既有 prefill/
+        decode 路径更新（等长复用则保持原值）。
+
+        输入 ``input_ids`` 是**从序列开头起的完整 token 前缀**，语义分四种：
+
+        * 无缓存（含 ``reset_for_new_sample()`` 之后）：prefill 整段前缀；
+        * 输入比缓存长：只把新增后缀喂给模型（extend，可多 token）；
+        * 输入与缓存等长：合法复用 —— 直接返回已缓存的下一 token 概率行，
+          不跑模型、不改历史（调用方须保证前缀内容确实相同：KV 缓存不保存
+          token id，无法反查）；
+        * 输入比缓存短：缓存领先输入，无法反推/无法安全裁剪，显式抛
+          ``ValueError``（旧私有 ``_forward_with_kvcache`` 在此静默返回最后
+          一行概率；本阶段不改旧路径，调用者迁移后再统一）。
+
+        Args:
+            input_ids: ``(1, seq_len)`` 的整型张量，``seq_len ≥ 1``。prefill 时
+                校验 token id 在词嵌入范围内；extend 只把新增后缀交给模型，
+                与既有 ``_decode_step`` 一样**不重复做 host 同步式范围校验**
+                （新 token 通常来自采样，已在范围内；避免热路径每次前向同步）。
+
+        Returns:
+            ``(1, vocab_size)`` 的下一 token 概率张量。
+
+        Raises:
+            TypeError: 非 tensor 或非整型 dtype（含 bool）。
+            ValueError: 非二维、batch ≠ 1、空前缀、prefill 时 token id 越界，
+                或缓存领先输入。
+            RuntimeError: 缓存长度与已跟踪的历史长度不一致（内部状态损坏）。
+
+        Note:
+            图模式（CUDA Graph）在 CPU 上不可执行；本方法复用与 eager 相同的
+            prefill/decode 分支，真实图路径仍需 GPU 验收。batch>1 不支持。
+        """
+        ids = self._validate_context_input_ids(input_ids)
+        seq_len = int(ids.shape[1])
+        cached_len = self.current_length
+
+        if cached_len > seq_len:
+            raise ValueError(
+                "forward_context 拒绝缓存领先输入："
+                f"缓存长度={cached_len} > 输入长度={seq_len}。"
+                "KV 缓存无法从更短的输入反推；请传入覆盖全部已缓存 token 的"
+                "完整前缀（等长或更长），或先 reset_for_new_sample()"
+            )
+
+        if self._past_key_values is None:
+            # 无缓存 / 刚 reset：整段前缀走 prefill
+            return self._prefill(ids)
+
+        # _decode_step writes history at _current_seq_len while the backend
+        # extends the real KV endpoint. Reject a mismatch before either reuse
+        # or extension, otherwise extending would overwrite the wrong row.
+        if self._current_seq_len != cached_len:
+            raise RuntimeError(
+                "forward_context 检测到缓存与概率历史不一致："
+                f"cache_length={cached_len}, tracked={self._current_seq_len}"
+            )
+        if seq_len == cached_len:
+            # 等长合法复用：不跑模型，直接返回“最后一个位置之后”的概率行
+            return self.prob_history[:, cached_len - 1, :]
+
+        new_ids = ids[:, cached_len:]
+        # 与 _decode_step 一致：不在每次 extend 时做 min/max 的 host 同步；
+        # prefill（含完整前缀首次进入）由 _prefill 内部校验 id 范围。
+        return self._decode_step(new_ids)
+
     @property
     def last_hidden_state(self) -> torch.Tensor:
         if self.hidden_states is None:

@@ -269,7 +269,7 @@ class _HelperHarness(unittest.TestCase):
             sample_calls.append(probs)
             return torch.tensor([[0]], dtype=torch.long)
 
-        with patch("src.baselines.core.sample", new=fake_sample):
+        with patch("src.baselines.adaptive.sample", new=fake_sample):
             try:
                 token = Baselines._adaptive_decoding_next_token(
                     _decoder(),
@@ -313,7 +313,7 @@ class _HelperHarness(unittest.TestCase):
             sample_weights.append(probs.detach().clone())
             return torch.tensor([[sampled_token]], dtype=torch.long)
 
-        with patch("src.baselines.core.sample", new=fake_sample):
+        with patch("src.baselines.adaptive.sample", new=fake_sample):
             token = Baselines._adaptive_decoding_next_token(
                 _decoder(),
                 proposal=proposal,
@@ -704,9 +704,10 @@ class AdaptiveProposalContractTests(_HelperHarness):
                 self.device = DEVICE
                 self.calls = 0
 
-            def _forward_with_kvcache(self, prefix):
+            def forward_context(self, prefix):
                 row = _history(q_rows)[:, self.calls, :]
                 self.calls += 1
+                self.current_length = prefix.shape[1]
                 return row
 
         class _NeverStopAdapter:
@@ -726,7 +727,7 @@ class AdaptiveProposalContractTests(_HelperHarness):
             sampler_weights.append(probs.detach().clone())
             return probs.argmax(dim=-1, keepdim=True)
 
-        with patch("src.baselines.core.sample", new=fake_sample):
+        with patch("src.baselines.operations.sample", new=fake_sample):
             proposal, _ = Baselines._adaptive_decoding_propose(
                 decoder,
                 prefix=_tokens([0]),

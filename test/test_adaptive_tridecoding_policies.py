@@ -80,6 +80,11 @@ class _RecordingPolicyCache(rounds._RowScriptedCache):
         self.hidden_states = torch.zeros(1, 1, 1)
 
     def _forward_with_kvcache(self, x):
+        # Frozen oracle compatibility only; the production caller uses the public API.
+        return self.forward_context(x)
+
+    def forward_context(self, x):
+        assert x.shape[1] >= self.current_length
         # 与生产 KVCacheModel 同义：消费到 x 的最后一个位置，返回该位置的
         # （这里脚本化的 one-hot）概率行；ARP 头需要 hidden_states。
         self._consume(x)
@@ -314,7 +319,7 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         args.charge_residual_payload = False
 
         patches = [
-            patch("src.baselines.core.KVCacheModel", _RecordingPolicyCache),
+            patch("src.baselines.runtime.KVCacheModel", _RecordingPolicyCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator",
                 rounds._RecordingCommunicationSimulator,
@@ -325,7 +330,7 @@ class AdaptiveTriDecodingPolicyGateTests(unittest.TestCase):
         ]
         if opportunistic_uncertainty is not None:
             _DeterministicCUHLM.uncertainty_value = opportunistic_uncertainty
-            patches.append(patch("src.baselines.core.CUHLM", _DeterministicCUHLM))
+            patches.append(patch("src.baselines.cee.CUHLM", _DeterministicCUHLM))
 
         with ExitStack() as stack:
             for item in patches:

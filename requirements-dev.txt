@@ -1,0 +1,14 @@
+# Development-only tools used by the CPU validation commands.
+#
+# This is intentionally NOT a lockfile and NOT a transitive closure. The
+# production uv.lock has no dev dependency group, so it does not contain pytest
+# or ruff (nor their dependencies). These are exact direct pins only.
+#
+# Install them apart from the production/shared environment, for example:
+#   uv venv .venv-dev --python 3.10
+#   uv pip install --python .venv-dev/bin/python -r requirements-dev.txt
+#
+# See docs/cpu_validation.md for the CPU-only evidence boundary and the offline
+# installation caveat.
+pytest==9.1.1
+ruff==0.15.4

@@ -13,19 +13,40 @@ RL-based threshold selection, and adaptive candidate lengths (SpecDec++).
 
 ### Environment
 
-The project uses `uv` for dependency management. A `requirements.txt` is also provided if you prefer plain `pip`.
+`pyproject.toml` plus the committed `uv.lock` are the only sources of truth for
+production dependencies. Use `uv sync --frozen` for the primary install: it
+installs exactly the locked versions and never re-resolves or rewrites
+`uv.lock`.
 
 ```bash
 # Clone and enter the repository
 git clone https://github.com/Nanji-Huaji/DuoDecoding.git && cd DuoDecoding
 
-# Option A: uv (recommended — uses locked dependencies)
-uv sync
+# Option A: uv (recommended — installs the committed lock as-is)
+uv sync --frozen
+```
 
-# Option B: pip + venv
+`requirements.txt` is a generated export of that same `uv.lock`, not a separate
+dependency list; it is the supported pip entry point. The export records a
+sha256 hash for every artifact, so pip (which enables hash-checking
+automatically) verifies each downloaded file against the lock:
+
+```bash
+# Option B: pip, installing the same locked artifacts
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Do not edit `requirements.txt` by hand. Regenerate it from the lock with the
+frozen/offline command documented in
+[docs/cpu_validation.md](docs/cpu_validation.md). That page also explains why
+hashes are kept and the offline limitations.
+
+Development tools are deliberately separate: `requirements-dev.txt` pins
+`pytest==9.1.1` and `ruff==0.15.4`, but the production `uv.lock` does not contain
+those tools, so it is a direct pin list rather than a resolved dev lock. See
+[docs/cpu_validation.md](docs/cpu_validation.md) for the isolated install and
+CPU-only evidence boundary.
 
 ### Git LFS
 
@@ -122,6 +143,13 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 This is only needed if you plan to train new acceptance heads. Pre-trained heads
 are downloaded by `scripts/download_models.py --checkpoints`.
+
+## Validation
+
+CPU-only contract and dependency checks are documented in
+[docs/cpu_validation.md](docs/cpu_validation.md). They cover the offline pytest
+gate, the requirements/lock contract, and the CPU-vs-GPU evidence boundary; they
+do not replace GPU or real-model acceptance.
 
 ## Usage
 

@@ -612,6 +612,10 @@ class _RowScriptedCache:
             self._prob_rows.append(self._row(position))
         return self._prob_rows[-1]
 
+    def forward_context(self, prefix):
+        assert prefix.shape[1] >= self.current_length
+        return self._consume(prefix)
+
     def _extend_one(self):
         self._prob_rows.append(self._row(self.current_length))
         return self._prob_rows[-1]
@@ -886,7 +890,7 @@ class AdaptiveTriDecodingRoundGateTests(unittest.TestCase):
             )()
         prefix = torch.tensor([[0]], dtype=torch.long)
         patches = [
-            patch("src.baselines.core.KVCacheModel", _RowScriptedCache),
+            patch("src.baselines.runtime.KVCacheModel", _RowScriptedCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator",
                 _RecordingCommunicationSimulator,

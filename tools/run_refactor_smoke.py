@@ -925,8 +925,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Explicit opt-in only. No stage flag retains the archived schema-1 driver.
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:2] == ["--stage", "stage-a"]:
+        try:
+            from .stage_a_smoke import main as stage_a_main
+        except ImportError:
+            from stage_a_smoke import main as stage_a_main
+        return stage_a_main(arguments[2:])
     try:
-        payload = run(parse_args(argv))
+        payload = run(parse_args(arguments))
     except SmokeError as exc:
         print(f"[refactor-smoke] ERROR: {exc}", file=sys.stderr)
         return 3 if isinstance(exc, GpuExclusivityError) else 2

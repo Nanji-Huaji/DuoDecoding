@@ -626,9 +626,25 @@ def compare(
     candidate: Any,
     *,
     expect_samples: int,
-    base_revision: str,
-    candidate_revision: str,
+    base_revision: str | None = None,
+    candidate_revision: str | None = None,
+    base_source: str | None = None,
+    candidate_source: str | None = None,
+    comparison: str = "observations",
 ) -> dict:
+    if any(
+        isinstance(p, dict) and p.get("schema_version") == 2
+        for p in (base, candidate)
+    ):
+        try:
+            from .stage_a_smoke_schema import compare_stage_a
+        except ImportError:
+            from stage_a_smoke_schema import compare_stage_a
+        return compare_stage_a(
+            base, candidate, expect_samples=expect_samples,
+            base_source=base_source, candidate_source=candidate_source,
+            comparison=comparison,
+        )
     report = _base_report(base_revision, candidate_revision)
     try:
         _need(
@@ -733,6 +749,9 @@ def _load(path: str, label: str) -> Any:
 
 def _print_report(report: dict) -> None:
     print(f"{report['verdict']} case={report['case']!r} samples={report['samples']}")
+    if report.get("schema_version") == 2:
+        print(f"  observed differences: {len(report.get('observations', []))}")
+        print(f"  limits: {report['limitations']}")
     for error in report["errors"]:
         print(f"  schema/identity: {error}")
     for item in report["mismatches"][:10]:
@@ -762,8 +781,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", required=True)
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--expect-samples", type=int, required=True)
-    parser.add_argument("--base-revision", required=True)
-    parser.add_argument("--candidate-revision", required=True)
+    parser.add_argument("--base-revision", help="required 40-hex identity for schema 1")
+    parser.add_argument(
+        "--candidate-revision", help="required 40-hex identity for schema 1"
+    )
+    parser.add_argument(
+        "--base-source", help="required 64-hex snapshot identity for schema 2"
+    )
+    parser.add_argument(
+        "--candidate-source", help="required 64-hex snapshot identity for schema 2"
+    )
+    parser.add_argument(
+        "--comparison", choices=("observations", "exact-replay"),
+        default="observations",
+        help="schema 2 only; schema 1 always retains strict comparison",
+    )
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args(argv)
     try:
@@ -773,6 +805,9 @@ def main(argv: list[str] | None = None) -> int:
             expect_samples=args.expect_samples,
             base_revision=args.base_revision,
             candidate_revision=args.candidate_revision,
+            base_source=args.base_source,
+            candidate_source=args.candidate_source,
+            comparison=args.comparison,
         )
     except Invalid as exc:
         report = _base_report(args.base_revision, args.candidate_revision)
@@ -788,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"INVALID: cannot write --json-out: {exc}", file=sys.stderr)
             return 2
     _print_report(report)
-    return {"PASS": 0, "FAIL": 1, "INVALID": 2}[report["verdict"]]
+    return {"PASS": 0, "OBSERVED": 0, "FAIL": 1, "INVALID": 2}[report["verdict"]]
 
 
 if __name__ == "__main__":

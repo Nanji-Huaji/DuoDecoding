@@ -25,7 +25,7 @@ import test_adaptive_tridecoding_policies as policies
 import test_adaptive_tridecoding_rounds as rounds
 import torch
 
-from src.baselines import Baselines, core, simulators
+from src.baselines import Baselines, cee, core, runtime, simulators
 
 ORACLE_PATH = Path(__file__).parent / "golden/cee_sd/baseline_b72a854.py.txt"
 ORACLE_SHA256 = "4dad0c0dc8583cb58ce19bb3096b5120cb143746c165e55fa0fd82a2122c62fe"
@@ -132,6 +132,10 @@ def _run(case, *, oracle=False):
             result = super()._consume(x)
             events.append(("consume", self.role, _plain(x), self.current_length))
             return result
+
+        def forward_context(self, prefix):
+            events.append(("forward_context", self.role, int(prefix.shape[1])))
+            return super().forward_context(prefix)
 
         def generate(self, prefix, gamma):
             events.append(("generate", self.role, int(gamma)))
@@ -280,12 +284,14 @@ def _run(case, *, oracle=False):
         for key in (*rounds.DIAGNOSTIC_ENV_KEYS, "COMM_TRACE"):
             stack.enter_context(patch.dict("os.environ", {key: ""}))
         stack.enter_context(patch.object(core, "KVCacheModel", Cache))
+        stack.enter_context(patch.object(runtime, "KVCacheModel", Cache))
         # Shared factory relocation must retain real accounting under both seams.
         stack.enter_context(patch.object(core, "CommunicationSimulator", Simulator))
         stack.enter_context(
             patch.object(simulators, "CommunicationSimulator", Simulator)
         )
         stack.enter_context(patch.object(core, "CUHLM", Gate))
+        stack.enter_context(patch.object(cee, "CUHLM", Gate))
         stack.enter_context(patch.object(torch.cuda, "Event", rounds._FakeCudaEvent))
         stack.enter_context(
             patch.object(torch.cuda, "current_stream", return_value=None)
@@ -316,9 +322,21 @@ def _run(case, *, oracle=False):
 
 
 def _snapshot(result):
+    # Replay cases use top-k proposals; every legacy generate marker is exactly
+    # one discarded draft/target verification sample, never a real proposal.
+    assert all(
+        event[1] in ("draft", "target") and event[2] == 1
+        for event in result.events if event[0] == "generate"
+    )
     return {
         "outputs": result.outputs,
-        "events": result.events,
+        # Only API entry markers differ: both still record actual consume events
+        # at the same stage boundary. Delta-law replay is orchestration coverage,
+        # not a claim that the obsolete discarded samples consume the same RNG.
+        "events": [
+            event for event in result.events
+            if event[0] not in ("generate", "forward_context")
+        ],
         "proposals": result.proposals,
         "caches": [
             (c.role, c.current_length, _plain(c.prob_history))
@@ -470,11 +488,13 @@ def test_opportunistic_gate_controls_draft_verify_not_final_target(
     verify_little,
 ):
     result = _run(_Case(mode="cee_sd_opportunistic", budget=1, uncertainty=uncertainty))
-    assert (
-        bool([e for e in result.events if e[:2] == ("generate", "draft")])
-        is verify_little
-    )
-    assert [e for e in result.events if e[:2] == ("generate", "target")]
+    draft_contexts = [
+        e for e in result.events if e[:2] == ("forward_context", "draft")
+    ]
+    # gamma1=1 always needs one ARP proposal forward; only the optional inner
+    # verification contributes a second public context call.
+    assert len(draft_contexts) == 1 + int(verify_little)
+    assert [e for e in result.events if e[:2] == ("forward_context", "target")]
     assert len(result.gates) == 1
     assert result.outputs[0][0] == [[0, 1]]
 
@@ -571,7 +591,7 @@ def test_eos_and_stop_sequence_exit_before_next_round_but_still_finalize(eos, ea
     assert result.simulators[0]._pending_bytes == {}
     if eos == 1:
         assert result.outputs[0][0] == [[0, 1]]
-        assert any(e[:2] == ("generate", "target") for e in result.events)
+        assert any(e[:2] == ("forward_context", "target") for e in result.events)
         eos_event = next(
             i for i, e in enumerate(result.events) if e[:2] == ("eos", True)
         )

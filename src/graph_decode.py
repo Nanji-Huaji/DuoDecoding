@@ -77,10 +77,132 @@ KVCacheModel 自动开启）；temp>0 的 norm 走 top-k/top-p 分支，保守�
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 import torch
 from transformers import StaticCache
+
+_UNSET = object()
+
+
+class _GraphCacheIdentity(NamedTuple):
+    """一次图缓存组的有效构造身份快照（值全部不可变，不持有调用方容器引用）。"""
+
+    caches: dict
+    graph_config: object
+    cache_key: object
+    builder_names: tuple[str, ...]
+
+
+def _cache_identity_attr(attr: str) -> str:
+    return f"{attr}__graph_cache_identity"
+
+
+def _freeze_identity(value: object) -> object:
+    """把构造身份递归冻结成可稳定比较的不可变快照。
+
+    只接受能表示配置的原始类型：None/bool/int/float/str/bytes、映射、序列与
+    集合；其它对象（模块、张量、lambda、torch.dtype 等）没有可靠的值语义，显式
+    拒绝 —— 否则只能退化成 `id()`/默认 `repr()`，每次新建的等价 lambda 或临时
+    对象都会被误判成“身份变了”，导致每轮重建。float 统一用 `repr()`（NaN 也能
+    稳定比较）。list 与 tuple 视为同一序列语义，避免 list↔tuple 的无谓重建。
+    """
+    if value is None:
+        return ("none", None)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        return ("float", repr(value))
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, bytes):
+        return ("bytes", value)
+    if isinstance(value, Mapping):
+        frozen_items = [
+            (_freeze_identity(key), _freeze_identity(item))
+            for key, item in value.items()
+        ]
+        frozen_items.sort(key=repr)
+        return ("mapping", tuple(frozen_items))
+    if isinstance(value, (list, tuple)):
+        return ("sequence", tuple(_freeze_identity(item) for item in value))
+    if isinstance(value, (set, frozenset)):
+        return (
+            "set",
+            tuple(sorted((_freeze_identity(item) for item in value), key=repr)),
+        )
+    raise TypeError(
+        "构造身份只接受 None/bool/int/float/str/bytes、映射、序列与集合，"
+        f"实际为 {type(value).__name__}；该类型没有稳定的值语义（不能把对象 "
+        "id/repr 当身份）。请把配置转成原始值，或显式传入可冻结的 cache_key"
+    )
+
+
+def _tensor_storage_identity(tensor: torch.Tensor) -> tuple:
+    """Inspect addresses and metadata only; never copy/read weight contents."""
+    if tensor.device.type == "meta" or tensor.layout != torch.strided:
+        raise ValueError("graph cache identity requires materialized strided weights")
+    storage = tensor.untyped_storage()
+    return (
+        id(tensor),
+        storage.data_ptr(),
+        storage.nbytes(),
+        str(tensor.device),
+        str(tensor.dtype),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.storage_offset(),
+    )
+
+
+def kv_cache_construction_key(
+    model,
+    *,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    vocab_size: int,
+    **cache_kwargs,
+) -> dict:
+    """Raw effective constructor identity for one KVCacheModel (no content hash).
+
+    Model identity alone misses ``model.to(...)`` and ``parameter.data = ...``:
+    graphs capture storage addresses, so inspect ALL parameter/buffer metadata,
+    not just the first parameter or a checkpoint path. In-place value updates
+    at the same address do not invalidate a graph. The cached model keeps object
+    identity alive; tensor identity also detects replacing a Parameter object.
+
+    Lightweight test doubles may omit parameters/buffers: record that explicitly,
+    retain object/device/dtype identity, and inspect an exposed embedding weight.
+    They still participate in sampling, vocabulary and capacity invalidation.
+    ``cache_kwargs`` are the actual per-cache kwargs, including max_length and
+    graph settings; omitted options use KVCacheModel's fixed defaults. Freezing
+    belongs solely to acquire_graph_caches, not to this metadata builder.
+    """
+    weights = {}
+    for kind in ("parameters", "buffers"):
+        iterator = getattr(model, kind, None)
+        weights[kind] = (
+            tuple(_tensor_storage_identity(tensor) for tensor in iterator())
+            if callable(iterator)
+            else None
+        )
+    embedding_getter = getattr(model, "get_input_embeddings", None)
+    embedding = embedding_getter() if callable(embedding_getter) else None
+    weight = getattr(embedding, "weight", None)
+    return {
+        "model": id(model),
+        "device": str(getattr(model, "device", None)),
+        "dtype": str(getattr(model, "dtype", None)),
+        "weights": weights,
+        "embedding": _tensor_storage_identity(weight) if weight is not None else None,
+        "sampling": (temperature, top_k, top_p),
+        "vocab_size": vocab_size,
+        "cache_kwargs": cache_kwargs,
+    }
 
 
 def graph_mode_cache_kwargs(args, cap: int) -> dict:
@@ -112,22 +234,101 @@ def graph_mode_cache_kwargs(args, cap: int) -> dict:
     }
 
 
-def acquire_graph_caches(holder, attr: str, graph_kw: dict, builders: dict) -> dict:
+def acquire_graph_caches(
+    holder,
+    attr: str,
+    graph_kw: Mapping | None,
+    builders: Mapping,
+    *,
+    cache_key: object = _UNSET,
+) -> dict:
     """图模式下跨样本复用缓存；eager 模式每次重建（历史行为逐位不变）。
 
     `builders` 是 {名字: 零参可调用}，只在未命中复用时调用。命中时只对已有缓存
     做原地 `reset_for_new_sample()`（StaticCache `zero_()`，地址不变 ⇒ 图不重
     捕获），避免每样本 ~534ms 的重捕获把收益吃光。`attr` 各方法独立，避免不同
     top-k 配置的缓存互相串用。
+
+    复用身份（A3）
+    --------------
+    图缓存的构造身份是三层信息的**不可变快照**：
+
+    1. `graph_kw` 的递归冻结值（dict/list/set 都展开，float 用 repr 处理 NaN），
+       **不保存调用方传入的 dict 引用** —— 调用方事后原地改配置不会污染已存
+       身份，下一次用等价配置仍能正确命中；
+    2. 显式 keyword-only `cache_key`（省略 = 不参与比较；显式传入 None 也当作
+       一个有效身份值）；
+    3. builder 的名字集合（排序后比较，与每次新建的 lambda 身份无关）。
+       命中还要求挂载的缓存对象仍是被记录的同一 dict。
+
+    任一不一致（图配置改变、显式身份改变、builder 集合改变、缓存属性被外部
+    替换、或旧版本只留下未记录身份的缓存）都**重建**缓存并重新捕获图，绝不
+    静默复用旧配置。eager（`graph_kw` 为空）保持每次新建、不读写复用状态；
+    只有等价身份才 reset。
+
+    调用者必须如何接线
+    ------------------
+    省略 `cache_key` 的旧四参调用仍然可用，但此时**只保证图配置一致**：若模型
+    身份（权重/路径/设备）、采样配置（temperature/top_k/top_p）、历史容量
+    （max_length / graph_len_budget / 验证档位）等发生变化而 `graph_kw` 恰好
+    不变，旧缓存会被复用 —— 这是兼容旧签名的已知缺口。各缓存入口（engine 的
+    `_acquire_autoregressive_cache` / `_acquire_speculative_caches`、baselines
+    的 `_acquire_three_layer_caches` / `_acquire_draft_target_caches`）已通过
+    `kv_cache_construction_key` 传入模型对象及权重存储元数据、采样、词表和
+    实际构造 kwargs。本函数仍不做模型内省，不比较 lambda 身份或模型路径。
     """
-    reused = getattr(holder, attr, None) if graph_kw else None
-    if reused is not None:
-        for cache in reused.values():
-            cache.reset_for_new_sample()
+    graph_config: Mapping = {} if graph_kw is None else graph_kw
+    if not isinstance(graph_config, Mapping):
+        raise TypeError(
+            "graph_kw 必须是 Mapping 或 None，"
+            f"实际为 {type(graph_config).__name__}"
+        )
+    if not isinstance(builders, Mapping):
+        raise TypeError(
+            f"builders 必须是 Mapping，实际为 {type(builders).__name__}"
+        )
+
+    if not graph_config:
+        # eager：每次新建，历史行为逐位不变（不挂属性、不 reset、不比较身份）
+        return {name: build() for name, build in builders.items()}
+
+    builder_names = tuple(sorted(builders))
+    frozen_graph = _freeze_identity(graph_config)
+    frozen_key = _UNSET if cache_key is _UNSET else _freeze_identity(cache_key)
+    record_attr = _cache_identity_attr(attr)
+    record = getattr(holder, record_attr, None)
+    reused = getattr(holder, attr, None)
+
+    if (
+        isinstance(record, _GraphCacheIdentity)
+        and record.graph_config == frozen_graph
+        and record.cache_key == frozen_key
+        and record.builder_names == builder_names
+        and reused is record.caches
+        and set(record.caches) == set(builder_names)
+    ):
+        for name, cache in reused.items():
+            reset = getattr(cache, "reset_for_new_sample", None)
+            if not callable(reset):
+                raise TypeError(
+                    f"缓存 {name!r} 不支持 reset_for_new_sample()，无法在图模式"
+                    "下跨样本复用；builder 应返回 KVCacheModel 等带该方法的对象"
+                )
+            reset()
         return reused
+
     caches = {name: build() for name, build in builders.items()}
-    if graph_kw:
-        setattr(holder, attr, caches)
+    setattr(holder, attr, caches)
+    setattr(
+        holder,
+        record_attr,
+        _GraphCacheIdentity(
+            caches=caches,
+            graph_config=frozen_graph,
+            cache_key=frozen_key,
+            builder_names=builder_names,
+        ),
+    )
     return caches
 
 

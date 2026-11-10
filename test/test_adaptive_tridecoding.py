@@ -133,6 +133,10 @@ class _FakeCache:
         self.hidden_states = torch.zeros(1, 1, 1)
         return self.prob_history[:, -1, :]
 
+    def forward_context(self, prefix):
+        assert prefix.shape[1] >= self.current_length
+        return self._forward_with_kvcache(prefix)
+
     def generate(self, prefix, gamma):
         x = prefix.clone()
         for _ in range(gamma):
@@ -220,7 +224,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
     def test_adaptive_tridecoding_uses_real_cee_verification_for_both_layers(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
@@ -253,7 +257,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
     def test_adaptive_tridecoding_uses_probe_cache_capacity_only_when_configured(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
@@ -278,7 +282,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         prefix = torch.tensor([[0]], dtype=torch.long)
         fake_comm = _FakeCommSimulator()
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator",
                 return_value=fake_comm,
@@ -314,7 +318,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
 
         self.instance.args.gamma1 = 2
         with (
-            patch("src.baselines.core.KVCacheModel", _ShortSecondStageCache),
+            patch("src.baselines.runtime.KVCacheModel", _ShortSecondStageCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator",
                 return_value=fake_comm,
@@ -394,7 +398,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
                         for key in DIAGNOSTIC_TRACE_FILES
                     },
                 ),
-                patch("src.baselines.core.KVCacheModel", _TraceCache),
+                patch("src.baselines.runtime.KVCacheModel", _TraceCache),
                 patch(
                     "src.baselines.simulators.CommunicationSimulator",
                     _FakeCommSimulator,
