@@ -1,7 +1,8 @@
 """Communication simulator factories extracted from core (S3a).
 
-The factories keep their historical signatures and bodies. ``baselines.core``
-privately re-exports them for compatibility; calls routed through the factories
+The factories preserve historical defaults; the tri factory also accepts an
+explicit trace mode. ``baselines.core`` privately re-exports them for compatibility;
+calls routed through the factories
 resolve ``CommunicationSimulator``/``PreciseCommunicationSimulator`` here, while
 direct constructor sites in core still resolve core's bindings.
 """
@@ -20,6 +21,7 @@ def _make_comm_simulator(
     edge_end: float,
     cloud_end: float,
     transfer_top_k: int | None = None,
+    mode: str | None = None,
 ) -> CommunicationSimulator:
     """按统一口径构造通信模拟器（H2，tri/cee 族）。
 
@@ -29,12 +31,11 @@ def _make_comm_simulator(
     ``_make_symmetric_comm_simulator``：同样的 precise 分支，但
     edge_end/cloud_end 固定为 inf。
 
-    仍保留显式块的只有 ``adaptive_tridecoding``（它在实参里读
-    comm_trace_mode，抽进工厂会改变指纹事件序）与两个 CUHLM 方法
-    （用 CUHLM 子类）。
+    CEE-SD 显式传入 ``mode``，让构造器初始化正确的 trace 来源；
+    两个 CUHLM 方法仍直接构造 CUHLM 子类。
 
     未给出的可选参数不传，让构造器用自身默认值（None / "static"），
-    与抽取前逐字等价。
+    既有调用的取值不变。
     """
     if precise:
         sim: CommunicationSimulator = PreciseCommunicationSimulator(
@@ -62,6 +63,8 @@ def _make_comm_simulator(
         }
         if transfer_top_k is not None:
             kwargs["transfer_top_k"] = transfer_top_k
+        if mode is not None:
+            kwargs["mode"] = mode
         sim = CommunicationSimulator(**kwargs)
     return sim
 

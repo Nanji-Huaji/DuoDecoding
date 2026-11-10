@@ -30,7 +30,11 @@ from .decoding_ops import (
     verify_draft_sequence,
 )
 from .decoding_types import AcceptanceResult, RollbackPlan, VerificationInputs
-from .graph_decode import acquire_graph_caches, graph_mode_cache_kwargs
+from .graph_decode import (
+    acquire_graph_caches,
+    graph_mode_cache_kwargs,
+    kv_cache_construction_key,
+)
 from .model_gpu import KVCacheModel
 from .mode_features import get_mode_spec
 from .proposal_utils import apply_transfer_top_k_cap, stage_topk_proposal_history
@@ -96,7 +100,10 @@ attn_impl = "sdpa" if not flash_attn_available else "flash_attention_2"
 INT_SIZE = 4
 
 
-class Decoding(Register, ABC):
+from .dual_decoding import SpeculativeDecodingMixin as _SpeculativeDecodingMixin
+
+
+class Decoding(_SpeculativeDecodingMixin, Register, ABC):
     def __init__(
         self,
         args,
@@ -709,6 +716,14 @@ class Decoding(Register, ABC):
                     **graph_kw,
                 )
             },
+            cache_key=kv_cache_construction_key(
+                model,
+                temperature=self.args.temp,
+                top_k=self.args.top_k,
+                top_p=self.args.top_p,
+                vocab_size=self.vocab_size,
+                **graph_kw,
+            ) if graph_kw else None,
         )["model"]
 
     @Register.register_decoding("large")
@@ -816,222 +831,25 @@ class Decoding(Register, ABC):
                     self.args.top_p,
                 ),
             },
-        )
-
-    @Register.register_decoding("sd")
-    @torch.inference_mode()
-    def speculative_decoding(
-        self,
-        prefix,
-        transfer_top_k: int | None = 300,
-        use_early_stopping: bool = False,
-        stop_sequences: Optional[List[str]] = None,
-        **kwargs,
-    ) -> Tuple[torch.Tensor, DecodingMetrics]:
-        max_tokens = prefix.shape[1] + self.args.max_tokens
-
-        draft_device = self.draft_model.device
-        target_device = self.target_model.device
-
-        # CUDA Graph：只有草稿缓存跑 γ 步多 token 前向（generate(prefix, γ)），是
-        # 图的收益点；target 每步只做单 token 前向，开图无收益反而多占显存。
-        # B19：此前只透了 use_cuda_graph —— 没给验证图档位/桶长，也没跨样本复用
-        # ⇒ 多 token 前向仍走 eager，且每样本重捕获。
-        graph_kw = graph_mode_cache_kwargs(
-            self.args, cap=int(getattr(self.args, "gamma", 5)) + 4
-        )
-        caches = self._acquire_speculative_caches(
-            "_speculative_decoding_caches", graph_kw, self.args.top_k
-        )
-        approx_model_cache = caches["draft"]
-        target_model_cache = caches["target"]
-        approx_model_cache.vocab_size = int(self.vocab_size)
-        target_model_cache.vocab_size = int(self.vocab_size)
-
-        draft_forward_times = 0
-        target_forward_times = 0
-        total_accepted_tokens = 0
-        total_drafted_tokens = 0
-
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        current_tokens = prefix.clone()
-
-        loop_idx = 0
-
-        start_event.record(stream=torch.cuda.current_stream())
-
-        while prefix.shape[1] < max_tokens:
-            loop_idx += 1
-
-            prefix_len = prefix.shape[1]
-
-            draft_kvcache_length = approx_model_cache.current_length
-            target_kvcache_length = target_model_cache.current_length
-
-            # 确保不会生成超过max_tokens的token
-            remaining_tokens = max_tokens - prefix_len
-            if remaining_tokens <= 0:
-                break
-
-            # 调整gamma以不超过剩余的token数量
-            current_gamma = min(
-                self.args.gamma, remaining_tokens - 1
-            )  # 减1是为了留给最后的采样token
-            if current_gamma <= 0:
-                # 如果只剩1个token，直接用target model生成
-                _ = target_model_cache.generate(prefix.to(target_device), 1)
-                target_forward_times += 1
-                if self.accelerator.is_main_process:
-                    self.target_forward_times += 1
-
-                t = sample(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size]
-                ).to(draft_device)
-                prefix = torch.cat((prefix, t), dim=1)
-                self.num_acc_tokens.append(1)
-                break
-
-            proposal_top_k = (
-                transfer_top_k
-                if transfer_top_k is not None and transfer_top_k > 0
-                else None
-            )
-            rebuilt_draft_probs = None
-            rebuilt_draft_meta = None
-            if proposal_top_k is not None:
-                x, rebuilt_draft_probs = approx_model_cache.generate_with_rebuilt_topk(
-                    prefix.to(draft_device),
-                    current_gamma,
-                    proposal_top_k,
-                )
-            else:
-                x = approx_model_cache.generate(prefix.to(draft_device), current_gamma)
-            draft_forward_times += current_gamma
-            total_drafted_tokens += current_gamma
-
-            # Verification-time cache invariant: approx has forwarded states up to
-            # x[:, :-1], while target forwards the full x and ends up one step ahead.
-            _ = target_model_cache.generate(x.to(target_device), 1)
-            target_forward_times += 1
-
-            if self.accelerator.is_main_process:
-                self.draft_forward_times += current_gamma
-                self.target_forward_times += 1
-
-            verify_kwargs = {
-                "draft_model_cache": approx_model_cache,
-                "target_model_cache": target_model_cache,
-                "x": x,
-                "prefix_len": prefix_len,
-                "gamma": current_gamma,
-                "transfer_mode": "none",
-                "send_reject_message": False,
-                "draft_probs_override": (
-                    None
-                    if rebuilt_draft_probs is None
-                    else torch.cat(
-                        (
-                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
-                            rebuilt_draft_probs,
-                        ),
-                        dim=1,
-                    )
+            cache_key={
+                "draft": kv_cache_construction_key(
+                    self.draft_model,
+                    temperature=self.args.temp,
+                    top_k=top_k,
+                    top_p=self.args.top_p,
+                    vocab_size=self.vocab_size,
+                    **graph_kw,
                 ),
-            }
-            draft_topk_history = stage_topk_proposal_history(
-                rebuilt_draft_meta,
-                current_gamma,
-            )
-            if draft_topk_history is not None:
-                verify_kwargs["draft_topk_history"] = draft_topk_history
-            this_step_accepted_tokens, n = verify_draft_sequence(**verify_kwargs)
-            _log_sd_alignment_snapshot(
-                "verify_exit",
-                prefix_len,
-                approx_model_cache,
-                target_model_cache,
-                x_len=x.shape[1],
-                gamma=current_gamma,
-                note=f"accepted={this_step_accepted_tokens}, n={n}",
-            )
-
-            total_accepted_tokens += this_step_accepted_tokens
-
-            self.num_acc_tokens.append(this_step_accepted_tokens)
-
-            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-
-            # 检查是否还有空间添加一个token（在接受序列过长时提前截断）
-            if n + 1 >= max_tokens:
-                prefix = x[:, :max_tokens]
-                break
-
-            prefix = finalize_verification(
-                approx_model_cache=approx_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=current_gamma,
-                n=n,
-                draft_probs_override=(
-                    None
-                    if rebuilt_draft_probs is None
-                    else torch.cat(
-                        (
-                            approx_model_cache.prob_history[:, : prefix_len - 1, :],
-                            rebuilt_draft_probs,
-                        ),
-                        dim=1,
-                    )
+                "target": kv_cache_construction_key(
+                    self.target_model,
+                    temperature=self.args.temp,
+                    top_k=top_k,
+                    top_p=self.args.top_p,
+                    vocab_size=self.vocab_size,
                 ),
-                draft_topk_history=stage_topk_proposal_history(
-                    rebuilt_draft_meta,
-                    current_gamma,
-                ),
-            )
-            _log_sd_alignment_snapshot(
-                "finalize_exit",
-                prefix.shape[1],
-                approx_model_cache,
-                target_model_cache,
-                x_len=prefix.shape[1],
-                gamma=current_gamma,
-            )
-
-            if use_early_stopping and self._check_stopping_criteria(
-                prefix, stop_sequences, prompt_len=prefix_len
-            ):
-                break
-
-        end_event.record(stream=torch.cuda.current_stream())
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event) / 1000.0
-
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-
-        batch_delay = self.comm_env.batch_delay
-        queuing_time = target_forward_times * batch_delay
-        wall_time = elapsed_time + queuing_time
-
-        throughput = generated_tokens / wall_time if wall_time > 0 else 0
-
-        metrics = get_empty_metrics()
-        metrics["draft_forward_times"] = draft_forward_times
-        metrics["target_forward_times"] = target_forward_times
-        metrics["generated_tokens"] = generated_tokens
-        metrics["draft_generated_tokens"] = total_drafted_tokens
-        metrics["draft_accepted_tokens"] = total_accepted_tokens
-        metrics["wall_time"] = wall_time
-        metrics["throughput"] = throughput
-        metrics["loop_times"] = loop_idx
-        metrics["queuing_time"] = queuing_time
-        metrics["each_loop_draft_tokens"] = (
-            total_drafted_tokens / loop_idx if loop_idx > 0 else 0
+            } if graph_kw else None,
         )
 
-        return prefix, metrics
 
     @Register.register_decoding("speculative_decoding_with_bandwidth")
     @torch.inference_mode()

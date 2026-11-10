@@ -178,7 +178,7 @@ class TemperatureSamplingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rebuild_topk_probs(probs, top_k=2, strategy="tail")
 
-    def test_compute_acceptance_result_zero_draft_probability_currently_accepts(self):
+    def test_compute_acceptance_result_zero_draft_probability_is_invalid(self):
         verification_inputs = VerificationInputs(
             selected_draft_p=torch.tensor([[0.0]], dtype=torch.float),
             draft_probs_batch=torch.tensor([[[1.0, 0.0]]], dtype=torch.float),
@@ -191,18 +191,17 @@ class TemperatureSamplingTests(unittest.TestCase):
             max_idx=1,
         )
 
-        result = compute_acceptance_result(
-            verification_inputs,
-            r=torch.tensor([[0.5]], dtype=torch.float),
-        )
+        for invalid in (0.0, -0.1, float("nan"), float("inf")):
+            verification_inputs.selected_draft_p.fill_(invalid)
+            with patch("torch.rand", side_effect=AssertionError("RNG before validation")):
+                with self.assertRaisesRegex(ValueError, "positive and finite"):
+                    compute_acceptance_result(verification_inputs)
 
-        # Current implementation computes target/draft directly, so division by zero
-        # yields inf and the token is treated as accepted.
-        self.assertEqual(int(result.accepted_count.item()), 1)
-        self.assertEqual(
-            materialize_acceptance(verification_inputs, result), (1, 1, True)
-        )
-        self.assertTrue(torch.equal(result.accept_mask, torch.tensor([[True]])))
+        # An impossible target token must be rejected even at the RNG boundary 0.
+        verification_inputs.selected_draft_p.fill_(0.5)
+        verification_inputs.target_probs_batch[:] = torch.tensor([[[1.0, 0.0]]])
+        result = compute_acceptance_result(verification_inputs, r=torch.zeros(1, 1))
+        self.assertEqual(int(result.accepted_count.item()), 0)
 
     def test_sample_reject_token_falls_back_when_residual_mass_is_zero(self):
         target_probs = torch.tensor([[0.2, 0.3, 0.5]], dtype=torch.float)

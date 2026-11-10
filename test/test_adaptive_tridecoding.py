@@ -121,31 +121,29 @@ class _FakeCache:
         _FakeCache.instances.append(self)
 
     def _set_uniform_history(self, x):
-        steps = max(x.shape[1], 1)
-        self.prob_history = torch.zeros((1, steps, self.vocab_size), dtype=torch.float)
+        # A row exists only after its context token was actually forwarded.
+        self.current_length = x.shape[1]
+        self.prob_history = torch.zeros(
+            (1, self.current_length, self.vocab_size), dtype=torch.float
+        )
         self.prob_history[:, :, 1] = 1.0
 
     def _forward_with_kvcache(self, x):
-        self.current_length = x.shape[1] + 1
+        self._set_uniform_history(x)
         self.hidden_states = torch.zeros(1, 1, 1)
-        probs = torch.tensor([[0.0, 1.0, 0.0, 0.0]], dtype=torch.float)
-        if self.prob_history is None:
-            self.prob_history = probs.unsqueeze(1)
-        else:
-            self.prob_history = torch.cat(
-                (self.prob_history, probs.unsqueeze(1)), dim=1
-            )
-        return probs
+        return self.prob_history[:, -1, :]
+
+    def forward_context(self, prefix):
+        assert prefix.shape[1] >= self.current_length
+        return self._forward_with_kvcache(prefix)
 
     def generate(self, prefix, gamma):
-        self.current_length = prefix.shape[1] + gamma
-        if gamma > 0:
-            extra = torch.ones(
-                (prefix.shape[0], gamma), dtype=prefix.dtype, device=prefix.device
-            )
-            prefix = torch.cat((prefix, extra), dim=1)
-        self._set_uniform_history(prefix)
-        return prefix
+        x = prefix.clone()
+        for _ in range(gamma):
+            self._forward_with_kvcache(x)
+            extra = torch.ones((x.shape[0], 1), dtype=x.dtype, device=x.device)
+            x = torch.cat((x, extra), dim=1)
+        return x
 
     def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
         # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
@@ -166,19 +164,13 @@ class _FakeCache:
             rebuilt_rows.append(rebuilt_q.unsqueeze(1))
             next_tok = sample(rebuilt_q)
             x = torch.cat((x, next_tok), dim=1)
-        prompt_steps = max(prefix.shape[1] - 1, 0)
-        if prompt_steps > 0:
-            prompt_history = torch.zeros(
-                (prefix.shape[0], prompt_steps, self.vocab_size), dtype=torch.float
-            )
-            prompt_history[:, :, 1] = 1.0
-            self.prob_history = torch.cat((prompt_history, self.prob_history), dim=1)
-        self._set_uniform_history(x)
         rebuilt = None if not rebuilt_rows else torch.cat(rebuilt_rows, dim=1)
         return x, rebuilt
 
     def rollback(self, end_pos):
-        self.current_length = end_pos
+        self.current_length = min(end_pos, self.current_length)
+        if self.prob_history is not None:
+            self.prob_history = self.prob_history[:, : self.current_length, :]
         self.rollback_calls.append(end_pos)
 
 
@@ -229,87 +221,45 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         self.instance.rl_adapter = None
         self.instance.little_rl_adapter = None
 
-    def test_adaptive_tridecoding_uses_stage_verification_helper_for_both_layers(self):
+    def test_adaptive_tridecoding_uses_real_cee_verification_for_both_layers(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
-        stage_calls = []
-
-        def fake_stage_verify(
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            *,
-            output_device,
-            draft_probs_override=None,
-            draft_topk_history=None,
-        ):
-            stage_calls.append(
-                {
-                    "proposer": proposer_cache.model.kind,
-                    "verifier": verifier_cache.model.kind,
-                    "prefix_len": prefix_len,
-                    "gamma": gamma,
-                }
-            )
-            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
-            return gamma, prefix_len + gamma - 1, token, True
-
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
+                "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
+            patch.object(
+                self.instance,
+                "_cee_verify_proposal",
+                wraps=self.instance._cee_verify_proposal,
+            ) as verify,
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             output, metrics = self.instance.adaptive_tridecoding(prefix)
-
-        self.assertEqual(output.shape[0], 1)
-        self.assertGreater(output.shape[1], prefix.shape[1])
+        self.assertEqual(output.tolist(), [[0, 1]])
+        self.assertEqual(metrics["generated_tokens"], 1)
         self.assertEqual(metrics["little_accepted_tokens"], 1)
-        self.assertGreaterEqual(metrics["draft_accepted_tokens"], 1)
-        self.assertEqual(len(stage_calls), 2)
-        self.assertEqual(
-            stage_calls[0],
-            {
-                "proposer": "little",
-                "verifier": "draft",
-                "prefix_len": 1,
-                "gamma": 1,
-            },
-        )
-        self.assertEqual(stage_calls[1]["proposer"], "draft")
-        self.assertEqual(stage_calls[1]["verifier"], "target")
-        self.assertEqual(stage_calls[1]["prefix_len"], 1)
-        self.assertGreaterEqual(stage_calls[1]["gamma"], 1)
+        self.assertEqual(metrics["draft_accepted_tokens"], 3)
+        self.assertEqual(len(verify.call_args_list), 2)
+        calls = [
+            (
+                c.args[1].model.kind,
+                c.args[2].model.kind,
+                c.args[0].prefix_len,
+                c.args[0].count,
+            )
+            for c in verify.call_args_list
+        ]
+        self.assertEqual(calls, [("little", "draft", 1, 1), ("draft", "target", 1, 3)])
 
     def test_adaptive_tridecoding_uses_probe_cache_capacity_only_when_configured(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
-
-        def fake_stage_verify(
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            *,
-            output_device,
-            draft_probs_override=None,
-            draft_topk_history=None,
-        ):
-            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
-            return gamma, prefix_len + gamma - 1, token, True
-
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
+                "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
@@ -317,135 +267,76 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         ):
             self.instance.adaptive_tridecoding(prefix)
             default_constructor_kwargs = [
-                cache.constructor_kwargs for cache in _FakeCache.instances
+                c.constructor_kwargs for c in _FakeCache.instances
             ]
             _FakeCache.instances = []
             self.instance.args.probe_cache_max_length = 7
             self.instance.adaptive_tridecoding(prefix)
-
         self.assertEqual(default_constructor_kwargs, [{}, {}, {}])
         self.assertEqual(
-            [cache.constructor_kwargs for cache in _FakeCache.instances],
+            [c.constructor_kwargs for c in _FakeCache.instances],
             [{"max_length": 7}, {"max_length": 7}, {"max_length": 7}],
         )
 
     def test_adaptive_tridecoding_transfers_vectorized_payloads(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
         fake_comm = _FakeCommSimulator()
-
-        def fake_stage_verify(
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            *,
-            output_device,
-            draft_probs_override=None,
-            draft_topk_history=None,
-        ):
-            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
-            return gamma, prefix_len + gamma - 1, token, True
-
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", return_value=fake_comm),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
             patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
+                "src.baselines.simulators.CommunicationSimulator",
+                return_value=fake_comm,
             ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
             self.instance.adaptive_tridecoding(prefix)
-
-        payload_calls = [
-            call for call in fake_comm.transfer_calls if call["probs"] is not None
-        ]
+        payload_calls = [c for c in fake_comm.transfer_calls if c["probs"] is not None]
         self.assertEqual(len(payload_calls), 2)
+        for call, link, tokens in zip(
+            payload_calls, ("edge_end", "edge_cloud"), (1, 3), strict=True
+        ):
+            self.assertEqual(call["link_type"], link)
+            self.assertTrue(
+                torch.equal(call["tokens"], torch.ones((1, tokens), dtype=torch.long))
+            )
+            self.assertTrue(torch.equal(call["probs"], torch.ones((1, tokens))))
 
-        edge_end_payload = payload_calls[0]
-        self.assertEqual(edge_end_payload["link_type"], "edge_end")
-        self.assertTrue(torch.equal(edge_end_payload["tokens"], torch.tensor([[1]])))
-        self.assertTrue(torch.equal(edge_end_payload["probs"], torch.tensor([[1.0]])))
-
-        edge_cloud_payload = payload_calls[1]
-        self.assertEqual(edge_cloud_payload["link_type"], "edge_cloud")
-        self.assertTrue(
-            torch.equal(edge_cloud_payload["tokens"], torch.tensor([[1, 1, 1]]))
-        )
-        self.assertTrue(
-            torch.equal(edge_cloud_payload["probs"], torch.tensor([[1.0, 1.0, 1.0]]))
-        )
-
-    def test_adaptive_tridecoding_second_stage_payload_tolerates_short_history(self):
+    def test_adaptive_tridecoding_rejects_incomplete_rebuilt_rows_before_payload(self):
         prefix = torch.tensor([[0]], dtype=torch.long)
         fake_comm = _FakeCommSimulator()
 
         class _ShortSecondStageCache(_FakeCache):
-            def generate_with_rebuilt_topk_metadata(self, prefix, gamma, proposal_top_k):
-                # 对齐 KVCacheModel 新协议：返回 (x, rebuilt_probs, meta)；
-                # fake 不产 top-k 元数据，meta=None（stage_topk_proposal_history 透传）
-                x, rebuilt_probs = self.generate_with_rebuilt_topk(
-                    prefix, gamma, proposal_top_k
-                )
-                return x, rebuilt_probs, None
-
             def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
                 x, rebuilt = super().generate_with_rebuilt_topk(
                     prefix, gamma, proposal_top_k
                 )
-                if (
-                    self.model.kind == "draft"
-                    and rebuilt is not None
-                    and rebuilt.shape[1] > 0
-                ):
+                if self.model.kind == "draft":
                     rebuilt = rebuilt[:, :1, :]
                 return x, rebuilt
 
-        def fake_stage_verify(
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            *,
-            output_device,
-            draft_probs_override=None,
-            draft_topk_history=None,
-        ):
-            token = torch.tensor([[1]], dtype=torch.long, device=output_device)
-            accepted = min(gamma, max(x.shape[1] - prefix_len, 0))
-            return accepted, prefix_len + accepted - 1, token, True
-
+        self.instance.args.gamma1 = 2
         with (
-            patch("src.baselines.core.KVCacheModel", _ShortSecondStageCache),
-            patch("src.baselines.core.CommunicationSimulator", return_value=fake_comm),
+            patch("src.baselines.runtime.KVCacheModel", _ShortSecondStageCache),
             patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
+                "src.baselines.simulators.CommunicationSimulator",
+                return_value=fake_comm,
             ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
-            self.instance.adaptive_tridecoding(prefix)
-
-        payload_calls = [
-            call
-            for call in fake_comm.transfer_calls
-            if call["link_type"] == "edge_cloud" and call["probs"] is not None
-        ]
-        self.assertEqual(len(payload_calls), 1)
-        self.assertEqual(payload_calls[0]["tokens"].shape[0], 1)
-        self.assertEqual(payload_calls[0]["probs"].shape[0], 1)
-        self.assertEqual(
-            payload_calls[0]["tokens"].shape[1],
-            payload_calls[0]["probs"].shape[1],
+            with self.assertRaisesRegex(ValueError, "proposal"):
+                self.instance.adaptive_tridecoding(prefix, _ablation="static")
+        # Incomplete proposals cannot silently pass with truncated payloads.
+        self.assertFalse(
+            any(c["link_type"] == "edge_cloud" for c in fake_comm.transfer_calls)
         )
-        self.assertLessEqual(payload_calls[0]["tokens"].shape[1], 3)
-
+        little_payload = [c for c in fake_comm.transfer_calls if c["probs"] is not None]
+        self.assertEqual(len(little_payload), 1)
+        self.assertEqual(little_payload[0]["link_type"], "edge_end")
+        self.assertEqual(little_payload[0]["tokens"].tolist(), [[1]])
 
     def _run_diagnostic_traces(
         self,
@@ -470,44 +361,24 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             raise ValueError(f"未知诊断开关: {unknown}")
 
         class _TraceCache(_FakeCache):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self.logits_history = None
-
-            def _forward_with_kvcache(self, x):
-                # The original one-round fake does not fill a longer prefix.
-                self._set_uniform_history(x)
-                return super()._forward_with_kvcache(x)
-
-        def fake_stage_verify(
-            *, proposer_cache, verifier_cache, x, prefix_len, gamma,
-            output_device, **kwargs,
-        ):
-            if verifier_cache.model.kind == "target":
-                # Distinct caches and adjacent rows make swapped caches and
-                # prefix_len vs prefix_len-1 errors observable in JSONL.
-                rows = x.shape[1] + 1
-                proposer_cache.prob_history = torch.tensor(
-                    [[[0.25, 0.125, 0.125, 0.5]]] * rows
-                ).transpose(0, 1)
-                verifier_cache.prob_history = torch.tensor(
-                    [[[0.5, 0.125, 0.25, 0.125]]] * rows
-                ).transpose(0, 1)
-                proposer_cache.prob_history[0, prefix_len - 1] = torch.tensor(
-                    [0.125, 0.5, 0.25, 0.125]
-                )
-                verifier_cache.prob_history[0, prefix_len - 1] = torch.tensor(
-                    [0.125, 0.25, 0.5, 0.125]
-                )
-                proposer_cache.logits_history = (
-                    None if rebuilt else proposer_cache.prob_history.log()
-                )
-            return (
-                gamma,
-                prefix_len + gamma - 1,
-                torch.tensor([[1]], dtype=torch.long, device=output_device),
-                True,
-            )
+            def _set_uniform_history(self, x):
+                super()._set_uniform_history(x)
+                # Literal hardware rows, not a verifier stub. Adjacent rows and
+                # caches differ, making wrong-cache/context diagnostics observable.
+                defaults = {
+                    "draft": (0.25, 0.125, 0.125, 0.5),
+                    "target": (0.5, 0.125, 0.25, 0.125),
+                }
+                anchors = {
+                    "draft": (0.125, 0.5, 0.25, 0.125),
+                    "target": (0.125, 0.25, 0.5, 0.125),
+                }
+                role = self.model.kind
+                if role in defaults:
+                    for position in range(self.current_length):
+                        values = anchors[role] if position % 4 == 0 else defaults[role]
+                        self.prob_history[0, position] = torch.tensor(values)
+                self.logits_history = None if rebuilt else self.prob_history.log()
 
         self.instance.args.max_tokens = 8
         with ExitStack() as stack:
@@ -517,8 +388,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
             if unavailable_path:
                 base = base / "missing"
             paths = {
-                key: base / filename
-                for key, filename in DIAGNOSTIC_TRACE_FILES.items()
+                key: base / filename for key, filename in DIAGNOSTIC_TRACE_FILES.items()
             }
             with (
                 patch.dict(
@@ -528,14 +398,28 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
                         for key in DIAGNOSTIC_TRACE_FILES
                     },
                 ),
-                patch("src.baselines.core.KVCacheModel", _TraceCache),
-                patch("src.baselines.core.CommunicationSimulator", _FakeCommSimulator),
+                patch("src.baselines.runtime.KVCacheModel", _TraceCache),
                 patch(
-                    "src.baselines.core.resolve_stage_verification",
-                    side_effect=fake_stage_verify,
+                    "src.baselines.simulators.CommunicationSimulator",
+                    _FakeCommSimulator,
+                ),
+                # Deterministic RNG outcomes; real strict verification and cache
+                # rollback remain active, with positive selected target support.
+                patch(
+                    "torch.rand", side_effect=lambda size, **kw: torch.zeros(size, **kw)
+                ),
+                patch(
+                    "torch.multinomial",
+                    side_effect=lambda probs, num_samples=1, **kw: torch.ones(
+                        (probs.shape[0], num_samples),
+                        dtype=torch.long,
+                        device=probs.device,
+                    ),
                 ),
                 patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-                patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
+                patch(
+                    "src.baselines.core.torch.cuda.current_stream", return_value=None
+                ),
                 patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
             ):
                 output, metrics = self.instance.adaptive_tridecoding(
@@ -547,10 +431,7 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
                     self.assertFalse(paths[key].exists(), msg=key)
                 return output, metrics, [], [], []
             traces = {
-                key: [
-                    json.loads(row)
-                    for row in paths[key].read_text().splitlines()
-                ]
+                key: [json.loads(row) for row in paths[key].read_text().splitlines()]
                 for key in enabled
             }
         return (
@@ -565,9 +446,9 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
         _, _, cache, calib, topk = self._run_diagnostic_traces()
         self.assertEqual(cache, [
             {"where": "pre_verify", "x_len": 4, "prefix_len": 1,
-             "target_cache_len": 5, "draft_cache_len": 4, "actual_gamma1": 1},
+             "target_cache_len": 4, "draft_cache_len": 3, "actual_gamma1": 1},
             {"where": "pre_verify", "x_len": 8, "prefix_len": 5,
-             "target_cache_len": 9, "draft_cache_len": 8, "actual_gamma1": 1},
+             "target_cache_len": 8, "draft_cache_len": 7, "actual_gamma1": 1},
         ])
         self.assertEqual(calib, [
             {"arp": 1.0, "tok": 1, "pd": 0.5, "pt": 0.25,
@@ -611,16 +492,16 @@ class AdaptiveTriDecodingTests(unittest.TestCase):
                     "where": "pre_verify",
                     "x_len": 4,
                     "prefix_len": 1,
-                    "target_cache_len": 5,
-                    "draft_cache_len": 4,
+                    "target_cache_len": 4,
+                    "draft_cache_len": 3,
                     "actual_gamma1": 1,
                 },
                 {
                     "where": "pre_verify",
                     "x_len": 8,
                     "prefix_len": 5,
-                    "target_cache_len": 9,
-                    "draft_cache_len": 8,
+                    "target_cache_len": 8,
+                    "draft_cache_len": 7,
                     "actual_gamma1": 1,
                 },
             ],

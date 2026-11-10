@@ -11,7 +11,7 @@ def top_k_top_p_filter(logits: torch.Tensor, top_k: int = 0, top_p: float = 0.0)
     """
 
     Args:
-        logits (torch.Tensor): Tensor with shape (batch, vocab) or (batch, seq_len, vocab)
+        logits (torch.Tensor): Shape (batch, vocab) or (batch, seq_len, vocab)
         top_k (int, optional): top_k. Defaults to 0.
         top_p (float, optional): top_p. Defaults to 0.0.
 
@@ -69,7 +69,13 @@ def norm_logits(
     return probs
 
 
-def sample(probs: torch.Tensor, num_samples: int = 1):
+def sampling_weights(probs: torch.Tensor) -> torch.Tensor:
+    """Return exactly the float32 weights passed to multinomial, without RNG.
+
+    This is the existing sampler preprocessing, including its invalid-row
+    fallback. Strict verification validates raw rows before using this helper.
+    The categorical law is weights / sum(weights), not a low-precision input row.
+    """
     probs = probs.float()
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
     probs = probs.clamp_min(0.0)
@@ -88,8 +94,11 @@ def sample(probs: torch.Tensor, num_samples: int = 1):
     fallback = torch.zeros_like(probs).scatter_(
         -1, probs.argmax(dim=-1, keepdim=True), 1.0
     )
-    probs = torch.where(probs_sum > 0, normalized, fallback)
+    return torch.where(probs_sum > 0, normalized, fallback)
 
+
+def sample(probs: torch.Tensor, num_samples: int = 1):
+    probs = sampling_weights(probs)
     idx_next = torch.multinomial(probs, num_samples=num_samples)
     return idx_next
 

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import torch
 
 from src.baselines import Baselines, _finalize_cuhlm_verification
-from src.communication import cuhlm_uplink_payload_bytes
+from src.communication import CommunicationSimulator, cuhlm_uplink_payload_bytes
 from src.utils import rebuild_topk_uniform_probs, sample
 
 
@@ -126,6 +126,12 @@ class _FakeCache:
             )
         return probs
 
+    def forward_context(self, prefix):
+        assert prefix.shape[1] >= self.current_length
+        self._set_uniform_history(prefix)
+        self.current_length = prefix.shape[1]
+        return self.prob_history[:, -1, :]
+
     def generate(self, prefix, gamma):
         self.current_length = prefix.shape[1] + gamma
         if gamma > 0:
@@ -174,6 +180,61 @@ class _FakeCache:
     def rollback(self, end_pos):
         self.current_length = end_pos
         self.rollback_calls.append(end_pos)
+
+
+class _CeeForwardedCache(_FakeCache):
+    """CEE-only cache: sampled tokens have not yet produced history rows."""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        type(self).instances.append(self)
+
+    def _forward_with_kvcache(self, prefix):
+        self._set_uniform_history(prefix)
+        self.current_length = prefix.shape[1]
+        return self.prob_history[:, -1, :]
+
+    def generate(self, prefix, gamma):
+        output = prefix.clone()
+        for _ in range(gamma):
+            probabilities = self._forward_with_kvcache(output)
+            output = torch.cat((output, sample(probabilities)), dim=1)
+        return output
+
+    def generate_with_rebuilt_topk(self, prefix, gamma, proposal_top_k):
+        output = prefix.clone()
+        rows = []
+        for _ in range(gamma):
+            probabilities = rebuild_topk_uniform_probs(
+                self._forward_with_kvcache(output), proposal_top_k
+            )
+            rows.append(probabilities.unsqueeze(1))
+            output = torch.cat((output, sample(probabilities)), dim=1)
+        return output, torch.cat(rows, dim=1) if rows else None
+
+    def rollback(self, end_pos):
+        self.rollback_calls.append(end_pos)
+        self.current_length = min(end_pos, self.current_length)
+        if self.prob_history is not None:
+            self.prob_history = self.prob_history[:, : self.current_length, :]
+            self.logits_history = self.logits_history[:, : self.current_length, :]
+
+
+class _CeeCommunicationSimulator(CommunicationSimulator):
+    """Real CEE billing with the requested payloads retained for assertions."""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.payloads = []
+        type(self).instances.append(self)
+
+    def simulate_transfer(self, size, link_type, *args, **kwargs):
+        self.payloads.append((link_type, size))
+        return super().simulate_transfer(size, link_type, *args, **kwargs)
 
 
 class _FakeAdapter:
@@ -282,8 +343,10 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
+            patch(
+                "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
+            ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -328,8 +391,10 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
+            patch(
+                "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
+            ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -371,8 +436,10 @@ class CeeRefactorTests(unittest.TestCase):
             )
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
+            patch(
+                "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
+            ),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -613,135 +680,99 @@ class CeeRefactorTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(little_cache.rollback_calls), 1)
 
-    def test_cee_sd_opportunistic_skips_first_stage_draft_verify_when_no_transfer(self):
+    def _assert_cee_opportunistic(self, should_transfer):
         instance = self._make_instance("cee_sd_opportunistic")
+        instance.args.max_tokens = 4 if should_transfer else 3
         prefix = torch.tensor([[0]], dtype=torch.long)
-        stage_calls = []
+        _CeeForwardedCache.instances = []
+        _CeeCommunicationSimulator.instances = []
 
-        def fake_stage_verify(
-            *,
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            output_device,
-            draft_probs_override=None,
-            draft_probs_batch_override=None,
-            draft_topk_history=None,
-        ):
-            stage_calls.append(
-                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
-            )
-            return (
-                gamma,
-                prefix_len + gamma - 1,
-                torch.tensor([[1]], dtype=torch.long),
-                True,
-            )
-
-        class _NoTransferComm(_FakeCommSimulator):
+        class _UncertaintyGate(_FakeCommSimulator):
             def determine_transfer_strategy(self, uncertainty, current_probs):
-                return False, 0
+                return should_transfer, 2 if should_transfer else 0
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _NoTransferComm),
-            patch("src.baselines.core.PreciseCommunicationSimulator", _NoTransferComm),
-            patch("src.baselines.core.CUHLM", _NoTransferComm),
-            patch("src.baselines.core.PreciseCUHLM", _NoTransferComm),
+            patch("src.baselines.runtime.KVCacheModel", _CeeForwardedCache),
+            patch(
+                "src.baselines.simulators.CommunicationSimulator",
+                _CeeCommunicationSimulator,
+            ),
+            patch("src.baselines.cee.CUHLM", _UncertaintyGate),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
-            patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
-            ),
+            patch.object(
+                instance, "_cee_verify_proposal", wraps=instance._cee_verify_proposal
+            ) as verify,
+            torch.random.fork_rng(devices=[]),
         ):
-            instance.cee_sd_opportunistic(prefix)
+            torch.random.default_generator.manual_seed(8128)
+            output, metrics = instance.cee_sd_opportunistic(prefix)
 
-        little_to_draft_calls = [
-            c for c in stage_calls if c[:2] == ("little", "draft")
-        ]
-        draft_to_target_calls = [
-            c for c in stage_calls if c[:2] == ("draft", "target")
+        stage_calls = [
+            (call.args[1].model.kind, call.args[2].model.kind, call.args[0].count)
+            for call in verify.call_args_list
         ]
         self.assertEqual(
-            little_to_draft_calls,
-            [],
-            "Draft must not be invoked for first-layer verification when "
-            "CUHLM uncertainty says no transfer",
+            stage_calls,
+            [("little", "draft", 1), ("draft", "target", 3)]
+            if should_transfer
+            else [("draft", "target", 2)],
         )
-        self.assertGreater(
-            len(draft_to_target_calls),
-            0,
-            "Second Draft->Target stage must still run",
+        self.assertEqual(
+            output.tolist(), [[0, 1, 1, 1, 1]] if should_transfer else [[0, 1, 1, 1]]
         )
+        self.assertEqual(metrics["target_forward_times"], 1)
+        self.assertEqual(metrics["draft_forward_times"], 2 if should_transfer else 1)
+        self.assertEqual(metrics["draft_accepted_tokens"], 3 if should_transfer else 2)
+        for call in verify.call_args_list:
+            proposal = call.args[0]
+            selected = torch.gather(
+                call.kwargs["wire_probabilities"],
+                2,
+                proposal.tokens[:, proposal.prefix_len :].unsqueeze(-1),
+            )
+            self.assertTrue(torch.equal(selected, torch.ones_like(selected)))
+
+        caches = {cache.model.kind: cache for cache in _CeeForwardedCache.instances}
+        self.assertEqual(caches["target"].current_length, output.shape[1] - 1)
+        self.assertEqual(caches["draft"].current_length, 3 if should_transfer else 2)
+        self.assertEqual(caches["little"].current_length, 1)
+        for cache in caches.values():
+            self.assertEqual(cache.prob_history.shape[1], cache.current_length)
+        simulator = _CeeCommunicationSimulator.instances[0]
+        self.assertEqual(
+            simulator.payloads,
+            [
+                ("edge_end", 8),
+                ("edge_end", 12),
+                ("edge_end", 12),
+                ("edge_cloud", 24),
+                ("edge_cloud", 36),
+                ("edge_cloud", 12),
+                ("edge_end", 12),
+            ]
+            if should_transfer
+            else [
+                ("edge_end", 8),
+                ("edge_end", 8),
+                ("edge_end", 6),
+                ("edge_cloud", 16),
+                ("edge_cloud", 24),
+                ("edge_cloud", 12),
+                ("edge_end", 12),
+            ],
+        )
+        self.assertEqual(metrics["edge_end_data_bytes"], 44 if should_transfer else 34)
+        self.assertEqual(
+            metrics["edge_cloud_data_bytes"], 72 if should_transfer else 52
+        )
+
+    def test_cee_sd_opportunistic_skips_first_stage_draft_verify_when_no_transfer(self):
+        self._assert_cee_opportunistic(should_transfer=False)
 
     def test_cee_sd_opportunistic_calls_first_stage_draft_verify_when_transfer(self):
-        instance = self._make_instance("cee_sd_opportunistic")
-        prefix = torch.tensor([[0]], dtype=torch.long)
-        stage_calls = []
-
-        def fake_stage_verify(
-            *,
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            output_device,
-            draft_probs_override=None,
-            draft_probs_batch_override=None,
-            draft_topk_history=None,
-        ):
-            stage_calls.append(
-                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
-            )
-            return (
-                gamma,
-                prefix_len + gamma - 1,
-                torch.tensor([[1]], dtype=torch.long),
-                True,
-            )
-
-        class _TransferComm(_FakeCommSimulator):
-            def determine_transfer_strategy(self, uncertainty, current_probs):
-                return True, 2
-
-        with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CommunicationSimulator", _TransferComm),
-            patch("src.baselines.core.PreciseCommunicationSimulator", _TransferComm),
-            patch("src.baselines.core.CUHLM", _TransferComm),
-            patch("src.baselines.core.PreciseCUHLM", _TransferComm),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
-            patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
-            ),
-        ):
-            instance.cee_sd_opportunistic(prefix)
-
-        little_to_draft_calls = [
-            c for c in stage_calls if c[:2] == ("little", "draft")
-        ]
-        draft_to_target_calls = [
-            c for c in stage_calls if c[:2] == ("draft", "target")
-        ]
-        self.assertGreater(
-            len(little_to_draft_calls),
-            0,
-            "Draft must be invoked to verify the Little token when CUHLM "
-            "uncertainty says transfer",
-        )
-        self.assertGreater(
-            len(draft_to_target_calls),
-            0,
-            "Second Draft->Target stage must still run",
-        )
+        self._assert_cee_opportunistic(should_transfer=True)
 
 
 if __name__ == "__main__":

@@ -157,7 +157,7 @@ class ThreeLayerCacheWiringTests(unittest.TestCase):
 
     def test_graph_off_builds_fresh_caches_without_graph_kwargs(self):
         instance = self._instance(False)
-        with patch("src.baselines.core.KVCacheModel", _FakeCache):
+        with patch("src.baselines.runtime.KVCacheModel", _FakeCache):
             _FakeCache.created = []
             first = instance.build_adaptive_tridecoding_caches(5)
             second = instance.build_adaptive_tridecoding_caches(5)
@@ -170,7 +170,7 @@ class ThreeLayerCacheWiringTests(unittest.TestCase):
 
     def test_graph_on_passes_graph_kwargs_and_reuses(self):
         instance = self._instance(True)
-        with patch("src.baselines.core.KVCacheModel", _FakeCache):
+        with patch("src.baselines.runtime.KVCacheModel", _FakeCache):
             _FakeCache.created = []
             first = instance.build_adaptive_tridecoding_caches(5)
             built_first_call = len(_FakeCache.created)
@@ -256,7 +256,7 @@ class DraftTargetCacheWiringTests(unittest.TestCase):
 
     def test_graph_off_builds_two_fresh_eager_caches(self):
         instance = self._instance(False)
-        with patch("src.baselines.core.KVCacheModel", _FakeCache):
+        with patch("src.baselines.runtime.KVCacheModel", _FakeCache):
             _FakeCache.created = []
             first_draft, _ = instance._acquire_draft_target_caches(
                 "_ad_caches", {}, 5, 0, 0.0
@@ -272,7 +272,7 @@ class DraftTargetCacheWiringTests(unittest.TestCase):
     def test_graph_on_draft_graphed_target_eager_and_reused(self):
         instance = self._instance(True)
         graph_kw = graph_mode_cache_kwargs(_graph_args(max_tokens=64), cap=9)
-        with patch("src.baselines.core.KVCacheModel", _FakeCache):
+        with patch("src.baselines.runtime.KVCacheModel", _FakeCache):
             _FakeCache.created = []
             first_draft, first_target = instance._acquire_draft_target_caches(
                 "_ad_caches", graph_kw, 5, 0, 0.0
@@ -292,7 +292,7 @@ class DraftTargetCacheWiringTests(unittest.TestCase):
 
     def test_compression_applies_to_draft_only(self):
         instance = self._instance(True)
-        with patch("src.baselines.core.KVCacheModel", _FakeCache):
+        with patch("src.baselines.runtime.KVCacheModel", _FakeCache):
             _FakeCache.created = []
             draft, target = instance._acquire_draft_target_caches(
                 "_ad_caches", {}, 7, 0, 0.0

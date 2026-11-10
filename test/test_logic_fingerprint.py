@@ -244,7 +244,7 @@ def test_single_arm_return_extraction_is_detected() -> None:
 
 def test_adaptive_verification_bills_the_proposal_before_signaling_rejection():
     """Check protocol stages, not equivalence to the old bounds/clock bugs."""
-    events = _entries("src/baselines/core.py")["Baselines.adaptive_decoding"]
+    events = _entries("src/baselines/core.py")["AdaptiveDecodingMixin.adaptive_decoding"]
     payload = events.index(["call", "collect_verification_payload"])
     draw = events.index(["rng", "rand"])
     transfer = events.index(["comm", "transfer"])

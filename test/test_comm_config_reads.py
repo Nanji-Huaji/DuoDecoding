@@ -5,11 +5,12 @@
 （src/protocols.py 模块头）。迁移后统一经 ``Baselines.comm_config``
 （或 ``_comm = self.comm_config`` 局部别名）；本测试防止回退。
 
-扫描两个注册解码方法所在文件：``src/baselines/core.py`` 与 ``src/engine.py``
-（历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，2026-10-19
-补入）。同时守 ``CommEnv`` 的 9 个通信数值键：迁移前它们在 ~20 处
-构造点各自 ``getattr(self.args, ..., 默认)``，现在只许经 ``self.comm_env``。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI 合法性校验
-（B15 模式门）不是解码期读取，必须保留。
+扫描注册解码方法所在的全部真实文件：``src/baselines/{core,runtime,adaptive,cee,operations}.py``
+与 ``src/engine.py``（历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，
+2026-10-19 补入；A2 拆分后新模块同样在扫描范围内）。同时守 ``CommEnv`` 的 9 个
+通信数值键：迁移前它们在 ~20 处构造点各自 ``getattr(self.args, ..., 默认)``，
+现在只许经 ``self.comm_env``。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI
+合法性校验（B15 模式门）不是解码期读取，必须保留。
 """
 
 import ast
@@ -37,9 +38,19 @@ SWITCHES = {
 }
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-# 所有注册解码方法所在文件：Baselines 一族 + engine.py 的历史方法
-# （speculative_decoding_with_bandwidth 曾漏在审计外，2026-10-19 补上）。
-SOURCES = (SRC / "baselines" / "core.py", SRC / "engine.py")
+# 所有注册解码方法所在文件：Baselines 一族（core + A2 迁出的真实模块）与
+# engine.py 的历史方法（speculative_decoding_with_bandwidth 曾漏在审计外，
+# 2026-10-19 补上）。迁移后仍扫描真实定义模块，不因拆分放宽约束。
+SOURCES = (
+    SRC / "baselines" / "core.py",
+    SRC / "baselines" / "runtime.py",
+    SRC / "baselines" / "adaptive.py",
+    SRC / "baselines" / "cee.py",
+    SRC / "baselines" / "operations.py",
+    SRC / "engine.py",
+    SRC / "dual_decoding.py",
+    SRC / "baselines" / "dual.py",
+)
 
 
 def _trees() -> dict[Path, ast.Module]:
@@ -47,7 +58,10 @@ def _trees() -> dict[Path, ast.Module]:
 
 
 def _tree() -> ast.Module:
-    return ast.parse((SRC / "baselines" / "core.py").read_text(encoding="utf-8"))
+    # _uplink_prob_payload 的真实定义在 A2 迁到 operations.py。
+    return ast.parse(
+        (SRC / "baselines" / "operations.py").read_text(encoding="utf-8")
+    )
 
 
 def _is_self_args(node: ast.AST) -> bool:

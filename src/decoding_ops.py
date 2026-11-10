@@ -97,7 +97,7 @@ def reject_tail_scalar_bytes(
     return 0.0
 
 
-def prepare_verification_inputs(
+def _prepare_legacy_verification_inputs(
     draft_model_cache: KVCacheModel,
     target_model_cache: KVCacheModel,
     x: torch.Tensor,
@@ -107,6 +107,14 @@ def prepare_verification_inputs(
     draft_probs_batch_override: Optional[torch.Tensor] = None,
     draft_topk_history: Optional[TopKProposalHistory] = None,
 ) -> VerificationInputs:
+    """Legacy clipped-window adapter, NOT the strict A4 proposal contract.
+
+    Phase-B removal list: CUHLM, TK-SLT, CEE combination stages and the legacy
+    bandwidth SD wrapper still use this adapter (directly or through the stage
+    wrappers below). Their historical partial-history handling is retained here
+    explicitly; migrated SD/DSD/DSSD must use verification.ProposalWindow instead.
+    No fallback from the strict contract to this adapter is allowed.
+    """
     draft_device = draft_model_cache.device
     draft_probs = draft_model_cache.prob_history
     if target_model_cache.prob_history is None:
@@ -222,6 +230,11 @@ def prepare_verification_inputs(
     )
 
 
+# Compatibility export only. Production legacy consumers use the explicit name;
+# the strict A4 modules never fall back to this clipped-window implementation.
+prepare_verification_inputs = _prepare_legacy_verification_inputs
+
+
 VERIFY_TRACE_PATH = os.environ.get("RL_VERIFY_TRACE")
 
 
@@ -229,6 +242,34 @@ def compute_acceptance_result(
     verification_inputs: VerificationInputs,
     *,
     r: Optional[torch.Tensor] = None,
+) -> AcceptanceResult:
+    """Accept against actual proposal support; selected q must be positive."""
+    return _compute_acceptance_result(verification_inputs, r=r, fp16_wire_q=False)
+
+
+def compute_legacy_tk_slt_fp16_acceptance_result(
+    verification_inputs: VerificationInputs,
+    *,
+    r: Optional[torch.Tensor] = None,
+) -> AcceptanceResult:
+    """TK-SLT-only bridge for its retained approximate FP16 wire protocol.
+
+    Candidates were sampled from raw q, but this interface receives wire qhat
+    AFTER quantization. A supported raw sample can therefore have qhat=0.
+    Preserve the legacy ratio semantics: p>0/qhat=0 accepts, p=qhat=0 rejects.
+    This is NOT exact rejection sampling against actual q; new exact protocols
+    must use compute_acceptance_result or verification.ProposalWindow instead.
+    No epsilon, renormalization, or substitution changes the reported wire qhat.
+    Phase B must reassess/remove this bridge with the TK-SLT sampling/wire law.
+    """
+    return _compute_acceptance_result(verification_inputs, r=r, fp16_wire_q=True)
+
+
+def _compute_acceptance_result(
+    verification_inputs: VerificationInputs,
+    *,
+    r: Optional[torch.Tensor],
+    fp16_wire_q: bool,
 ) -> AcceptanceResult:
     if verification_inputs.actual_gamma <= 0:
         return AcceptanceResult(
@@ -253,13 +294,28 @@ def compute_acceptance_result(
         verification_inputs.draft_token_indices,
     ).squeeze(-1)
 
+    # Actual q must have selected support. Only TK-SLT's post-sampling FP16
+    # wire qhat may lose it. Validate both interfaces before consuming RNG.
+    invalid_support = selected_draft_p < 0 if fp16_wire_q else selected_draft_p <= 0
+    if not torch.isfinite(selected_draft_p).all() or invalid_support.any():
+        support = "nonnegative" if fp16_wire_q else "positive"
+        raise ValueError(f"selected proposal probabilities must be {support} and finite")
+    if not torch.isfinite(selected_target_p).all() or (selected_target_p < 0).any():
+        raise ValueError("selected target probabilities must be nonnegative and finite")
+
     if r is None:
         r = torch.rand(
             (selected_draft_p.shape[0], verification_inputs.actual_gamma),
             device=selected_draft_p.device,
         )
 
-    accept_mask = r <= (selected_target_p / selected_draft_p)
+    ratio = selected_target_p / selected_draft_p
+    if fp16_wire_q:
+        # Explicitly define the two zero-wire cases, without smoothing qhat or
+        # leaking NaN from 0/0 into the acceptance metadata.
+        zero_wire_ratio = torch.where(selected_target_p > 0, torch.inf, 0.0)
+        ratio = torch.where(selected_draft_p > 0, ratio, zero_wire_ratio)
+    accept_mask = r < ratio
     continuous_accept, _ = accept_mask.to(torch.int8).cummin(dim=1)
     accepted_count = continuous_accept.sum(dim=1, dtype=torch.int64)
 
@@ -455,7 +511,6 @@ def verify_draft_sequence(
         "verify_draft_sequence 仅支持 batch_size=1（accepted_count 与 serial "
         "下行计费都只取 batch 0，见 B43）；bs>1 需先逐 batch 化"
     )
-    draft_device = draft_model_cache.device
     _log_sd_alignment_snapshot(
         "verify_enter",
         prefix_len,
@@ -465,7 +520,7 @@ def verify_draft_sequence(
         gamma=gamma,
     )
 
-    verification_inputs = prepare_verification_inputs(
+    verification_inputs = _prepare_legacy_verification_inputs(
         draft_model_cache=draft_model_cache,
         target_model_cache=target_model_cache,
         x=x,
@@ -496,11 +551,8 @@ def verify_draft_sequence(
             comm_link,
         )
 
-    r = torch.rand(
-        (x.shape[0], verification_inputs.actual_gamma),
-        device=draft_device,
-    )
-    acceptance_result = compute_acceptance_result(verification_inputs, r=r)
+    # Let the shared primitive validate selected support before it draws RNG.
+    acceptance_result = compute_acceptance_result(verification_inputs)
     invalid_acceptance_ratio = log_ratio_if_invalid(
         acceptance_result.selected_target_p,
         acceptance_result.selected_draft_p,
@@ -569,7 +621,7 @@ def verify_draft_sequence_result(
         "verify_draft_sequence_result 仅支持 batch_size=1（accepted_count "
         "只取 batch 0，见 B43）；bs>1 需先逐 batch 化"
     )
-    verification_inputs = prepare_verification_inputs(
+    verification_inputs = _prepare_legacy_verification_inputs(
         draft_model_cache=draft_model_cache,
         target_model_cache=target_model_cache,
         x=x,

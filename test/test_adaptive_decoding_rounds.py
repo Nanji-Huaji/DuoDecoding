@@ -4,13 +4,14 @@ The oracle compiles ONLY the frozen ``git show a9a61cc:src/baselines/core.py``
 adaptive_decoding AST (no registration or old-module execution). The checked-in
 SHA-256-pinned method works in shallow clones, and intentionally cannot call
 helpers introduced by the refactor. Both executions use fresh fixtures,
-deterministic clocks and real torch RNG. The compared seams are tokens, all
-metrics, real communication billing, cache truncation, policy calls, and ordered
-stop/trace actions. Clock observations are excluded; target rollback requests
-(old ``n + 2`` vs new ``n + 1``) are compared as actual ``min(end, before)``
-truncations. Cache before/after values and protocol effects stay observable.
-Only hardware/model boundaries are scripted; acceptance and residual sampling
-stay real. Independent correctness contracts cover the intentionally fixed bugs.
+deterministic clocks and real torch RNG. The oracle is auxiliary orchestration
+coverage on deterministic toy laws, NOT a same-seed trajectory contract: A3
+intentionally removes discarded target samples. Its extra sample/generate events
+and acceptance draw VALUES are excluded, but draw count/order, real forwards,
+all metrics, billing, rollback, policy and stop/trace actions remain compared.
+Target rollback requests (old ``n + 2`` vs new ``n + 1``) compare the actual
+``min(end, before)`` truncations. Nondegenerate laws use independent assertions
+rather than an obsolete RNG oracle; acceptance and residual sampling stay real.
 """
 
 import ast
@@ -255,6 +256,10 @@ def _run(method, case, *, expect_error=None):
             )
             return q
 
+        def forward_context(self, prefix):
+            assert prefix.shape[1] >= self.current_length
+            return self._forward_with_kvcache(prefix)
+
         def generate(self, prefix, gamma):
             actions.append(("cache.generate", self.kind, _plain(prefix), gamma))
             x = prefix.clone()
@@ -462,7 +467,7 @@ def _run(method, case, *, expect_error=None):
                     },
                 )
             )
-            stack.enter_context(patch("src.baselines.core.KVCacheModel", Cache))
+            stack.enter_context(patch("src.baselines.runtime.KVCacheModel", Cache))
             stack.enter_context(
                 patch("src.baselines.simulators.CommunicationSimulator", Simulator)
             )
@@ -528,27 +533,33 @@ def _run(method, case, *, expect_error=None):
 
 
 def _normalize_actions(actions):
-    """Exact comparison ignores clocks and the *requested* rollback end only.
+    """Compare protocol effects, not the intentionally corrected RNG trajectory.
 
-    The refactor removes one redundant ``time.time()`` and two unused
-    ``edge_cloud_comm_time`` reads, so tick indices are not part of the
-    semantic action stream. The only other agreed change is the all-accepted
-    target rollback request: the old oracle asked for ``n + 2`` (one row beyond
-    what was forwarded), the new code asks for ``n + 1``. A rollback never
-    exposes rows past the forwarded length, so both truncate to
-    ``min(end, before)``; the requested value is normalized to that real end.
-    ``before`` and the real ``after``/cache state, plus every communication,
-    RL, billing, trace and stop action, are still compared verbatim.
+    Only the frozen oracle's discarded target sample is removed. Genuine forward
+    lengths, sampling laws/results, acceptance draw count/order, communication,
+    rewards and stop/trace events remain observable. These comparisons use delta
+    laws, so different uniform values cannot alter their acceptance decisions.
     """
     normalized = []
+    discarded_target_sample = False
     for action in actions:
         if action[0] == "clock":
             continue
-        if action[0] == "rollback":
+        if action[:2] == ("cache.generate", "target"):
+            assert action[-1] == 1 and not discarded_target_sample
+            discarded_target_sample = True
+            continue
+        if action[0] == "sample" and discarded_target_sample:
+            discarded_target_sample = False
+            continue
+        if action[0] == "rand":
+            normalized.append(("rand", action[1][:2]))  # dtype/shape, not RNG value
+        elif action[0] == "rollback":
             kind, requested, before, after = action[1:]
             normalized.append(("rollback", kind, min(requested, before), before, after))
         else:
             normalized.append(action)
+    assert not discarded_target_sample
     return normalized
 
 
@@ -557,7 +568,6 @@ class AdaptiveDecodingRoundsTests(unittest.TestCase):
         old = _run(_oracle(), case)
         new = _run(Baselines.adaptive_decoding, case)
         self.assertTrue(torch.equal(old["tokens"], new["tokens"]))
-        self.assertTrue(torch.equal(old["rng"], new["rng"]), "real CPU RNG diverged")
         old_rest = {k: v for k, v in old.items() if k not in ("tokens", "rng")}
         new_rest = {k: v for k, v in new.items() if k not in ("tokens", "rng")}
         old_rest["actions"] = _normalize_actions(old_rest["actions"])
@@ -565,6 +575,17 @@ class AdaptiveDecodingRoundsTests(unittest.TestCase):
         self.assertEqual(old_rest, new_rest)
         # Includes ALL timing metrics: no whitelist that could hide metric drift.
         return new
+
+    def test_public_context_forward_never_draws_a_discarded_target_sample(self):
+        for budget, expected_samples in ((1, 1), (4, 4), (9, 9)):
+            with self.subTest(budget=budget):
+                result = _run(Baselines.adaptive_decoding, _Case(budget=budget))
+                samples = [a for a in result["actions"] if a[0] == "sample"]
+                self.assertEqual(len(samples), expected_samples)
+                self.assertFalse(any(
+                    a[0] == "cache.generate" for a in result["actions"]
+                ))
+                self.assertEqual(result["tokens"].tolist(), [[0] + [1] * budget])
 
     def test_full_accept_public_entry(self):
         result = self.assertDifferential(_Case())
@@ -597,10 +618,15 @@ class AdaptiveDecodingRoundsTests(unittest.TestCase):
                         for a in tail
                     )
                 )
-                self.assertIn(
-                    ("cache.generate", "target", _plain(result["tokens"][:, :-1]), 1),
-                    tail,
+                target_forwards = [
+                    a for a in tail if a[:2] == ("cache.forward", "target")
+                ]
+                self.assertEqual(len(target_forwards), 1)
+                self.assertEqual(
+                    target_forwards[0][2], _plain(result["tokens"][:, :-1])
                 )
+                self.assertEqual(len([a for a in tail if a[0] == "sample"]), 1)
+                self.assertFalse(any(a[0] == "cache.generate" for a in tail))
                 self.assertEqual(result["global_forwards"], (6, 3))
 
     def test_cache_length_equal_to_prefix_is_a_legal_prefilled_hit(self):
@@ -753,7 +779,10 @@ class AdaptiveDecodingRoundsTests(unittest.TestCase):
 
     def test_rl_uses_previous_topk_for_this_sampling_and_selected_topk_next_round(self):
         row = (0.125, 0.5, 0.25, 0.125)
-        result = self.assertDifferential(
+        # Independent distribution/policy assertions: changed RNG consumption
+        # intentionally makes the frozen oracle's same-seed trajectory obsolete.
+        result = _run(
+            Baselines.adaptive_decoding,
             _Case(
                 draft_rows={i: row for i in range(20)},
                 target_rows={i: row for i in range(20)},

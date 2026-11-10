@@ -1,5 +1,7 @@
 # 第一层验证步骤设计（adaptive_tridecoding）
 
+> **历史方案说明（2026-11-07 更新）：** 下文保留原基点、坐标与当时的狭窄授权，不作为当前实现规范。用户后续已授权完整 CEE-SD 本体重构，以逻辑正确性而非旧轨迹验收；当前接口与修正见[本体重构记录](<cee_sd_body_refactor_20261107.md>)。尤其旧 §3 的第一层 EOS 直接停机、末轮 flush 前读取 wall time、通信必须留在原方法等限制已被替代：EOS 须经 target 确认，终止回复/下行须计费，最后结算先于派生时间指标；helper 使用真实新调用帧，不伪造旧位置。原实验状态及以下设计论证仅描述当时版本。
+
 > 基点：`59b80ec`（本地分支 `refactor/baselines-s2-nightly-20261103` 的独立 commit；**未 push、未合 main**）。只读设计：不改源/测试/既有文档，不提交。
 > 在 `59b80ec` 中 `src/baselines/core.py` 的 `adaptive_tridecoding` 为 888 行（3094–3981）；`_adaptive_rejection_prob_bytes` 3983、`_select_adaptive_little_config` 4011、`_select_adaptive_main_config` 4049。`_make_comm_simulator` / `_make_symmetric_comm_simulator` 在 `src/baselines/simulators.py:13/69`（S3a 中间态已移出；core 141–145 为私有 re-export）。
 > S3a 的未提交中间态把上述 factory 移走，当前方法暂为 3005–3892（方法体净 −89），块内顺序/语义未变。**本文所有方法内行号均为 `59b80ec` 坐标**；当前中间态只能对方法体做 −89 映射，**不能对所有文件/跨文件引用统一偏移**（factory 已是 `simulators.py:13/69`）。S3a 落定后应整体重排一次行号，不要把中间态数字写进验收。

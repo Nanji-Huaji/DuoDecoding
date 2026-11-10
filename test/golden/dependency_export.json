@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "uv_version": "uv 0.8.15",
+  "uv_export_args": [
+    "export",
+    "--frozen",
+    "--offline",
+    "--no-dev",
+    "--no-emit-project",
+    "--format",
+    "requirements-txt"
+  ],
+  "source_sha256": {
+    "pyproject.toml": "16dc0d8f645d3e097b6bf7087e1616c40b711185096f38cd776102044f1d19f0",
+    "uv.lock": "5a0523617bd1955801fedc44adb0515b7cadb1a2f7c986fcd438a6600d02fdab"
+  },
+  "requirements_sha256": "7d2fcb926a027090ec6e33b8c1e355e6cbbcf3b24cb7e9e8efcd34a3a593d5e0"
+}

@@ -134,6 +134,12 @@ class _FakeCache:
             )
         return probs
 
+    def forward_context(self, prefix):
+        assert prefix.shape[1] >= self.current_length
+        self._set_uniform_history(prefix)
+        self.current_length = prefix.shape[1]
+        return self.prob_history[:, -1, :]
+
     def generate(self, prefix, gamma):
         # A sampled token is appended to the result before it is forwarded.
         # Like KVCacheModel.generate, history ends one token before the result.
@@ -238,6 +244,10 @@ class DecodingAvgTopKMetricTests(unittest.TestCase):
 
     def _enter_common_patches(self, stack: ExitStack):
         stack.enter_context(patch("src.baselines.core.KVCacheModel", _FakeCache))
+        stack.enter_context(patch("src.baselines.dual.KVCacheModel", _FakeCache))
+        stack.enter_context(
+            patch("src.baselines.runtime.KVCacheModel", _FakeCache)
+        )
         stack.enter_context(
             patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator)
         )

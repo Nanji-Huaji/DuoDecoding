@@ -338,6 +338,24 @@ class _FakeCacheRouter:
 
 
 class TestTkSltDecodeLoop(TkSltLoopTestBase):
+    def test_supported_raw_sample_survives_fp16_wire_support_loss(self):
+        """A rare but legal raw-q candidate must not abort the retained protocol."""
+        raw_row = torch.tensor([[[1e-8, 1.0 - 1e-8, 0.0, 0.0]]], dtype=torch.float64)
+        # The scripted cache draws token 0. It has positive raw support, even
+        # though real FP16 quantization removes that support on the wire.
+        with patch.object(_FakeDraftCache, "_sparse_row", return_value=raw_row):
+            output, metrics = self._run(
+                torch.tensor([[3]], dtype=torch.long), max_tokens=2, gamma=1,
+            )
+        self.assertEqual(int(output[0, 1]), 0)
+        self.assertEqual(metrics["draft_generated_tokens"], 1)
+        self.assertEqual(metrics["draft_accepted_tokens"], 1)
+        self.assertEqual(metrics["generated_tokens"], 2)
+        self.assertGreater(_FakeDraftCache.instances[0].prob_history[0, 0, 0].item(), 0)
+        self.assertEqual(_quantize_probs_fp16(raw_row)[0, 0, 0].item(), 0)
+        self.assertEqual(self._uplinks()[0]["data_size_bytes"], K * 2)
+        self.assertEqual(len(self._downlinks()), 1)
+
     def test_accept_path_bills_paper_payload_and_downlink(self):
         """单轮全接受：上行 = γ·K·2 B（FP16），下行 = 0 B 报文。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
@@ -404,7 +422,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.core.prepare_verification_inputs", spy):
+        with patch("src.baselines.core._prepare_legacy_verification_inputs", spy):
             output, _ = self._run(prefix, max_tokens=3)
 
         self.assertEqual(len(overrides), 1)
@@ -472,7 +490,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.core.prepare_verification_inputs", spy):
+        with patch("src.baselines.core._prepare_legacy_verification_inputs", spy):
             # gamma=1, max_tokens=4 ⇒ 两个完整 DSD 轮
             output, metrics = self._run(prefix, max_tokens=4, gamma=1)
 
