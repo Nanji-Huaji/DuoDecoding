@@ -554,6 +554,6 @@ def test_incomplete_target_history_fails_before_repeating_a_round(monkeypatch):
             return super().generate(prefix, gamma)
 
     monkeypatch.setattr("src.baselines.cuhlm.KVCacheModel", IncompleteCache)
-    with pytest.raises(ValueError, match="exactly one verification position"):
+    with pytest.raises(ValueError, match="exactly the forwarded prefix"):
         _run(runtime, [1, 2])
     assert len(draft_calls) == 1

@@ -58,6 +58,9 @@ class _FakeCommSimulator:
     #: 每个触发轮是否真的需要上行；按 determine_transfer_strategy 调用序号取。
     transfer_flags = [True]
 
+    #: 可选的脚本化重建分布（每个触发轮消费一项）；空表示原样返回 q。
+    reconstructed_rows = []
+
     def flush_round(self):
         """per_round 合并模式的轮末结算；fake 不做字节合并。"""
         self.round_events.append(("flush", None))
@@ -126,6 +129,9 @@ class _FakeCommSimulator:
         # 三维约束（communication.py:584），防止调用方再退回二维输入。
         if probs.dim() != 3:
             raise ValueError(f"probs维度应为3，实际为{probs.dim()}")
+        if _FakeCommSimulator.reconstructed_rows:
+            row = _FakeCommSimulator.reconstructed_rows.pop(0)
+            return torch.tensor(row, dtype=probs.dtype).reshape(1, 1, -1)
         return probs
 
     def simulate_transfer(self, data_size_bytes, link_type="edge_cloud", **kwargs):
@@ -246,6 +252,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         _FakeCache.instances = []
         _FakeCommSimulator.instances = []
         _FakeCommSimulator.transfer_flags = [True]
+        _FakeCommSimulator.reconstructed_rows = []
         _FakeCache.vocab = 2
         _FakeCache.draft_tokens = [0]
         _FakeCache.draft_rows = [[1.0, 0.0]]
@@ -304,7 +311,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
     # ------------------------------------------------------------------
     def test_rejection_path_keeps_single_token_and_uses_prefix_forward(self):
         # draft p(0)=1, target p(0)=0 -> deterministic reject; residual token 1.
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         output, metrics, caches, comm_simulator = self._run(prefix)
 
         self.assertEqual(tuple(output.shape), (1, 2))
@@ -341,7 +348,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         # produced two tokens for a budget of one.
         _FakeCache.draft_rows = [[0.5, 0.5]]
         _FakeCache.target_rows = [[0.5, 0.5]]
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         output, metrics, caches, comm_simulator = self._run(prefix)
 
         self.assertEqual(tuple(output.shape), (1, 2))
@@ -353,7 +360,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         approx_cache, target_cache = caches
         self.assertEqual(len(approx_cache.generate_calls), 1)
         self.assertEqual(len(target_cache.forward_context_calls), 1)
-        self.assertEqual(target_cache.forward_context_calls[0].tolist(), [[7]])
+        self.assertEqual(target_cache.forward_context_calls[0].tolist(), [[1]])
         self.assertEqual(target_cache.generate_calls, [])
         self.assertEqual(approx_cache.rollback_calls, [])
         self.assertEqual(target_cache.rollback_calls, [])
@@ -365,7 +372,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
 
     def test_skip_appends_draft_without_target_forward_or_fake_comm(self):
         _FakeCommSimulator.transfer_flags = [False]
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         output, metrics, caches, comm_simulator = self._run(prefix)
 
         self.assertEqual(tuple(output.shape), (1, 2))
@@ -387,7 +394,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
 
     def test_zero_budget_performs_no_forward_or_sampling(self):
         self.instance.args.max_tokens = 0
-        prefix = torch.tensor([[7, 1]], dtype=torch.long)
+        prefix = torch.tensor([[1, 0]], dtype=torch.long)
         output, metrics, caches, comm_simulator = self._run(prefix)
 
         self.assertTrue(torch.equal(output, prefix))
@@ -399,13 +406,70 @@ class UncertaintyDecodingTests(unittest.TestCase):
             self.assertEqual(cache.forward_context_calls, [])
         self.assertEqual(comm_simulator.transfer_calls, [])
 
+    def test_lossy_reconstructed_law_drives_the_rejection_token(self):
+        # q(d)=.5, P(d)=.3 -> ratio .6; draw .9 rejects.  (P - qhat)+ puts all
+        # mass on token 0, while the exact (P - q)+ would put it on token 2.
+        _FakeCache.vocab = 3
+        self.instance.vocab_size = 3
+        _FakeCache.draft_tokens = [0]
+        _FakeCache.draft_rows = [[0.5, 0.2, 0.3]]
+        _FakeCache.target_rows = [[0.3, 0.0, 0.7]]
+        _FakeCommSimulator.transfer_flags = [True]
+        _FakeCommSimulator.reconstructed_rows = [[0.1, 0.2, 0.7]]
+        prefix = torch.tensor([[1]], dtype=torch.long)
+
+        with patch(
+            "src.baselines.cuhlm.torch.rand",
+            return_value=torch.tensor([[0.9]]),
+        ):
+            output, metrics, _caches, comm_simulator = self._run(prefix)
+
+        self.assertEqual(output[0, 1:].tolist(), [0])
+        self.assertEqual(metrics["draft_accepted_tokens"], 0)
+        self.assertEqual(metrics["generated_tokens"], 1)
+        self.assertEqual(metrics["target_forward_times"], 1)
+        self.assertEqual(_FakeCommSimulator.reconstructed_rows, [])
+        self.assertEqual(comm_simulator.reject_messages, 0)
+        self.assertEqual(
+            [call["kind"] for call in comm_simulator.transfer_calls],
+            ["context_transfer", "uplink", "downlink"],
+        )
+
+    def test_invalid_reconstructed_law_fails_before_acceptance_rng(self):
+        _FakeCache.vocab = 3
+        self.instance.vocab_size = 3
+        _FakeCache.draft_tokens = [0]
+        _FakeCache.draft_rows = [[0.5, 0.2, 0.3]]
+        _FakeCache.target_rows = [[0.3, 0.0, 0.7]]
+        _FakeCommSimulator.transfer_flags = [True]
+        _FakeCommSimulator.reconstructed_rows = [[float("nan"), 0.5, 0.4]]
+        prefix = torch.tensor([[1]], dtype=torch.long)
+
+        with patch(
+            "src.baselines.cuhlm.torch.rand",
+            side_effect=AssertionError("acceptance RNG consumed before validation"),
+        ):
+            with self.assertRaisesRegex(ValueError, "reconstructed"):
+                self._run(prefix)
+
+    def test_skip_does_not_hide_an_invalid_proposal(self):
+        # The sampler could not have produced draft token 0 from this row; the
+        # skip branch must not silently finalize it.
+        _FakeCache.draft_tokens = [0]
+        _FakeCache.draft_rows = [[0.0, 1.0]]
+        _FakeCommSimulator.transfer_flags = [False]
+        prefix = torch.tensor([[1]], dtype=torch.long)
+
+        with self.assertRaisesRegex(ValueError, "selected support"):
+            self._run(prefix)
+
     def test_consecutive_accepts_never_insert_bonus_tokens(self):
         _FakeCache.draft_rows = [[0.5, 0.5]]
         _FakeCache.target_rows = [[0.5, 0.5]]
         _FakeCache.draft_tokens = [0, 1, 0]
         _FakeCommSimulator.transfer_flags = [True, True, True]
         self.instance.args.max_tokens = 3
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         output, metrics, caches, _ = self._run(prefix)
 
         self.assertEqual(tuple(output.shape), (1, 4))
@@ -434,7 +498,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         _FakeCache.target_rows = [[0.0, 1.0], [0.5, 0.5], [0.5, 0.5]]
         _FakeCommSimulator.transfer_flags = [True, True, False]
         self.instance.args.max_tokens = 3
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         output, metrics, caches, comm_simulator = self._run(prefix)
 
         self.assertEqual(output[0, 1:].tolist(), [1, 0, 1])
@@ -499,7 +563,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         _FakeCache.draft_tokens = [3, 0]
         _FakeCache.draft_rows = [
             [0.0, 0.0, 0.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 0.0],
         ]
         _FakeCache.target_rows = [
             [0.0, 0.0, 0.0, 0.0, 1.0],
@@ -533,7 +597,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
 
     def test_prompt_eos_does_not_stop_generation(self):
         _FakeCache.draft_tokens = [0]
-        _FakeCache.draft_rows = [[0.0, 1.0, 0.0, 0.0, 0.0]]
+        _FakeCache.draft_rows = [[1.0, 0.0, 0.0, 0.0, 0.0]]
         _FakeCommSimulator.transfer_flags = [False]
         prefix = torch.tensor([[3, 3]], dtype=torch.long)
         self._set_eos(3, 1, prefix)
@@ -565,7 +629,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         _FakeCache.draft_rows = [[1.0, 0.0], [1.0, 0.0]]
         _FakeCache.target_rows = [[0.0, 1.0]]
         self.instance.args.max_tokens = 2
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
         _output, metrics, _caches, comm_simulator = self._run(prefix)
 
         kinds = [call["kind"] for call in comm_simulator.transfer_calls]
@@ -591,7 +655,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         """Qwen 等 151936 词表不能被 CUHLM 默认的 32000 覆盖。"""
         self.instance.vocab_size = 151936
         self.instance.args.max_tokens = 0
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
 
         self._run(prefix)
 
@@ -602,7 +666,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
     def test_precise_cuhlm_constructor_receives_runner_vocab_size(self):
         self.instance.vocab_size = 151936
         self.instance.args.max_tokens = 0
-        prefix = torch.tensor([[7]], dtype=torch.long)
+        prefix = torch.tensor([[1]], dtype=torch.long)
 
         with (
             patch("src.baselines.cuhlm.KVCacheModel", _FakeCache),
@@ -624,7 +688,7 @@ class UncertaintyDecodingTests(unittest.TestCase):
         _FakeCache.draft_rows = [[0.1, 0.9]]
         _FakeCache.target_rows = [[0.9, 0.1]]
         _FakeCommSimulator.transfer_flags = [True]
-        prefix = torch.tensor([[7, 9]], dtype=torch.long)
+        prefix = torch.tensor([[1, 0]], dtype=torch.long)
         _output, _metrics, _caches, comm_simulator = self._run(prefix)
 
         self.assertEqual(comm_simulator.uncertainty_draft_tokens, [1])
