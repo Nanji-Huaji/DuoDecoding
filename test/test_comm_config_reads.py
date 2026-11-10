@@ -46,6 +46,7 @@ SOURCES = (
     SRC / "baselines" / "runtime.py",
     SRC / "baselines" / "adaptive.py",
     SRC / "baselines" / "cee.py",
+    SRC / "baselines" / "cuhlm.py",
     SRC / "baselines" / "operations.py",
     SRC / "engine.py",
     SRC / "dual_decoding.py",

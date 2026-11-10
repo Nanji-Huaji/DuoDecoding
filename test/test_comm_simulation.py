@@ -261,9 +261,60 @@ class TestCuhlmCompressedVocab:
         )
         probs = torch.full((64,), 1.0 / 64)
         should, _ = sim.determine_transfer_strategy(0.79, probs)
-        assert should is False  # u <= u_th：机会跳过，不上传
+        assert should is False  # u < u_th：机会跳过，不上传
         should, k = sim.determine_transfer_strategy(0.81, probs)
         assert should is True and 1 <= k < 64  # u > u_th：压缩上传
+
+    def test_threshold_equality_skips_transfer(self):
+        """论文式 (10) 是 `u > threshold`；等号必须走跳过分支。
+
+        M=20 的分歧计数让 0.8 恰好可达（16/20），所以边界不能被
+        `>=` 静默吞掉。这是对旧 `>=` 实现的定向回归。
+        """
+        sim = CUHLM(
+            20.0,
+            vocab_size=64,
+            uncertainty_threshold=0.8,
+            ntt_ms_edge_cloud=0.0,
+        )
+        probs = torch.full((64,), 1.0 / 64)
+        should, k = sim.determine_transfer_strategy(0.8, probs)
+        assert should is False
+        assert k == 0
+
+    def test_compressed_k_star_uses_actual_draft_token_probability(self):
+        """式 (26) 的 x_d 是实际 draft token 的概率，不是 top-1。
+
+        反例 V3：probs=[0.5,0.3,0.2]、u=0.5、theta=0.25、d=1。
+        x_d=0.3 时 k*=2；若退化成 top-1（x_d=0.5）会得到 k*=1。
+        """
+        sim = CUHLM(20.0, vocab_size=3, ntt_ms_edge_cloud=0.0)
+        probs = torch.tensor([0.5, 0.3, 0.2])
+        assert sim._calculate_compressed_vocab_size(0.5, probs, theta=0.25) == 1
+        assert (
+            sim._calculate_compressed_vocab_size(
+                0.5, probs, theta=0.25, draft_token=1
+            )
+            == 2
+        )
+
+    def test_strategy_forwards_explicit_draft_token(self):
+        """公开策略接口必须把显式 draft token 传给 k* 求解器。
+
+        probs=[.85,.05,.10]、u=.5、默认 theta=.1：top-1 得到 k=1，
+        以真实 draft token 1 的 x_d=.05 则得到 k=2。旧签名不接受该参数。
+        """
+        sim = CUHLM(
+            20.0,
+            vocab_size=3,
+            uncertainty_threshold=0.4,
+            ntt_ms_edge_cloud=0.0,
+        )
+        probs = torch.tensor([0.85, 0.05, 0.10])
+        should, k = sim.determine_transfer_strategy(0.5, probs)
+        assert (should, k) == (True, 1)
+        should, k = sim.determine_transfer_strategy(0.5, probs, draft_token=1)
+        assert (should, k) == (True, 2)
 
     def test_apply_top_k_compression_on_2d(self):
         torch.manual_seed(2)

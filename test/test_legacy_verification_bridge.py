@@ -70,8 +70,8 @@ def test_legacy_bridge_callers_are_explicit_and_bounded():
     assert actual == Counter(
         {
             (
-                "src/baselines/core.py",
-                "Baselines.uncertainty_decoding",
+                "src/baselines/cuhlm.py",
+                "CuhlmMixin.uncertainty_decoding",
                 LEGACY_PREPARE,
             ): 1,
             ("src/baselines/core.py", "Baselines.tk_slt", LEGACY_PREPARE): 1,

@@ -16,6 +16,7 @@ import torch
 import src.baselines as baselines
 import src.baselines.adaptive as adaptive
 import src.baselines.cee as cee
+import src.baselines.cuhlm as cuhlm
 import src.baselines.dual as dual
 import src.dual_decoding as local_dual
 import src.baselines.operations as operations
@@ -43,7 +44,7 @@ EXPECTED_REGISTRATIONS = {
     "cee_sd_opportunistic": "CeeSdMixin.cee_sd_opportunistic",
     "ceesd_w/o_arp": "Baselines.ceesd_without_arp",
     "ceesd_without_arp": "Baselines.ceesd_without_arp",
-    "cuhlm": "Baselines.uncertainty_decoding",
+    "cuhlm": "CuhlmMixin.uncertainty_decoding",
     "dist_spec": "DualDecodingMixin.dist_spec",
     "dist_split_spec": "DualDecodingMixin.dist_split_spec",
     "dsd": "DualDecodingMixin.dist_spec",
@@ -58,7 +59,7 @@ EXPECTED_REGISTRATIONS = {
     "tk_slt": "Baselines.tk_slt",
     "tkslt": "Baselines.tk_slt",
     "tridecoding": "CeeSdMixin.tridecoding",
-    "uncertainty_decoding": "Baselines.uncertainty_decoding",
+    "uncertainty_decoding": "CuhlmMixin.uncertainty_decoding",
 }
 
 
@@ -132,6 +133,7 @@ def test_legacy_pickle_global_names_still_resolve():
         ["src.baselines.core", "src.baselines.simulators", "src.baselines"],
         ["src.register", "src.baselines.simulators", "src.baselines.core"],
         ["src.baselines.cee", "src.baselines"],
+        ["src.baselines.cuhlm", "src.baselines"],
         ["src.dual_decoding", "src.engine", "src.baselines.dual"],
         ["src.baselines.dual", "src.baselines", "src.engine"],
         ["src.baselines.runtime", "src.baselines"],
@@ -148,6 +150,7 @@ from src.baselines import (
     adaptive,
     cee,
     core,
+    cuhlm,
     operations,
     runtime,
     simulators,
@@ -162,6 +165,7 @@ assert Baselines.adaptive_tridecoding is cee.CeeSdMixin.adaptive_tridecoding
 assert Baselines.cee_sd_no_arp is cee.CeeSdMixin.cee_sd_no_arp
 assert Baselines.tridecoding is cee.CeeSdMixin.tridecoding
 assert Baselines.cee_sd_opportunistic is cee.CeeSdMixin.cee_sd_opportunistic
+assert Baselines.uncertainty_decoding is cuhlm.CuhlmMixin.uncertainty_decoding
 assert Baselines.__init__ is runtime.RuntimeResources.__init__
 assert Baselines._stop_at_eos is operations.SharedOperations._stop_at_eos
 registry = Register._DECODING_REGISTRY
@@ -195,6 +199,7 @@ def test_moved_families_use_their_real_module_globals():
         (Baselines.dist_split_spec, dual, "DualDecodingMixin"),
         (Baselines.adaptive_decoding, adaptive, "AdaptiveDecodingMixin"),
         (Baselines._adaptive_decoding_verify, adaptive, "AdaptiveDecodingMixin"),
+        (Baselines.uncertainty_decoding, cuhlm, "CuhlmMixin"),
         (Baselines.adaptive_tridecoding, cee, "CeeSdMixin"),
         (Baselines._cee_verify_proposal, cee, "CeeSdMixin"),
         (Baselines.cee_sd_opportunistic, cee, "CeeSdMixin"),
@@ -225,6 +230,7 @@ def test_real_modules_do_not_import_the_compatibility_package_or_core():
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "runtime.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "adaptive.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "cee.py",
+        Path(__file__).resolve().parents[1] / "src" / "baselines" / "cuhlm.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "operations.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "dual.py",
         Path(__file__).resolve().parents[1] / "src" / "dual_decoding.py",
@@ -277,7 +283,15 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
     """No copy of a moved body may remain in core or appear twice."""
     roots = [
         Path(__file__).resolve().parents[1] / "src" / "baselines" / name
-        for name in ("core.py", "runtime.py", "adaptive.py", "cee.py", "operations.py", "dual.py")
+        for name in (
+            "core.py",
+            "runtime.py",
+            "adaptive.py",
+            "cee.py",
+            "cuhlm.py",
+            "operations.py",
+            "dual.py",
+        )
     ] + [
         Path(__file__).resolve().parents[1] / "src" / "engine.py",
         Path(__file__).resolve().parents[1] / "src" / "dual_decoding.py",
@@ -298,6 +312,7 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
         "_adaptive_decoding_next_token",
         "_trace_adaptive_decoding_append",
         "_adaptive_decoding_finalize",
+        "uncertainty_decoding",
         "adaptive_tridecoding",
         "_cee_propose",
         "_cee_first_stage",
