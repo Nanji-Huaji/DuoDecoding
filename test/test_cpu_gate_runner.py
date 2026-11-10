@@ -106,6 +106,61 @@ def test_gate_runs_both_modes_offline_with_gpu_hidden(tmp_path, monkeypatch):
     assert (output / "importlib.log").read_text() == "test output\n"
 
 
+def test_pytest_command_reports_skip_reasons_and_forwards_golden_policy(tmp_path):
+    optional = gate.pytest_command("python-for-test", "default", tmp_path / "d.xml")
+    required = gate.pytest_command(
+        "python-for-test", "importlib", tmp_path / "i.xml",
+        require_golden_assets=True,
+    )
+    for command in (optional, required):
+        assert "-rs" in command
+        assert command[-2] == "test"
+        assert command[-1].startswith("--junitxml=")
+    assert "--require-golden-assets" not in optional
+    assert "--require-golden-assets" in required
+
+
+def test_gate_records_required_golden_assets_and_forwards_to_both_modes(
+    tmp_path, monkeypatch,
+):
+    calls = _setup(monkeypatch)
+    output = tmp_path / "evidence"
+    assert gate.run_gate(tmp_path, output, require_golden_assets=True) == 0
+    for command, _ in calls:
+        assert "-rs" in command
+        assert "--require-golden-assets" in command
+    assert _manifest(output)["golden_assets"] == {
+        "required": True, "flag": "--require-golden-assets",
+    }
+
+
+def test_gate_default_keeps_assets_optional_but_always_reports_skips(
+    tmp_path, monkeypatch,
+):
+    calls = _setup(monkeypatch)
+    output = tmp_path / "evidence"
+    assert gate.run_gate(tmp_path, output) == 0
+    for command, _ in calls:
+        assert "-rs" in command
+        assert "--require-golden-assets" not in command
+    assert _manifest(output)["golden_assets"]["required"] is False
+
+
+def test_cli_flag_opts_into_strict_golden_assets(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(root, output, *, require_golden_assets=False):
+        seen.update(root=root, output=output, required=require_golden_assets)
+        return 0
+
+    monkeypatch.setattr(gate, "run_gate", fake_run)
+    output = tmp_path / "evidence"
+    assert gate.main(["--output-dir", str(output), "--require-golden-assets"]) == 0
+    assert seen == {"root": gate.ROOT, "output": output, "required": True}
+    assert gate.main(["--output-dir", str(tmp_path / "other")]) == 0
+    assert seen["required"] is False
+
+
 @pytest.mark.parametrize("codes", [(1, 0), (0, 2), (5, 5)])
 def test_any_pytest_failure_or_no_collection_fails_gate(tmp_path, monkeypatch, codes):
     calls = _setup(monkeypatch, returncodes=codes)

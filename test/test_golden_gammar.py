@@ -8,11 +8,11 @@
 """
 
 import json
-import re
 import sys
 from pathlib import Path
 
 import pytest
+from golden_assets import assert_golden_checkpoints
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GAMMAR_DIR = GOLDEN_DIR / "gammar"
@@ -59,16 +59,11 @@ def test_manifest_command_is_complete(tag):
 
 
 @pytest.mark.parametrize("tag", sorted(MANIFEST["tags"]))
-def test_checkpoint_fingerprint_matches_worktree(tag):
-    """golden 绑定 checkpoint 状态：v3 快照被改动 → 这里红灯（golden 失效）。"""
-    import hashlib
-
-    for role, spec in MANIFEST["tags"][tag]["checkpoints"].items():
-        digest = hashlib.sha256(Path(spec["path"]).read_bytes()).hexdigest()
-        assert digest[:16] == spec["sha256_16"], (
-            f"{tag}/{role}: checkpoint {spec['path']} 与 golden 记录的指纹不符——"
-            f"checkpoint 已漂移，golden 需要重新收割"
-        )
+def test_checkpoint_fingerprint_matches_worktree(tag, require_golden_assets):
+    """golden 绑定 checkpoint；漂移永远失败，缺失默认 skip，严格模式失败。"""
+    assert_golden_checkpoints(
+        MANIFEST["tags"][tag]["checkpoints"], require=require_golden_assets
+    )
 
 
 def test_locked_field_perturbation_fails():

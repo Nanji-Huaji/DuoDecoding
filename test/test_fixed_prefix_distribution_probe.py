@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ from src.distribution_probe import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DRIVER = REPO_ROOT / "scripts" / "probe_fixed_prefix_distribution.py"
-PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
+PYTHON = sys.executable  # 使用当前解释器，不假定仓库内 .venv 布局
 
 
 def test_categorical_metrics_are_symmetric_and_zero_for_identical_inputs() -> None:

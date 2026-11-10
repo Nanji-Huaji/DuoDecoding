@@ -29,10 +29,16 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD
 ```bash
 .venv/bin/python -B tools/run_cpu_gate.py \
   --output-dir .refactor/stage-a-20261110/cpu-gate-$(date +%s)
+# 全量 golden 资产验收（缺 checkpoint 必须失败，而非 skip）：
+.venv/bin/python -B tools/run_cpu_gate.py --require-golden-assets \
+  --output-dir .refactor/stage-a-20261111/cpu-gate-$(date +%s)
 ```
 
 - 使用调用它的 Python；不安装任何包。输出目录必须不存在，不复用旧证据。
 - 依次执行完整测试目录的默认收集与 `--import-mode=importlib`，记录日志、JUnit、解释器及关键包版本。
+- 两种模式都带 `-rs`，skip 原因写入日志；默认策略与是否严格记录在 manifest 的 `golden_assets` 字段（`required` / `flag`）。
+- 默认缺外部权重时，14 项历史 golden checkpoint 检查显式 skip（[资产策略](<cpu_portability_20261111.md>)），**skip 不等于资产验收**。`--require-golden-assets` 把缺失变为失败；已存在文件仍逐项核对 `sha256_16`，漂移在两种策略下都失败。
+- 干净 clone（无 `models/`、无 RL checkpoint、无子模块资产）预期：原先 18 项失败中 4 项自给通过、14 项带原因 skip，而不是 0 skip 的“全绿”。
 - 设置 GPU 隐藏、Hugging Face 离线、禁自动 pytest 插件及禁 pyc 变量；移除 `PYTEST_ADDOPTS`/`PYTEST_PLUGINS`，并用 `-o addopts=` 防止宿主配置偷偷只收集而不执行。
 - 对主要源码/测试/工具目录、主仓库 Python 文件（包括测试实际导入的[根实验入口](<../exp.py>)）、依赖清单及 pytest 配置记录前后快照，包含未跟踪源码；任一测试非零退出或端点快照不相等都会失败。
 - **端点快照相等不证明中间从未改动后恢复。** 子模块只记录 Git 修订/状态，不是所有嵌套字节的哈希；模型权重也不在该源码快照内。最终冻结须由执行者确认。
