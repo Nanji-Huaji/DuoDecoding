@@ -46,6 +46,7 @@ class _FakeCommSimulator:
         """per_round 合并模式的轮界标记；fake 不结算。"""
 
     def __init__(self, *args, **kwargs):
+        self.init_kwargs = dict(kwargs)
         self.edge_cloud_comm_time = 0.0
         self.edge_end_comm_time = 0.0
         self.edge_cloud_data = 0
@@ -57,6 +58,8 @@ class _FakeCommSimulator:
         self.edge_cloud_topk_history = []
         self.edge_cloud_draft_len_history = []
         self.transfer_calls = []
+        self.strategy_calls = []
+        self.uncertainty_draft_tokens = []
         self.accept_messages = 0
         self.reject_messages = 0
         _FakeCommSimulator.instances.append(self)
@@ -73,9 +76,17 @@ class _FakeCommSimulator:
         return 0.0
 
     def calculate_uncertainty(self, logits, M=20, theta_max=2.0, draft_token=None):
+        self.uncertainty_draft_tokens.append(draft_token)
         return 1.0
 
-    def determine_transfer_strategy(self, uncertainty, current_probs):
+    def determine_transfer_strategy(self, uncertainty, current_probs, draft_token=None):
+        self.strategy_calls.append(
+            (
+                uncertainty,
+                None if current_probs is None else tuple(current_probs.shape),
+                draft_token,
+            )
+        )
         return True, 2
 
     def _get_current_probs(self, prob_history):
@@ -192,11 +203,11 @@ class UncertaintyDecodingTests(unittest.TestCase):
         prefix = torch.tensor([[7]], dtype=torch.long)
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cuhlm.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cuhlm.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.cuhlm.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.cuhlm.torch.cuda.synchronize", return_value=None),
         ):
             output, metrics = self.instance.uncertainty_decoding(prefix)
 
@@ -237,6 +248,48 @@ class UncertaintyDecodingTests(unittest.TestCase):
         self.assertGreaterEqual(uplink["kwargs"].get("draft_len", 0), 1)
         # 3) 下行最终 token：索引 negligible（论文 §II-B）→ 0 字节报文
         self.assertEqual(transfer_calls[2]["data_size_bytes"], 0)
+
+        # 不确定度与 k* 策略必须消费本轮真实采样 token（fake generate 返回 0），
+        # 而不是让 _calculate_compressed_vocab_size 退化成 top-1。
+        self.assertEqual(comm_simulator.uncertainty_draft_tokens, [0])
+        self.assertEqual(comm_simulator.strategy_calls, [(1.0, (2,), 0)])
+
+    def test_plain_cuhlm_constructor_receives_runner_vocab_size(self):
+        """Qwen 等 151936 词表不能被 CUHLM 默认的 32000 覆盖。"""
+        self.instance.vocab_size = 151936
+        self.instance.args.max_tokens = 0
+        prefix = torch.tensor([[7]], dtype=torch.long)
+
+        with (
+            patch("src.baselines.cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cuhlm.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cuhlm.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.cuhlm.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.cuhlm.torch.cuda.synchronize", return_value=None),
+        ):
+            self.instance.uncertainty_decoding(prefix)
+
+        self.assertEqual(
+            _FakeCommSimulator.instances[0].init_kwargs["vocab_size"], 151936
+        )
+
+    def test_precise_cuhlm_constructor_receives_runner_vocab_size(self):
+        self.instance.vocab_size = 151936
+        self.instance.args.max_tokens = 0
+        prefix = torch.tensor([[7]], dtype=torch.long)
+
+        with (
+            patch("src.baselines.cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cuhlm.PreciseCUHLM", _FakeCommSimulator),
+            patch("src.baselines.cuhlm.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.cuhlm.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.cuhlm.torch.cuda.synchronize", return_value=None),
+        ):
+            self.instance.uncertainty_decoding(prefix, use_precise_comm_sim=True)
+
+        self.assertEqual(
+            _FakeCommSimulator.instances[0].init_kwargs["vocab_size"], 151936
+        )
 
 
 if __name__ == "__main__":

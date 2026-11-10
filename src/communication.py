@@ -1139,18 +1139,32 @@ class CUHLM(CommunicationSimulator):
         return rebuilt_probs
 
     def determine_transfer_strategy(
-        self, uncertainty: float, current_probs: torch.Tensor | None
+        self,
+        uncertainty: float,
+        current_probs: torch.Tensor | None,
+        draft_token: Optional[int] = None,
     ) -> Tuple[bool, int]:
-        "返回是否传输以及传输的词汇表大小"
+        """返回是否传输以及传输的词汇表大小。
+
+        论文式 (10) 的触发条件是 ``u > threshold``：等号走跳过分支。M=20
+        时 16/20 使 0.8 恰好可达，不能用 ``>=`` 把边界并进触发。
+
+        ``draft_token`` 是本轮实际采样的草稿 token。论文式 (26) 的 ``x_d``
+        是它在当前分布上的概率，不是 top-1；知道真实 token 的调用方应显式
+        传入。未提供时保留 top-1 兼容 fallback（``terminal_prob`` 等旧调用
+        者），不是对旧行为的正确性声明。
+        """
         if current_probs is None or current_probs.numel() == 0:
             warnings.warn(
                 "警告：current_probs为空，无法决定传输策略，默认不传输概率分布"
             )
             return False, 0
-        if uncertainty >= self.uncertainty_threshold:  # 不确定度高，传输
+        if uncertainty > self.uncertainty_threshold:  # 不确定度高，传输
             vocab_size = max(
                 1,
-                self._calculate_compressed_vocab_size(uncertainty, current_probs),
+                self._calculate_compressed_vocab_size(
+                    uncertainty, current_probs, draft_token=draft_token
+                ),
             )
             return True, vocab_size
         else:  # 大模型直接接受当前输出
@@ -1199,6 +1213,10 @@ class CUHLM(CommunicationSimulator):
 
         所有量均定义在**词表概率分布** x(t) 上（论文第 II-A 节：x(t) 由
         logit 经 softmax 归一化而来）。喂原始 logits 会得到无意义的 k*。
+
+        ``draft_token`` 是本轮实际采样的草稿 token；式 (26) 的 ``x_d`` 是
+        该 token 的概率。未提供时退化为 top-1（旧调用者的兼容 fallback），
+        这不等价于真实草稿 token 概率。
         """
         if current_probs is None or current_probs.numel() == 0:
             return 0

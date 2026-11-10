@@ -8,7 +8,8 @@
     "src/baselines/cee.py",
     "src/baselines/operations.py",
     "src/dual_decoding.py",
-    "src/baselines/dual.py"
+    "src/baselines/dual.py",
+    "src/baselines/cuhlm.py"
   ],
   "rev": "WORKTREE",
   "entries": {
@@ -309,7 +310,7 @@
         }
       }
     },
-    "Baselines.uncertainty_decoding": {
+    "CuhlmMixin.uncertainty_decoding": {
       "events": 91,
       "sha256_16": "052491e9665476aa",
       "surface": {
