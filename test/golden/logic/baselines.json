@@ -312,7 +312,7 @@
     },
     "CuhlmMixin.uncertainty_decoding": {
       "events": 90,
-      "sha256_16": "eaf44fd1b5f6baf4",
+      "sha256_16": "7aec9e478ae6d0cd",
       "surface": {
         "boolop": {
           "And": 3,
@@ -326,21 +326,21 @@
           "Event": 2,
           "KVCacheModel": 2,
           "PreciseCUHLM": 1,
-          "ValueError": 2,
+          "ProposalWindow": 1,
+          "ValueError": 1,
           "_check_stopping_criteria": 2,
           "_get_current_probs": 1,
           "_graph_mode_cache_kwargs": 1,
           "_kv_cache_construction_key": 2,
-          "_prepare_legacy_verification_inputs": 1,
           "_stop_at_eos": 1,
           "acquire_graph_caches": 1,
           "cat": 2,
           "color_print": 1,
           "compress_rebuild_probs": 1,
-          "compute_acceptance_result": 1,
           "copy": 3,
           "cuhlm_uplink_payload_bytes": 1,
           "current_stream": 2,
+          "decide_cuhlm_verification": 1,
           "elapsed_time": 1,
           "forward_context": 1,
           "generate": 1,
@@ -350,11 +350,11 @@
           "int": 5,
           "item": 1,
           "list": 2,
-          "materialize_acceptance": 1,
+          "prepare_cuhlm_verification": 1,
           "record": 2,
           "synchronize": 1,
           "time": 4,
-          "to": 3,
+          "to": 4,
           "tuple": 1
         },
         "comm": {
@@ -384,13 +384,14 @@
           "while": 1
         },
         "raise": {
-          "": 2
+          "": 1
         },
         "return": {
           "": 1
         },
         "rng": {
-          "sample_reject_token": 1
+          "rand": 1,
+          "sample": 1
         }
       }
     },

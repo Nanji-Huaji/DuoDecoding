@@ -69,11 +69,6 @@ def test_legacy_bridge_callers_are_explicit_and_bounded():
             actual.update(_calls(ROOT / relative))
     assert actual == Counter(
         {
-            (
-                "src/baselines/cuhlm.py",
-                "CuhlmMixin.uncertainty_decoding",
-                LEGACY_PREPARE,
-            ): 1,
             ("src/baselines/core.py", "Baselines.tk_slt", LEGACY_PREPARE): 1,
             ("src/baselines/core.py", "Baselines.cee_cuhlm", LEGACY_PREPARE): 2,
             ("src/baselines/core.py", "Baselines.tk_slt", FP16_ACCEPT): 1,
@@ -114,6 +109,9 @@ def test_strict_modules_do_not_import_legacy_validation_or_stage_wrappers():
         "src/dual_decoding.py",
         "src/baselines/dual.py",
         "src/verification.py",
+        "src/probability_laws.py",
+        "src/cuhlm_verification.py",
+        "src/baselines/cuhlm.py",
     ):
         tree = ast.parse((ROOT / relative).read_text())
         imports = {

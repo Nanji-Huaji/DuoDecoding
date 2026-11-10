@@ -15,33 +15,12 @@ from dataclasses import dataclass, field
 
 import torch
 
+from .probability_laws import (
+    positive_residual_law,
+    selected_probability_law,
+    validate_probability_rows,
+)
 from .sampling import sampling_weights
-
-
-def _probability_rows(rows: torch.Tensor, label: str) -> None:
-    if not rows.is_floating_point():
-        raise ValueError(f"{label} must have a floating probability dtype")
-    if not torch.isfinite(rows).all() or (rows < 0).any():
-        raise ValueError(f"{label} must be finite and nonnegative")
-    # Accumulate low-precision rows in float32, without normalizing an invalid law.
-    accumulation_dtype = (
-        torch.float64 if rows.dtype == torch.float64 else torch.float32
-    )
-    totals = rows.sum(dim=-1, dtype=accumulation_dtype)
-    tolerance = max(1e-6, 4 * torch.finfo(rows.dtype).eps)
-    if not torch.allclose(totals, torch.ones_like(totals), rtol=0, atol=tolerance):
-        raise ValueError(f"{label} rows must sum to one")
-
-
-def _selected_law(weights: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
-    # Canonicalize the global scale first. Exactly proportional float32 rows
-    # then yield identical double ratios, sums and selected scalars, including
-    # at FP32 rounding midpoints; identical laws must never spuriously reject.
-    precise = weights.double()
-    relative = precise / precise.amax(dim=-1, keepdim=True)
-    indices = tokens.to(weights.device).unsqueeze(-1)
-    selected = torch.gather(relative, 2, indices).squeeze(-1)
-    return selected / relative.sum(dim=-1)
 
 
 @dataclass(frozen=True, eq=False)
@@ -73,14 +52,16 @@ class ProposalWindow:
             raise ValueError("proposal probabilities must cover exactly its candidates")
         if (self.tokens < 0).any() or (self.tokens >= q.shape[-1]).any():
             raise ValueError("proposal token is outside its vocabulary")
-        _probability_rows(q, "proposal")
+        validate_probability_rows(q, "proposal")
         object.__setattr__(self, "sampling_weights", sampling_weights(q))
         if (self.selected_probabilities() <= 0).any():
             raise ValueError("proposal has non-positive selected support")
 
     def selected_probabilities(self) -> torch.Tensor:
         """Actual normalized selected-Q law; wire rounding is the caller's choice."""
-        return _selected_law(self.sampling_weights, self.tokens[:, self.prefix_len:])
+        return selected_probability_law(
+            self.sampling_weights, self.tokens[:, self.prefix_len:]
+        )
 
     @property
     def count(self) -> int:
@@ -148,7 +129,7 @@ def prepare_verification_window(
     rows = target_history[:, proposal.prefix_len - 1:, :vocab].to(
         proposal.probabilities.device
     )
-    _probability_rows(rows, "target")
+    validate_probability_rows(rows, "target")
     weights = sampling_weights(rows)
     if selected_q is None:
         selected_q = proposal.selected_probabilities()
@@ -162,7 +143,7 @@ def prepare_verification_window(
     ):
         raise ValueError("selected q payload must contain positive normalized scalars")
     selected_q = selected_q.to(proposal.probabilities.device)
-    selected_p = _selected_law(
+    selected_p = selected_probability_law(
         weights[:, :proposal.count], proposal.tokens[:, proposal.prefix_len:]
     ).to(selected_q.dtype)
     return VerificationWindow(proposal, rows, weights, selected_q, selected_p)
@@ -200,27 +181,10 @@ def decide_verification(
     if accepted == proposal.count:
         continuation = target_row
     else:
-        p_weights = window.target_weights[:, accepted, :].double()
-        q_weights = proposal.sampling_weights[:, accepted, :].double()
-        pivot = q_weights.argmax(dim=-1, keepdim=True)
-        p_pivot = torch.gather(p_weights, -1, pivot)
-        q_pivot = torch.gather(q_weights, -1, pivot)
-        # Remove the global weight scale BEFORE summing differences. Products
-        # of our float32 weights are exact in float64 (at most 48 mantissa bits),
-        # so the pivot difference is exactly zero, even for nearly proportional
-        # rows with tiny tails. A plain p-q can lose those tails in sum(delta).
-        delta = p_weights * q_pivot - q_weights * p_pivot
-        # Centering now equals q[pivot] * sum(p) * (P-Q). The positive pivot
-        # weight prevents a nonzero proportional component from cancelling all
-        # positive mass. Normalize before casting a tiny residual to float32.
-        correction = delta.sum(dim=-1, keepdim=True) / q_weights.sum(
-            dim=-1, keepdim=True
+        continuation = positive_residual_law(
+            window.target_weights[:, accepted, :],
+            proposal.sampling_weights[:, accepted, :],
         )
-        residual = (delta - q_weights * correction).clamp_min(0)
-        mass = residual.sum(dim=-1, keepdim=True)
-        if not torch.isfinite(mass).all() or (mass <= 0).any():
-            raise ValueError("rejected proposal has no positive finite residual mass")
-        continuation = residual / mass
     return VerificationDecision(
         accepted_count=accepted,
         accepted_end=proposal.prefix_len + accepted - 1,

@@ -20,10 +20,15 @@ not forwarded until a later draft/trigger round.  After skipped rounds the
 target catches up over the whole finalized prefix on its next trigger.
 Rollback is no longer needed because no cache is advanced past the prefix.
 
-Still deliberately retained (not claimed solved): original-history q(d)
-acceptance versus the reconstructed qhat residual (paper-intentional, lossy), the
-compressed-qhat zero-residual degeneracy, and the Eq. (26) k solver's
-fallback.  This path is therefore still not claimed target-distribution exact.
+Verification now goes through the independent single-token interface in
+``src.cuhlm_verification``: acceptance compares the target law with the
+normalized selected *original* q(d) (the sampler law actually used), rejection
+returns ``normalize((P - qhat)+)`` from the reconstructed law the server holds,
+and a rejected proposal with zero positive residual mass fails closed instead of
+falling back to argmax or the original q.  This remains the paper's intentional
+lossy protocol (original-history q(d) acceptance, reconstructed qhat residual),
+so the path is still not claimed target-distribution exact.  The Eq. (26) k
+solver's fallback is unchanged and still not proven conservative.
 """
 
 import time
@@ -37,11 +42,9 @@ from ..baselines_helpers import (
     _send_downlink_index_only,
 )
 from ..communication import CUHLM, PreciseCUHLM, cuhlm_uplink_payload_bytes
-from ..decoding_ops import (
-    _prepare_legacy_verification_inputs,
-    compute_acceptance_result,
-    materialize_acceptance,
-    sample_reject_token,
+from ..cuhlm_verification import (
+    decide_cuhlm_verification,
+    prepare_cuhlm_verification,
 )
 from ..graph_decode import (
     acquire_graph_caches,
@@ -55,6 +58,8 @@ from ..graph_decode import (
 from ..metrics import DecodingMetrics, get_empty_metrics
 from ..model_gpu import KVCacheModel
 from ..register import Register
+from ..sampling import sample
+from ..verification import ProposalWindow
 
 
 class CuhlmMixin:
@@ -240,6 +245,17 @@ class CuhlmMixin:
             else:
                 raise ValueError("Approx model logits history is None")
 
+            # 本轮候选的原始 q 行就是 draft 在本轮 prefix 上实际采样用到的行。
+            # 草稿生成后立即验证 proposal：skip 分支也不能把非法 proposal 藏
+            # 起来。这一步只做校验与规范化，不采样、不消耗 RNG。
+            proposal = ProposalWindow(
+                tokens=x,
+                probabilities=approx_model_cache.prob_history[
+                    :, prefix_len - 1 : prefix_len, : self.vocab_size
+                ],
+                prefix_len=prefix_len,
+            )
+
             # Calculate uncertainty BEFORE target call (as in the paper)
             draft_token = int(x[0, -1].item())
             uncertainty = comm_simulator.calculate_uncertainty(
@@ -316,25 +332,24 @@ class CuhlmMixin:
             target_comp_time += time.time() - t0
             target_forward_times += 1
 
-            # 验证窗口仍是 legacy clipped 适配器：draft 行 prefix_len-1 =
-            # 本轮 proposal，target 行 prefix_len-1 = 上面刚取的 P。
-            n = prefix_len - 1
-
-            verification_inputs = _prepare_legacy_verification_inputs(
-                draft_model_cache=approx_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=1,
+            # 单 token 验证（论文 II-A/IV-B、Algorithm 1）：
+            # - target 历史必须恰好覆盖本轮 forward 的旧 prefix（无 bonus 行）；
+            # - qhat 是旧 codec 返回的原始重建概率（不是已处理的 sampler
+            #   weights，也不再走 legacy clipped 适配器）。先验证整窗，再取一次
+            #   acceptance uniform，避免非法 law 先消费 RNG；
+            # - 接受用原 proposal 的实际 sampler law 对 P；拒绝用 qhat 残差。
+            reconstructed = comm_simulator.compress_rebuild_probs(
+                proposal.probabilities, int(vocab_size)
             )
-            if verification_inputs.actual_gamma != 1:
-                # An empty clipped window cannot finalize a token; abort rather
-                # than repeat the same prefix forever without a target bonus.
-                raise ValueError("CUHLM requires exactly one verification position")
-            acceptance_result = compute_acceptance_result(verification_inputs)
-            accepted_count, n, all_accepted = materialize_acceptance(
-                verification_inputs, acceptance_result
+            window = prepare_cuhlm_verification(
+                proposal,
+                target_model_cache.prob_history[:, :, : self.vocab_size],
+                reconstructed,
             )
+            uniform = torch.rand(
+                (1, 1), device=proposal.probabilities.device
+            )
+            decision = decide_cuhlm_verification(window, uniform)
 
             self.color_print(
                 f"Uncertainty: {uncertainty:.4f}, Vocab size: {vocab_size}", 3
@@ -343,38 +358,27 @@ class CuhlmMixin:
             # F-CUHLM：压缩分布已在触发时的合并上行中计费（每次触发必传，
             # 与论文一致）；reject 不再有独立的 reject 消息与二次压缩包传输，
             # 下行只回传最终 token（见下方 _send_downlink_index_only）。
-            total_accepted_tokens += accepted_count
+            total_accepted_tokens += 1 if decision.accepted else 0
 
-            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            # accept: n = prefix_len -> 保留草稿 token 本身（x 的最后一个），
-            # 不额外采 bonus；reject: n = prefix_len-1 -> 只保留旧 prefix，
-            # 下面再追加一个残差 token。
-            prefix = x[:, : n + 1]
+            # 接受只保留 x 的最后一个 token（draft 本身），不额外采 bonus；
+            # 拒绝只保留旧 prefix，下面追加一个由重建残差采出的 token。
+            prefix = x if decision.accepted else x[:, :prefix_len]
 
-            t = None
-            if not all_accepted:
-                target_prob_row = verification_inputs.target_probs_batch[:, 0, :]
-                # F-CUHLM：重采样基于服务器实际持有的压缩重构分布 x̂
-                # （论文式 (17)，top-k 保留 + 残差均匀）。旧实现用端侧全量
-                # 分布，压缩失真对输出零影响——精度口径曾偏向该基线。
-                # compress_rebuild_probs 严格要求 (batch, seq, vocab) 三维，
-                # 取单行后切回 (1, vocab) 喂 sample_reject_token。
-                _draft_row_hat = comm_simulator.compress_rebuild_probs(
-                    approx_model_cache.prob_history[:, n : n + 1, : self.vocab_size],
-                    int(vocab_size),
-                )[:, 0, :]
-                t = sample_reject_token(
-                    target_prob_row,
-                    _draft_row_hat,
-                    output_device=prefix.device,
-                )
+            # 拒绝采样仍发生在下行之前（与上一批的 RNG/通信交错顺序一致：
+            # acceptance 随机数 -> residual 采样 -> 下行报文）。模拟器在随机
+            # 通信模式下也会消耗 RNG，不能把这次采样挪到下行之后。
+            residual_token = None
+            if decision.residual_probs is not None:
+                residual_token = sample(decision.residual_probs)
+                if residual_token.device != prefix.device:
+                    residual_token = residual_token.to(prefix.device)
 
             # F-CUHLM（论文口径）：响应 token 索引 negligible（§II-B）——
             # 0 字节下行报文，保留一次 NTT（见 _send_downlink_index_only）。
             # 旧口径（B17）：INT_SIZE + token 字节。
             _send_downlink_index_only(comm_simulator, "edge_cloud")
-            if t is not None:
-                prefix = torch.cat((prefix, t), dim=1)
+            if residual_token is not None:
+                prefix = torch.cat((prefix, residual_token), dim=1)
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
