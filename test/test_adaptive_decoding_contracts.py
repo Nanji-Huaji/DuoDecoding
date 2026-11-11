@@ -727,7 +727,7 @@ class AdaptiveProposalContractTests(_HelperHarness):
             sampler_weights.append(probs.detach().clone())
             return probs.argmax(dim=-1, keepdim=True)
 
-        with patch("src.baselines.operations.sample", new=fake_sample):
+        with patch("src.baselines.adaptive.sample", new=fake_sample):
             proposal, _ = Baselines._adaptive_decoding_propose(
                 decoder,
                 prefix=_tokens([0]),

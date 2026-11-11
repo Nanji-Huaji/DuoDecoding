@@ -1,8 +1,15 @@
 """Two-model adaptive decoding: entry point and five round helpers.
 
 The proposal keeps the draft law it was sampled from; verification, rejection
-payload billing and cache rollback remain explicit steps of this family. Shared
-proposal/stop/payload primitives come from ``operations`` rather than this file.
+payload billing and cache rollback remain explicit steps of this family.
+
+RNG policy ``private-device-v1`` (2026-11-11): one lazy per-invocation context
+owns all proposal, acceptance, residual, bonus and tail draws. Different actual
+devices do not reuse cloned default-generator keys. The adapter proposal loop
+lives here so its draws share that context without altering other families or
+the model/cache interface. Seeded bitstreams intentionally change; probability
+formulas, policy/reward ordering and communication remain unchanged. This is an
+RNG repair, not a claim that the legacy raw-ratio verifier is numerically exact.
 """
 
 import json
@@ -25,6 +32,7 @@ from ..decoding_ops import (
     compute_residual_distribution,
     reject_tail_scalar_bytes,
 )
+from ..decoding_rng import DecodingRng
 from ..graph_decode import graph_mode_cache_kwargs as _graph_mode_cache_kwargs
 from ..metrics import DecodingMetrics, get_empty_metrics
 from ..model_gpu import KVCacheModel
@@ -34,7 +42,7 @@ from ..proposal_utils import (
     stage_prob_history,
 )
 from ..register import Register
-from ..utils import sample, state_entropy
+from ..utils import rebuild_topk_uniform_probs, sample, state_entropy
 from ._adaptive_state import (
     AdaptiveDecodeStats as _AdaptiveDecodeStats,
 )
@@ -93,6 +101,7 @@ class AdaptiveDecodingMixin:
             "_adaptive_decoding_caches", _graph_kw, draft_top_k, 0, 0.0
         )
         stats = _AdaptiveDecodeStats()
+        rng = DecodingRng()
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record(stream=torch.cuda.current_stream())
@@ -123,7 +132,7 @@ class AdaptiveDecodingMixin:
                 stats.target_forward_times += 1
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
-                t = sample(
+                t = rng.sample(
                     target_model_cache.prob_history[:, -1, : self.vocab_size]
                 ).to(prefix.device)
                 prefix = torch.cat((prefix, t), dim=1)
@@ -142,6 +151,7 @@ class AdaptiveDecodingMixin:
                 approx_model_cache=approx_model_cache,
                 comm_simulator=comm_simulator,
                 draft_device=draft_device,
+                rng=rng,
             )
             current_gamma = proposal.gamma
             stats.draft_steps += 1
@@ -163,6 +173,7 @@ class AdaptiveDecodingMixin:
                 target_model_cache=target_model_cache,
                 comm_simulator=comm_simulator,
                 draft_device=draft_device,
+                rng=rng,
             )
             this_step_accepted_tokens = n - prefix_len + 1
             stats.accepted_tokens += this_step_accepted_tokens
@@ -195,6 +206,7 @@ class AdaptiveDecodingMixin:
                 transfer_top_k=transfer_top_k,
                 charge_residual=charge_residual,
                 draft_device=draft_device,
+                rng=rng,
             )
             t = t.to(prefix.device)
             prefix = torch.cat((prefix, t), dim=1)
@@ -241,6 +253,7 @@ class AdaptiveDecodingMixin:
         approx_model_cache: KVCacheModel,
         comm_simulator: CommunicationSimulator,
         draft_device: torch.device,
+        rng: Optional[DecodingRng] = None,
     ) -> Tuple[_AdaptiveProposal, Optional[int]]:
         """Generate with the old policy, then select the top-k for settlement.
 
@@ -248,13 +261,26 @@ class AdaptiveDecodingMixin:
         next proposal/top-k and adapter threshold, not the simulator's default.
         """
         self.adapter.reset_step()
-        x, rebuilt_draft_probs, _, q = self._generate_with_optional_rebuilt_proposal(
-            approx_model_cache,
-            prefix.to(draft_device),
-            current_gamma,
-            current_proposal_top_k,
-            adapter=self.adapter,
-        )
+        # Keep the adapter's forward -> sample -> predict order. This is the
+        # adapter-only path formerly owned by SharedOperations; no metadata-only
+        # or cache.generate path is needed by this family. Direct helper callers
+        # may omit the context for compatibility; the public entry never does.
+        x = prefix.to(draft_device).clone()
+        rebuilt_rows: List[torch.Tensor] = []
+        q: Optional[torch.Tensor] = None
+        draw = sample if rng is None else rng.sample
+        for _ in range(current_gamma):
+            q = approx_model_cache.forward_context(x)
+            sample_probs = rebuild_topk_uniform_probs(q, current_proposal_top_k)
+            if current_proposal_top_k is not None:
+                rebuilt_rows.append(sample_probs.unsqueeze(1))
+            next_tok = draw(sample_probs)
+            x = torch.cat((x, next_tok), dim=1)
+            hidden_states = approx_model_cache.hidden_states
+            assert hidden_states is not None
+            if self.adapter.predict(hidden_states):
+                break
+        rebuilt_draft_probs = torch.cat(rebuilt_rows, dim=1) if rebuilt_rows else None
         if self.rl_adapter is not None:
             bandwidth = comm_simulator.bandwidth_edge_cloud_mbps
             latency = comm_simulator.ntt_edge_cloud_ms
@@ -288,6 +314,7 @@ class AdaptiveDecodingMixin:
         target_model_cache: KVCacheModel,
         comm_simulator: CommunicationSimulator,
         draft_device: torch.device,
+        rng: Optional[DecodingRng] = None,
     ) -> int:
         """Verify against the sampled proposal, with complete target context.
 
@@ -344,7 +371,11 @@ class AdaptiveDecodingMixin:
         ].to(draft_device)
         n = prefix_len + current_gamma - 1
         for i in range(current_gamma):
-            r = torch.rand(1, device=draft_device)
+            r = (
+                torch.rand(1, device=draft_device)
+                if rng is None
+                else rng.rand((1,), device=draft_device)
+            )
             j = draft_tokens[:, i]
             q_token = selected_q[:, i : i + 1]
             comm_simulator.transfer(j, q_token, "edge_cloud")
@@ -364,6 +395,7 @@ class AdaptiveDecodingMixin:
         transfer_top_k: Optional[int],
         charge_residual: bool,
         draft_device: torch.device,
+        rng: Optional[DecodingRng] = None,
     ) -> torch.Tensor:
         """Bill a rejection if needed, sample one token, then roll back target.
 
@@ -374,6 +406,7 @@ class AdaptiveDecodingMixin:
         if not proposal.prefix_len - 1 <= n <= proposal.prefix_len + proposal.gamma - 1:
             raise ValueError("accepted position is outside the adaptive proposal")
         stage_probs = proposal.probabilities
+        draw = sample if rng is None else rng.sample
         if n < proposal.prefix_len + proposal.gamma - 1:
             comm_simulator.transfer(
                 None,
@@ -389,7 +422,7 @@ class AdaptiveDecodingMixin:
                     ),
                     "edge_cloud",
                 )
-            t = sample(
+            t = draw(
                 compute_residual_distribution(
                     target_model_cache.prob_history[:, n, : self.vocab_size].to(
                         draft_device
@@ -399,7 +432,7 @@ class AdaptiveDecodingMixin:
             )
         else:
             bonus_row = proposal.prefix_len + proposal.gamma - 1
-            t = sample(
+            t = draw(
                 target_model_cache.prob_history[:, bonus_row, : self.vocab_size]
             ).to(draft_device)
         target_model_cache.rollback(n + 1)
