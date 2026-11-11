@@ -212,8 +212,8 @@ def _run_generation_helper(adapter: DecodingAdapter, gamma: int):
 def test_real_adapter_in_generation_helper_does_not_stop_early():
     """p=0.8, threshold=0.3, gamma=5: all 5 draft tokens must be generated.
 
-    This is the real call path used by ``_adaptive_decoding_propose``; the old
-    implementation stopped at the second token because it accumulated the
+    This covers the shared generation helper, not adaptive's RNG-owned producer.
+    The old adapter stopped at the second token because it accumulated the
     product even in ``per_token`` mode.
     """
     adapter = _adapter(0.8, 0.3, "per_token")

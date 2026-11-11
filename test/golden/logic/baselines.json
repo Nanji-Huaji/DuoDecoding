@@ -819,18 +819,19 @@
       }
     },
     "AdaptiveDecodingMixin.adaptive_decoding": {
-      "events": 147,
-      "sha256_16": "202515d01e0d1702",
+      "events": 159,
+      "sha256_16": "cf5b6a6ae102b131",
       "surface": {
         "boolop": {
           "And": 5,
           "Or": 5
         },
         "break": {
-          "": 5
+          "": 6
         },
         "call": {
           "CommunicationSimulator": 1,
+          "DecodingRng": 1,
           "Event": 2,
           "KVCacheModel": 2,
           "PreciseCommunicationSimulator": 1,
@@ -838,7 +839,6 @@
           "_AdaptiveDecodeStats": 1,
           "_AdaptiveProposal": 1,
           "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 1,
           "_graph_mode_cache_kwargs": 1,
           "_reward_comm_s": 1,
           "_save_adaptive_rl_checkpoints": 1,
@@ -846,20 +846,22 @@
           "acquire_graph_caches": 1,
           "all": 1,
           "any": 1,
-          "append": 2,
+          "append": 3,
           "apply_transfer_top_k_cap": 1,
-          "cat": 2,
+          "cat": 4,
+          "clone": 1,
           "collect_verification_payload": 1,
           "color_print": 1,
           "compute_residual_distribution": 1,
           "copy": 3,
           "current_stream": 2,
+          "draw": 2,
           "dumps": 1,
           "elapsed_time": 1,
           "element_size": 1,
           "exp": 1,
           "float": 2,
-          "forward_context": 2,
+          "forward_context": 3,
           "get": 5,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
@@ -870,8 +872,10 @@
           "min": 3,
           "numel": 1,
           "open": 1,
+          "predict": 1,
           "proposal_top_k": 1,
-          "range": 1,
+          "range": 2,
+          "rebuild_topk_uniform_probs": 1,
           "record": 2,
           "reject_tail_scalar_bytes": 1,
           "reset_step": 1,
@@ -882,8 +886,9 @@
           "step": 1,
           "synchronize": 1,
           "time": 2,
-          "to": 8,
+          "to": 7,
           "tuple": 2,
+          "unsqueeze": 1,
           "write": 1
         },
         "comm": {
@@ -908,7 +913,7 @@
           "gamma": 1
         },
         "loop": {
-          "for": 2,
+          "for": 3,
           "while": 1
         },
         "raise": {
@@ -918,8 +923,7 @@
           "": 1
         },
         "rng": {
-          "rand": 1,
-          "sample": 1
+          "rand": 2
         },
         "try": {
           "": 1
