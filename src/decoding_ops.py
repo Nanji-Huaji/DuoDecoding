@@ -109,11 +109,14 @@ def _prepare_legacy_verification_inputs(
 ) -> VerificationInputs:
     """Legacy clipped-window adapter, NOT the strict A4 proposal contract.
 
-    Phase-B removal list: CUHLM, TK-SLT, CEE combination stages and the legacy
-    bandwidth SD wrapper still use this adapter (directly or through the stage
-    wrappers below). Their historical partial-history handling is retained here
-    explicitly; migrated SD/DSD/DSSD must use verification.ProposalWindow instead.
-    No fallback from the strict contract to this adapter is allowed.
+    Phase-B removal list: CUHLM, CEE combination stages and the legacy bandwidth
+    SD wrapper still use this adapter (directly or through the stage wrappers
+    below). Their historical partial-history handling is retained here
+    explicitly; migrated SD/DSD/DSSD must use verification.ProposalWindow
+    instead. TK-SLT migrated to the strict wire contract
+    (:mod:`src.tk_slt_proposal` plus ``verification.ProposalWindow``) and is no
+    longer a consumer of this adapter. No fallback from the strict contract to
+    this adapter is allowed.
     """
     draft_device = draft_model_cache.device
     draft_probs = draft_model_cache.prob_history
@@ -252,15 +255,21 @@ def compute_legacy_tk_slt_fp16_acceptance_result(
     *,
     r: Optional[torch.Tensor] = None,
 ) -> AcceptanceResult:
-    """TK-SLT-only bridge for its retained approximate FP16 wire protocol.
+    """Historical TK-SLT bridge for its retired approximate FP16 wire protocol.
 
-    Candidates were sampled from raw q, but this interface receives wire qhat
-    AFTER quantization. A supported raw sample can therefore have qhat=0.
-    Preserve the legacy ratio semantics: p>0/qhat=0 accepts, p=qhat=0 rejects.
-    This is NOT exact rejection sampling against actual q; new exact protocols
-    must use compute_acceptance_result or verification.ProposalWindow instead.
-    No epsilon, renormalization, or substitution changes the reported wire qhat.
-    Phase B must reassess/remove this bridge with the TK-SLT sampling/wire law.
+    Retained only as an explicit compatibility callable (and for the tests that
+    pin the retired codec's semantics). The active TK-SLT decoder no longer calls
+    it: proposals are sampled from the FP16 wire payload itself and verified by
+    ``verification.ProposalWindow`` / ``prepare_verification_window`` /
+    ``decide_verification``. No active decoder needs this bridge.
+
+    Its semantics: candidates were sampled from raw q, but this interface
+    receives wire qhat AFTER quantization. A supported raw sample can therefore
+    have qhat=0. Preserve the legacy ratio semantics: p>0/qhat=0 accepts,
+    p=qhat=0 rejects. This is NOT exact rejection sampling against actual q; any
+    new protocol must use compute_acceptance_result or
+    verification.ProposalWindow instead. No epsilon, renormalization, or
+    substitution changes the reported wire qhat.
     """
     return _compute_acceptance_result(verification_inputs, r=r, fp16_wire_q=True)
 

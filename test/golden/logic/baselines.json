@@ -11,7 +11,9 @@
     "src/baselines/dual.py",
     "src/baselines/cuhlm.py",
     "src/baselines/tk_slt.py",
-    "src/tk_slt_policy.py"
+    "src/tk_slt_policy.py",
+    "src/tk_slt_proposal.py",
+    "src/decoding_rng.py"
   ],
   "rev": "WORKTREE",
   "entries": {
@@ -398,63 +400,86 @@
       }
     },
     "TkSltMixin.tk_slt": {
-      "events": 171,
-      "sha256_16": "49ddf61475a7572d",
+      "events": 384,
+      "sha256_16": "b4ca5ec6ccb35c2a",
       "surface": {
         "boolop": {
-          "And": 6,
-          "Or": 1
+          "And": 7,
+          "Or": 19
         },
         "break": {
           "": 6
         },
         "call": {
           "CommunicationSimulator": 1,
+          "Context": 1,
+          "Decimal": 4,
+          "DecodingRng": 1,
           "Event": 2,
+          "Fraction": 2,
           "KVCacheModel": 2,
           "PreciseCommunicationSimulator": 1,
-          "ValueError": 6,
+          "ProposalWindow": 1,
+          "TkSltProposal": 1,
+          "TkSltWireRow": 1,
+          "ValueError": 47,
           "_check_stopping_criteria": 2,
-          "_compute_legacy_tk_slt_fp16_acceptance_result": 1,
           "_graph_mode_cache_kwargs": 1,
+          "_increasing": 3,
           "_kv_cache_construction_key": 2,
           "_last_edge_cloud_tx_seconds": 2,
-          "_move_token_tensor": 6,
-          "_prepare_legacy_verification_inputs": 1,
-          "_quantize_probs_fp16": 1,
+          "_move_token_tensor": 7,
           "_stop_at_eos": 2,
           "_validate_token_range": 6,
           "acquire_graph_caches": 1,
-          "append": 3,
+          "all": 4,
+          "any": 2,
+          "append": 4,
           "apply_rollback": 2,
-          "bool": 1,
-          "build_draft_probs_override": 1,
+          "bool": 7,
           "build_rollback_plan": 1,
+          "callable": 1,
           "cat": 3,
           "clone": 1,
           "color_print": 2,
           "copy": 3,
+          "cumsum": 1,
           "current_stream": 2,
+          "decide_verification": 1,
+          "dense": 1,
+          "dense_rows": 1,
+          "device": 1,
           "dim": 12,
           "elapsed_time": 1,
-          "float": 2,
-          "forward_context": 3,
-          "generate": 1,
+          "empty": 1,
+          "float": 13,
+          "forward_context": 4,
+          "from_float": 3,
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
-          "int": 6,
+          "index": 7,
+          "int": 7,
+          "is_floating_point": 1,
+          "isfinite": 9,
+          "isinstance": 11,
           "list": 2,
-          "materialize_acceptance": 1,
-          "min": 2,
+          "localcontext": 1,
+          "min": 4,
+          "numel": 1,
+          "prepare_verification_window": 1,
+          "range": 1,
           "record": 2,
+          "reshape": 1,
+          "sort": 1,
+          "sum": 3,
           "synchronize": 1,
           "time": 10,
-          "tk_slt_optimal_draft_length": 1,
           "tk_slt_uplink_payload_bytes": 1,
-          "to": 8,
-          "tuple": 7,
-          "unsqueeze": 6
+          "to": 12,
+          "tuple": 8,
+          "unsqueeze": 6,
+          "validate_probability_rows": 3
         },
         "comm": {
           "flush_round": 2,
@@ -464,6 +489,9 @@
         },
         "continue": {
           "": 1
+        },
+        "except": {
+          "": 7
         },
         "flag": {
           "gamma": 1,
@@ -478,17 +506,21 @@
           "tk_slt_odld": 1
         },
         "loop": {
-          "while": 1
+          "for": 1,
+          "while": 3
         },
         "raise": {
-          "": 6
+          "": 47
         },
         "return": {
           "": 1
         },
         "rng": {
-          "sample_accept_token": 1,
-          "sample_reject_token": 1
+          "rand": 1,
+          "sample": 5
+        },
+        "try": {
+          "": 7
         }
       }
     },

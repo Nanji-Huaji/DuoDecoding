@@ -2,21 +2,43 @@
 
 The complete ``tk_slt`` / ``tkslt`` loop lives here as an independent family
 mixin.  It keeps the paper-specific protocol rather than reusing the SD/DSD
-verification skeleton: the draft law is the sparse softmax over top-K logits,
-the uplink carries FP16-quantized sparse probabilities, and rejects resample
-from the server-side sparse wire law.
+verification skeleton: the draft law is the sparse top-K model law, the uplink
+carries its explicit FP16 probability payload, and rejection uses the positive
+residual of the target law against that same wire proposal.
+
+Probability-wire variant (2026-11-11): a proposal is now *defined* by the row
+that is actually sent and verified.  :mod:`src.tk_slt_proposal` validates the
+model row before sampler preprocessing, selects exactly ``min(K, V)``
+coordinates (``sampling.py`` masks ``logits < threshold``, so tied top-K logits
+keep more than K positives), renormalizes the retained mass, writes real FP16
+values with negligible sorted indices, and the draft loop samples the dense-V
+FP16 row rebuilt from that payload.  The receiver rebuilds the same row from the
+same payload on the target device and runs the strict ``ProposalWindow`` /
+``prepare_verification_window`` / ``decide_verification`` contract, so
+acceptance, the stable residual and the emitted token all refer to one
+categorical law.  With ``Q=[.6,.4]`` the old loop emitted the raw Q law while
+verifying ``P=wire(Q)`` (TVD 9.76502895e-5) and could sample a token whose wire
+support was 0.  Both are gone: no unbilled dense model row reaches the receiver,
+and an invalid wire payload fails closed instead of being repaired.
+
+This remains an explicit probability-wire variant: it does not claim bit-exact
+real arithmetic, GPU validation or a literal reproduction of the paper's
+ambiguous logits terminology.  The repository's global draft/target temperature
+stays in force (the paper's draft T=1 is not silently imposed). Every draw uses
+one per-invocation ``DecodingRng`` context with distinct device keys, avoiding
+cloned default-CUDA streams after ``torch.manual_seed``. This intentionally
+changes RNG consumption; real multi-GPU execution remains unvalidated.
+The dedicated
+``compute_legacy_tk_slt_fp16_acceptance_result`` bridge in ``decoding_ops`` is
+retained only as a historical callable; this loop no longer uses it.
 
 Batch scope (2026-11-11): module migration plus the target-forward cleanup --
-standalone, remaining-budget fallback and verification now call the public
+standalone, remaining-budget fallback and verification call the public
 ``KVCacheModel.forward_context`` instead of ``generate`` when the extra sampled
-token was always discarded.  Forward endpoints, cache rollback, wire bytes,
-sampling laws and communication ordering are unchanged.
-
-This remains an explicitly approximate legacy protocol: proposals are sampled
-from raw top-K Q while the receiver verifies with the FP16-roundtripped Qhat.
-Positive raw support can therefore be zero on the wire; the dedicated
-``compute_legacy_tk_slt_fp16_acceptance_result`` bridge is retained and this
-module does not claim target-distribution exactness.
+token was always discarded, and the draft loop advances the same way one step at
+a time.  Forward endpoints (``prefix + gamma - 1``), cache construction keys,
+graph-cache identity/reset, wire bytes and communication ordering are unchanged.
+The intended sampling change is the proposal law itself (now the FP16 wire law).
 """
 
 import time
@@ -30,21 +52,12 @@ from ..baselines_helpers import (
     _finalize_comm_metrics,
     _last_edge_cloud_tx_seconds,
     _move_token_tensor,
-    _quantize_probs_fp16,
-    _sample_token_from_probs,
     _send_downlink_index_only,
     _validate_token_range,
 )
 from ..communication import CommunicationSimulator, tk_slt_uplink_payload_bytes
-from ..decoding_ops import (
-    _prepare_legacy_verification_inputs,
-    apply_rollback,
-    build_rollback_plan,
-    compute_legacy_tk_slt_fp16_acceptance_result as _compute_legacy_tk_slt_fp16_acceptance_result,
-    materialize_acceptance,
-    sample_accept_token,
-    sample_reject_token,
-)
+from ..decoding_ops import apply_rollback, build_rollback_plan
+from ..decoding_rng import DecodingRng
 from ..graph_decode import (
     acquire_graph_caches,
 )
@@ -56,15 +69,34 @@ from ..graph_decode import (
 )
 from ..metrics import DecodingMetrics, get_empty_metrics
 from ..model_gpu import KVCacheModel
-from ..proposal_utils import build_draft_probs_override
+from ..probability_laws import validate_probability_rows
 from ..register import Register
 from ..tk_slt_policy import tk_slt_select_speculative
+from ..tk_slt_proposal import build_draft_proposal
+from ..verification import (
+    ProposalWindow,
+    decide_verification,
+    prepare_verification_window,
+)
 from .simulators import _make_symmetric_comm_simulator
-
 
 #: TK-SLT ODLD（--tk_slt_odld）的 γ* 上限：估计噪声下防病态值；
 #: 论文 Table I 的最大 γ* 是 14（α=0.8、L=0.01），64 只在极端估计下触及。
 _TK_SLT_ODLD_GAMMA_CAP = 64
+
+
+def _sample_tk_token(
+    rng: DecodingRng,
+    probs: torch.Tensor,
+    *,
+    output_device: torch.device,
+    vocab_size: int,
+    label: str,
+) -> torch.Tensor:
+    """Keep token-boundary checks while drawing from this decode's private RNG."""
+    token = _ensure_token_shape(rng.sample(probs), label=label)
+    _validate_token_range(token, vocab_size=vocab_size, label=label)
+    return _move_token_tensor(token, output_device)
 
 
 class TkSltMixin:
@@ -90,16 +122,28 @@ class TkSltMixin:
         论文 "Communication-Efficient Collaborative LLM Inference via
         Distributed Speculative Decoding"（WCSP'25, Zheng & Yang）：DSD 框架
         下，端侧 SLM 只对 top-K logits 做 softmax——草稿分布 Y_i 的支撑集
-        就是 top-K（§III Solution 1），采样自该稀疏分布；上行每个草稿位置
-        只传 K 个概率值 + 词表索引，BS 用重建的稀疏 Q 做标准投机验证，
-        拒绝时从 norm(max(0, P−Q)) 重采样（稀疏 Q ⇒ 非 top-K 位置拿到
-        完整的 P，正是论文的残差定义）。
+        就是 top-K（§III Solution 1）；上行每个草稿位置只传 K 个概率值 +
+        词表索引，BS 用重建的稀疏 Q 做标准投机验证，拒绝时从
+        norm(max(0, P−Q̂)) 重采样（稀疏 Q̂ ⇒ 非 top-K 位置拿到完整的 P，
+        正是论文的残差定义）。
+
+        本实现是**显式概率-wire 变体**：提案律就是上行/验证实际使用的
+        那个律。`src/tk_slt_proposal.py` 先校验模型概率行（采样器预处理
+        之前），显式选正好 min(K,V) 个坐标（top-K 平局会让 mask 保留多于
+        K 个正项），按保留质量重归一化后写成真实 FP16 值 + negligible
+        排序索引；草稿从该 payload 重建的 dense-V FP16 行采样，接收端只
+        从同一 payload 重建并走 strict `ProposalWindow` /
+        `prepare_verification_window` / `decide_verification`。因此接受
+        判据、稳定残差和输出 token 都指向同一个分类律——不再出现
+        "raw Q 采样 + FP16 Q̂ 验证"（Q=[.6,.4] 时首 token 与原 P 的 TVD
+        9.76502895e-5，且正的 1e-8 尾部可在 wire 上为 0 却仍被采到）。
 
         通信口径 = 论文自身（与 CUHLM 系同一处理方式，见 docs/protocol.md
         §3.1/§3.3），不接仓库统一计费开关：
-        - 上行：γ·K·b_prob bits，b_prob=16（FP16，§VI-B）。概率值**真实**
-          量化到 fp16 再按行重归一化——验证判据与计费看到同一个 q̂
-          （B15/B16 的"计费与数据一致"原则）；
+        - 上行：γ·K·b_prob bits，b_prob=16（FP16，§VI-B）。载荷就是
+          min(K,V) 个真实 FP16 值/位置（K<=0/None ⇒ 整词表 V 值），
+          验证判据与计费看到同一个 payload（B15/B16 的"计费与数据一致"
+          原则）；索引按 §II-B negligible；
         - 草稿 token 索引、下行响应（结果 token + 位置 j）按 §II-B 判为
           negligible：0 字节报文，链路模型仍按报文计一次 NTT；
         - K<=0/None ⇒ 整词表载荷 + 全量 softmax 提议（vanilla DSD，
@@ -115,7 +159,10 @@ class TkSltMixin:
         verification call ``forward_context`` and sample exactly the tokens
         they keep.  The pre-migration ``generate(..., 1)`` calls drew an extra
         target token that was always discarded, so this intentionally changes
-        the RNG stream without changing the sampled-token laws.
+        the RNG stream without changing the sampled-token laws.  The draft loop
+        likewise advances one ``forward_context`` step per draft token and
+        samples the reconstructed FP16 wire row; it ends at the same
+        ``prefix + gamma - 1`` endpoint as the old ``generate`` did.
         """
         comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
             self.comm_env,
@@ -137,9 +184,9 @@ class TkSltMixin:
         # 口径自述随 metrics 落盘（F-CUHLM 同款），保证论文口径跑出的工件
         # 可辨识、不与仓库统一口径的结果混排。
         _dev = (
-            "tk_slt_paper_accounting: uplink=gamma*K*b_prob(FP16 16b, "
-            "real-quantized), indices negligible, "
-            "reject-resample=server-side sparse fp16 Q; "
+            "tk_slt_paper_accounting: uplink=gamma*min(K,V)*b_prob(FP16 16b, "
+            "real wire values+negligible indices), "
+            "reject-resample=strict server-side wire law; "
             "round_trip=unified(1xNTT/round since 2026-10-09)"
         )
         _devs = list(getattr(self.args, "protocol_deviations", ()) or ())
@@ -231,6 +278,9 @@ class TkSltMixin:
 
         _tri_prompt_len = prefix.shape[1]  # EOS 早停的生成段起点（B10）
 
+        # One lazy context for every draw in this invocation, across all rounds.
+        # Equal default CUDA seeds must not clone proposal/acceptance randomness.
+        rng = DecodingRng()
         while prefix.shape[1] < max_tokens:
             # 循环内 EOS 早停（B10）：计算与通信在 EOS 后立即停，
             # 时延口径与 dsd/dssd/adaptive_* 对齐
@@ -293,8 +343,15 @@ class TkSltMixin:
                     if self.accelerator.is_main_process:
                         self.target_forward_times += 1
 
-                    t = _sample_token_from_probs(
-                        target_model_cache.prob_history[:, -1, : self.vocab_size],
+                    target_row = target_model_cache.prob_history[
+                        :, -1, : self.vocab_size
+                    ]
+                    # 采样前显式校验目标行：不依赖 sampling_weights 对无效行的
+                    # one-hot 兜底（strict 契约不允许"发明"一个分布）。
+                    validate_probability_rows(target_row, "tk_slt.standalone_t")
+                    t = _sample_tk_token(
+                        rng,
+                        target_row,
                         output_device=prefix.device,
                         vocab_size=self.vocab_size,
                         label="tk_slt.standalone_t",
@@ -325,8 +382,14 @@ class TkSltMixin:
                 if self.accelerator.is_main_process:
                     self.target_forward_times += 1
 
-                t = _sample_token_from_probs(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
+                target_row = target_model_cache.prob_history[
+                    :, -1, : self.vocab_size
+                ]
+                # 采样前显式校验目标行（同上：无无效行兜底）。
+                validate_probability_rows(target_row, "tk_slt.fallback_t")
+                t = _sample_tk_token(
+                    rng,
+                    target_row,
                     output_device=prefix.device,
                     vocab_size=self.vocab_size,
                     label="tk_slt.fallback_t",
@@ -335,13 +398,22 @@ class TkSltMixin:
                 self.num_acc_tokens.append(1)
                 break
 
-            # ---- Draft：top-K 稀疏采样（softmax 只作用于 top-K logits）----
+            # ---- Draft：概率-wire 提议（先选支撑/FP16 编码，再从 wire 行采样）----
+            # 每步 forward_context 推进一格，编码后立即从重建的 dense-V FP16
+            # 行采样；缓存端点仍是 prefix+γ-1（与旧 generate 相同），token 写入
+            # 预分配缓冲，不做逐步增长的 torch.cat。
             t0 = time.time()
-            x = approx_model_cache.generate(
-                _move_token_tensor(prefix, draft_device), current_gamma
+            draft = build_draft_proposal(
+                approx_model_cache,
+                _move_token_tensor(prefix, draft_device),
+                current_gamma,
+                draft_sampling_top_k,
+                vocab_size=self.vocab_size,
+                device=draft_device,
+                rng=rng,
             )
             draft_comp_time += time.time() - t0
-            x = _ensure_token_shape(x, label="tk_slt.generated_x")
+            x = _ensure_token_shape(draft.tokens, label="tk_slt.generated_x")
             _validate_token_range(
                 x, vocab_size=self.vocab_size, label="tk_slt.generated_x"
             )
@@ -354,18 +426,11 @@ class TkSltMixin:
             sum_draft_len += current_gamma
             sum_top_k += topk_history_val
 
-            # ---- 上行：K 个概率/草稿位置，FP16 量化后传输 ----
-            # prob_history 行 = 稀疏分布（temp>0 时非零项 ≤ K；temp=0 时
-            # one-hot）。窗口按"本轮输入前缀之后"切片，与计费的 γ 一致。
-            window_end = min(
-                prefix_len + current_gamma - 1, approx_model_cache.prob_history.shape[1]
-            )
-            draft_prob_window = approx_model_cache.prob_history[
-                :, prefix_len - 1 : window_end, :
-            ]
-            window_rows = int(draft_prob_window.shape[1])
-            quantized_window = _quantize_probs_fp16(draft_prob_window)
-
+            # ---- 上行：真实稀疏 wire 值（每值 2B）+ negligible 索引 ----
+            # 载荷 = γ·min(K,V) 个 FP16 值（K<=0/None ⇒ γ·V），与
+            # tk_slt_uplink_payload_bytes 的论文口径逐值一致；索引与下行按
+            # §II-B negligible。没有额外的 dense Q 旁路。
+            window_rows = draft.count
             comm_simulator.simulate_transfer(
                 tk_slt_uplink_payload_bytes(
                     transfer_top_k, window_rows, self.vocab_size
@@ -383,7 +448,7 @@ class TkSltMixin:
                     t_v_seconds += _tx_seconds
                     t_v_dists += window_rows
 
-            # ---- Verify：BS 用收到的稀疏 FP16 分布做标准投机验证 ----
+            # ---- Verify：BS 只从已计费 payload 重建，再走 strict 契约 ----
             queuing_time += batch_delay
             t0 = time.time()
             # 只推进 target 上下文，不采丢弃 token：候选窗口与 prefill/extend
@@ -400,30 +465,30 @@ class TkSltMixin:
                 self.draft_forward_times += current_gamma
                 self.target_forward_times += 1
 
-            verification_inputs = _prepare_legacy_verification_inputs(
-                draft_model_cache=approx_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
+            # 接收端在 target 设备上从 payload 重建 dense-V FP16 行：target
+            # 的完整 P 不会伪装成发给草稿的未计费数据；round-local wire 行是
+            # 不可变的稀疏值+索引，后续缓存写入不会改动它。
+            proposal = ProposalWindow(
+                tokens=x,
+                probabilities=draft.dense_rows(device=target_device),
                 prefix_len=prefix_len,
-                gamma=current_gamma,
-                draft_probs_override=build_draft_probs_override(
-                    approx_model_cache,
-                    prefix_len,
-                    quantized_window,
-                ),
             )
-            # FP16 wire q may lose support present in the actual sampling law.
-            acceptance_result = _compute_legacy_tk_slt_fp16_acceptance_result(
-                verification_inputs
+            # 先验完整个窗口（维度/词表/概率质量），再取接受随机数：非法
+            # target 或 wire 行在这里响亮失败，不落到任何 fallback。
+            window = prepare_verification_window(
+                proposal,
+                target_model_cache.prob_history[:, :, : self.vocab_size],
             )
-            (
-                this_step_accepted_tokens,
-                n,
-                _,
-            ) = materialize_acceptance(verification_inputs, acceptance_result)
+            acceptance_uniforms = rng.rand(
+                (1, proposal.count), device=proposal.probabilities.device
+            )
+            decision = decide_verification(window, acceptance_uniforms)
+
+            this_step_accepted_tokens = decision.accepted_count
+            n = decision.accepted_end
             total_accepted_tokens += this_step_accepted_tokens
             alpha_num += this_step_accepted_tokens
-            alpha_den += verification_inputs.actual_gamma
+            alpha_den += current_gamma
 
             self.num_acc_tokens.append(this_step_accepted_tokens)
 
@@ -431,7 +496,7 @@ class TkSltMixin:
             prefix = x[:, : n + 1]
             rollback_plan = build_rollback_plan(
                 prefix_len,
-                verification_inputs.actual_gamma,
+                current_gamma,
                 n,
             )
 
@@ -444,29 +509,15 @@ class TkSltMixin:
                 )
                 break
 
-            if not rollback_plan.all_accepted:
-                # 拒绝路径：BS 基于已持有的稀疏 FP16 分布 Q̂ 从
-                # norm(max(0, P−Q̂)) 重采样（论文 §II-A 3b；稀疏 Q ⇒
-                # 非 top-K 位置拿到完整的 P）。无额外传输。
-                rejection_offset = n - (prefix_len - 1)
-                t = sample_reject_token(
-                    verification_inputs.target_probs_batch[
-                        :, rejection_offset, : self.vocab_size
-                    ],
-                    verification_inputs.draft_probs_batch[
-                        :, rejection_offset, : self.vocab_size
-                    ],
-                    output_device=prefix.device,
-                )
-            else:
-                # 全接受路径：从 P_{γ+1} 采样 bonus token
-                t = sample_accept_token(
-                    target_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=prefix.device,
-                )
-            t = _ensure_token_shape(t, label="tk_slt.sampled_t")
-            _validate_token_range(
-                t, vocab_size=self.vocab_size, label="tk_slt.sampled_t"
+            # 续采：接受分支 = P_{γ+1}（target bonus 行）；拒绝分支 = strict
+            # norm((P−Q̂)+)（论文 §II-A 3b；Q̂ 即已计费的 wire 行）。两者都由
+            # prepare/decide 给出：无 legacy max_fn 兜底、无额外抽样。
+            t = _sample_tk_token(
+                rng,
+                decision.continuation_probs,
+                output_device=prefix.device,
+                vocab_size=self.vocab_size,
+                label="tk_slt.sampled_t",
             )
 
             apply_rollback(
