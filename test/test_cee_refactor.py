@@ -371,95 +371,73 @@ class CeeRefactorTests(unittest.TestCase):
         self.assertEqual(instance.args.gamma1, self._orig_gamma1)
         self.assertEqual(instance.args.gamma2, self._orig_gamma2)
 
-    def test_cee_dssd_uses_stage_helper_twice(self):
+    def test_cee_dssd_budget_reserves_both_continuations(self):
         instance = self._make_instance("cee_dssd")
-        prefix = torch.tensor([[0]], dtype=torch.long)
-        stage_calls = []
-
-        def fake_stage_verify(
-            *,
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            output_device,
-            draft_probs_override=None,
-            draft_probs_batch_override=None,
-            draft_topk_history=None,
-        ):
-            stage_calls.append(
-                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
-            )
-            return (
-                gamma,
-                prefix_len + gamma - 1,
-                torch.tensor([[1]], dtype=torch.long),
-                True,
-            )
-
+        instance.args.max_tokens = 3
+        instance.args.gamma1, instance.args.gamma2 = 1, 2
+        _CeeForwardedCache.instances = []
         with (
-            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
+            torch.random.fork_rng(devices=[]),
+            patch("src.baselines.runtime.KVCacheModel", _CeeForwardedCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
-            patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
-            ),
+            patch("torch.cuda.Event", _FakeCudaEvent),
+            patch("torch.cuda.current_stream", return_value=None),
+            patch("torch.cuda.synchronize", return_value=None),
+            patch("torch.multinomial", wraps=torch.multinomial) as categorical,
         ):
-            instance.cee_dssd(prefix)
+            output, metrics = instance.cee_dssd(torch.tensor([[0]]))
+        self.assertEqual(output.tolist(), [[0, 1, 1, 1]])
+        self.assertEqual(categorical.call_count, 3)
+        self.assertTrue(
+            all(
+                call.kwargs.get("generator") is not None
+                for call in categorical.call_args_list
+            )
+        )
+        self.assertEqual(metrics["little_generated_tokens"], 1)
+        self.assertEqual(metrics["draft_generated_tokens"], 2)
+        self.assertEqual(metrics["little_accepted_tokens"], 1)
+        self.assertEqual(metrics["draft_accepted_tokens"], 2)
+        self.assertEqual(
+            {
+                cache.model.kind: cache.current_length
+                for cache in _CeeForwardedCache.instances
+            },
+            {"little": 1, "draft": 2, "target": 3},
+        )
 
-        self.assertEqual(stage_calls[0][:2], ("little", "draft"))
-        self.assertEqual(stage_calls[1][:2], ("draft", "target"))
-
-    def test_cee_dsd_uses_stage_helper_twice(self):
+    def test_cee_dsd_single_token_budget_is_target_only(self):
         instance = self._make_instance("cee_dsd")
-        prefix = torch.tensor([[0]], dtype=torch.long)
-        stage_calls = []
-
-        def fake_stage_verify(
-            *,
-            proposer_cache,
-            verifier_cache,
-            x,
-            prefix_len,
-            gamma,
-            output_device,
-            draft_probs_override=None,
-            draft_probs_batch_override=None,
-            draft_topk_history=None,
-        ):
-            stage_calls.append(
-                (proposer_cache.model.kind, verifier_cache.model.kind, gamma)
-            )
-            return (
-                gamma,
-                prefix_len + gamma - 1,
-                torch.tensor([[1]], dtype=torch.long),
-                True,
-            )
-
+        instance.args.max_tokens = 1
+        instance.args.gamma1, instance.args.gamma2 = 1, 2
+        _CeeForwardedCache.instances = []
         with (
-            patch("src.baselines.runtime.KVCacheModel", _FakeCache),
+            torch.random.fork_rng(devices=[]),
+            patch("src.baselines.runtime.KVCacheModel", _CeeForwardedCache),
             patch(
                 "src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator
             ),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
-            patch(
-                "src.baselines.core.resolve_stage_verification",
-                side_effect=fake_stage_verify,
-            ),
+            patch("torch.cuda.Event", _FakeCudaEvent),
+            patch("torch.cuda.current_stream", return_value=None),
+            patch("torch.cuda.synchronize", return_value=None),
+            patch("torch.multinomial", wraps=torch.multinomial) as categorical,
         ):
-            instance.cee_dsd(prefix)
-
-        self.assertEqual(stage_calls[0][:2], ("little", "draft"))
-        self.assertEqual(stage_calls[1][:2], ("draft", "target"))
+            output, metrics = instance.cee_dsd(torch.tensor([[0]]))
+        self.assertEqual(output.tolist(), [[0, 1]])
+        self.assertEqual(categorical.call_count, 1)
+        self.assertIsNotNone(categorical.call_args.kwargs.get("generator"))
+        self.assertEqual(metrics["little_forward_times"], 0)
+        self.assertEqual(metrics["draft_forward_times"], 0)
+        self.assertEqual(metrics["target_forward_times"], 1)
+        self.assertEqual(
+            {
+                cache.model.kind: cache.current_length
+                for cache in _CeeForwardedCache.instances
+            },
+            {"little": 0, "draft": 0, "target": 1},
+        )
 
     def test_cee_cuhlm_does_not_use_stage_helper(self):
         instance = self._make_instance("cee_cuhlm")
@@ -512,11 +490,13 @@ class CeeRefactorTests(unittest.TestCase):
 
         sim = _FakeCommSimulator.instances[0]
         edge_cloud = [
-            size for kind, link, size in sim.calls
+            size
+            for kind, link, size in sim.calls
             if kind == "simulate" and link == "edge_cloud"
         ]
         edge_end = [
-            size for kind, link, size in sim.calls
+            size
+            for kind, link, size in sim.calls
             if kind == "simulate" and link == "edge_end"
         ]
 
@@ -525,9 +505,7 @@ class CeeRefactorTests(unittest.TestCase):
         self.assertEqual(edge_cloud, [cuhlm_uplink_payload_bytes(2, 4), 0.0])
         # Stage-1（起草分布上行）：gamma2=1 个位置 × k₁（transfer_top_k=300
         # 超过 V=4 钳到全词表 ⇒ 4×(8+2)/8 = 5.0 B）+ 轮末设备下行 0 字节 ×2。
-        self.assertEqual(
-            edge_end, [cuhlm_uplink_payload_bytes(300, 4), 0.0, 0.0]
-        )
+        self.assertEqual(edge_end, [cuhlm_uplink_payload_bytes(300, 4), 0.0, 0.0])
 
     def test_cee_cuhlm_ignores_rl_adapter_hooks(self):
         instance = self._make_instance("cee_cuhlm")
@@ -785,7 +763,6 @@ class CeeRefactorTests(unittest.TestCase):
 
     def test_cee_sd_opportunistic_calls_first_stage_draft_verify_when_transfer(self):
         self._assert_cee_opportunistic(should_transfer=True)
-
 
     def test_cee_cuhlm_passes_vocab_size_and_actual_draft_token(self):
         for precise, patch_target in (

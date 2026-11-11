@@ -13,7 +13,10 @@
     "src/baselines/tk_slt.py",
     "src/tk_slt_policy.py",
     "src/tk_slt_proposal.py",
-    "src/decoding_rng.py"
+    "src/decoding_rng.py",
+    "src/cee_proposal.py",
+    "src/cee_cascade.py",
+    "src/baselines/cee_distributed.py"
   ],
   "rev": "WORKTREE",
   "entries": {
@@ -1293,168 +1296,183 @@
         }
       }
     },
-    "Baselines.cee_dssd": {
-      "events": 126,
-      "sha256_16": "0252c99db0174a66",
+    "CeeDistributedMixin.cee_dsd": {
+      "events": 210,
+      "sha256_16": "46a1f2c28bfeb09d",
       "surface": {
         "boolop": {
-          "And": 4,
-          "Or": 1
+          "And": 2,
+          "Or": 5
         },
         "break": {
-          "": 2
-        },
-        "call": {
-          "CEETriPrefix": 1,
-          "CommunicationSimulator": 1,
-          "Event": 2,
-          "KVCacheModel": 3,
-          "PreciseCommunicationSimulator": 1,
-          "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 2,
-          "_graph_mode_cache_kwargs": 1,
-          "_stop_at_eos": 1,
-          "acquire_graph_caches": 1,
-          "append": 2,
-          "apply_transfer_top_k_cap": 1,
-          "assign": 2,
-          "build_stage_prefix_topk_history": 1,
-          "cast": 6,
-          "clone": 1,
-          "collect_verification_payload": 2,
-          "copy": 3,
-          "current_stream": 2,
-          "elapsed_time": 1,
-          "element_size": 3,
-          "generate": 2,
-          "get": 3,
-          "get_empty_metrics": 1,
-          "get_model_input_device": 3,
-          "int": 2,
-          "kv_cache_construction_key": 1,
-          "list": 1,
-          "merge_stage_topk_histories": 1,
-          "numel": 3,
-          "proposal_top_k": 1,
-          "record": 2,
-          "reject_tail_scalar_bytes": 2,
-          "resolve_stage_verification": 2,
-          "rollback": 1,
-          "stage_prob_history": 2,
-          "stage_topk_proposal_history": 3,
-          "synchronize": 1,
-          "to": 4
-        },
-        "comm": {
-          "flush_round": 1,
-          "send_reject_message": 2,
-          "set_round": 1,
-          "simulate_transfer": 5,
-          "transfer": 7
-        },
-        "flag": {
-          "gamma1": 6,
-          "gamma2": 8,
-          "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
-        },
-        "flag_getattr": {
-          "gamma1": 1,
-          "gamma2": 1
-        },
-        "loop": {
-          "while": 1
-        },
-        "return": {
           "": 1
         },
+        "call": {
+          "CascadeProposal": 5,
+          "CascadeStats": 1,
+          "CeeProbabilityCodec": 1,
+          "CommunicationSimulator": 1,
+          "DecodingRng": 1,
+          "Event": 2,
+          "PreciseCommunicationSimulator": 1,
+          "PreparedCascadeStage": 3,
+          "ProposalWindow": 5,
+          "ValueError": 13,
+          "_acquire_three_layer_caches": 1,
+          "_check_stopping_criteria": 1,
+          "_reject_payload": 2,
+          "any": 2,
+          "append": 3,
+          "apply_transfer_top_k_cap": 1,
+          "cat": 6,
+          "clone": 4,
+          "copy": 3,
+          "current_stream": 2,
+          "decide_verification": 3,
+          "dense": 8,
+          "elapsed_time": 1,
+          "element_size": 5,
+          "empty": 5,
+          "encode": 3,
+          "flush_round": 1,
+          "forward_context": 5,
+          "get": 3,
+          "get_empty_metrics": 2,
+          "graph_mode_cache_kwargs": 1,
+          "index": 2,
+          "int": 18,
+          "isinstance": 1,
+          "len": 5,
+          "list": 1,
+          "min": 4,
+          "new_empty": 3,
+          "numel": 3,
+          "prepare_verification_window": 3,
+          "range": 3,
+          "record": 2,
+          "rollback": 2,
+          "set_round": 1,
+          "simulate_transfer": 2,
+          "stack": 6,
+          "synchronize": 1,
+          "to": 8,
+          "transfer": 2,
+          "truncate_confirmed_eos": 1,
+          "tuple": 6,
+          "update": 1,
+          "values": 1
+        },
+        "comm": {
+          "simulate_transfer": 3
+        },
+        "flag": {
+          "gamma1": 1,
+          "gamma2": 1,
+          "max_tokens": 1
+        },
+        "loop": {
+          "for": 4,
+          "while": 1
+        },
+        "raise": {
+          "": 13
+        },
+        "return": {
+          "": 2
+        },
         "rng": {
-          "sample_accept_token": 2
+          "rand": 3,
+          "sample": 2
         }
       }
     },
-    "Baselines.cee_dsd": {
-      "events": 130,
-      "sha256_16": "ab039694c65e6691",
+    "CeeDistributedMixin.cee_dssd": {
+      "events": 210,
+      "sha256_16": "24fc5e0fce8eb7d8",
       "surface": {
         "boolop": {
-          "And": 4,
-          "Or": 1
+          "And": 2,
+          "Or": 5
         },
         "break": {
-          "": 2
-        },
-        "call": {
-          "CEETriPrefix": 1,
-          "CommunicationSimulator": 1,
-          "Event": 2,
-          "KVCacheModel": 3,
-          "PreciseCommunicationSimulator": 1,
-          "_check_stopping_criteria": 1,
-          "_generate_with_optional_rebuilt_proposal": 2,
-          "_graph_mode_cache_kwargs": 1,
-          "_simulate_topk_prob_transfer": 2,
-          "_stop_at_eos": 1,
-          "acquire_graph_caches": 1,
-          "append": 2,
-          "apply_transfer_top_k_cap": 1,
-          "assign": 2,
-          "build_stage_prefix_topk_history": 1,
-          "clone": 1,
-          "copy": 3,
-          "current_stream": 2,
-          "elapsed_time": 1,
-          "element_size": 3,
-          "generate": 2,
-          "generate_with_topk_metadata_only": 2,
-          "get": 3,
-          "get_empty_metrics": 1,
-          "get_model_input_device": 3,
-          "hasattr": 2,
-          "int": 2,
-          "kv_cache_construction_key": 1,
-          "list": 1,
-          "merge_stage_topk_histories": 1,
-          "min": 2,
-          "numel": 3,
-          "proposal_top_k": 1,
-          "record": 2,
-          "reject_residual_payload_bytes": 2,
-          "resolve_stage_verification": 2,
-          "rollback": 5,
-          "stage_topk_proposal_history": 1,
-          "synchronize": 1,
-          "to": 8
-        },
-        "comm": {
-          "flush_round": 1,
-          "send_reject_message": 2,
-          "set_round": 1,
-          "simulate_transfer": 5,
-          "transfer": 5
-        },
-        "flag": {
-          "gamma1": 7,
-          "gamma2": 9,
-          "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
-        },
-        "flag_getattr": {
-          "gamma1": 1,
-          "gamma2": 1
-        },
-        "loop": {
-          "while": 1
-        },
-        "return": {
           "": 1
         },
+        "call": {
+          "CascadeProposal": 5,
+          "CascadeStats": 1,
+          "CeeProbabilityCodec": 1,
+          "CommunicationSimulator": 1,
+          "DecodingRng": 1,
+          "Event": 2,
+          "PreciseCommunicationSimulator": 1,
+          "PreparedCascadeStage": 3,
+          "ProposalWindow": 5,
+          "ValueError": 13,
+          "_acquire_three_layer_caches": 1,
+          "_check_stopping_criteria": 1,
+          "_reject_payload": 2,
+          "any": 2,
+          "append": 3,
+          "apply_transfer_top_k_cap": 1,
+          "cat": 6,
+          "clone": 4,
+          "copy": 3,
+          "current_stream": 2,
+          "decide_verification": 3,
+          "dense": 8,
+          "elapsed_time": 1,
+          "element_size": 3,
+          "empty": 5,
+          "encode": 3,
+          "flush_round": 1,
+          "forward_context": 5,
+          "get": 3,
+          "get_empty_metrics": 2,
+          "graph_mode_cache_kwargs": 1,
+          "index": 2,
+          "int": 18,
+          "isinstance": 1,
+          "len": 5,
+          "list": 1,
+          "min": 4,
+          "new_empty": 3,
+          "numel": 3,
+          "prepare_verification_window": 3,
+          "range": 3,
+          "record": 2,
+          "rollback": 2,
+          "selected_probabilities": 2,
+          "set_round": 1,
+          "stack": 6,
+          "synchronize": 1,
+          "to": 8,
+          "transfer": 4,
+          "truncate_confirmed_eos": 1,
+          "tuple": 6,
+          "update": 1,
+          "values": 1
+        },
+        "comm": {
+          "simulate_transfer": 3
+        },
+        "flag": {
+          "gamma1": 1,
+          "gamma2": 1,
+          "max_tokens": 1
+        },
+        "loop": {
+          "for": 4,
+          "while": 1
+        },
+        "raise": {
+          "": 13
+        },
+        "return": {
+          "": 2
+        },
         "rng": {
-          "sample_accept_token": 2
+          "rand": 3,
+          "sample": 2
         }
       }
     }
