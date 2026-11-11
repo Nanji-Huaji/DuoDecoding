@@ -9,7 +9,9 @@ verifier (:mod:`src.cuhlm_verification`):
 * :func:`selected_probability_law` - the normalized selected scalar under the
   actual float32 sampler weights, with the global scale removed first;
 * :func:`positive_residual_law` - the stable ``normalize((P - Q)+)`` rejection
-  law computed from the pivot/cross-product form.
+  law computed from the pivot/cross-product form;
+* :func:`law_l1_distance` - the same centered cross-difference used as a stable
+  total-variation distance between two actual sampler laws.
 
 These functions draw no randomness, sample no token, touch no cache or
 communication state, and never mutate their inputs.  Callers validate raw rows
@@ -79,6 +81,36 @@ def selected_probability_law(
     return selected / relative.sum(dim=-1)
 
 
+def _centered_cross_difference(
+    target_weights: torch.Tensor, reference_weights: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return the centered cross-product difference and its two normalizers.
+
+    For float32 weights ``p`` (target) and ``q`` (reference), the returned
+    ``centered`` row is ``q[pivot] * sum(p) * (p/sum(p) - q/sum(q))``.  Both
+    factors ``q[pivot]`` and ``sum(p)`` are positive, so centering keeps the
+    sign of the law difference while products of two float32 values stay exact
+    in float64.  It also carries a tiny tail's contribution into the dominant
+    coordinate instead of losing it in a plain ``sum(p - q)``.
+
+    This is the shared math behind :func:`positive_residual_law` and
+    :func:`law_l1_distance`.  The residual kernel applies ``clamp_min(0)``,
+    sums, then divides exactly as before; the helper performs no normalization
+    on the unit-law scale.
+    """
+    p_weights = target_weights.double()
+    q_weights = reference_weights.double()
+    pivot = q_weights.argmax(dim=-1, keepdim=True)
+    p_pivot = torch.gather(p_weights, -1, pivot)
+    q_pivot = torch.gather(q_weights, -1, pivot)
+    delta = p_weights * q_pivot - q_weights * p_pivot
+    correction = delta.sum(dim=-1, keepdim=True) / q_weights.sum(
+        dim=-1, keepdim=True
+    )
+    centered = delta - q_weights * correction
+    return centered, q_pivot, p_weights.sum(dim=-1, keepdim=True)
+
+
 def positive_residual_law(
     target_weights: torch.Tensor,
     reference_weights: torch.Tensor,
@@ -103,16 +135,10 @@ def positive_residual_law(
     back to epsilon, a uniform tail, argmax or the original proposal; such a
     zero-residual reject cannot be sampled from the stated law.
     """
-    p_weights = target_weights.double()
-    q_weights = reference_weights.double()
-    pivot = q_weights.argmax(dim=-1, keepdim=True)
-    p_pivot = torch.gather(p_weights, -1, pivot)
-    q_pivot = torch.gather(q_weights, -1, pivot)
-    delta = p_weights * q_pivot - q_weights * p_pivot
-    correction = delta.sum(dim=-1, keepdim=True) / q_weights.sum(
-        dim=-1, keepdim=True
+    centered, _, _ = _centered_cross_difference(
+        target_weights, reference_weights
     )
-    residual = (delta - q_weights * correction).clamp_min(0)
+    residual = centered.clamp_min(0)
     mass = residual.sum(dim=-1, keepdim=True)
     if not torch.isfinite(mass).all() or (mass <= 0).any():
         raise ValueError(
@@ -120,3 +146,37 @@ def positive_residual_law(
             "cannot draw a rejection residual"
         )
     return residual / mass
+
+
+def law_l1_distance(
+    target_weights: torch.Tensor,
+    reference_weights: torch.Tensor,
+    *,
+    label: str = "probability laws",
+) -> torch.Tensor:
+    """Return ``sum(abs(p/sum(p) - q/sum(q)))`` for actual sampler weights.
+
+    ``target_weights`` and ``reference_weights`` are already-preprocessed
+    float32 sampler weights with shape ``(..., vocab)``.  Following
+    :func:`positive_residual_law`, the centered cross-product difference is
+    measured against ``q[pivot] * sum(p)``; the absolute sum of that centered
+    row divided by the same positive factor is their L1 distance (twice the
+    total-variation distance between the two categorical laws).
+
+    A plain double ``p - q`` after separate normalization can erase a tiny tail
+    (and the compensating change of the dominant coordinate) when the weights'
+    mass is close to one.  The centered form keeps that shift because the
+    cross-products are combined before any unit-law division.
+    """
+    centered, q_pivot, target_mass = _centered_cross_difference(
+        target_weights, reference_weights
+    )
+    denominator = q_pivot * target_mass
+    numerator = centered.abs().sum(dim=-1, keepdim=True)
+    if (
+        not torch.isfinite(numerator).all()
+        or not torch.isfinite(denominator).all()
+        or (denominator <= 0).any()
+    ):
+        raise ValueError(f"{label} have no positive finite sampled mass")
+    return numerator / denominator

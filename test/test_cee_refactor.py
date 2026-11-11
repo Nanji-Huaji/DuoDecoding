@@ -6,7 +6,12 @@ from unittest.mock import patch
 import torch
 
 from src.baselines import Baselines, _finalize_cuhlm_verification
-from src.communication import CommunicationSimulator, cuhlm_uplink_payload_bytes
+from src.baselines._cee_state import CeeProposal as _CeeProposal
+from src.communication import (
+    CUHLM,
+    CommunicationSimulator,
+    cuhlm_uplink_payload_bytes,
+)
 from src.utils import rebuild_topk_uniform_probs, sample
 
 
@@ -39,6 +44,8 @@ class _FakeCommSimulator:
     instances = []
 
     def __init__(self, *args, **kwargs):
+        self.constructor_kwargs = dict(kwargs)
+        self.determine_calls = []
         self.edge_cloud_comm_time = 0.0
         self.edge_end_comm_time = 0.0
         self.edge_cloud_data = 0
@@ -85,7 +92,8 @@ class _FakeCommSimulator:
     def calculate_uncertainty(self, logits, M=20, theta_max=2.0, draft_token=None):
         return 1.0
 
-    def determine_transfer_strategy(self, uncertainty, current_probs):
+    def determine_transfer_strategy(self, uncertainty, current_probs, draft_token=None):
+        self.determine_calls.append(draft_token)
         return True, 2
 
 
@@ -544,7 +552,9 @@ class CeeRefactorTests(unittest.TestCase):
         prefix = torch.tensor([[0]], dtype=torch.long)
 
         class _AlwaysAcceptComm(_FakeCommSimulator):
-            def determine_transfer_strategy(self, uncertainty, current_probs):
+            def determine_transfer_strategy(
+                self, uncertainty, current_probs, draft_token=None
+            ):
                 return False, 2
 
         with (
@@ -688,7 +698,9 @@ class CeeRefactorTests(unittest.TestCase):
         _CeeCommunicationSimulator.instances = []
 
         class _UncertaintyGate(_FakeCommSimulator):
-            def determine_transfer_strategy(self, uncertainty, current_probs):
+            def determine_transfer_strategy(
+                self, uncertainty, current_probs, draft_token=None
+            ):
                 return should_transfer, 2 if should_transfer else 0
 
         with (
@@ -773,6 +785,87 @@ class CeeRefactorTests(unittest.TestCase):
 
     def test_cee_sd_opportunistic_calls_first_stage_draft_verify_when_transfer(self):
         self._assert_cee_opportunistic(should_transfer=True)
+
+
+    def test_cee_cuhlm_passes_vocab_size_and_actual_draft_token(self):
+        for precise, patch_target in (
+            (False, "src.baselines.core.CUHLM"),
+            (True, "src.baselines.core.PreciseCUHLM"),
+        ):
+            _FakeCommSimulator.instances = []
+            instance = self._make_instance("cee_cuhlm")
+            instance.args.max_tokens = 2
+            prefix = torch.tensor([[0]], dtype=torch.long)
+            with (
+                patch("src.baselines.core.KVCacheModel", _FakeCache),
+                patch(patch_target, _FakeCommSimulator),
+                patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
+                patch(
+                    "src.baselines.core.torch.cuda.current_stream",
+                    return_value=None,
+                ),
+                patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
+            ):
+                instance.cee_cuhlm(prefix, use_precise_comm_sim=precise)
+
+            comm = _FakeCommSimulator.instances[-1]
+            self.assertEqual(comm.constructor_kwargs.get("vocab_size"), 4)
+            self.assertTrue(comm.determine_calls)
+            self.assertEqual(set(comm.determine_calls), {1})
+
+    def test_cee_first_stage_reuses_the_actual_proposal_token(self):
+        class _Gate(CUHLM):
+            def __init__(self):
+                super().__init__(20.0, vocab_size=4)
+                self.calculated_token = None
+                self.strategy_token = None
+
+            def calculate_uncertainty(
+                self, logits, M=20, theta_max=2.0, draft_token=None
+            ):
+                self.calculated_token = draft_token
+                return 0.5
+
+            def determine_transfer_strategy(
+                self, uncertainty, current_probs, draft_token=None
+            ):
+                self.strategy_token = draft_token
+                return False, 0
+
+        class _Comm:
+            def __init__(self):
+                self.calls = []
+
+            def simulate_transfer(self, size, link_type, *args, **kwargs):
+                self.calls.append((link_type, size))
+                return 0.0
+
+            def send_accept_message(self, link_type):
+                self.calls.append((link_type, "accept"))
+
+        gate = _Gate()
+        proposal = _CeeProposal(
+            tokens=torch.tensor([[0, 1]]),
+            probabilities=torch.full((1, 1, 4), 0.25),
+            prefix_len=1,
+        )
+        little_cache = SimpleNamespace(logits_history=torch.zeros(1, 1, 4))
+        instance = object.__new__(_TestBaselines)
+        instance.vocab_size = 4
+        verification, _ = Baselines._cee_first_stage(
+            instance,
+            proposal,
+            little_cache,
+            None,
+            _Comm(),
+            uncertainty_sim=gate,
+            prob_payload_bits=16,
+            charge_residual=False,
+            proposal_top_k=2,
+        )
+        self.assertEqual(gate.calculated_token, 1)
+        self.assertEqual(gate.strategy_token, 1)
+        self.assertTrue(verification.skipped)
 
 
 if __name__ == "__main__":
