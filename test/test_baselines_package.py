@@ -38,8 +38,8 @@ EXPECTED_REGISTRATIONS = {
     "adaptive_decoding": "AdaptiveDecodingMixin.adaptive_decoding",
     "adaptive_tridecoding": "CeeSdMixin.adaptive_tridecoding",
     "cee_cuhlm": "Baselines.cee_cuhlm",
-    "cee_dsd": "Baselines.cee_dsd",
-    "cee_dssd": "Baselines.cee_dssd",
+    "cee_dsd": "CeeDistributedMixin.cee_dsd",
+    "cee_dssd": "CeeDistributedMixin.cee_dssd",
     "cee_sd": "CeeSdMixin.adaptive_tridecoding",
     "cee_sd_no_arp": "CeeSdMixin.cee_sd_no_arp",
     "cee_sd_opportunistic": "CeeSdMixin.cee_sd_opportunistic",
@@ -120,7 +120,9 @@ def test_reloading_entry_does_not_repeat_decoding_registration():
 def test_legacy_pickle_global_names_still_resolve():
     # Protocol-0 globals model existing references to the old module location.
     assert pickle.loads(b"csrc.baselines\nBaselines\n.") is Baselines
-    assert pickle.loads(b"csrc.baselines\n_make_comm_simulator\n.") is _make_comm_simulator
+    assert (
+        pickle.loads(b"csrc.baselines\n_make_comm_simulator\n.") is _make_comm_simulator
+    )
     assert pickle.loads(pickle.dumps(Baselines)) is Baselines
 
 
@@ -134,6 +136,9 @@ def test_legacy_pickle_global_names_still_resolve():
         ["src.baselines.core", "src.baselines.simulators", "src.baselines"],
         ["src.register", "src.baselines.simulators", "src.baselines.core"],
         ["src.baselines.cee", "src.baselines"],
+        ["src.baselines.cee_distributed", "src.baselines"],
+        ["src.cee_cascade", "src.baselines.core"],
+        ["src.cee_proposal", "src.baselines.cee_distributed"],
         ["src.baselines.cuhlm", "src.baselines"],
         ["src.dual_decoding", "src.engine", "src.baselines.dual"],
         ["src.baselines.dual", "src.baselines", "src.engine"],
@@ -150,6 +155,7 @@ from src.baselines import (
     Baselines,
     adaptive,
     cee,
+    cee_distributed,
     core,
     cuhlm,
     operations,
@@ -164,6 +170,8 @@ assert _make_comm_simulator is simulators._make_comm_simulator
 assert Baselines.adaptive_decoding is adaptive.AdaptiveDecodingMixin.adaptive_decoding
 assert Baselines.adaptive_tridecoding is cee.CeeSdMixin.adaptive_tridecoding
 assert Baselines.cee_sd_no_arp is cee.CeeSdMixin.cee_sd_no_arp
+assert Baselines.cee_dsd is cee_distributed.CeeDistributedMixin.cee_dsd
+assert Baselines.cee_dssd is cee_distributed.CeeDistributedMixin.cee_dssd
 assert Baselines.tridecoding is cee.CeeSdMixin.tridecoding
 assert Baselines.cee_sd_opportunistic is cee.CeeSdMixin.cee_sd_opportunistic
 assert Baselines.uncertainty_decoding is cuhlm.CuhlmMixin.uncertainty_decoding
@@ -256,18 +264,16 @@ def test_real_modules_do_not_import_the_compatibility_package_or_core():
                         {alias.name for alias in node.names} & {"core", "baselines"}
                     ), (path.name, module, [alias.name for alias in node.names])
             elif isinstance(node, ast.Import):
-                assert all(
-                    alias.name not in forbidden for alias in node.names
-                ), (path.name, [alias.name for alias in node.names])
+                assert all(alias.name not in forbidden for alias in node.names), (
+                    path.name,
+                    [alias.name for alias in node.names],
+                )
             elif isinstance(node, ast.Call):
                 func = node.func
                 dynamic = (
                     isinstance(func, ast.Name)
                     and func.id in ("__import__", "import_module")
-                ) or (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "import_module"
-                )
+                ) or (isinstance(func, ast.Attribute) and func.attr == "import_module")
                 if dynamic and node.args:
                     target = node.args[0]
                     if isinstance(target, ast.Constant) and isinstance(
@@ -277,9 +283,10 @@ def test_real_modules_do_not_import_the_compatibility_package_or_core():
                             path.name,
                             target.value,
                         )
-                        assert not target.value.endswith(
-                            (".core", "baselines.core")
-                        ), (path.name, target.value)
+                        assert not target.value.endswith((".core", "baselines.core")), (
+                            path.name,
+                            target.value,
+                        )
 
 
 def test_each_family_method_is_defined_in_exactly_one_real_module():
