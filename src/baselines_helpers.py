@@ -3,6 +3,9 @@
 只允许依赖叶子模块；不 import src.baselines。S2/S3a 后由 baselines.core
 导入并经 src.baselines 包兼容入口提供旧名字；patch 应指向函数实际定义模块，
 不能依赖兼容包上的赋值写透。此模块仍是独立叶子模块，位置不变。
+
+TK-SLT 的 ODLD/AS² 纯数学已迁到 ``src/tk_slt_policy.py``；这里只保留
+同名兼容 re-export，算术与调用点不变。
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from typing import Callable, List, Optional, Tuple, cast
+from typing import Callable, List, Optional, cast
 
 import torch
 
@@ -30,6 +33,12 @@ from .decoding_ops import (
 )
 from .metrics import INT_SIZE, DecodingMetrics
 from .model_gpu import KVCacheModel
+from .tk_slt_policy import (
+    _lambert_w_minus_one,
+    tk_slt_optimal_draft_length,
+    tk_slt_select_speculative,
+    tk_slt_speedup_ratio,
+)
 from .utils import sample, skip_token_validation
 
 def _add_comm_accounting_metrics(metrics: dict, args, comm_simulator) -> None:
@@ -228,16 +237,16 @@ def _last_edge_cloud_tx_seconds(comm_simulator) -> Optional[float]:
         return None
     return None
 def _quantize_probs_fp16(probs: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-    """TK-SLT 上行载荷的**真实** FP16 量化（论文 §VI-B：half precision 传输）。
+    """现有 TK-SLT 概率-wire 变体的 FP16 roundtrip，不是无损 codec。
 
-    论文的通信模式把传输的概率值量化到 FP16；这里让验证判据与计费看到
-    **同一个** q̂（B15/B16 的"计费与数据一致"原则）：
+    先转 FP16，再转回输入 dtype，并在该 dtype 中求和、重归一化。
+    本函数不校验输入；舍入也不保证输出精确和为 1。极端情况下若所有
+    正质量都下溢，分母 clamp 只避免除零，不会恢复一个有效分布。
 
-    · fp16 roundtrip 后按行重归一化（softmax over top-K 本来和为 1，
-      量化误差 ~1e-3，重归一化后仍是合法分布，接受判据 p/q 不失真）✓
-    · 0 值（top-K 之外）量化后仍是 0，稀疏支撑不变 ✓
-    · 值为 0/1 的行（temp=0 的 one-hot）逐位不变 ⇒ 协议 temp=0 下
-      与未量化路径完全一致 ✓
+    精确 0 仍为 0；正尾部可能在逐元素 FP16 转换中下溢为 0，保留下来
+    的质量也可能改变。这里仅构造接收端 q̂，不修复它与原提案 Q 的差异；
+    legacy bridge 仍保留 "positive P / zero wireQ" 的近似判据。
+    精确 one-hot 0/1 行逐位不变，但不能据此声称一般温度下无损。
     """
     if probs is None or probs.numel() == 0:
         return probs
@@ -245,90 +254,6 @@ def _quantize_probs_fp16(probs: Optional[torch.Tensor]) -> Optional[torch.Tensor
     row_sum = out.sum(dim=-1, keepdim=True)
     tiny = torch.finfo(out.dtype).tiny
     return out / row_sum.clamp_min(tiny)
-def _lambert_w_minus_one(z: float) -> float:
-    """Lambert W 的 −1 分支：解 w·e^w = z，z ∈ (−1/e, 0)，返回 w ≤ −1。
-
-    论文 Theorem 2 式 (21) 需要 W_{−1}。g(w)=w·e^w 在 (−∞,−1] 上从 0⁻
-    单调降到 −1/e，故对给定 z ∈ (−1/e, 0) 解唯一，二分法无依赖、确定
-    可测（100 次二分到 ~1e-28 绝对精度，对 γ 的影响 < 1e-26）。
-    """
-    if not (-1.0 / math.e < z < 0.0):
-        raise ValueError(f"W_{{-1}} 的定义域是 (−1/e, 0)，收到 z={z!r}")
-    lo, hi = -200.0, -1.0  # g(lo)≈0⁻ > z > g(hi)=−1/e
-    for _ in range(100):
-        mid = (lo + hi) / 2.0
-        if mid * math.exp(mid) > z:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2.0
-def tk_slt_speedup_ratio(gamma: int, alpha: float, L: float) -> float:
-    """TK-SLT 论文式 (11)：S_inf(γ) = (1−α^{γ+1}) / ((1−α)(1+γL))。
-
-    α=1 时取极限 (γ+1)/(1+γL)（式 (12) 的期望 token 数除以式 (7) 的
-    归一化时延）；α=0 时为 1/(1+γL)。
-    """
-    gamma = int(gamma)
-    if alpha >= 1.0:
-        return (gamma + 1) / (1.0 + gamma * L)
-    if alpha <= 0.0:
-        return 1.0 / (1.0 + gamma * L)
-    return (1.0 - alpha ** (gamma + 1)) / ((1.0 - alpha) * (1.0 + gamma * L))
-def tk_slt_optimal_draft_length(
-    alpha: float,
-    b: float,
-    c: float,
-    gamma_cap: int = 64,
-) -> Tuple[int, float]:
-    """论文 Algorithm 1（ODLD）：闭式最优草稿长度 γ*（Theorem 2 式 (21)）。
-
-        γ0 = (1/ln α)·(W_{−1}(−(1/e)·α^{1/L−1}) + 1) − 1/L，L = b + c
-
-    γ0 < 1 ⇒ γ* = 1；否则在 {⌊γ0⌋, ⌈γ0⌉} 里取 S_inf 更大者（平局取
-    ⌈γ0⌉，与论文 Algorithm 1 的 ≤ 分支一致）。返回 (γ*, S_inf(γ*))。
-
-    论文约束外的退化输入（估计噪声 early rounds 常见）按保守方向处理：
-    · α ≥ 1 / L ≤ 0：接受率饱和或相对开销为零 ⇒ 加大 γ 只赚不亏，
-      取上限 gamma_cap（防噪声下的病态值）；
-    · α ≤ 0：全拒 ⇒ γ* = 1（AS² 随后会选择 standalone LLM）；
-    · L ≥ 1：论文式 (19) 要求 L < 1，此时 z 越界无解；取 γ* = 1，
-      S_inf(1) = (1+α)/(1+L) < 1 恒成立 ⇒ AS² 会退回 standalone LLM。
-    """
-    L = float(b) + float(c)
-    gamma_cap = max(1, int(gamma_cap))
-    if L <= 0.0 or alpha >= 1.0:
-        return gamma_cap, tk_slt_speedup_ratio(gamma_cap, alpha, L)
-    if alpha <= 0.0 or L >= 1.0:
-        return 1, tk_slt_speedup_ratio(1, alpha, L)
-
-    z = -(1.0 / math.e) * alpha ** (1.0 / L - 1.0)
-    w = _lambert_w_minus_one(z)
-    gamma0 = (w + 1.0) / math.log(alpha) - 1.0 / L
-    if gamma0 < 1.0:
-        return 1, tk_slt_speedup_ratio(1, alpha, L)
-
-    floor_g, ceil_g = math.floor(gamma0), math.ceil(gamma0)
-    s_floor = tk_slt_speedup_ratio(floor_g, alpha, L)
-    s_ceil = tk_slt_speedup_ratio(ceil_g, alpha, L)
-    if s_floor <= s_ceil:
-        gamma_star = ceil_g
-    else:
-        gamma_star = floor_g
-    gamma_star = max(1, min(gamma_star, gamma_cap))
-    return gamma_star, tk_slt_speedup_ratio(gamma_star, alpha, L)
-def tk_slt_select_speculative(
-    alpha: float,
-    b: float,
-    c: float,
-    gamma_cap: int = 64,
-) -> Tuple[bool, int, float]:
-    """论文 Algorithm 2（AS²）：S_inf(γ*) > 1 才用 DSD，否则 standalone LLM。
-
-    返回 (use_dsd, γ*, S*)。与 ODLD 一样吃 (α, b, c)——在线使用时由
-    运行估计喂入（接受率、T_V/T_LLM、T_SLM/T_LLM）。
-    """
-    gamma_star, s_star = tk_slt_optimal_draft_length(alpha, b, c, gamma_cap)
-    return s_star > 1.0, gamma_star, s_star
 def _validate_token_range(
     tokens: torch.Tensor,
     *,

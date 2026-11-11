@@ -9,7 +9,9 @@
     "src/baselines/operations.py",
     "src/dual_decoding.py",
     "src/baselines/dual.py",
-    "src/baselines/cuhlm.py"
+    "src/baselines/cuhlm.py",
+    "src/baselines/tk_slt.py",
+    "src/tk_slt_policy.py"
   ],
   "rev": "WORKTREE",
   "entries": {
@@ -395,9 +397,9 @@
         }
       }
     },
-    "Baselines.tk_slt": {
+    "TkSltMixin.tk_slt": {
       "events": 171,
-      "sha256_16": "614586e568ebf2eb",
+      "sha256_16": "49ddf61475a7572d",
       "surface": {
         "boolop": {
           "And": 6,
@@ -436,7 +438,8 @@
           "dim": 12,
           "elapsed_time": 1,
           "float": 2,
-          "generate": 4,
+          "forward_context": 3,
+          "generate": 1,
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
@@ -1428,6 +1431,7 @@
     "Baselines.cee_sd_no_arp": "CeeSdMixin.cee_sd_no_arp",
     "Baselines.cee_sd_opportunistic": "CeeSdMixin.cee_sd_opportunistic",
     "Baselines.dist_spec": "DualDecodingMixin.dist_spec",
-    "Baselines.dist_split_spec": "DualDecodingMixin.dist_split_spec"
+    "Baselines.dist_split_spec": "DualDecodingMixin.dist_split_spec",
+    "Baselines.tk_slt": "TkSltMixin.tk_slt"
   }
 }

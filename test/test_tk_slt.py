@@ -23,17 +23,19 @@ import torch
 
 from src.baselines import (
     Baselines,
-    _lambert_w_minus_one,
+    prepare_verification_inputs as _real_prepare_verification_inputs,
+)
+from src.baselines_helpers import (
     _last_edge_cloud_tx_seconds,
     _quantize_probs_fp16,
+)
+from src.communication import CommunicationSimulator, tk_slt_uplink_payload_bytes
+from src.tk_slt_policy import (
+    _lambert_w_minus_one,
     tk_slt_optimal_draft_length,
     tk_slt_select_speculative,
     tk_slt_speedup_ratio,
 )
-from src.baselines import (
-    prepare_verification_inputs as _real_prepare_verification_inputs,
-)
-from src.communication import CommunicationSimulator, tk_slt_uplink_payload_bytes
 
 VOCAB = 4
 K = 2  # top-K 稀疏 logits 的 K（< VOCAB 才有压缩意义）
@@ -210,18 +212,20 @@ class _FakeTargetCache:
         self.vocab_size = VOCAB
         self.rollback_calls = []
         self.generate_calls = []
+        self.forward_context_calls = []
         self.prob_history = None
         self.logits_history = None
         self.extra_rows = {}
         _FakeTargetCache.instances.append(self)
 
-    def generate(self, x, gamma):
+    def forward_context(self, x):
         """第 pos 行 = P(·|x[:pos+1])：预测位置 pos+1 的 token。
 
         pos+1 落在 x 内时把 0.9 放在该 token 上（接受友好的可控场景），
-        否则用固定 bonus 分布（x 之后的位置）。
+        否则用固定 bonus 分布（x 之后的位置）。本 fake 与真实
+        ``KVCacheModel.forward_context`` 一样不采样。
         """
-        self.generate_calls.append((x.shape[1], gamma))
+        self.forward_context_calls.append(x.shape[1])
         rows = []
         for pos in range(x.shape[1]):
             if pos in self.extra_rows:
@@ -234,6 +238,12 @@ class _FakeTargetCache:
                 row = [0.4, 0.3, 0.2, 0.1]
             rows.append(row)
         self.prob_history = torch.tensor([rows])
+        return self.prob_history[:, -1, :]
+
+    def generate(self, x, gamma):
+        """Legacy seam kept observable: production must not call it for target."""
+        self.generate_calls.append((x.shape[1], gamma))
+        self.forward_context(x)
         return x
 
     def rollback(self, end_pos):
@@ -290,12 +300,12 @@ class TkSltLoopTestBase(unittest.TestCase):
     def _run(self, prefix, transfer_top_k=K, **overrides):
         self.args.__dict__.update(overrides)
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCacheRouter()),
+            patch("src.baselines.tk_slt.KVCacheModel", _FakeCacheRouter()),
             patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.tk_slt.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.tk_slt.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.tk_slt.torch.cuda.synchronize", return_value=None),
         ):
             return self.instance.tk_slt(prefix, transfer_top_k=transfer_top_k)
 
@@ -379,6 +389,8 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(draft_cache.init_args["top_k"], K)
         self.assertEqual(target_cache.init_args["top_k"], 0)
         self.assertEqual(target_cache.init_args["top_p"], 0)
+        self.assertEqual(target_cache.generate_calls, [])
+        self.assertEqual(target_cache.forward_context_calls, [3])
 
         sim = _FakeCommSimulator.instances[0]
         # 1) 首轮 prompt 上传（全仓一次性约定）
@@ -422,7 +434,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.core._prepare_legacy_verification_inputs", spy):
+        with patch("src.baselines.tk_slt._prepare_legacy_verification_inputs", spy):
             output, _ = self._run(prefix, max_tokens=3)
 
         self.assertEqual(len(overrides), 1)
@@ -452,7 +464,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         # 目标在验证行 0（drafted token 0 的位置）的概率：token 0 上为 0
         reject_router = _FakeCacheRouter(target_extra_rows={0: [0.0, 0.9, 0.1, 0.0]})
 
-        with patch("src.baselines.core.KVCacheModel", reject_router):
+        with patch("src.baselines.tk_slt.KVCacheModel", reject_router):
             output, metrics = self._run_manual(prefix, transfer_top_k=K)
 
         self.assertEqual(tuple(output.shape), (1, 3))
@@ -467,6 +479,10 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(self._uplinks()[0]["kwargs"].get("draft_len"), 1)
         # 拒绝轮照常有一次 0 字节下行（结果 token + 位置 j）
         self.assertEqual(len(self._downlinks()), 1)
+        # 验证轮与 fallback 都只推进上下文；target 不再采丢弃 token
+        target_cache = _FakeTargetCache.instances[0]
+        self.assertEqual(target_cache.generate_calls, [])
+        self.assertEqual(target_cache.forward_context_calls, [2, 2])
 
     def test_multi_round_window_slicing_and_single_prompt_upload(self):
         """两轮 DSD：prompt 只传一次；第二轮的窗口从 prefix_len-1 切起。"""
@@ -490,7 +506,7 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
                 **kw,
             )
 
-        with patch("src.baselines.core._prepare_legacy_verification_inputs", spy):
+        with patch("src.baselines.tk_slt._prepare_legacy_verification_inputs", spy):
             # gamma=1, max_tokens=4 ⇒ 两个完整 DSD 轮
             output, metrics = self._run(prefix, max_tokens=4, gamma=1)
 
@@ -529,9 +545,9 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         with (
             patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
             patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
+            patch("src.baselines.tk_slt.torch.cuda.Event", _FakeCudaEvent),
+            patch("src.baselines.tk_slt.torch.cuda.current_stream", return_value=None),
+            patch("src.baselines.tk_slt.torch.cuda.synchronize", return_value=None),
         ):
             return self.instance.tk_slt(prefix, **dec_kwargs)
 
@@ -541,7 +557,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         """ODLD 开启：首轮用 --gamma 兜底，此后逐轮用 γ*。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
         with patch(
-            "src.baselines.core.tk_slt_select_speculative",
+            "src.baselines.tk_slt.tk_slt_select_speculative",
             return_value=(True, 3, 1.5),
         ) as sel:
             output, metrics = self._run(
@@ -560,7 +576,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         """AS² 判 S*<=1 的轮次：target 直出、无上行分布，只回 0 字节下行。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
         with patch(
-            "src.baselines.core.tk_slt_select_speculative",
+            "src.baselines.tk_slt.tk_slt_select_speculative",
             return_value=(False, 1, 0.5),
         ):
             output, metrics = self._run(
@@ -571,7 +587,8 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         draft_cache = _FakeDraftCache.instances[0]
         target_cache = _FakeTargetCache.instances[0]
         self.assertEqual(len(draft_cache.generate_calls), 1)
-        self.assertEqual(len(target_cache.generate_calls), 2)
+        self.assertEqual(target_cache.generate_calls, [])
+        self.assertEqual(len(target_cache.forward_context_calls), 2)
         self.assertEqual(metrics["tk_slt_standalone_rounds"], 1)
         # 上行分布只有首轮那一次；两轮各有一次 0 字节下行
         self.assertEqual(len(self._uplinks()), 1)
@@ -611,6 +628,33 @@ class TestFp16Quantization(unittest.TestCase):
         self.assertIsNone(_quantize_probs_fp16(None))
         empty = torch.zeros(1, 0, VOCAB)
         self.assertTrue(torch.equal(_quantize_probs_fp16(empty), empty))
+
+    def test_positive_fp16_tail_can_underflow_and_change_the_wire_law(self):
+        """The wire representation is lossy; docs must not call it lossless."""
+        raw = torch.tensor([[[0.6, 0.4, 1e-8, 0.0]]], dtype=torch.float64)
+        wire = _quantize_probs_fp16(raw)
+        # 1e-8 is positive in the proposal law but not representable in fp16.
+        self.assertEqual(wire[0, 0, 2].item(), 0.0)
+        self.assertFalse(torch.equal(wire, raw))
+        # Round-to-nearest + row renormalization moves the retained masses.
+        self.assertNotEqual(wire[0, 0, 0].item(), raw[0, 0, 0].item())
+        self.assertAlmostEqual(float(wire.sum().item()), 1.0, places=6)
+
+
+class TestCompatibilityReExports(unittest.TestCase):
+    def test_policy_names_resolve_from_helpers_and_package(self):
+        import src.baselines as baselines
+        import src.baselines_helpers as helpers
+        import src.tk_slt_policy as policy
+
+        for name in (
+            "_lambert_w_minus_one",
+            "tk_slt_optimal_draft_length",
+            "tk_slt_select_speculative",
+            "tk_slt_speedup_ratio",
+        ):
+            self.assertIs(getattr(helpers, name), getattr(policy, name))
+            self.assertIs(getattr(baselines, name), getattr(policy, name))
 
 
 class TestLambertWMinusOne(unittest.TestCase):
