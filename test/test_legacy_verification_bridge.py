@@ -69,13 +69,21 @@ def test_legacy_bridge_callers_are_explicit_and_bounded():
             actual.update(_calls(ROOT / relative))
     assert actual == Counter(
         {
-            ("src/baselines/tk_slt.py", "TkSltMixin.tk_slt", LEGACY_PREPARE): 1,
             ("src/baselines/core.py", "Baselines.cee_cuhlm", LEGACY_PREPARE): 2,
-            ("src/baselines/tk_slt.py", "TkSltMixin.tk_slt", FP16_ACCEPT): 1,
             ("src/decoding_ops.py", "verify_draft_sequence", LEGACY_PREPARE): 1,
             ("src/decoding_ops.py", "verify_draft_sequence_result", LEGACY_PREPARE): 1,
         }
     )
+
+
+def test_active_tk_slt_is_not_a_legacy_bridge_consumer():
+    """TK-SLT's active loop verifies the wire payload through the strict contract.
+
+    The dedicated historical FP16 bridge and the clipped legacy adapter stay
+    exported (other algorithms and the retired-codec tests still use them), but
+    the migrated TK-SLT module must not call either one.
+    """
+    assert _calls(ROOT / "src/baselines/tk_slt.py") == Counter()
 
 
 def test_old_public_name_is_only_compatibility_for_explicit_legacy_implementation():

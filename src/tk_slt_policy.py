@@ -1,54 +1,179 @@
-"""TK-SLT ODLD/AS² policy math, independent of torch and communication.
+"""Pure TK-SLT ODLD/AS² policy; compatibility names remain in helpers.
 
-This module owns the paper's draft-length decision (Theorem 2 / Algorithms 1
-and 2).  It is a pure function family: no model, KV cache, RNG or wire state is
-read here, so both the decode loop and focused CPU tests can call it directly.
-
-The implementations were moved verbatim out of ``baselines_helpers``; the old
-names remain re-exported there for compatibility.  Arithmetic, guard ordering
-and return values are intentionally unchanged. This includes known legacy
-numeric limitations: the fixed Lambert bracket and exponent rounding can fail
-on valid parameters (e.g. alpha=.5, L=.0005). Extraction is not certification of
-those boundaries; the separate numerical follow-up must address them.
+Optimize the bounded discrete objective, not a rounded Lambert stationary point.
+Inputs are binary64 estimates; L is the ordinary rounded sum b+c. Comparisons
+use exact rationals or directed Decimal enclosures, not rounded speedup scores.
+The reported score is a floating approximation. Exact ties choose smaller gamma.
 """
 
 from __future__ import annotations
 
 import math
+import operator
+from decimal import (
+    MAX_EMAX,
+    MIN_EMIN,
+    ROUND_CEILING,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
+from fractions import Fraction
 from typing import Tuple
 
 
-def _lambert_w_minus_one(z: float) -> float:
-    """Lambert W 的 −1 分支：解 w·e^w = z，z ∈ (−1/e, 0)，返回 w ≤ −1。
+def _context(precision, rounding=ROUND_HALF_EVEN):
+    # Do not inherit a caller's Decimal precision, rounding mode or Inexact trap.
+    return Context(
+        prec=precision,
+        rounding=rounding,
+        Emin=MIN_EMIN,
+        Emax=MAX_EMAX,
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
 
-    论文 Theorem 2 式 (21) 需要 W_{−1}。g(w)=w·e^w 在 (−∞,−1] 上从 0⁻
-    单调降到 −1/e，故对给定 z ∈ (−1/e, 0) 解唯一。这里保留旧固定区间
-    与 100 次二分，受 FP64 精度限制；并未保证覆盖整个定义域或任意精度。
+
+def _integer(value, name, minimum):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    try:
+        result = operator.index(value)
+    except TypeError as error:
+        raise ValueError(f"{name} must be an integer >= {minimum}") from error
+    if result < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    return result
+
+
+def _estimate(value, name, maximum=math.inf):
+    result = float(value)
+    if not math.isfinite(result) or not 0 <= result <= maximum:
+        raise ValueError(f"{name} must be finite and in [0, {maximum}]")
+    return result
+
+
+def _cost(b, c):
+    return _estimate(_estimate(b, "b") + _estimate(c, "c"), "b+c")
+
+
+def _lambert_w_minus_one(z: float) -> float:
+    """Binary64 W_-1 approximation for representable -1/e < z < 0.
+
+    Solve t-ln(t)=-ln(-z), t>=1, instead of underflowing w*exp(w).
+    Decimal guard digits also retain the distance from the branch point that
+    a binary64 logarithm can round away. This compatibility helper is no longer
+    used by ODLD; no 1e-28 absolute-accuracy claim is made for its float result.
     """
+    z = float(z)
     if not (-1.0 / math.e < z < 0.0):
         raise ValueError(f"W_{{-1}} 的定义域是 (−1/e, 0)，收到 z={z!r}")
-    lo, hi = -200.0, -1.0  # Historical bracket; not sufficient for every valid z.
-    for _ in range(100):
-        mid = (lo + hi) / 2.0
-        if mid * math.exp(mid) > z:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2.0
+    with localcontext(_context(80)):
+        target = -Decimal.from_float(-z).ln()
+        lo, hi = Decimal(1), target + target.ln() + 2
+        for _ in range(256):
+            if float(lo) == float(hi):
+                break
+            mid = (lo + hi) / 2
+            if mid - mid.ln() < target:
+                lo = mid
+            else:
+                hi = mid
+        return -float((lo + hi) / 2)
 
 
 def tk_slt_speedup_ratio(gamma: int, alpha: float, L: float) -> float:
-    """TK-SLT 论文式 (11)：S_inf(γ) = (1−α^{γ+1}) / ((1−α)(1+γL))。
+    """Report sum(alpha**j, j=0..gamma)/(1+gamma*L), including gamma=0.
 
-    α=1 时取极限 (γ+1)/(1+γL)（式 (12) 的期望 token 数除以式 (7) 的
-    归一化时延）；α=0 时为 1/(1+γL)。
+    Decimal guard digits avoid cancellation and intermediate binary64 overflow.
+    The result is a float, not an exact score/tie oracle; extreme scores may
+    legitimately underflow to zero or overflow to infinity on conversion.
     """
-    gamma = int(gamma)
-    if alpha >= 1.0:
-        return (gamma + 1) / (1.0 + gamma * L)
-    if alpha <= 0.0:
-        return 1.0 / (1.0 + gamma * L)
-    return (1.0 - alpha ** (gamma + 1)) / ((1.0 - alpha) * (1.0 + gamma * L))
+    gamma = _integer(gamma, "gamma", 0)
+    alpha, L = _estimate(alpha, "alpha", 1), _estimate(L, "L")
+    with localcontext(_context(80)):
+        a, cost = Decimal.from_float(alpha), Decimal.from_float(L)
+        if alpha == 1:
+            total = Decimal(gamma + 1)
+        elif alpha == 0:
+            total = Decimal(1)
+        else:
+            # For any binary64 alpha<1, alpha**(2**64)<exp(-2048).
+            # Its omitted contribution is far below a float's representable
+            # absolute resolution; this is only the reported score, not search.
+            power = Decimal(0) if gamma >= 2**64 else a ** (gamma + 1)
+            total = (1 - power) / (1 - a)
+        return float(total / (1 + Decimal(gamma) * cost))
+
+
+def _power_bound(base, exponent, context):
+    """Positive integer power with directed rounding at *every* multiplication."""
+    result = Decimal(1)
+    while exponent:
+        if exponent & 1:
+            result = context.multiply(result, base)
+        exponent >>= 1
+        if exponent:
+            base = context.multiply(base, base)
+    return result
+
+
+def _increasing(gamma, alpha, cost, decimal_alpha):
+    """Whether S(g+1)>S(g), without cancellation of two rounded scores.
+
+    Equivalent to alpha**(g+1) > L/[L+(1-alpha)*(1+gL)]. Small powers are
+    compared as integers. Large ones use successively refined enclosures; no
+    arbitrary epsilon makes the decision and no full-cap enumeration is used.
+    """
+    threshold = cost / (cost + (1 - alpha) * (1 + gamma * cost))
+    n = gamma + 1
+    binary_exponent = (alpha.denominator.bit_length() - 1) * n
+    if n <= 4096:
+        left = pow(alpha.numerator, n) * threshold.denominator
+        right_bits = threshold.numerator.bit_length() + binary_exponent
+        if left.bit_length() != right_bits:
+            return left.bit_length() > right_bits
+        return left > threshold.numerator << binary_exponent
+
+    # A rational exact equality must not make interval refinement run forever.
+    # alpha has a power-of-two denominator; equality can only occur if the
+    # threshold has the same reduced denominator. Its numerator then bounds
+    # the size of the one exact power needed to check equality.
+    denominator = threshold.denominator
+    if (
+        denominator & (denominator - 1) == 0
+        and denominator.bit_length() - 1 == binary_exponent
+    ):
+        numerator = alpha.numerator
+        if (
+            n * (numerator.bit_length() - 1) + 1 <= threshold.numerator.bit_length()
+            and pow(numerator, n) == threshold.numerator
+        ):
+            return False
+
+    precision = 64
+    while True:
+        lower, upper = (
+            _context(precision, ROUND_FLOOR),
+            _context(precision, ROUND_CEILING),
+        )
+        numerator, denominator = (
+            Decimal(threshold.numerator),
+            Decimal(threshold.denominator),
+        )
+        threshold_lo = lower.divide(numerator, denominator)
+        threshold_hi = upper.divide(numerator, denominator)
+        power_lo = _power_bound(decimal_alpha, n, lower)
+        power_hi = _power_bound(decimal_alpha, n, upper)
+        if power_lo > threshold_hi:
+            return True
+        if power_hi < threshold_lo:
+            return False
+        precision *= 2
 
 
 def tk_slt_optimal_draft_length(
@@ -57,42 +182,38 @@ def tk_slt_optimal_draft_length(
     c: float,
     gamma_cap: int = 64,
 ) -> Tuple[int, float]:
-    """论文 Algorithm 1（ODLD）：闭式最优草稿长度 γ*（Theorem 2 式 (21)）。
+    """Maximize the discrete ODLD objective over integers 1..gamma_cap.
 
-        γ0 = (1/ln α)·(W_{−1}(−(1/e)·α^{1/L−1}) + 1) − 1/L，L = b + c
-
-    γ0 < 1 ⇒ γ* = 1；否则在 {⌊γ0⌋, ⌈γ0⌉} 里取 S_inf 更大者（平局取
-    ⌈γ0⌉，与论文 Algorithm 1 的 ≤ 分支一致）。返回 (γ*, S_inf(γ*))。
-
-    论文约束外的退化输入（估计噪声 early rounds 常见）按保守方向处理：
-    · α ≥ 1 / L ≤ 0：接受率饱和或相对开销为零 ⇒ 加大 γ 只赚不亏，
-      取上限 gamma_cap（防噪声下的病态值）；
-    · α ≤ 0：全拒 ⇒ γ* = 1（AS² 随后会选择 standalone LLM）；
-    · L ≥ 1：论文式 (19) 要求 L < 1，此时 z 越界无解；取 γ* = 1，
-      S_inf(1) = (1+α)/(1+L) < 1 恒成立 ⇒ AS² 会退回 standalone LLM。
+    D_g = alpha**(g+1)*(1+gL) - L*sum(alpha**j, j=0..g) has the sign of
+    S(g+1)-S(g), and D_(g+1)-D_g = -(1-alpha)*alpha**(g+1)*(1+(g+1)L).
+    Thus exponential bracketing and binary search find the first non-increase
+    in O(log gamma_cap) comparisons. Precision cost depends on the inputs.
+    Public estimates must be finite, 0<=alpha<=1, b,c>=0; cap is a positive
+    integer. Invalid inputs raise instead of silently clamping the objective.
     """
-    L = float(b) + float(c)
-    gamma_cap = max(1, int(gamma_cap))
-    if L <= 0.0 or alpha >= 1.0:
-        return gamma_cap, tk_slt_speedup_ratio(gamma_cap, alpha, L)
-    if alpha <= 0.0 or L >= 1.0:
-        return 1, tk_slt_speedup_ratio(1, alpha, L)
-
-    z = -(1.0 / math.e) * alpha ** (1.0 / L - 1.0)
-    w = _lambert_w_minus_one(z)
-    gamma0 = (w + 1.0) / math.log(alpha) - 1.0 / L
-    if gamma0 < 1.0:
-        return 1, tk_slt_speedup_ratio(1, alpha, L)
-
-    floor_g, ceil_g = math.floor(gamma0), math.ceil(gamma0)
-    s_floor = tk_slt_speedup_ratio(floor_g, alpha, L)
-    s_ceil = tk_slt_speedup_ratio(ceil_g, alpha, L)
-    if s_floor <= s_ceil:
-        gamma_star = ceil_g
+    alpha, cost = _estimate(alpha, "alpha", 1), _cost(b, c)
+    cap = _integer(gamma_cap, "gamma_cap", 1)
+    if cap == 1 or alpha == 0 or cost >= alpha:
+        gamma = 1
+    elif cost == 0 or alpha == 1:
+        gamma = cap
     else:
-        gamma_star = floor_g
-    gamma_star = max(1, min(gamma_star, gamma_cap))
-    return gamma_star, tk_slt_speedup_ratio(gamma_star, alpha, L)
+        a, cost_fraction = Fraction(alpha), Fraction(cost)
+        da = Decimal.from_float(alpha)
+        if not _increasing(1, a, cost_fraction, da):
+            gamma = 1
+        else:
+            lo, hi = 1, min(2, cap)
+            while hi < cap and _increasing(hi, a, cost_fraction, da):
+                lo, hi = hi, min(2 * hi, cap)
+            while lo + 1 < hi:
+                mid = (lo + hi) // 2
+                if _increasing(mid, a, cost_fraction, da):
+                    lo = mid
+                else:
+                    hi = mid
+            gamma = hi
+    return gamma, tk_slt_speedup_ratio(gamma, alpha, cost)
 
 
 def tk_slt_select_speculative(
@@ -101,10 +222,11 @@ def tk_slt_select_speculative(
     c: float,
     gamma_cap: int = 64,
 ) -> Tuple[bool, int, float]:
-    """论文 Algorithm 2（AS²）：S_inf(γ*) > 1 才用 DSD，否则 standalone LLM。
+    """AS² uses the mathematical S*>1 condition, not a rounded report.
 
-    返回 (use_dsd, γ*, S*)。与 ODLD 一样吃 (α, b, c)——在线使用时由
-    运行估计喂入（接受率、T_V/T_LLM、T_SLM/T_LLM）。
+    S(g)>1 iff the average of alpha**1..alpha**g exceeds L. This average
+    cannot exceed alpha, and gamma=1 attains alpha. Thus S*>1 iff alpha>L.
+    A tiny positive gain can legitimately return True alongside float score 1.
     """
-    gamma_star, s_star = tk_slt_optimal_draft_length(alpha, b, c, gamma_cap)
-    return s_star > 1.0, gamma_star, s_star
+    gamma, score = tk_slt_optimal_draft_length(alpha, b, c, gamma_cap)
+    return float(alpha) > _cost(b, c), gamma, score

@@ -9,27 +9,30 @@ Speculative Decoding"（WCSP'25, Zheng & Yang）。锁定三件事：
    （b_prob=16，FP16，且概率值真实量化——验证判据与计费看到同一个 q̂）；
    草稿 token 索引与下行响应 negligible ⇒ 0 字节报文。字节公式的数值
    断言在 test_unified_comm_accounting.py，这里锁解码循环的实际调用序列。
-3. **解码语义**：草稿缓存的采样 top-k = K（softmax 只作用于 top-K
-   logits）；验证用 FP16 量化后的稀疏分布；拒绝重采样基于该稀疏 Q̂；
-   ODLD/AS² 开关的接线（γ* 生效、standalone 轮无上行）。
+3. **解码语义**（概率-wire 变体）：草稿分布先显式选 min(K,V) 个坐标、
+   按保留质量重归一化、写成真实 FP16 payload；草稿**从该 payload 重建的
+   dense-V FP16 行采样**，接收端只从同一 payload 重建并走 strict
+   ProposalWindow / prepare_verification_window / decide_verification。
+   采样所用的律与验证所用的律逐位相同（旧实现是 raw Q 采样 + FP16 q̂
+   验证，TVD 9.76502895e-5）；被采样候选的 wire 支撑必为正。
 """
 
 import math
 import unittest
 from argparse import Namespace
+from fractions import Fraction
 from unittest.mock import patch
 
 import torch
 
-from src.baselines import (
-    Baselines,
-    prepare_verification_inputs as _real_prepare_verification_inputs,
-)
+import src.verification as verification_module
+from src.baselines import Baselines
 from src.baselines_helpers import (
     _last_edge_cloud_tx_seconds,
     _quantize_probs_fp16,
 )
 from src.communication import CommunicationSimulator, tk_slt_uplink_payload_bytes
+from src.sampling import sampling_weights
 from src.tk_slt_policy import (
     _lambert_w_minus_one,
     tk_slt_optimal_draft_length,
@@ -137,12 +140,12 @@ class _FakeCommSimulator:
 
 
 class _FakeDraftCache:
-    """端侧 SLM 缓存：token 序列与稀疏 top-K 概率行都按固定模式循环。
+    """端侧 SLM 缓存：每个草稿步返回脚本化的模型概率行。
 
-    每次 generate(prefix, γ) 追加 γ+1 行概率（真实缓存在
-    generate(prefix, γ) 后有 prefix_len+γ 行），并从 token 循环里
-    取 γ 个新 token。概率行是稀疏 top-2：0.6 在 drafted token、
-    0.4 在下一个（0 elsewhere）。
+    解码循环不再调用 ``generate``：草稿 token 由循环从 FP16 wire 行采样。
+    默认行是 token 循环上的 one-hot（采样确定），需要非 one-hot 律的测试
+    通过 router 的 ``draft_rows`` 覆盖。``forward_context_calls`` 记录每步
+    输入长度，``forward_context_contents`` 记录被推进的真实前缀内容。
     """
 
     instances = []
@@ -153,41 +156,27 @@ class _FakeDraftCache:
         self.device = model.device
         self.vocab_size = VOCAB
         self.rollback_calls = []
-        self.generate_calls = []
-        self.prob_history = torch.zeros(1, 0, VOCAB)
-        self.logits_history = None
-        self._token_cycle = [0, 1, 2, 3]
-        self._tok_idx = 0
+        self.forward_context_calls = []
+        self.forward_context_contents = []
+        self.rows = [self._one_hot(token) for token in (0, 1, 2, 3)]
         _FakeDraftCache.instances.append(self)
 
-    def _sparse_row(self, token: int) -> torch.Tensor:
-        row = [0.0] * VOCAB
-        row[token % VOCAB] = 0.6
-        row[(token + 1) % VOCAB] = 0.4
-        return torch.tensor([row]).unsqueeze(1)  # (1, 1, VOCAB)
+    @staticmethod
+    def _one_hot(token: int) -> torch.Tensor:
+        row = torch.zeros(1, VOCAB)
+        row[0, token % VOCAB] = 1.0
+        return row
 
-    def generate(self, prefix, gamma):
-        self.generate_calls.append((prefix.shape[1], gamma))
-        new_tokens = []
-        for _ in range(gamma):
-            new_tokens.append(self._token_cycle[self._tok_idx % len(self._token_cycle)])
-            self._tok_idx += 1
-        for tok in new_tokens:
-            self.prob_history = torch.cat(
-                (self.prob_history, self._sparse_row(tok)), dim=1
-            )
-        # 最后一行：最后一个 drafted token 之后的分布（真实缓存也有）
-        self.prob_history = torch.cat(
-            (
-                self.prob_history,
-                torch.tensor([[[0.25] * VOCAB]]),
-            ),
-            dim=1,
+    def forward_context(self, prefix):
+        self.forward_context_calls.append(int(prefix.shape[1]))
+        self.forward_context_contents.append(prefix.clone())
+        index = min(len(self.forward_context_calls) - 1, len(self.rows) - 1)
+        return self.rows[index].clone()
+
+    def generate(self, *args, **kwargs):
+        raise AssertionError(
+            "TK-SLT draft must sample the reconstructed wire row via forward_context"
         )
-        toks = torch.tensor(
-            [new_tokens], dtype=prefix.dtype, device=prefix.device
-        )
-        return torch.cat((prefix, toks), dim=1)
 
     def rollback(self, end_pos):
         self.rollback_calls.append(end_pos)
@@ -197,10 +186,10 @@ class _FakeDraftCache:
 
 
 class _FakeTargetCache:
-    """BS 侧 LLM 缓存：对 x 的每个位置给"0.9 在该位置 token"的行，
+    """BS 侧 LLM 缓存：pos+1 在 x 内时把 1.0 放在该 token 上（接受友好），
 
     最后一行（x 之后的位置）用固定分布供 bonus token 采样。
-    extra_rows 可覆盖指定位置的行（如构造必拒场景）。
+    extra_rows 可覆盖指定位置的行（构造必拒/非法行场景）。
     """
 
     instances = []
@@ -221,8 +210,8 @@ class _FakeTargetCache:
     def forward_context(self, x):
         """第 pos 行 = P(·|x[:pos+1])：预测位置 pos+1 的 token。
 
-        pos+1 落在 x 内时把 0.9 放在该 token 上（接受友好的可控场景），
-        否则用固定 bonus 分布（x 之后的位置）。本 fake 与真实
+        pos+1 落在 x 内时把 1.0 放在该 token 上（接受判据 p/q 恰好抵消已接受
+        的 wire 质量），否则用固定 bonus 分布（x 之后的位置）。本 fake 与真实
         ``KVCacheModel.forward_context`` 一样不采样。
         """
         self.forward_context_calls.append(x.shape[1])
@@ -231,9 +220,9 @@ class _FakeTargetCache:
             if pos in self.extra_rows:
                 rows.append(list(self.extra_rows[pos]))
                 continue
-            row = [0.1 / (VOCAB - 1)] * VOCAB
+            row = [0.0] * VOCAB
             if pos + 1 < x.shape[1]:
-                row[int(x[0, pos + 1]) % VOCAB] = 0.9
+                row[int(x[0, pos + 1]) % VOCAB] = 1.0
             else:
                 row = [0.4, 0.3, 0.2, 0.1]
             rows.append(row)
@@ -241,7 +230,7 @@ class _FakeTargetCache:
         return self.prob_history[:, -1, :]
 
     def generate(self, x, gamma):
-        """Legacy seam kept observable: production must not call it for target."""
+        """Legacy seam kept observable: production must not call it."""
         self.generate_calls.append((x.shape[1], gamma))
         self.forward_context(x)
         return x
@@ -251,6 +240,28 @@ class _FakeTargetCache:
 
     def reset_for_new_sample(self):
         pass
+
+
+class _FakeCacheRouter:
+    """按 model.kind 分发到 draft/target 假缓存（替代 KVCacheModel 构造）。
+
+    draft_rows：草稿缓存每步返回的模型概率行（默认 one-hot token 循环）。
+    target_extra_rows：注入到 target 缓存的指定位置概率行。
+    """
+
+    def __init__(self, draft_rows=None, target_extra_rows=None):
+        self.draft_rows = None if draft_rows is None else list(draft_rows)
+        self.target_extra_rows = dict(target_extra_rows or {})
+
+    def __call__(self, model, temperature, top_k, top_p, **kwargs):
+        if getattr(model, "kind", None) == "draft":
+            cache = _FakeDraftCache(model, temperature, top_k, top_p, **kwargs)
+            if self.draft_rows is not None:
+                cache.rows = list(self.draft_rows)
+            return cache
+        cache = _FakeTargetCache(model, temperature, top_k, top_p, **kwargs)
+        cache.extra_rows = dict(self.target_extra_rows)
+        return cache
 
 
 class TkSltLoopTestBase(unittest.TestCase):
@@ -297,17 +308,68 @@ class TkSltLoopTestBase(unittest.TestCase):
             "Model", (), {"device": torch.device("cpu"), "kind": "target"}
         )()
 
-    def _run(self, prefix, transfer_top_k=K, **overrides):
-        self.args.__dict__.update(overrides)
-        with (
-            patch("src.baselines.tk_slt.KVCacheModel", _FakeCacheRouter()),
-            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
+    def _patched_loop(self, router):
+        return (
+            patch("src.baselines.tk_slt.KVCacheModel", router),
+            patch(
+                "src.baselines.simulators.CommunicationSimulator",
+                _FakeCommSimulator,
+            ),
+            patch(
+                "src.baselines.simulators.PreciseCommunicationSimulator",
+                _FakeCommSimulator,
+            ),
             patch("src.baselines.tk_slt.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.tk_slt.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.tk_slt.torch.cuda.synchronize", return_value=None),
-        ):
+        )
+
+    def _run(self, prefix, transfer_top_k=K, **overrides):
+        return self._run_router(_FakeCacheRouter(), prefix, transfer_top_k, **overrides)
+
+    def _run_router(self, router, prefix, transfer_top_k=K, **overrides):
+        self.args.__dict__.update(overrides)
+        patches = self._patched_loop(router)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             return self.instance.tk_slt(prefix, transfer_top_k=transfer_top_k)
+
+    # -- recorders: the loop's declared seams, observed without altering them --
+
+    def _record_codec(self):
+        payloads = []
+        module = __import__("src.tk_slt_proposal", fromlist=["encode_proposal_row"])
+        real = module.encode_proposal_row
+
+        def wrapper(*args, **kwargs):
+            payload = real(*args, **kwargs)
+            payloads.append(payload)
+            return payload
+
+        return payloads, patch("src.tk_slt_proposal.encode_proposal_row", wrapper)
+
+    def _record_windows(self):
+        windows = []
+        real = verification_module.prepare_verification_window
+
+        def wrapper(proposal, target_history):
+            window = real(proposal, target_history)
+            windows.append(window)
+            return window
+
+        patcher = patch(
+            "src.baselines.tk_slt.prepare_verification_window", wrapper
+        )
+        return windows, patcher
+
+    def _record_multinomial(self):
+        samples = []
+        original = torch.multinomial
+
+        def wrapper(probabilities, *args, **kwargs):
+            samples.append(probabilities.detach().clone())
+            return original(probabilities, *args, **kwargs)
+
+        return samples, patch("torch.multinomial", wrapper)
 
     def _uplinks(self):
         """分布上行：本方法的上行报文总是带 draft_len=γ（topk 可为 0）。"""
@@ -329,42 +391,251 @@ class TkSltLoopTestBase(unittest.TestCase):
         ]
 
 
-class _FakeCacheRouter:
-    """按 model.kind 分发到 draft/target 假缓存（替代 KVCacheModel 构造）。
-
-    target_extra_rows：注入到 target 缓存的指定位置概率行
-    （构造必拒场景用）。
-    """
-
-    def __init__(self, target_extra_rows=None):
-        self.target_extra_rows = dict(target_extra_rows or {})
-
-    def __call__(self, model, temperature, top_k, top_p, **kwargs):
-        if getattr(model, "kind", None) == "draft":
-            return _FakeDraftCache(model, temperature, top_k, top_p, **kwargs)
-        cache = _FakeTargetCache(model, temperature, top_k, top_p, **kwargs)
-        cache.extra_rows = dict(self.target_extra_rows)
-        return cache
-
-
 class TestTkSltDecodeLoop(TkSltLoopTestBase):
-    def test_supported_raw_sample_survives_fp16_wire_support_loss(self):
-        """A rare but legal raw-q candidate must not abort the retained protocol."""
-        raw_row = torch.tensor([[[1e-8, 1.0 - 1e-8, 0.0, 0.0]]], dtype=torch.float64)
-        # The scripted cache draws token 0. It has positive raw support, even
-        # though real FP16 quantization removes that support on the wire.
-        with patch.object(_FakeDraftCache, "_sparse_row", return_value=raw_row):
-            output, metrics = self._run(
-                torch.tensor([[3]], dtype=torch.long), max_tokens=2, gamma=1,
+    def test_cloned_role_defaults_cannot_correlate_proposal_and_acceptance(self):
+        """A valid categorical dependency with cloned default role tapes.
+
+        This CPU toy uses inverse CDF, not CUDA's exponential race. Default
+        draft/target streams restart the same tape; an explicit CPU generator
+        instead shares one advancing tape across all draws in this invocation.
+        Q=[1/2,1/2], P=[1/4,3/4] must yield token0 in 1/4 of the grid, not 1/2.
+        """
+        emitted_zero = 0
+        grid = 8
+        for i in range(grid):
+            for j in range(grid):
+                tape = ((i + 0.5) / grid, (j + 0.5) / grid, 0.125)
+                positions = {}
+                sample_count = 0
+
+                def next_uniform(role, generator, *, positions=positions, tape=tape):
+                    key = role if generator is None else generator
+                    offset = positions.get(key, 0)
+                    positions[key] = offset + 1
+                    return tape[min(offset, len(tape) - 1)]
+
+                def categorical(weights, num_samples=1, *, generator=None):
+                    nonlocal sample_count
+                    role = "draft" if sample_count == 0 else "target"
+                    sample_count += 1
+                    value = next_uniform(role, generator)
+                    threshold = torch.tensor([[value]], dtype=weights.dtype)
+                    return torch.searchsorted(weights.cumsum(-1), threshold, right=True)
+
+                def uniform(shape, *, device=None, generator=None, **kwargs):
+                    value = next_uniform("target", generator)
+                    return torch.full(shape, value, device=device, **kwargs)
+
+                raw = torch.tensor([[0.5, 0.5, 0.0, 0.0]])
+                router = _FakeCacheRouter(
+                    draft_rows=[raw],
+                    target_extra_rows={
+                        0: [0.25, 0.75, 0.0, 0.0],
+                        1: [0.25, 0.75, 0.0, 0.0],
+                    },
+                )
+                with (
+                    patch("torch.multinomial", categorical),
+                    patch("torch.rand", uniform),
+                ):
+                    output, _ = self._run_router(
+                        router, torch.tensor([[3]]), max_tokens=2, gamma=1
+                    )
+                emitted_zero += int(output[0, 1] == 0)
+
+        self.assertEqual(emitted_zero, 16)  # independent 8x8 grid: 1/4, not 32/64
+
+    def test_draft_sampler_law_is_the_transmitted_wire_law(self):
+        """The checked counterexample: Q=[.6,.4], P=wire(Q).
+
+        The old loop sampled raw Q and verified P=wire(Q): every ratio was
+        exactly 1, so the first token kept the raw Q law while P differs by TVD
+        9.76502895e-5.  The active loop must draw from the reconstructed FP16
+        wire row, which is also the receiver's reference law.
+        """
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        raw_row = torch.tensor([[0.6, 0.4, 0.0, 0.0]], dtype=torch.float32)
+        wire_row = torch.tensor([[0.60009765625, 0.39990234375, 0.0, 0.0]])
+        router = _FakeCacheRouter(
+            draft_rows=[raw_row],
+            target_extra_rows={0: wire_row[0].tolist(), 1: wire_row[0].tolist()},
+        )
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+        samples, sample_patch = self._record_multinomial()
+
+        with codec_patch, window_patch, sample_patch:
+            output, metrics = self._run_router(
+                router, prefix, max_tokens=2, gamma=1
             )
-        self.assertEqual(int(output[0, 1]), 0)
+
+        self.assertEqual(len(payloads), 1)
+        payload = payloads[0]
+        self.assertEqual(tuple(payload.values.shape), (1, K))
+        self.assertEqual(payload.indices.tolist(), [[0, 1]])
+        self.assertEqual(payload.values.tolist(), wire_row[:, :K].tolist())
+        self.assertEqual(payload.dense().tolist(), wire_row.tolist())
+        self.assertEqual(payload.nbytes, K * 2)
+
+        # the draft draw used exactly the payload reconstruction
+        self.assertTrue(torch.equal(samples[0], sampling_weights(wire_row)))
+        # the receiver's reference law is that same reconstruction, bit for bit
+        proposal = windows[0].proposal
+        self.assertTrue(torch.equal(proposal.probabilities[0, 0], payload.dense()[0]))
+        self.assertTrue(torch.equal(proposal.sampling_weights[0, 0], samples[0][0]))
+        # target P is the wire row, so acceptance is exactly 1 and the bonus law
+        # is the wire law: the first-token law is P, not raw Q.
+        self.assertTrue(torch.equal(windows[0].selected_q, windows[0].selected_p))
+        self.assertTrue(torch.equal(samples[1], sampling_weights(wire_row)))
+
+        # exact rational law distance, as in the read-only wire-law probe
+        def _law(tensor):
+            weights = [
+                Fraction(float(v)) for v in sampling_weights(tensor).reshape(-1)
+            ]
+            total = sum(weights)
+            return [w / total for w in weights]
+
+        tvd = float(
+            sum(
+                abs(a - b)
+                for a, b in zip(_law(wire_row), _law(raw_row), strict=True)
+            )
+            / 2
+        )
+        self.assertAlmostEqual(tvd, 9.765028953570009e-05, delta=1e-16)
+        self.assertFalse(torch.equal(samples[0], sampling_weights(raw_row)))
+
+        self.assertIn(int(output[0, 1]), (0, 1))
         self.assertEqual(metrics["draft_generated_tokens"], 1)
         self.assertEqual(metrics["draft_accepted_tokens"], 1)
         self.assertEqual(metrics["generated_tokens"], 2)
-        self.assertGreater(_FakeDraftCache.instances[0].prob_history[0, 0, 0].item(), 0)
-        self.assertEqual(_quantize_probs_fp16(raw_row)[0, 0, 0].item(), 0)
-        self.assertEqual(self._uplinks()[0]["data_size_bytes"], K * 2)
-        self.assertEqual(len(self._downlinks()), 1)
+        self.assertEqual(len(samples), 2)  # one draft draw + one bonus draw
+
+    def test_sampled_candidate_always_has_positive_wire_support(self):
+        """A positive raw tail that FP16 cannot represent is never a candidate.
+
+        The old bridge accepted a sampled token whose wire support was 0.  The
+        wire law can only draw tokens it actually carries.
+        """
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        raw_row = torch.tensor([[1e-8, 1.0 - 1e-8, 0.0, 0.0]], dtype=torch.float64)
+        router = _FakeCacheRouter(
+            draft_rows=[raw_row],
+            target_extra_rows={0: [0.0, 1.0, 0.0, 0.0], 1: [0.0, 1.0, 0.0, 0.0]},
+        )
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+
+        with codec_patch, window_patch:
+            output, metrics = self._run_router(
+                router, prefix, max_tokens=3, gamma=1, transfer_top_k=1
+            )
+
+        payload = payloads[0]
+        self.assertEqual(payload.indices.tolist(), [[1]])
+        self.assertEqual(payload.values.tolist(), [[1.0]])
+        # token 0 has positive raw support but is not on the wire at all
+        legacy = _quantize_probs_fp16(raw_row.unsqueeze(1))
+        self.assertEqual(legacy[0, 0, 0].item(), 0.0)
+        receiver = windows[0].proposal.probabilities[0, 0]
+        self.assertEqual(receiver[0].item(), 0.0)
+        self.assertEqual(receiver[1].item(), 1.0)
+        self.assertGreater(
+            windows[0].proposal.selected_probabilities()[0, 0].item(), 0.0
+        )
+        self.assertEqual(int(output[0, 1]), 1)
+        self.assertEqual(metrics["draft_accepted_tokens"], 1)
+        self.assertEqual(_FakeDraftCache.instances[0].forward_context_calls, [1])
+
+    def test_underflowed_wire_tail_is_not_a_drawable_support(self):
+        """A raw 1e-8 tail that FP16 drops is zero *in the sampling law*.
+
+        The legacy bridge accepted a sampled token with zero wire support; the
+        wire law can only draw mass it carries, and the receiver's row shows the
+        underflow explicitly instead of an invented one-hot.
+        """
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        raw_row = torch.tensor(
+            [[0.5, 0.5 - 1e-8, 1e-8, 0.0]], dtype=torch.float64
+        )
+        router = _FakeCacheRouter(
+            draft_rows=[raw_row],
+            target_extra_rows={0: [1.0, 0.0, 0.0, 0.0], 1: [1.0, 0.0, 0.0, 0.0]},
+        )
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+        samples, sample_patch = self._record_multinomial()
+
+        with codec_patch, window_patch, sample_patch:
+            output, metrics = self._run_router(
+                router, prefix, max_tokens=2, gamma=1, transfer_top_k=0
+            )
+
+        payload = payloads[0]
+        self.assertIsNone(payload.indices)  # full vocabulary: implicit indices
+        self.assertGreater(float(raw_row[0, 2].item()), 0.0)
+        self.assertEqual(payload.values[0, 2].item(), 0.0)  # real FP16 underflow
+        receiver = windows[0].proposal.probabilities[0, 0]
+        self.assertEqual(receiver[2].item(), 0.0)
+        self.assertEqual(float(sampling_weights(payload.dense())[0, 2].item()), 0.0)
+        self.assertTrue(
+            torch.equal(samples[0], sampling_weights(payload.dense()))
+        )
+        self.assertGreater(
+            float(windows[0].proposal.selected_probabilities()[0, 0].item()), 0.0
+        )
+        self.assertIn(int(output[0, 1]), (0, 1))
+        # one draft draw + one continuation; a rejection spends one more budget
+        # token, so the target-only fallback may add exactly one retained draw.
+        accepted = metrics["draft_accepted_tokens"]
+        self.assertIn(accepted, (0, 1))
+        self.assertEqual(len(samples), 2 + (1 if accepted == 0 else 0))
+
+    def test_invalid_model_row_fails_before_any_draw(self):
+        """The draft model row is validated by the codec before sampling."""
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        router = _FakeCacheRouter(
+            draft_rows=[torch.tensor([[2.0, 1.0, 0.0, 0.0]], dtype=torch.float64)]
+        )
+        with patch(
+            "torch.multinomial",
+            side_effect=AssertionError("draw before validation"),
+        ):
+            with self.assertRaises(ValueError):
+                self._run_router(router, prefix, max_tokens=3, gamma=1)
+
+    def test_topk_tie_row_bills_exactly_the_sparse_payload(self):
+        """Tied top-K logits keep more positives than K; a K-slot wire re-selects.
+
+        ``sampling.py`` masks ``logits < threshold``, so a uniform row keeps all
+        V positives with top_k=2.  The payload must still be exactly min(K, V)
+        FP16 values, and the billed bytes must equal those values.
+        """
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        uniform = torch.tensor([[0.25, 0.25, 0.25, 0.25]], dtype=torch.float64)
+        wire_uniform = [0.5, 0.5, 0.0, 0.0]
+        router = _FakeCacheRouter(
+            draft_rows=[uniform], target_extra_rows={0: wire_uniform, 1: wire_uniform}
+        )
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+
+        with codec_patch, window_patch:
+            output, metrics = self._run_router(
+                router, prefix, max_tokens=3, gamma=1
+            )
+
+        payload = payloads[0]
+        self.assertEqual(int((uniform > 0).sum().item()), VOCAB)  # the code fact
+        self.assertEqual(tuple(payload.values.shape), (1, K))
+        self.assertEqual(payload.indices.tolist(), [[0, 1]])  # ties by lowest id
+        self.assertEqual(payload.values.tolist(), [[0.5, 0.5]])
+        self.assertEqual(self._uplinks()[0]["data_size_bytes"], payload.nbytes)
+        receiver = windows[0].proposal.probabilities[0, 0]
+        self.assertEqual(int((receiver > 0).sum().item()), K)
+        self.assertEqual(float(receiver[2:].sum().item()), 0.0)
+        self.assertIn(int(output[0, 1]), (0, 1))
 
     def test_accept_path_bills_paper_payload_and_downlink(self):
         """单轮全接受：上行 = γ·K·2 B（FP16），下行 = 0 B 报文。"""
@@ -391,6 +662,12 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(target_cache.init_args["top_p"], 0)
         self.assertEqual(target_cache.generate_calls, [])
         self.assertEqual(target_cache.forward_context_calls, [3])
+        # 草稿用 forward_context 逐步推进（不再 generate）：输入长度 1、2
+        self.assertEqual(draft_cache.forward_context_calls, [1, 2])
+        self.assertEqual(
+            [c.tolist() for c in draft_cache.forward_context_contents],
+            [[[3]], [[3, 0]]],
+        )
 
         sim = _FakeCommSimulator.instances[0]
         # 1) 首轮 prompt 上传（全仓一次性约定）
@@ -408,117 +685,129 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(draft_cache.rollback_calls, [3])
         self.assertEqual(target_cache.rollback_calls, [4])
 
-    def test_verification_uses_fp16_quantized_sparse_q(self):
-        """验证判据必须用 FP16 量化后的窗口（计费与数据一致）。
-
-        0.6/0.4 这类值 fp16 roundtrip 后会变——覆盖行 ≠ 原始行，
-        但与 _quantize_probs_fp16(原始窗口) 逐位相等。
-        """
+    def test_verification_window_is_reconstructed_from_payloads_only(self):
+        """接收端只用已计费 payload 重建：没有未计费的 dense raw Q 旁路。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
-        overrides = []
+        raw_row = torch.tensor([[0.5, 0.3, 0.15, 0.05]], dtype=torch.float32)
+        target_row = [0.4, 0.35, 0.2, 0.05]
+        router = _FakeCacheRouter(
+            draft_rows=[raw_row], target_extra_rows={0: target_row, 1: target_row}
+        )
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+        samples, sample_patch = self._record_multinomial()
 
-        def spy(draft_model_cache, target_model_cache, x, prefix_len, gamma, **kw):
-            overrides.append(
-                {
-                    "prefix_len": prefix_len,
-                    "gamma": gamma,
-                    "draft_probs_override": kw.get("draft_probs_override"),
-                }
+        with codec_patch, window_patch, sample_patch:
+            self._run_router(router, prefix, max_tokens=3, gamma=1)
+
+        payload = payloads[0]
+        self.assertEqual(payload.indices.tolist(), [[0, 1]])
+        self.assertEqual(payload.values.tolist(), [[0.625, 0.375]])
+        receiver = windows[0].proposal.probabilities[0, 0]
+        self.assertTrue(torch.equal(receiver, payload.dense()[0]))
+        self.assertEqual(float(receiver[2:].sum().item()), 0.0)
+        # not the raw model row, and not the retired full-row FP16 roundtrip
+        self.assertFalse(torch.equal(receiver.float(), raw_row[0]))
+        self.assertFalse(
+            torch.equal(
+                receiver.float(),
+                _quantize_probs_fp16(raw_row.unsqueeze(1))[0, 0].float(),
             )
-            return _real_prepare_verification_inputs(
-                draft_model_cache=draft_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=gamma,
-                **kw,
-            )
-
-        with patch("src.baselines.tk_slt._prepare_legacy_verification_inputs", spy):
-            output, _ = self._run(prefix, max_tokens=3)
-
-        self.assertEqual(len(overrides), 1)
-        ov = overrides[0]
-        draft_cache = _FakeDraftCache.instances[0]
-        win_lo = ov["prefix_len"] - 1
-        win_hi = ov["prefix_len"] + ov["gamma"] - 1
-        raw_window = draft_cache.prob_history[:, win_lo:win_hi, :]
-        got = ov["draft_probs_override"][:, ov["prefix_len"] - 1 :, :]
-        self.assertEqual(tuple(got.shape), tuple(raw_window.shape))
-        self.assertFalse(torch.equal(got, raw_window))  # 确实被量化了
-        self.assertTrue(torch.equal(got, _quantize_probs_fp16(raw_window)))
-        # 量化后仍是合法分布
+        )
+        # the draft draw used the same reconstruction
+        self.assertTrue(torch.equal(samples[0], sampling_weights(payload.dense())))
         self.assertTrue(
-            torch.allclose(got.sum(dim=-1), torch.ones(got.shape[:2]), atol=1e-6)
+            torch.equal(windows[0].proposal.sampling_weights[0, 0], samples[0][0])
         )
 
-    def test_reject_path_resamples_from_sparse_quantized_q(self):
-        """拒绝路径：BS 从 norm(max(0, P−Q̂)) 重采样，Q̂ = 稀疏 FP16 行。
+    def test_reject_path_resamples_from_strict_wire_residual(self):
+        """拒绝路径 = strict norm((P−Q̂)+)，无 legacy max_fn 兜底。
 
         构造必拒场景：目标在 drafted token 上概率为 0 ⇒ p/q = 0。
-        残差 = P−Q̂ 在稀疏支撑之外的位置拿到完整的 P：drafted token 的
-        q̂=0.6 被 0 减掉后残差为 0，token 3（q̂=0）拿到完整 P 分量。
+        Q̂ 是 wire 行（one-hot token 0），残差恰为 P 在其余位置的归一化。
         """
         prefix = torch.tensor([[3]], dtype=torch.long)
-        # max_tokens=2 ⇒ 首轮 γ_eff = min(2, 1) = 1；token 循环首个 draft = 0
-        # 目标在验证行 0（drafted token 0 的位置）的概率：token 0 上为 0
-        reject_router = _FakeCacheRouter(target_extra_rows={0: [0.0, 0.9, 0.1, 0.0]})
+        reject_router = _FakeCacheRouter(
+            target_extra_rows={0: [0.0, 0.9, 0.1, 0.0]}
+        )
+        samples, sample_patch = self._record_multinomial()
+        windows, window_patch = self._record_windows()
 
-        with patch("src.baselines.tk_slt.KVCacheModel", reject_router):
-            output, metrics = self._run_manual(prefix, transfer_top_k=K)
+        with sample_patch, window_patch:
+            output, metrics = self._run_router(reject_router, prefix)
 
         self.assertEqual(tuple(output.shape), (1, 3))
         self.assertTrue(torch.equal(output[:, :1], prefix))
-        # 拒绝后重采样的 token ∈ {1, 2}：残差只在稀疏 Q̂ 之外/之上的位置
         self.assertIn(int(output[0, 1]), (1, 2))
         self.assertEqual(metrics["draft_accepted_tokens"], 0)
-        # 第 2 轮 remaining=1 走 fallback（target 直出）⇒ 再 append 1
         self.assertEqual(self.instance.num_acc_tokens, [0, 1])
+        # 3 draws: draft + strict residual + fallback (no extra sampling)
+        self.assertEqual(len(samples), 3)
+        one_hot_weights = sampling_weights(
+            torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+        )
+        self.assertTrue(torch.equal(samples[0], one_hot_weights))
+        residual = samples[1].reshape(-1)
+        self.assertEqual(float(residual[0].item()), 0.0)
+        self.assertAlmostEqual(float(residual[1].item()), 0.9, places=6)
+        self.assertAlmostEqual(float(residual[2].item()), 0.1, places=6)
+        self.assertEqual(float(residual.sum().item()), 1.0)
+        self.assertTrue(
+            torch.equal(
+                windows[0].proposal.probabilities[0, 0],
+                torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float16),
+            )
+        )
         # 上行按 γ_eff=1 计费：1·K·2 = 4 字节
         self.assertEqual(self._uplinks()[0]["data_size_bytes"], K * 2)
         self.assertEqual(self._uplinks()[0]["kwargs"].get("draft_len"), 1)
-        # 拒绝轮照常有一次 0 字节下行（结果 token + 位置 j）
         self.assertEqual(len(self._downlinks()), 1)
-        # 验证轮与 fallback 都只推进上下文；target 不再采丢弃 token
         target_cache = _FakeTargetCache.instances[0]
         self.assertEqual(target_cache.generate_calls, [])
         self.assertEqual(target_cache.forward_context_calls, [2, 2])
 
-    def test_multi_round_window_slicing_and_single_prompt_upload(self):
-        """两轮 DSD：prompt 只传一次；第二轮的窗口从 prefix_len-1 切起。"""
+    def test_invalid_target_row_fails_before_acceptance_rng(self):
+        """Strict validation stays an error: no max_fn / one-hot fallback."""
         prefix = torch.tensor([[3]], dtype=torch.long)
-        overrides = []
+        router = _FakeCacheRouter(target_extra_rows={0: [0.2, 0.2, 0.2, 0.2]})
+        samples, sample_patch = self._record_multinomial()
 
-        def spy(draft_model_cache, target_model_cache, x, prefix_len, gamma, **kw):
-            overrides.append(
-                {
-                    "prefix_len": prefix_len,
-                    "gamma": gamma,
-                    "draft_probs_override": kw.get("draft_probs_override"),
-                }
-            )
-            return _real_prepare_verification_inputs(
-                draft_model_cache=draft_model_cache,
-                target_model_cache=target_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=gamma,
-                **kw,
-            )
+        with sample_patch, self.assertRaises(ValueError):
+            self._run_router(router, prefix, max_tokens=3, gamma=1)
 
-        with patch("src.baselines.tk_slt._prepare_legacy_verification_inputs", spy):
-            # gamma=1, max_tokens=4 ⇒ 两个完整 DSD 轮
+        # only the draft draw happened; acceptance/continuation never ran
+        self.assertEqual(len(samples), 1)
+
+    def test_multi_round_window_slicing_and_single_prompt_upload(self):
+        """两轮 DSD：prompt 只传一次；每轮 payload 独立、前缀内容真实。"""
+        prefix = torch.tensor([[3]], dtype=torch.long)
+        payloads, codec_patch = self._record_codec()
+        windows, window_patch = self._record_windows()
+
+        with codec_patch, window_patch:
             output, metrics = self._run(prefix, max_tokens=4, gamma=1)
 
         draft_cache = _FakeDraftCache.instances[0]
-        self.assertEqual(draft_cache.generate_calls, [(1, 1), (3, 1)])
-        self.assertEqual(len(overrides), 2)
-        self.assertEqual([o["prefix_len"] for o in overrides], [1, 3])
-        # 第二轮窗口 = draft prob_history 的 [prefix_len-1 : prefix_len+γ-1] = [2:3]
-        second = overrides[1]
-        raw = draft_cache.prob_history[:, 2:3, :]
-        got = second["draft_probs_override"][:, 2:, :]
-        self.assertTrue(torch.equal(got, _quantize_probs_fp16(raw)))
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(len(windows), 2)
+        self.assertEqual([w.proposal.prefix_len for w in windows], [1, 3])
+        for window, payload in zip(windows, payloads, strict=True):
+            self.assertTrue(
+                torch.equal(
+                    window.proposal.probabilities[0, 0], payload.dense()[0]
+                )
+            )
+        # 第二轮草稿缓存从第 1 轮真实结尾继续推进（input length 3）
+        self.assertEqual(draft_cache.forward_context_calls, [1, 3])
+        self.assertEqual(
+            draft_cache.forward_context_contents[0].tolist(), [[3]]
+        )
+        self.assertEqual(
+            draft_cache.forward_context_contents[1].shape[1], 3
+        )
+        self.assertEqual(
+            draft_cache.forward_context_contents[1][0, :1].tolist(), [3]
+        )
         # prompt 只在首轮上传一次
         prompt_uploads = [
             c for c in _FakeCommSimulator.instances[0].transfer_calls
@@ -527,11 +816,14 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(len(prompt_uploads), 1)
         self.assertEqual(len(self._uplinks()), 2)
         self.assertEqual(metrics["generated_tokens"], 4)
+        self.assertEqual(output.shape[1], 5)
 
     def test_k_disabled_degenerates_to_vanilla_dsd_billing(self):
         """K<=0/None ⇒ 全量 softmax 提议 + 整词表载荷（论文自己的 DSD 基线）。"""
         prefix = torch.tensor([[3]], dtype=torch.long)
-        output, metrics = self._run(prefix, transfer_top_k=0, max_tokens=3)
+        payloads, codec_patch = self._record_codec()
+        with codec_patch:
+            output, metrics = self._run(prefix, transfer_top_k=0, max_tokens=3)
 
         draft_cache = _FakeDraftCache.instances[0]
         self.assertEqual(draft_cache.init_args["top_k"], 0)
@@ -539,17 +831,11 @@ class TestTkSltDecodeLoop(TkSltLoopTestBase):
         self.assertEqual(self._uplinks()[0]["data_size_bytes"], 2 * VOCAB * 2)
         self.assertEqual(self._uplinks()[0]["kwargs"].get("topk"), 0)
         self.assertEqual(metrics["avg_top_k"], 0)
-
-    def _run_manual(self, prefix, **dec_kwargs):
-        """不走 _run 的 KVCacheModel patch（调用方自带 router）时用这个。"""
-        with (
-            patch("src.baselines.simulators.CommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.simulators.PreciseCommunicationSimulator", _FakeCommSimulator),
-            patch("src.baselines.tk_slt.torch.cuda.Event", _FakeCudaEvent),
-            patch("src.baselines.tk_slt.torch.cuda.current_stream", return_value=None),
-            patch("src.baselines.tk_slt.torch.cuda.synchronize", return_value=None),
-        ):
-            return self.instance.tk_slt(prefix, **dec_kwargs)
+        self.assertEqual(len(payloads), 2)
+        for payload in payloads:
+            self.assertIsNone(payload.indices)
+            self.assertEqual(tuple(payload.values.shape), (1, VOCAB))
+            self.assertEqual(payload.nbytes, VOCAB * 2)
 
 
 class TestTkSltOdldWiring(TkSltLoopTestBase):
@@ -567,7 +853,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         self.assertEqual(sel.call_count, 2)  # 首轮无估计不咨询；第 2/3 轮咨询
         # （第 3 轮 remaining=1，咨询后走 fallback：target 直出）
         draft_cache = _FakeDraftCache.instances[0]
-        self.assertEqual(draft_cache.generate_calls, [(1, 2), (4, 3)])
+        self.assertEqual(draft_cache.forward_context_calls, [1, 2, 4, 5, 6])
         self.assertEqual(self.instance.num_acc_tokens, [2, 3, 1])
         self.assertTrue(metrics["tk_slt_odld"])
         self.assertEqual(metrics["tk_slt_gamma_star_final"], 3)
@@ -586,7 +872,7 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         # 首轮 DSD（draft 1 次）+ 第 2 轮 standalone（target 直出）
         draft_cache = _FakeDraftCache.instances[0]
         target_cache = _FakeTargetCache.instances[0]
-        self.assertEqual(len(draft_cache.generate_calls), 1)
+        self.assertEqual(len(draft_cache.forward_context_calls), 1)
         self.assertEqual(target_cache.generate_calls, [])
         self.assertEqual(len(target_cache.forward_context_calls), 2)
         self.assertEqual(metrics["tk_slt_standalone_rounds"], 1)
@@ -601,12 +887,20 @@ class TestTkSltOdldWiring(TkSltLoopTestBase):
         output, metrics = self._run(prefix, max_tokens=8, gamma=2)
         draft_cache = _FakeDraftCache.instances[0]
         # 第 3 轮 remaining=2 ⇒ γ_eff=1（越界钳位是既有约定）
-        self.assertEqual(draft_cache.generate_calls, [(1, 2), (4, 2), (7, 1)])
+        self.assertEqual(draft_cache.forward_context_calls, [1, 2, 4, 5, 7])
         self.assertFalse(metrics["tk_slt_odld"])
         self.assertEqual(metrics["tk_slt_standalone_rounds"], 0)
 
 
-class TestFp16Quantization(unittest.TestCase):
+class TestRetiredFp16Codec(unittest.TestCase):
+    """The retired full-row FP16 roundtrip kept for the historical bridge only.
+
+    The active TK-SLT loop no longer uses this codec (see
+    :mod:`src.tk_slt_proposal`); these assertions pin the historical helper's
+    documented lossiness so the retained bridge cannot be mistaken for a
+    lossless wire.
+    """
+
     def test_values_change_and_rows_stay_normalized(self):
         probs = torch.tensor([[[0.1, 0.3, 0.6, 0.0]]])
         out = _quantize_probs_fp16(probs)
@@ -616,7 +910,6 @@ class TestFp16Quantization(unittest.TestCase):
         )
 
     def test_zeros_and_one_hot_survive(self):
-        # temp=0 的 one-hot 行逐位不变（协议 temp=0 下与未量化路径一致）
         one_hot = torch.tensor([[[0.0, 1.0, 0.0, 0.0]]])
         self.assertTrue(torch.equal(_quantize_probs_fp16(one_hot), one_hot))
         # 稀疏支撑（0 值位置）保持为 0
@@ -630,7 +923,7 @@ class TestFp16Quantization(unittest.TestCase):
         self.assertTrue(torch.equal(_quantize_probs_fp16(empty), empty))
 
     def test_positive_fp16_tail_can_underflow_and_change_the_wire_law(self):
-        """The wire representation is lossy; docs must not call it lossless."""
+        """The retired wire representation is lossy; docs must not call it lossless."""
         raw = torch.tensor([[[0.6, 0.4, 1e-8, 0.0]]], dtype=torch.float64)
         wire = _quantize_probs_fp16(raw)
         # 1e-8 is positive in the proposal law but not representable in fp16.

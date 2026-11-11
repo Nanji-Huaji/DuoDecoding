@@ -10,8 +10,10 @@ The assertions cover the public `Baselines.tk_slt` / `tkslt` entry and its
 `KVCacheModel.forward_context` seam:
 
 * zero budget forwards nothing; budget one uses the target-only fallback;
+* the draft loop advances with `forward_context` only (never `generate`), ends
+  at `prefix + gamma - 1`, and samples the reconstructed FP16 wire row;
 * all-accept keeps the target bonus, first/middle rejection samples the
-  residual token and stops at the accepted endpoint;
+  strict wire residual token and stops at the accepted endpoint;
 * the finalized bonus/residual token is never forwarded in the same round;
 * standalone (AS²) and remaining-budget fallback use `forward_context`, never
   `generate`, so no target RNG draw is discarded;
@@ -27,8 +29,11 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 import src.baselines.tk_slt as tk_slt_module
+import src.tk_slt_proposal as tk_slt_proposal_module
+import src.verification as verification_module
 from src.baselines import Baselines
 from src.model_gpu import KVCacheModel
+from src.sampling import sampling_weights
 
 VOCAB = 8
 K = 1
@@ -166,7 +171,7 @@ class _RecordingComm:
 
     def simulate_transfer(self, data_size_bytes, link_type="edge_cloud", **kwargs):
         kind = "downlink" if int(data_size_bytes) == 0 else "uplink"
-        self.transfer_calls.append((kind, link_type, kwargs))
+        self.transfer_calls.append((kind, link_type, kwargs, int(data_size_bytes)))
         if kind == "uplink":
             self.stats["edge_cloud"].append(
                 {"data_size_bytes": int(data_size_bytes), "tx_time": 0.0}
@@ -273,6 +278,52 @@ def _recording_samples(monkeypatch):
     return samples
 
 
+@pytest.mark.parametrize(
+    ("path", "budget", "odld", "expected_draws"),
+    [("fallback", 1, False, 1), ("standalone", 3, True, 4),
+     ("accept", 4, False, 6), ("reject", 3, False, 7)],
+)
+def test_all_loop_draws_share_explicit_private_cpu_generator(
+    monkeypatch, path, budget, odld, expected_draws
+):
+    draft = {token: (token + 1) % VOCAB for token in range(VOCAB)}
+    target = (
+        {token: (token + 2) % VOCAB for token in range(VOCAB)}
+        if path == "reject" else draft
+    )
+    runtime = _runtime(
+        budget=budget, gamma=1, odld=odld,
+        draft_preference=draft, target_preference=target,
+    )
+    if odld:
+        monkeypatch.setattr(
+            tk_slt_module, "tk_slt_select_speculative", lambda *a, **k: (False, 1, 0.5)
+        )
+    draws = []
+    real_sample, real_rand = torch.multinomial, torch.rand
+
+    def sample(*args, **kwargs):
+        draws.append(("sample", kwargs.get("generator")))
+        return real_sample(*args, **kwargs)
+
+    def rand(*args, **kwargs):
+        draws.append(("uniform", kwargs.get("generator")))
+        return real_rand(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "multinomial", sample)
+    monkeypatch.setattr(torch, "rand", rand)
+    output, metrics = _run(runtime)
+
+    assert output.shape[1] == 2 + budget
+    assert len(draws) == expected_draws
+    # ODLD first calibrates with one speculative round, then switches standalone.
+    assert (any(kind == "uniform" for kind, _ in draws)) == (path != "fallback")
+    if path == "standalone":
+        assert metrics["tk_slt_standalone_rounds"] == 1
+    assert all(generator is not None for _, generator in draws)
+    assert all(generator is draws[0][1] for _, generator in draws)
+
+
 def test_tkslt_alias_resolves_to_the_new_defining_module():
     runtime = _runtime(
         budget=1,
@@ -306,7 +357,9 @@ def test_zero_budget_forwards_nothing_and_samples_nothing(monkeypatch):
     monkeypatch.setattr(runtime.target_model, "forward", unexpected)
     monkeypatch.setattr(torch, "multinomial", unexpected)
 
+    rng_state = torch.get_rng_state().clone()
     output, metrics = _run(runtime)
+    assert torch.equal(torch.get_rng_state(), rng_state)
     assert output.shape == (1, 2)
     assert metrics["generated_tokens"] == 0
     assert metrics["draft_forward_times"] == metrics["target_forward_times"] == 0
@@ -333,6 +386,7 @@ def test_budget_one_uses_target_only_fallback_and_keeps_the_token_unforwarded(
     assert metrics["target_forward_times"] == 1
     draft, target = _caches()
     assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == []
     assert target.generate_calls == []
     assert target.forward_context_input_lens == [2]
     assert target.forward_context_rng_stable == [True]
@@ -365,7 +419,11 @@ def test_all_accept_samples_one_bonus_without_a_discarded_target_draw(monkeypatc
     assert target.forward_context_rng_stable == [True]
     # Both caches stop at the forwarded window; the bonus token is not forwarded.
     assert target.current_length == 4
-    # Draft generate ended after the last *verified* draft token (prefix+gamma-1).
+    # The draft loop is a per-step forward_context loop, never generate.
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2, 3]
+    assert draft.forward_context_rng_stable == [True, True]
+    # It ends after the last *verified* draft token (prefix+gamma-1).
     assert draft.current_length == 3
     assert tuple(target.prob_history.shape) == (1, 4, VOCAB)
     # Two draft draws + exactly one retained bonus draw.
@@ -400,6 +458,8 @@ def test_first_rejection_samples_residual_and_rolls_back_to_the_prefix(
     assert target.forward_context_rng_stable == [True, True]
     # Rejected window rolled back to the old prefix; fallback extended it by one.
     assert target.current_length == 3
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2]
     assert draft.current_length == 2
     assert len(samples) == 3  # draft + residual + fallback
 
@@ -426,8 +486,98 @@ def test_middle_rejection_keeps_first_accept_and_stops_at_reject_offset(
     assert target.forward_context_input_lens == [4, 4]
     assert target.forward_context_rng_stable == [True, True]
     assert target.current_length == 4
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2, 3]
     assert draft.current_length == 3
     assert len(samples) == 4  # two drafts + residual + fallback
+
+
+def test_draft_wire_payload_is_sparse_fp16_and_drives_verification(monkeypatch):
+    """A non-one-hot real model row: exact K FP16 slots, one shared wire law.
+
+    The draft model's lm_head is zero, so its next-token law is uniform over the
+    vocabulary (all V entries positive, the top-K tie case).  K=1 must still
+    transmit exactly one FP16 value at the lowest tied id, the draft must sample
+    the reconstructed wire row, and the receiver must use that same row instead
+    of the dense model law.
+    """
+    runtime = _runtime(
+        budget=2,
+        gamma=1,
+        draft_preference={},
+        target_preference={token: (token + 1) % VOCAB for token in range(VOCAB)},
+    )
+    rows, payloads, windows = [], [], []
+    real_encode = tk_slt_proposal_module.encode_proposal_row
+    real_prepare = verification_module.prepare_verification_window
+
+    def recording_encode(probabilities, top_k, **kwargs):
+        payload = real_encode(probabilities, top_k, **kwargs)
+        rows.append(probabilities.detach().clone())
+        payloads.append(payload)
+        return payload
+
+    def recording_prepare(proposal, target_history):
+        window = real_prepare(proposal, target_history)
+        windows.append(window)
+        return window
+
+    monkeypatch.setattr(
+        tk_slt_proposal_module, "encode_proposal_row", recording_encode
+    )
+    monkeypatch.setattr(
+        tk_slt_module, "prepare_verification_window", recording_prepare
+    )
+    samples = _recording_samples(monkeypatch)
+
+    output, metrics = _run(runtime)
+
+    # draft token 0 is rejected, the strict residual emits 3, fallback emits 4
+    assert output[0].tolist() == [1, 2, 3, 4]
+    assert metrics["generated_tokens"] == 2
+    assert metrics["draft_generated_tokens"] == 1
+    assert metrics["draft_accepted_tokens"] == 0
+
+    # the real model row is a valid non-one-hot law
+    raw = rows[0]
+    assert raw.shape == (1, VOCAB)
+    assert int((raw > 0).sum().item()) == VOCAB
+    assert abs(float(raw.sum().item()) - 1.0) < 1e-6
+
+    # the billed payload is exactly min(K, V) real FP16 values + sorted indices
+    payload = payloads[0]
+    assert payload.values.dtype == torch.float16
+    assert payload.values.shape == (1, K)
+    assert payload.indices.tolist() == [[0]]  # uniform row: ties by lowest id
+    assert payload.nbytes == 2 * K
+    assert torch.equal(
+        payload.dense(),
+        torch.tensor([[1.0] + [0.0] * (VOCAB - 1)], dtype=torch.float16),
+    )
+
+    # the draft sampled that reconstruction; the verifier used the same row
+    assert torch.equal(samples[0], sampling_weights(payload.dense()))
+    proposal = windows[0].proposal
+    assert torch.equal(proposal.probabilities[0, 0], payload.dense()[0])
+    assert torch.equal(proposal.sampling_weights[0, 0], samples[0][0])
+    assert proposal.selected_probabilities()[0, 0].item() == 1.0
+    # the dense raw model law never reached the receiver
+    assert not torch.equal(proposal.probabilities[0, 0].float(), raw[0])
+
+    # billing covers exactly the transmitted values (K * 2 B)
+    comm = _RecordingComm.instances[0]
+    uplink = comm.uplinks()[0]
+    assert uplink[2]["topk"] == K
+    assert uplink[2]["draft_len"] == 1
+    assert uplink[3] == payload.nbytes
+
+    # the draft loop is forward_context only and ends at prefix + gamma - 1
+    draft, target = _caches()
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2]
+    assert draft.current_length == 2
+    assert target.generate_calls == []
+    assert len(samples) == 3  # draft + strict residual + fallback
 
 
 def test_eos_truncates_the_generated_suffix_after_the_round():
@@ -444,7 +594,9 @@ def test_eos_truncates_the_generated_suffix_after_the_round():
     assert output[0].tolist() == [1, 2, 3]
     assert metrics["generated_tokens"] == 1
     # The forward still covered the verified window; EOS truncation is final.
-    _, target = _caches()
+    draft, target = _caches()
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2, 3]
     assert target.generate_calls == []
     assert target.forward_context_input_lens == [4]
 
@@ -472,7 +624,8 @@ def test_odld_standalone_uses_forward_context_and_no_draft_round(monkeypatch):
     assert metrics["tk_slt_gamma_star_final"] == 1
     draft, target = _caches()
     # One DSD draft round only; the standalone round forwards target directly.
-    assert len(draft.generate_calls) == 1
+    assert draft.generate_calls == []
+    assert draft.forward_context_input_lens == [2]
     assert target.generate_calls == []
     assert target.forward_context_input_lens == [3, 4]
     assert target.forward_context_rng_stable == [True, True]
