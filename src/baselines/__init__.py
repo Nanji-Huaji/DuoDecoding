@@ -2,10 +2,12 @@
 
 Patch dependencies in their defining module: resource/policy assembly lives in
 ``src.baselines.runtime``, two-model adaptive in ``src.baselines.adaptive``,
-CEE-SD in ``src.baselines.cee``, CU-HLM in ``src.baselines.cuhlm``, DSD/DSSD in
-``src.baselines.dual``, local SD in ``src.dual_decoding``, shared primitives in
-``src.baselines.operations`` and still-unmigrated baselines in
-``src.baselines.core``; simulator factories use ``src.baselines.simulators``.
+CEE-SD in ``src.baselines.cee``, CU-HLM in ``src.baselines.cuhlm``, TK-SLT in
+``src.baselines.tk_slt``, DSD/DSSD in ``src.baselines.dual``, local SD in
+``src.dual_decoding``, shared primitives in ``src.baselines.operations`` and
+still-unmigrated baselines in ``src.baselines.core``; simulator factories use
+``src.baselines.simulators``. TK-SLT ODLD/AS² policy math lives in
+``src.tk_slt_policy``.
 Exports here do not write through to an implementation module. Legacy names are
 visible through imports/getattr/dir, not this package's __dict__.
 """

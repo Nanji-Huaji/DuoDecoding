@@ -71,6 +71,7 @@ MODES = ("uncertainty_decoding", "tk_slt", "cee_cuhlm")
 def runner(monkeypatch):
     monkeypatch.setattr("src.baselines.core.KVCacheModel", _Cache)
     monkeypatch.setattr("src.baselines.cuhlm.KVCacheModel", _Cache)
+    monkeypatch.setattr("src.baselines.tk_slt.KVCacheModel", _Cache)
     monkeypatch.setattr(torch.cuda, "Event", _Clock)
     monkeypatch.setattr(torch.cuda, "current_stream", lambda: None)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
@@ -152,6 +153,7 @@ def test_eager_calls_are_fresh_without_model_identity_introspection(
 
     monkeypatch.setattr("src.baselines.core._kv_cache_construction_key", forbidden)
     monkeypatch.setattr("src.baselines.cuhlm._kv_cache_construction_key", forbidden)
+    monkeypatch.setattr("src.baselines.tk_slt._kv_cache_construction_key", forbidden)
     runner.args.use_cuda_graph = False
     _call(runner, mode)
     count = len(_Cache.created)

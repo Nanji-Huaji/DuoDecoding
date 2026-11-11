@@ -22,6 +22,7 @@ import src.dual_decoding as local_dual
 import src.baselines.operations as operations
 import src.baselines.runtime as runtime
 import src.baselines.simulators as simulators
+import src.baselines.tk_slt as tk_slt
 from src.baselines import Baselines, _make_comm_simulator, _uplink_prob_payload, core
 from src.register import Register
 
@@ -56,8 +57,8 @@ EXPECTED_REGISTRATIONS = {
         "Decoding.speculative_decoding_with_bandwidth"
     ),
     "target_only": "Baselines.target_only",
-    "tk_slt": "Baselines.tk_slt",
-    "tkslt": "Baselines.tk_slt",
+    "tk_slt": "TkSltMixin.tk_slt",
+    "tkslt": "TkSltMixin.tk_slt",
     "tridecoding": "CeeSdMixin.tridecoding",
     "uncertainty_decoding": "CuhlmMixin.uncertainty_decoding",
 }
@@ -200,6 +201,7 @@ def test_moved_families_use_their_real_module_globals():
         (Baselines.adaptive_decoding, adaptive, "AdaptiveDecodingMixin"),
         (Baselines._adaptive_decoding_verify, adaptive, "AdaptiveDecodingMixin"),
         (Baselines.uncertainty_decoding, cuhlm, "CuhlmMixin"),
+        (Baselines.tk_slt, tk_slt, "TkSltMixin"),
         (Baselines.adaptive_tridecoding, cee, "CeeSdMixin"),
         (Baselines._cee_verify_proposal, cee, "CeeSdMixin"),
         (Baselines.cee_sd_opportunistic, cee, "CeeSdMixin"),
@@ -231,6 +233,7 @@ def test_real_modules_do_not_import_the_compatibility_package_or_core():
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "adaptive.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "cee.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "cuhlm.py",
+        Path(__file__).resolve().parents[1] / "src" / "baselines" / "tk_slt.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "operations.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "dual.py",
         Path(__file__).resolve().parents[1] / "src" / "dual_decoding.py",
@@ -289,6 +292,7 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
             "adaptive.py",
             "cee.py",
             "cuhlm.py",
+            "tk_slt.py",
             "operations.py",
             "dual.py",
         )
@@ -313,6 +317,7 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
         "_trace_adaptive_decoding_append",
         "_adaptive_decoding_finalize",
         "uncertainty_decoding",
+        "tk_slt",
         "adaptive_tridecoding",
         "_cee_propose",
         "_cee_first_stage",
