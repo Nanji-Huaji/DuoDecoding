@@ -193,45 +193,37 @@ class TestCuhlmCompressedVocab:
     - `uncertainty_threshold` 边界语义（u > u_th 才传输）。
     """
 
-    @staticmethod
-    def _bruteforce_k_star(uncertainty, probs, theta=0.1):
-        """修复前的逐 k 暴力循环（作为等价性参照）。"""
-        a, b = 0.815, -0.066
-        beta_d = max(0.0, min(1.0, a * uncertainty + b))
-        sorted_probs, _ = torch.sort(probs.float().reshape(-1), descending=True)
-        vocab = sorted_probs.numel()
-        x_d = float(sorted_probs[0])
-        l_neg_1 = float(torch.log1p(torch.exp(torch.tensor(-1.0))))
-        l_neg_beta = float(torch.log1p(torch.exp(torch.tensor(-beta_d))))
-        denom = (1 - x_d) * l_neg_1 + x_d * l_neg_beta
-        if denom <= 0:
-            return 30
-        for k in range(1, vocab):
-            top = float(sorted_probs[:k].sum())
-            residual = 1.0 - top
-            u = residual / (vocab - k) if residual > 0 else 0.0
-            num = float((sorted_probs[k:] - u).abs().sum())
-            if num / denom <= theta:
-                return k
-        return min(300, vocab // 100)
-
-    def test_vectorized_matches_bruteforce(self):
+    def test_selection_is_bounded_and_has_no_fixed_fallback(self):
+        # Replaces the old float32 brute-force ±1 comparison: the solver is not
+        # claimed to equal an ideal-tail loop.  It must only return a legal k,
+        # and when nothing can be certified (theta=0 on a rounding-sensitive
+        # row) it must return V instead of the old 0 / min(300, V//100).
         torch.manual_seed(0)
         for vocab in (50, 300):
             for alpha in (0.05, 1.0, 10.0):
-                dist = torch.distributions.Dirichlet(
+                probs = torch.distributions.Dirichlet(
                     torch.full((vocab,), float(alpha))
-                )
-                probs = dist.sample()
+                ).sample()
                 sim = CUHLM(
                     20.0,
                     vocab_size=vocab,
                     ntt_ms_edge_cloud=0.0,
                 )
                 for uncertainty in (0.0, 0.3, 0.6, 0.9):
-                    ref = self._bruteforce_k_star(uncertainty, probs)
-                    new = sim._calculate_compressed_vocab_size(uncertainty, probs)
-                    assert abs(new - ref) <= 1, (vocab, alpha, uncertainty, ref, new)
+                    selected = sim._calculate_compressed_vocab_size(
+                        uncertainty, probs
+                    )
+                    assert 1 <= selected <= vocab
+
+        uniform = torch.full((3,), 1.0 / 3.0)
+        sim3 = CUHLM(20.0, vocab_size=3, ntt_ms_edge_cloud=0.0)
+        assert sim3._calculate_compressed_vocab_size(0.9, uniform, theta=0.0) == 3
+        assert (
+            sim3._calculate_compressed_vocab_size(
+                0.9, uniform, theta=0.0, draft_token=1
+            )
+            == 3
+        )
 
     def test_uniform_distribution_gives_k1(self):
         # 均匀分布：top-1 + 均匀尾重构恰好无损 ⇒ 分子为 0 ⇒ k* = 1。
@@ -240,17 +232,13 @@ class TestCuhlmCompressedVocab:
         sim = CUHLM(20.0, vocab_size=vocab, ntt_ms_edge_cloud=0.0)
         assert sim._calculate_compressed_vocab_size(0.5, probs) == 1
 
-    def test_warns_when_fed_raw_logits(self):
+    def test_raw_logits_raise_instead_of_warning_and_falling_back(self):
         vocab = 64
         torch.manual_seed(1)
-        raw_logits = torch.randn(vocab) * 5  # 总质量远离 1
+        raw_logits = torch.randn(vocab) * 5  # 负值/总质量远离 1
         sim = CUHLM(20.0, vocab_size=vocab, ntt_ms_edge_cloud=0.0)
-        import warnings as _warnings
-
-        with _warnings.catch_warnings(record=True) as caught:
-            _warnings.simplefilter("always")
+        with pytest.raises(ValueError, match="finite and nonnegative|sum to one"):
             sim._calculate_compressed_vocab_size(0.5, raw_logits)
-        assert any("概率分布" in str(w.message) for w in caught)
 
     def test_threshold_boundary_semantics(self):
         sim = CUHLM(

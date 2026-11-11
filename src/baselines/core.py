@@ -1196,6 +1196,7 @@ class Baselines(
                 uncertainty_threshold=getattr(
                     self.args, "uncertainty_threshold", 0.8
                 ),
+                vocab_size=self.vocab_size,
             )
         else:
             comm_simulator = CUHLM(
@@ -1205,6 +1206,7 @@ class Baselines(
                 bandwidth_edge_end=self.comm_env.edge_end_bandwidth,
                 bandwidth_cloud_end=self.comm_env.cloud_end_bandwidth,
                 uncertainty_threshold=getattr(self.args, "uncertainty_threshold", 0.8),
+                vocab_size=self.vocab_size,
                 dimension="Mbps",
                 ntt_ms_edge_cloud=ntt_ms_edge_cloud,
                 ntt_ms_edge_end=ntt_ms_edge_end,
@@ -1497,6 +1499,7 @@ class Baselines(
                     comm_simulator.determine_transfer_strategy(
                         uncertainty,
                         draft_stage_probs[:, prefix_len - 1 + i, : self.vocab_size],
+                        draft_token=current_token_id,
                     )
                 )
 

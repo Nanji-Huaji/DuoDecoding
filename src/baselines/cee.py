@@ -559,15 +559,17 @@ class CeeSdMixin:
                 raise ValueError(
                     "Little model logits history is required for opportunistic CEE-SD"
                 )
+            proposal_token = int(proposal.tokens[:, proposal.prefix_len].item())
             uncertainty = uncertainty_sim.calculate_uncertainty(
                 logits[:, proposal.prefix_len - 1, : self.vocab_size],
                 M=20,
                 theta_max=2.0,
-                draft_token=int(proposal.tokens[:, proposal.prefix_len].item()),
+                draft_token=proposal_token,
             )
             should_transfer, _ = uncertainty_sim.determine_transfer_strategy(
                 uncertainty,
                 proposal.probabilities[:, 0, :],
+                draft_token=proposal_token,
             )
             if not should_transfer:
                 comm.simulate_transfer(8, "edge_end")

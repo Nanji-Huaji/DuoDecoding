@@ -8,6 +8,10 @@ from typing import List, Literal, Optional, Tuple, TypedDict, cast, Protocol
 
 import torch
 
+from src.cuhlm_compression import (
+    compress_rebuild_probs as _compress_rebuild_probs,
+)
+from src.cuhlm_compression import select_compressed_vocab_size
 from src.utils import read_trace_file, return_closest_mean_index
 
 
@@ -743,54 +747,14 @@ class CommunicationSimulator:
 
     @staticmethod
     def compress_rebuild_probs(probs: torch.Tensor, k: int) -> torch.Tensor:
+        """Compatibility entry point for the extracted pure codec.
+
+        The implementation lives in :mod:`src.cuhlm_compression` so the Eq. (26)
+        solver and the runtime verification path execute the exact same
+        top-k/uniform-tail arithmetic.  See that module for shape, dtype and
+        ``k >= vocab_size`` identity semantics.
         """
-        Args:
-            probs: 形状：(batch_size, seq_len, vocab_size)
-            k: int, top-k数量
-        Returns:
-            rebuilt_probs: 形状：(batch_size, seq_len, vocab_size)
-        """
-        if probs is None or probs.numel() == 0:
-            warnings.warn("警告：probs为空，无法进行压缩重建")
-            return torch.empty(0)
-
-        if probs.dim() != 3:
-            raise ValueError(f"probs维度应为3，实际为{probs.dim()}，无法进行压缩重建")
-
-        if k >= probs.shape[-1]:
-            return probs  # 无需压缩
-
-        batch_size, seq_len, vocab_size = probs.shape
-
-        # 向量化处理：reshape为(batch_size * seq_len, vocab_size)
-        flat_probs = probs.view(-1, vocab_size)
-
-        # 批量获取top-k
-        top_k_values, top_k_indices = torch.topk(flat_probs, k, dim=-1, sorted=True)
-
-        # 创建压缩的概率分布
-        compressed_probs = torch.zeros_like(flat_probs)
-        batch_indices = torch.arange(flat_probs.shape[0]).unsqueeze(1).expand(-1, k)
-        compressed_probs[batch_indices, top_k_indices] = top_k_values
-
-        # 重建概率分布（tail = 显式非 top-k 掩码；residual clamp 防负"概率"）
-        top_k_sum = compressed_probs.sum(dim=-1, keepdim=True)
-        residual_mass = (1.0 - top_k_sum).clamp_min(0.0)
-        top_k_mask = torch.zeros_like(compressed_probs, dtype=torch.bool)
-        top_k_mask[batch_indices, top_k_indices] = True
-        tail_mask = ~top_k_mask
-        tail_count = tail_mask.sum(dim=-1, keepdim=True)
-
-        uniform_prob = torch.where(
-            tail_count > 0,
-            residual_mass / tail_count,
-            torch.zeros_like(residual_mass),
-        )
-
-        rebuilt_flat_probs = torch.where(tail_mask, uniform_prob, compressed_probs)
-
-        # 恢复原始形状
-        return rebuilt_flat_probs.view(batch_size, seq_len, vocab_size)
+        return _compress_rebuild_probs(probs, k)
 
     def transfer(
         self,
@@ -1005,8 +969,6 @@ class CUHLM(CommunicationSimulator):
     - theta_max: float, 最大温度扰动，默认2.0
     """
 
-    DEFAULT_COMPRESSED_VOCAB_SIZE = 300
-
     def __init__(
         self,
         bandwidth_edge_cloud,
@@ -1204,109 +1166,44 @@ class CUHLM(CommunicationSimulator):
         theta: float = 0.1,
         draft_token: Optional[int] = None,
     ) -> int:
-        """按论文式 (26)（Proposition 2，在线逐轮规则）求最小压缩词表大小：
+        """Compatibility adapter for the pure Eq. (26) k solver.
 
-            k*(t) = arg min { k(t) | U_TV(β_d(t)) ≤ θ }
+        The real selection now lives in
+        :func:`src.cuhlm_compression.select_compressed_vocab_size`.  It screens
+        candidates with one ``O(V log V)`` ideal tail calculation and certifies
+        at most two through the actual codec, using the original Eq. (26) budget
+        for both. If neither can be certified, it returns the full vocabulary
+        ``V`` — never a fixed ``min(300, V//100)``,
+        ``0`` or ``30``.
 
-        （注：论文式 (24) 是离线时间平均版 k* = argmin{k | E_t[U_TV]≤θ}；
-        本实现与其在线变体等价，即用式 (26) 的上界逐轮解约束。）
-
-        所有量均定义在**词表概率分布** x(t) 上（论文第 II-A 节：x(t) 由
-        logit 经 softmax 归一化而来）。喂原始 logits 会得到无意义的 k*。
-
-        ``draft_token`` 是本轮实际采样的草稿 token；式 (26) 的 ``x_d`` 是
-        该 token 的概率。未提供时退化为 top-1（旧调用者的兼容 fallback），
-        这不等价于真实草稿 token 概率。
+        All quantities are vocabulary probability rows, not raw logits.  Invalid
+        shapes, negative/NaN entries, non-unit mass, invalid ``theta`` or
+        ``draft_token`` raise instead of warning and silently substituting a
+        constant.  ``draft_token`` is the actual sampled draft token; omitting it
+        keeps the top-1 compatibility fallback, which is not a claim that top-1
+        is the real candidate.
         """
-        if current_probs is None or current_probs.numel() == 0:
-            return 0
-
-        # 确保输入是完整的词汇表概率分布
-        if current_probs.shape[-1] != self.vocab_size:
-            warnings.warn(
-                f"警告：概率分布长度({current_probs.shape[-1]})与词汇表大小({self.vocab_size})不匹配"
-            )
-            return max(1, min(300, self.vocab_size // 100))
-
-        total_mass = float(current_probs.float().sum())
-        if abs(total_mass - 1.0) > 0.05:
-            warnings.warn(
-                f"警告：输入的总质量 {total_mass:.4f} 偏离 1，"
-                "请确认传入的是概率分布（softmax 后）而非原始 logits——"
-                "论文式 (16)/(23)/(26) 均定义在概率分布上"
-            )
-
-        # Step 1: 计算rejection probability
-        a, b = 0.815, -0.066
-        beta_d = max(0, min(1, a * uncertainty + b))
-
-        # Step 2: 对概率分布排序（float32 累加，避免半精度累加误差）
-        sorted_probs, _ = torch.sort(
-            current_probs.float().reshape(-1), descending=True
+        return select_compressed_vocab_size(
+            current_probs,
+            uncertainty=uncertainty,
+            theta=theta,
+            draft_token=draft_token,
+            vocab_size=self.vocab_size,
         )
-        vocab_size = self.vocab_size
-
-        # Step 3: 获取draft token概率
-        if draft_token is None:
-            x_d = float(sorted_probs[0])
-        else:
-            # draft_token是索引，获取对应概率
-            if 0 <= draft_token < vocab_size:
-                x_d = float(current_probs.reshape(-1)[draft_token])
-            else:
-                warnings.warn(f"警告：draft_token索引({draft_token})超出范围")
-                x_d = float(sorted_probs[0])
-
-        # Step 4: 计算softplus函数
-        eta = 1.0
-        l_neg_1 = self.softplus(torch.tensor(-1.0), eta).item()
-        l_neg_beta = self.softplus(torch.tensor(-beta_d), eta).item()
-
-        # Step 5: 计算分母（论文式 (26)）：(1-x_d)·ℓ(-1) + x_d·ℓ(-β_d)
-        denominator = (1 - x_d) * l_neg_1 + x_d * l_neg_beta
-        if denominator <= 0:
-            return 30
-
-        # Step 6: 向量化搜索最小的 k（与逐 k 暴力循环数学等价，O(V) 而非 O(V²)）
-        #
-        # 对每个 k：top_k_sum = Σ_{i≤k} x_i（降序前缀和），
-        #   residual = max(1 - top_k_sum, 0)，uniform = residual / (V-k)
-        #   numerator_k = Σ_{i>k} |x_i - uniform|（论文式 (23) 分子）
-        # 利用降序排列的 crossover 性质（{x_i ≥ u} 恒为前缀）：
-        #   m = 尾部中 ≥ uniform 的元素个数（searchsorted 一次求出全部）
-        #   head = 尾部前 m 个元素之和（前缀和差分）
-        #   numerator = 2·(head - m·uniform) + (V-k)·uniform - tail_sum
-        prefix_sum = torch.cumsum(sorted_probs, dim=0)  # prefix_sum[i] = Σ_{j≤i} x_j
-        ks = torch.arange(1, vocab_size, device=sorted_probs.device)
-        top_k_sum = prefix_sum[ks - 1]
-        tail_sum = prefix_sum[vocab_size - 1] - top_k_sum
-        residual = (1.0 - top_k_sum).clamp_min(0.0)
-        tail_count = vocab_size - ks
-        uniform = residual / tail_count
-
-        asc = -sorted_probs  # 升序，用于 searchsorted
-        # pos[k] = 全数组中 x_i ≥ uniform_k 的个数；{x≥u} 是前缀，故 m = pos - k（≥0 截断）
-        pos = torch.searchsorted(asc, -uniform, right=True)
-        m = (pos - ks).clamp_min(0)
-        idx = (ks + m - 1).clamp_max(vocab_size - 1)
-        head = prefix_sum[idx] - top_k_sum  # 尾部前 m 大元素之和
-        numerator = 2.0 * (head - m * uniform) + tail_count * uniform - tail_sum
-        numerator = numerator.clamp_min(0.0)
-
-        u_tv = numerator / denominator
-        satisfied = u_tv <= theta
-        if bool(satisfied.any()):
-            return int(ks[satisfied][0])
-
-        # 如果没找到满足条件的k，返回保守值
-        return min(self.DEFAULT_COMPRESSED_VOCAB_SIZE, self.vocab_size // 100)
 
     def terminal_prob(
         self, current_probs: torch.Tensor, logits: Optional[torch.Tensor]
     ) -> torch.Tensor:
-        """
-        返回先经过压缩再重建的终端概率分布
-        形状为(vocab_size,)
+        """Return the terminal law after the *actual* compression codec.
+
+        This legacy entry point still omits ``draft_token``, so
+        ``determine_transfer_strategy`` uses its documented top-1 fallback; that
+        is not a claim that top-1 is the real candidate.  When compression is
+        selected, the rebuild must use the same explicit top-k-mask codec as the
+        solver and runtime path.  The old two-step
+        ``_apply_top_k_compression`` + ``rebuild_full_probs`` treated a zero
+        value inside the top-k as tail because the second step inferred the mask
+        from ``> 0``; that is not the main codec's semantics.
         """
         if current_probs is None and logits is None:
             warnings.warn("警告：current_probs和logits均为空，无法获取终端概率分布")
@@ -1326,14 +1223,12 @@ class CUHLM(CommunicationSimulator):
         should_transfer_prob, vocab_size = self.determine_transfer_strategy(
             uncertainty, current_probs
         )
-        if not should_transfer_prob:
+        if not should_transfer_prob or vocab_size >= self.vocab_size:
             return current_probs
-        if vocab_size < self.vocab_size:
-            compressed_probs = self._apply_top_k_compression(current_probs, vocab_size)
-            rebuilt_probs = self.rebuild_full_probs(compressed_probs)
-            return rebuilt_probs
-        else:
-            return current_probs
+        rebuilt_probs = self.compress_rebuild_probs(
+            current_probs.reshape(1, 1, -1), int(vocab_size)
+        )
+        return rebuilt_probs.reshape(current_probs.shape)
 
 
 class PreciseCommunicationSimulator(CommunicationSimulator):

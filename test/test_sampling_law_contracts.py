@@ -5,7 +5,8 @@ from fractions import Fraction
 import pytest
 import torch
 
-from src.sampling import sample
+from src.probability_laws import law_l1_distance, positive_residual_law
+from src.sampling import sample, sampling_weights
 from src.verification import (
     ProposalWindow,
     decide_verification,
@@ -202,3 +203,86 @@ def test_sampler_refactor_preserves_preprocessing_and_rng(dtype, monkeypatch):
         monkeypatch.setattr(torch, "multinomial", inspect_weights)
         assert torch.equal(sample(raw), expected_tokens)
         assert torch.equal(torch.random.get_rng_state(), expected_rng)
+
+
+# ---------------------------------------------------------------------------
+# Shared centered cross-difference kernel: stable L1 and unchanged residual
+# ---------------------------------------------------------------------------
+
+
+def _legacy_positive_residual_law(target_weights, reference_weights):
+    """Pre-refactor body, kept as a bitwise oracle for the shared kernel."""
+    p_weights = target_weights.double()
+    q_weights = reference_weights.double()
+    pivot = q_weights.argmax(dim=-1, keepdim=True)
+    p_pivot = torch.gather(p_weights, -1, pivot)
+    q_pivot = torch.gather(q_weights, -1, pivot)
+    delta = p_weights * q_pivot - q_weights * p_pivot
+    correction = delta.sum(dim=-1, keepdim=True) / q_weights.sum(
+        dim=-1, keepdim=True
+    )
+    residual = (delta - q_weights * correction).clamp_min(0)
+    mass = residual.sum(dim=-1, keepdim=True)
+    if not torch.isfinite(mass).all() or (mass <= 0).any():
+        raise ValueError("no positive finite residual mass")
+    return residual / mass
+
+
+@pytest.mark.parametrize(
+    "p,q",
+    [
+        (
+            torch.tensor([[[0.4, 0.3, 0.3]]], dtype=torch.float32),
+            torch.tensor([[[0.5, 0.25, 0.25]]], dtype=torch.float32),
+        ),
+        (
+            torch.tensor([[0.1, 0.2, 0.7]], dtype=torch.bfloat16),
+            torch.tensor([[0.2, 0.3, 0.5]], dtype=torch.bfloat16),
+        ),
+        (
+            torch.tensor([[0.5, 0.3, 0.2]], dtype=torch.float16),
+            torch.tensor([[0.4, 0.35, 0.25]], dtype=torch.float16),
+        ),
+        (
+            torch.tensor([[0.7, 1e-20, 3e-30]], dtype=torch.float32),
+            torch.tensor([[0.6, 0.4, 0.0]], dtype=torch.float32),
+        ),
+    ],
+)
+def test_positive_residual_law_is_bitwise_unchanged_by_shared_centering(p, q):
+    expected = _legacy_positive_residual_law(p, q)
+    actual = positive_residual_law(p, q)
+    assert torch.equal(actual, expected)
+
+
+def test_centered_cross_difference_l1_keeps_tiny_dominant_shift():
+    raw = torch.tensor([1.0, 1e-30, 5e-31], dtype=torch.float32)
+    decoded = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+    p = sampling_weights(raw.reshape(1, -1))
+    q = sampling_weights(decoded.reshape(1, -1))
+    exact = [
+        Fraction(float(value)) for value in p.reshape(-1)
+    ]
+    mass = sum(exact)
+    p_law = [value / mass for value in exact]
+    # Codec is [1, 0, 0]; its own sampler law is exact enough here.
+    q_law = [Fraction(1), Fraction(0), Fraction(0)]
+    oracle = float(sum(abs(a - b) for a, b in zip(p_law, q_law)))
+    naive = float(
+        (
+            p.double() / p.double().sum(-1, keepdim=True)
+            - q.double() / q.double().sum(-1, keepdim=True)
+        )
+        .abs()
+        .sum()
+    )
+    stable = float(law_l1_distance(p, q).item())
+    assert stable == pytest.approx(oracle, rel=1e-12, abs=0.0)
+    assert naive == pytest.approx(oracle / 2, rel=1e-9, abs=0.0)
+
+
+def test_l1_distance_rejects_zero_reference_mass():
+    with pytest.raises(ValueError, match="positive finite"):
+        law_l1_distance(
+            torch.tensor([[0.5, 0.5]]), torch.zeros(1, 2)
+        )
