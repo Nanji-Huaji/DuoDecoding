@@ -47,6 +47,7 @@ SOURCES = (
     SRC / "baselines" / "adaptive.py",
     SRC / "baselines" / "cee.py",
     SRC / "baselines" / "cuhlm.py",
+    SRC / "baselines" / "cee_cuhlm.py",
     SRC / "baselines" / "tk_slt.py",
     SRC / "baselines" / "operations.py",
     SRC / "engine.py",

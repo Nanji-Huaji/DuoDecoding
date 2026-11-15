@@ -10,6 +10,7 @@
     "src/dual_decoding.py",
     "src/baselines/dual.py",
     "src/baselines/cuhlm.py",
+    "src/baselines/cee_cuhlm.py",
     "src/baselines/tk_slt.py",
     "src/tk_slt_policy.py",
     "src/tk_slt_proposal.py",
@@ -1211,9 +1212,9 @@
         }
       }
     },
-    "Baselines.cee_cuhlm": {
-      "events": 136,
-      "sha256_16": "2e729db6cd34e5c1",
+    "CeeCuhlmMixin.cee_cuhlm": {
+      "events": 139,
+      "sha256_16": "9d843c8a8576d6c1",
       "surface": {
         "boolop": {
           "And": 1
@@ -1233,7 +1234,7 @@
           "_move_token_tensor": 4,
           "_prepare_legacy_verification_inputs": 2,
           "_save_adaptive_rl_checkpoints": 1,
-          "_stop_at_eos": 1,
+          "_stop_at_eos": 2,
           "_validate_token_range": 2,
           "acquire_graph_caches": 1,
           "apply_rollback": 2,
@@ -1259,7 +1260,7 @@
           "proposal_top_k": 2,
           "range": 1,
           "record": 3,
-          "rollback": 2,
+          "rollback": 3,
           "stage_prob_history": 2,
           "synchronize": 1,
           "time": 11
@@ -1284,7 +1285,7 @@
           "uncertainty_threshold": 5
         },
         "loop": {
-          "for": 1,
+          "for": 2,
           "while": 1
         },
         "return": {

@@ -353,6 +353,12 @@ class GraphDecodeRunner:
         self.model = model
         self.max_len = int(max_len)
         self.device = torch.device(device)
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
+        # torch.cuda.graph's implicit capture stream is process-wide, not per
+        # device (PyTorch 2.6). Reusing it on another GPU can capture an empty
+        # graph while the real work executes eagerly, leaving stale replay data.
+        self._capture_stream = torch.cuda.Stream(device=self.device)
         self.dtype = dtype
         self.capture_hidden = capture_hidden
         # 捕获尺寸阶梯（去重、排序、过滤非法值）。回放时取 ≥k 的最小档。
@@ -399,7 +405,7 @@ class GraphDecodeRunner:
         self.graph: torch.cuda.CUDAGraph | None = None
         self.prefill_logits: torch.Tensor | None = None
         self.nnz = 0  # 逻辑长度（回滚只改它；不等同于 StaticCache 内部计数）
-        self.capture_count = 0  # 重捕获计数（跨样本复用后应恒为 1）
+        self.capture_count = 0  # 单步图 + 验证图的总数；跨样本复用时不增加
 
     # ────────────────────────────────────────── 前后处理进图
     def attach_history_buffers(
@@ -572,6 +578,12 @@ class GraphDecodeRunner:
 
         返回最后一个位置的**原始 logits**，形状 (1, vocab)。
         """
+        # Capture (including lazy model initialization) must use this runner's
+        # device, and must not change the caller's current device on return.
+        with torch.cuda.device(self.device):
+            return self._prefill_on_device(input_ids)
+
+    def _prefill_on_device(self, input_ids: torch.Tensor) -> torch.Tensor:
         seq = int(input_ids.shape[1])
         if seq >= self.max_len:
             raise RuntimeError(
@@ -631,10 +643,10 @@ class GraphDecodeRunner:
                     device=hs[-1].device,
                 )
 
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(self.device)
         # 热身：把 lazy init / 分配挡在图外。热身写入的 KV 槽位在 seq 之后，
         # 逻辑上已死（回滚语义），首轮真实回放会覆盖它们。
-        with torch.inference_mode():
+        with torch.cuda.stream(self._capture_stream):
             self._set_step_inputs(None, seq)
             for _ in range(3):
                 self._forward_step()
@@ -644,13 +656,13 @@ class GraphDecodeRunner:
                 self._set_verify_inputs(size, None, seq)
                 for _ in range(2):
                     self._forward_verify(size)
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(self.device)
 
         # 捕获单步图
         self.step_ids.fill_(0)
         self._set_step_inputs(None, seq)
         self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph):
+        with torch.cuda.graph(self.graph, stream=self._capture_stream):
             captured = self._forward_step()
             self.logits_buf.copy_(captured[:, -1])  # 图内写固定缓冲区
         self.capture_count += 1
@@ -662,12 +674,12 @@ class GraphDecodeRunner:
             self.verify_ids[size].zero_()
             self._set_verify_inputs(size, None, seq)
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            with torch.cuda.graph(graph, stream=self._capture_stream):
                 captured_v = self._forward_verify(size)
                 self.verify_logits[size].copy_(captured_v)
             self.verify_graphs[size] = graph
             self.capture_count += 1
-        torch.cuda.synchronize()
+        torch.cuda.synchronize(self.device)
 
         return logits[:, -1].clone()
 

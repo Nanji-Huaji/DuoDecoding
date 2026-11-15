@@ -16,6 +16,7 @@ import torch
 import src.baselines as baselines
 import src.baselines.adaptive as adaptive
 import src.baselines.cee as cee
+import src.baselines.cee_cuhlm as cee_cuhlm
 import src.baselines.cuhlm as cuhlm
 import src.baselines.dual as dual
 import src.dual_decoding as local_dual
@@ -37,7 +38,7 @@ EXPORT_CONTRACT = json.loads(
 EXPECTED_REGISTRATIONS = {
     "adaptive_decoding": "AdaptiveDecodingMixin.adaptive_decoding",
     "adaptive_tridecoding": "CeeSdMixin.adaptive_tridecoding",
-    "cee_cuhlm": "Baselines.cee_cuhlm",
+    "cee_cuhlm": "CeeCuhlmMixin.cee_cuhlm",
     "cee_dsd": "CeeDistributedMixin.cee_dsd",
     "cee_dssd": "CeeDistributedMixin.cee_dssd",
     "cee_sd": "CeeSdMixin.adaptive_tridecoding",
@@ -140,6 +141,7 @@ def test_legacy_pickle_global_names_still_resolve():
         ["src.cee_cascade", "src.baselines.core"],
         ["src.cee_proposal", "src.baselines.cee_distributed"],
         ["src.baselines.cuhlm", "src.baselines"],
+        ["src.baselines.cee_cuhlm", "src.baselines"],
         ["src.dual_decoding", "src.engine", "src.baselines.dual"],
         ["src.baselines.dual", "src.baselines", "src.engine"],
         ["src.baselines.runtime", "src.baselines"],
@@ -156,6 +158,7 @@ from src.baselines import (
     adaptive,
     cee,
     cee_distributed,
+    cee_cuhlm,
     core,
     cuhlm,
     operations,
@@ -175,6 +178,7 @@ assert Baselines.cee_dssd is cee_distributed.CeeDistributedMixin.cee_dssd
 assert Baselines.tridecoding is cee.CeeSdMixin.tridecoding
 assert Baselines.cee_sd_opportunistic is cee.CeeSdMixin.cee_sd_opportunistic
 assert Baselines.uncertainty_decoding is cuhlm.CuhlmMixin.uncertainty_decoding
+assert Baselines.cee_cuhlm is cee_cuhlm.CeeCuhlmMixin.cee_cuhlm
 assert Baselines.__init__ is runtime.RuntimeResources.__init__
 assert Baselines._stop_at_eos is operations.SharedOperations._stop_at_eos
 registry = Register._DECODING_REGISTRY
@@ -209,6 +213,7 @@ def test_moved_families_use_their_real_module_globals():
         (Baselines.adaptive_decoding, adaptive, "AdaptiveDecodingMixin"),
         (Baselines._adaptive_decoding_verify, adaptive, "AdaptiveDecodingMixin"),
         (Baselines.uncertainty_decoding, cuhlm, "CuhlmMixin"),
+        (Baselines.cee_cuhlm, cee_cuhlm, "CeeCuhlmMixin"),
         (Baselines.tk_slt, tk_slt, "TkSltMixin"),
         (Baselines.adaptive_tridecoding, cee, "CeeSdMixin"),
         (Baselines._cee_verify_proposal, cee, "CeeSdMixin"),
@@ -241,6 +246,7 @@ def test_real_modules_do_not_import_the_compatibility_package_or_core():
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "adaptive.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "cee.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "cuhlm.py",
+        Path(__file__).resolve().parents[1] / "src" / "baselines" / "cee_cuhlm.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "tk_slt.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "operations.py",
         Path(__file__).resolve().parents[1] / "src" / "baselines" / "dual.py",
@@ -299,6 +305,7 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
             "adaptive.py",
             "cee.py",
             "cuhlm.py",
+            "cee_cuhlm.py",
             "tk_slt.py",
             "operations.py",
             "dual.py",
@@ -324,6 +331,8 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
         "_trace_adaptive_decoding_append",
         "_adaptive_decoding_finalize",
         "uncertainty_decoding",
+        "cee_cuhlm",
+        "_finalize_cuhlm_verification",
         "tk_slt",
         "adaptive_tridecoding",
         "_cee_propose",
