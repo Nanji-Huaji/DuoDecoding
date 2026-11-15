@@ -444,8 +444,8 @@ class CeeRefactorTests(unittest.TestCase):
         prefix = torch.tensor([[0]], dtype=torch.long)
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cee_cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cee_cuhlm.CUHLM", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -478,8 +478,8 @@ class CeeRefactorTests(unittest.TestCase):
         _FakeCommSimulator.instances = []
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cee_cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cee_cuhlm.CUHLM", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -514,8 +514,8 @@ class CeeRefactorTests(unittest.TestCase):
         instance.little_rl_adapter = _UnexpectedRLAdapter()
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cee_cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cee_cuhlm.CUHLM", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -536,8 +536,8 @@ class CeeRefactorTests(unittest.TestCase):
                 return False, 2
 
         with (
-            patch("src.baselines.core.KVCacheModel", _FakeCache),
-            patch("src.baselines.core.CUHLM", _AlwaysAcceptComm),
+            patch("src.baselines.cee_cuhlm.KVCacheModel", _FakeCache),
+            patch("src.baselines.cee_cuhlm.CUHLM", _AlwaysAcceptComm),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -571,11 +571,11 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch(
-                "src.baselines.core.sample_reject_token",
+                "src.baselines.cee_cuhlm.sample_reject_token",
                 return_value=torch.tensor([[2]], dtype=torch.long),
             ) as reject_mock,
             patch(
-                "src.baselines.core.sample_accept_token",
+                "src.baselines.cee_cuhlm.sample_accept_token",
                 return_value=torch.tensor([[1]], dtype=torch.long),
             ) as accept_mock,
         ):
@@ -619,11 +619,11 @@ class CeeRefactorTests(unittest.TestCase):
 
         with (
             patch(
-                "src.baselines.core.sample_reject_token",
+                "src.baselines.cee_cuhlm.sample_reject_token",
                 return_value=torch.tensor([[2]], dtype=torch.long),
             ) as reject_mock,
             patch(
-                "src.baselines.core.sample_accept_token",
+                "src.baselines.cee_cuhlm.sample_accept_token",
                 return_value=torch.tensor([[1]], dtype=torch.long),
             ) as accept_mock,
         ):
@@ -655,8 +655,8 @@ class CeeRefactorTests(unittest.TestCase):
             return cache
 
         with (
-            patch("src.baselines.core.KVCacheModel", side_effect=fake_cache_ctor),
-            patch("src.baselines.core.CUHLM", _FakeCommSimulator),
+            patch("src.baselines.cee_cuhlm.KVCacheModel", side_effect=fake_cache_ctor),
+            patch("src.baselines.cee_cuhlm.CUHLM", _FakeCommSimulator),
             patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
@@ -766,15 +766,15 @@ class CeeRefactorTests(unittest.TestCase):
 
     def test_cee_cuhlm_passes_vocab_size_and_actual_draft_token(self):
         for precise, patch_target in (
-            (False, "src.baselines.core.CUHLM"),
-            (True, "src.baselines.core.PreciseCUHLM"),
+            (False, "src.baselines.cee_cuhlm.CUHLM"),
+            (True, "src.baselines.cee_cuhlm.PreciseCUHLM"),
         ):
             _FakeCommSimulator.instances = []
             instance = self._make_instance("cee_cuhlm")
             instance.args.max_tokens = 2
             prefix = torch.tensor([[0]], dtype=torch.long)
             with (
-                patch("src.baselines.core.KVCacheModel", _FakeCache),
+                patch("src.baselines.cee_cuhlm.KVCacheModel", _FakeCache),
                 patch(patch_target, _FakeCommSimulator),
                 patch("src.baselines.core.torch.cuda.Event", _FakeCudaEvent),
                 patch(
