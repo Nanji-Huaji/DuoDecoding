@@ -96,6 +96,11 @@ class _FakeCommSimulator:
         self.determine_calls.append(draft_token)
         return True, 2
 
+    @staticmethod
+    def compress_rebuild_probs(probs, k):
+        # 对齐真实模拟器的 codec：外层残差用的是同一行的 k* 重建。
+        return CUHLM.compress_rebuild_probs(probs, k)
+
 
 class _FakeCache:
     def __init__(self, model, temperature, top_k, top_p, **kwargs):
@@ -500,12 +505,18 @@ class CeeRefactorTests(unittest.TestCase):
             if kind == "simulate" and link == "edge_end"
         ]
 
-        # Stage-2（CUHLM 门控，fake 恒触发 k(t)=2）：一次触发上行
+        # 外层触发（fake 恒触发 k(t)=2）：一次上行
         # （2×(8+2)/8 = 2.5 B）+ 一次 0 字节云端响应。
         self.assertEqual(edge_cloud, [cuhlm_uplink_payload_bytes(2, 4), 0.0])
-        # Stage-1（起草分布上行）：gamma2=1 个位置 × k₁（transfer_top_k=300
-        # 超过 V=4 钳到全词表 ⇒ 4×(8+2)/8 = 5.0 B）+ 轮末设备下行 0 字节 ×2。
+        # Stage-1（Little 提议分布上行）：gamma2=1 个位置 × k₁
+        # （transfer_top_k=300 超过 V=4 钳到全词表 ⇒ 5.0 B），
+        # 加内层轮末与轮末设备下行各一次 0 字节报文。
         self.assertEqual(edge_end, [cuhlm_uplink_payload_bytes(300, 4), 0.0, 0.0])
+        # 原始 prompt 分别上传到 edge 和 cloud；云端遵循独立 CUHLM 约定。
+        self.assertEqual(
+            [call for call in sim.calls if call[0] == "transfer"],
+            [("transfer", "edge_end", 1), ("transfer", "edge_cloud", 1)],
+        )
 
     def test_cee_cuhlm_ignores_rl_adapter_hooks(self):
         instance = self._make_instance("cee_cuhlm")
@@ -644,14 +655,14 @@ class CeeRefactorTests(unittest.TestCase):
         accept_mock.assert_called_once()
         reject_mock.assert_not_called()
 
-    def test_cee_cuhlm_rolls_back_little_cache_after_first_stage(self):
+    def test_cee_cuhlm_stops_proposer_caches_at_the_finalized_prefix(self):
         instance = self._make_instance("cee_cuhlm")
         prefix = torch.tensor([[0]], dtype=torch.long)
-        created_caches = []
+        created_caches = {}
 
         def fake_cache_ctor(model, temperature, top_k, top_p):
             cache = _FakeCache(model, temperature, top_k, top_p)
-            created_caches.append(cache)
+            created_caches[model.kind] = cache
             return cache
 
         with (
@@ -661,12 +672,14 @@ class CeeRefactorTests(unittest.TestCase):
             patch("src.baselines.core.torch.cuda.current_stream", return_value=None),
             patch("src.baselines.core.torch.cuda.synchronize", return_value=None),
         ):
-            instance.cee_cuhlm(prefix)
+            output, _ = instance.cee_cuhlm(prefix)
 
-        little_cache = next(
-            cache for cache in created_caches if cache.model.kind == "little"
-        )
-        self.assertGreaterEqual(len(little_cache.rollback_calls), 1)
+        # 最后一个定稿 token 不再前向：两位提议者的端点都被裁到 prefix-1，
+        # 且裁剪只回滚、不延长。
+        for kind in ("little", "draft"):
+            cache = created_caches[kind]
+            self.assertEqual(cache.current_length, output.shape[1] - 1)
+            self.assertEqual(cache.rollback_calls[-1], output.shape[1] - 1)
 
     def _assert_cee_opportunistic(self, should_transfer):
         instance = self._make_instance("cee_sd_opportunistic")

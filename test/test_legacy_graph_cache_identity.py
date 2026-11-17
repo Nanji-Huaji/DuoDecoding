@@ -215,13 +215,37 @@ def test_only_effective_sampling_settings_invalidate(runner, mode):
     initial = list(_Cache.created)
     runner.args.top_p = 0.5
     _call(runner, mode, top_k=3)
-    if mode == "cee_cuhlm":  # All three cache constructors intentionally use k=p=0.
-        assert _Cache.created == initial
-        assert all(cache.resets == 1 for cache in initial)
+    assert len(_Cache.created) == 2 * len(initial)
+    assert all(cache.resets == 0 for cache in initial)
+    rebuilt = {
+        cache.model: cache.configuration[1:3]
+        for cache in _Cache.created[len(initial) :]
+    }
+    if mode == "cee_cuhlm":
+        # Draft now follows standalone CU-HLM filtering (transfer_top_k/args.top_p);
+        # Little (inner proposal law) and Target stay top_k=top_p=0.
+        assert rebuilt[runner.draft_model] == (3, 0.5)
+        assert rebuilt[runner.little_model] == (0, 0)
+        assert rebuilt[runner.target_model] == (0, 0)
     else:
-        assert len(_Cache.created) == 2 * len(initial)
-        assert _Cache.created[len(initial)].configuration[1:3] == (3, 0.5)
-        assert _Cache.created[-1].configuration[1:3] == (0, 0)
+        assert rebuilt[runner.draft_model] == (3, 0.5)
+        assert rebuilt[runner.target_model] == (0, 0)
+
+
+@pytest.mark.parametrize("transfer_top_k,draft_top_k", [(0, 2), (3, 3)])
+def test_cee_cuhlm_draft_identity_uses_the_standalone_filtering_rule(
+    runner, transfer_top_k, draft_top_k
+):
+    """transfer_top_k>0 wins, otherwise args.top_k; top_p is args.top_p."""
+    runner.args.top_k = 2
+    runner.args.top_p = 0.6
+    _call(runner, "cee_cuhlm", top_k=transfer_top_k)
+    configurations = {
+        cache.model: cache.configuration[1:3] for cache in _Cache.created
+    }
+    assert configurations[runner.draft_model] == (draft_top_k, 0.6)
+    assert configurations[runner.little_model] == (0, 0)
+    assert configurations[runner.target_model] == (0, 0)
 
 
 @pytest.mark.parametrize("mode", MODES)

@@ -57,8 +57,8 @@ _BASELINE_ACCOUNTING: tuple[str, ...] = (
 
 #: 各模式消费的通信计费开关快照（运行时内省的离线替身，测试保证不漂移）。
 #: 2026-04 统一口径落地（docs/protocol.md §3）：基线族接入与 ours 同一套
-#: 计费开关；CUHLM 系（uncertainty_decoding/cuhlm/cee_cuhlm）不接统一
-#: 开关，改按 CU-HLM 论文自身的计费口径计费（见 _CUHLM_MODES）。
+#: 计费开关；CUHLM 系保留论文载荷口径，只接入统一往返开关
+#: comm_round_trip_mode（见 _CUHLM_MODES）。
 _STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
     # adaptive 族：全 4 开关（含 force_full_vocab_transfer 旁路）
     "adaptive_tridecoding": ACCOUNTING_SWITCHES,
@@ -85,7 +85,8 @@ _STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
     # comm_round_trip_mode（per_round = 每次云端交互付 1×NTT）。
     # 此前它们逐报文付 NTT（每轮 2×50ms），同一主表内比 dsd/dssd/ours
     # 每轮多付 50ms 纯记账差异（tk_slt 合并后实测 +31% 吞吐）。
-    # cee_cuhlm（三级变体，不在主矩阵）暂未接线，保持逐报文口径。
+    # 2026-11-16：CEE-CUHLM 外层对齐单 token CUHLM，同步接入往返开关。
+    "cee_cuhlm": ("comm_round_trip_mode",),
     "cuhlm": ("comm_round_trip_mode",),
     "uncertainty_decoding": ("comm_round_trip_mode",),
     "tk_slt": ("comm_round_trip_mode",),

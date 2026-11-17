@@ -1,13 +1,49 @@
-"""Legacy CEE-CUHLM orchestration, separate from strict CEE and standalone CUHLM.
+"""CEE-CUHLM: three-tier speculative decoding under CU-HLM's outer protocol.
 
-Inner rejection sampling targets raw Draft probabilities. The outer stage skips
-low-uncertainty candidates and forces a residual at the first trigger; it does
-NOT implement standalone CUHLM acceptance or the CEE wire-draft-v1 contract.
-Default-generator draw order, mixed proposal rows and paper-cost accounting
-remain intentional compatibility constraints until a separate protocol decision.
+Standalone CU-HLM (:mod:`src.baselines.cuhlm`) is the protocol reference for the
+outer stage.  CEE keeps its Little -> Draft speculation (``gamma2`` Little
+proposals, ``gamma1`` fresh Draft prefetch) but **every** carried and fresh
+candidate is gated by one independent CU-HLM round:
+
+* **skip** finalizes the candidate token with no cloud message, no target
+  forward and no queuing cost; the still-unconsumed prefetched suffix stays
+  valid and is gated candidate by candidate.
+* **trigger** bills one Eq. (5) uplink, forwards only the already finalized
+  prefix with the target (no candidate forward, no sampled-and-discarded row),
+  then accepts the candidate on ``u < P(d) / q(d)`` where ``q`` is the original
+  proposal law that sampled it; on reject it samples one token from
+  ``normalize((P - qhat)+)`` where ``qhat`` is the codec reconstruction of that
+  same row, and finally bills one 0-byte cloud downlink.
+
+A reject also discards the whole unconsumed suffix, rewinds Little/Draft to the
+pre-candidate prefix endpoint and re-proposes from the residual-extended prefix.
+There is no outer bonus token, no forced reject and no zero-residual fallback.
+
+The inner Little -> Draft stage uses the strict multi-token kernel in
+:mod:`src.verification`: Little's proposal is a ``ProposalWindow`` over the rows
+the rebuilt-proposal generator actually sampled from, Draft verifies it with a
+sample-free ``forward_context``, and the kernel's accepted tokens plus its one
+necessary continuation token become the carried candidates.  The strict
+accept/correct kernel's output marginal law is Draft's sampler law ``Q_D``, so
+every carried candidate (including the continuation/correction) carries the
+corresponding ``Q_D`` row, never a conditional residual.  Those rows and their
+probe logits are cloned before any rollback or continuation forward, because
+row ``r`` describes token ``r + 1`` and the fresh prefetch overwrites them.
+Fresh candidates come from Draft's own filtered sampler rows under standalone
+CU-HLM's rule (``transfer_top_k`` if positive else ``args.top_k``, with
+``args.top_p``), never from a uniform-tail rebuild; the target keeps ``k=p=0``.
+
+This remains the paper's intentionally lossy protocol (original-``q``
+acceptance against reconstructed-``qhat`` residuals), carried on top of CEE's
+extra edge cost, so it is not claimed to be target-distribution exact.
+``small_draft_threshold`` stays inert (it is not an inner gate);
+``uncertainty_threshold``/``draft_target_threshold`` drive the outer gate.  The
+legacy ``_finalize_cuhlm_verification`` export is retained for compatibility
+only and is no longer on any active path.
 """
 
 import time
+from dataclasses import dataclass
 from typing import Optional, cast
 
 import torch
@@ -20,12 +56,13 @@ from ..baselines_helpers import (
     _validate_token_range,
 )
 from ..communication import CUHLM, PreciseCUHLM, cuhlm_uplink_payload_bytes
+from ..cuhlm_verification import (
+    decide_cuhlm_verification,
+    prepare_cuhlm_verification,
+)
 from ..decoding_ops import (
-    _prepare_legacy_verification_inputs,
     apply_rollback,
     build_rollback_plan,
-    compute_acceptance_result,
-    materialize_acceptance,
     sample_accept_token,
     sample_reject_token,
 )
@@ -40,8 +77,73 @@ from ..graph_decode import (
 )
 from ..metrics import DecodingMetrics, get_empty_metrics
 from ..model_gpu import KVCacheModel
-from ..proposal_utils import proposal_top_k, stage_prob_history
+from ..proposal_utils import proposal_top_k
 from ..register import Register
+from ..sampling import sample
+from ..verification import (
+    ProposalWindow,
+    decide_verification,
+    prepare_verification_window,
+)
+
+
+@dataclass
+class _CeeRunStats:
+    """Per-run loop counters; owns no cache, simulator, model or policy."""
+
+    little_forward_times: int = 0
+    draft_forward_times: int = 0
+    target_forward_times: int = 0
+    little_generated_tokens: int = 0
+    draft_generated_tokens: int = 0
+    little_accepted_tokens: int = 0
+    draft_accepted_tokens: int = 0
+    outer_rejections: int = 0
+    pending_resync: int = 0
+    little_comp_time: float = 0.0
+    draft_comp_time: float = 0.0
+    target_comp_time: float = 0.0
+    queuing_time: float = 0.0
+    arp_overhead_time: float = 0.0
+    dra_overhead_time: float = 0.0
+
+
+@dataclass(frozen=True, eq=False)
+class _CeeBlock:
+    """One stage's candidate tokens and the per-candidate laws/logits.
+
+    ``tokens`` is ``(1, count)``, ``probabilities`` is ``(1, count, vocab)`` and
+    ``logits`` is ``(1, count, vocab)``.  Row ``i`` belongs to ``tokens[:, i]``.
+    Both carried and fresh rows represent the marginal Draft law Q_D; a carried
+    correction does not carry its conditional residual law. Tokens stay on the
+    producer device until materialized as windows on the finalized prefix device.
+    """
+
+    tokens: torch.Tensor
+    probabilities: torch.Tensor
+    logits: torch.Tensor
+
+
+@dataclass(frozen=True, eq=False)
+class _CeeCandidate:
+    """One outer-gate candidate: its single-token window and probe logits.
+
+    ``proposal`` is built eagerly (and therefore validated) so a skipped
+    candidate cannot hide an inconsistent law.  ``logits`` is the Draft's
+    uncompressed row for the candidate's position and only the uncertainty
+    probe reads it; ``token`` is cached as an int because the probe and the
+    strategy call both need it.
+    """
+
+    proposal: ProposalWindow
+    logits: torch.Tensor
+    token: int
+
+
+def _shrink_cache(cache: KVCacheModel, end_pos: int) -> None:
+    """Roll a proposer cache back to ``end_pos``; never extend a shorter one."""
+    if cache.current_length > end_pos:
+        cache.rollback(end_pos)
 
 
 def _finalize_cuhlm_verification(
@@ -86,7 +188,7 @@ def _finalize_cuhlm_verification(
 
 
 class CeeCuhlmMixin:
-    """Own the retained protocol and its three cache lifecycles."""
+    """Own the aligned protocol and its three cache lifecycles."""
 
     @Register.register_decoding("cee_cuhlm")
     @torch.no_grad()
@@ -103,269 +205,179 @@ class CeeCuhlmMixin:
         use_early_stopping: bool = False,
         stop_sequences: list[str] | None = None,
     ) -> tuple[torch.Tensor, DecodingMetrics]:
+        # 深度键与往返口径必须在本方法体内直接读取：src.protocols 的运行时
+        # 内省只看注册方法的 code object，不跟随私有 helper。
+        gamma1 = int(getattr(self.args, "gamma1", 1))
+        gamma2 = int(getattr(self.args, "gamma2", 1))
+        if gamma1 < 0 or gamma2 < 0:
+            raise ValueError(
+                "cee_cuhlm 的投机深度必须非负："
+                f"gamma1={gamma1}, gamma2={gamma2}"
+            )
+        round_trip_mode = self.comm_config.comm_round_trip_mode
+        # 独立 CU-HLM 的草稿过滤规则：transfer_top_k>0 时用它，否则
+        # args.top_k；top_p 恒为 args.top_p。Target 保持 k=p=0。
+        draft_top_k = (
+            int(transfer_top_k)
+            if (transfer_top_k is not None and int(transfer_top_k) > 0)
+            else int(self.args.top_k)
+        )
+
         if max_tokens is None:
-            # 不放大预算：γ1+γ2+1 的放大会让本方法比基线多生成 token、
-            # 高估吞吐（F33 契约）。越界由函数末尾的显式截断兜底。
+            # 不放大预算：每个外层候选只定稿一个 token，不会整块越界。
             max_tokens = prefix.shape[1] + self.args.max_tokens
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        start_event.record(stream=torch.cuda.current_stream())
 
-        draft_device = self.get_model_input_device(self.draft_model)
-        target_device = self.get_model_input_device(self.target_model)
-        little_device = self.get_model_input_device(self.little_model)
-
-        # --- Communication Simulator ---
         comm_simulator = self._build_cuhlm_comm_simulator(
             transfer_top_k=transfer_top_k,
             use_precise_comm_sim=use_precise_comm_sim,
             use_stochastic_comm=use_stochastic_comm,
             ntt_ms_edge_cloud=ntt_ms_edge_cloud,
             ntt_ms_edge_end=ntt_ms_edge_end,
+            round_trip_mode=round_trip_mode,
         )
-
         batch_delay = self.comm_env.batch_delay
 
-        # --- KVCache Models ---
-        # 图容量对 gamma1/gamma2 的读取必须留在本方法体内：protocols 的
-        # depth-key 运行时内省只看本函数代码对象（test_protocol_spec）。
-        _graph_cap = (
-            int(getattr(self.args, "gamma1", 1))
-            + int(getattr(self.args, "gamma2", 1))
-            + 4
-        )
-        little_model_cache, draft_model_cache, target_model_cache = (
-            self._acquire_cuhlm_caches(_graph_cap)
+        # 图容量对 gamma1/gamma2 的读取同样保留在本方法体内。
+        little_cache, draft_cache, target_cache = self._acquire_cuhlm_caches(
+            gamma1 + gamma2 + 4, draft_top_k
         )
 
-        # Metrics tracking：各阶段共享的累计器（键即 metrics 口径）。
-        stats: dict[str, float | int] = {
-            "little_forward_times": 0,
-            "draft_forward_times": 0,
-            "target_forward_times": 0,
-            "little_comp_time": 0.0,
-            "draft_comp_time": 0.0,
-            "target_comp_time": 0.0,
-            "little_generated_tokens": 0,
-            "draft_generated_tokens": 0,
-            "little_accepted_tokens": 0,
-            "draft_accepted_tokens": 0,
-            "queuing_time": 0.0,
-            "arp_overhead_time": 0.0,
-            "dra_overhead_time": 0.0,
-        }
-        wall_time = 0  # 循环后累计（elapsed + 逐链路通信时延）。
+        draft_device = self.get_model_input_device(self.draft_model)
+        target_device = self.get_model_input_device(self.target_model)
+        little_device = self.get_model_input_device(self.little_model)
 
-        idx = 0
-
+        stats = _CeeRunStats()
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
-
-        current_tokens = prefix.clone()
-
         start_event.record(stream=torch.cuda.current_stream())
 
-        comm_simulator.transfer(prefix, None, "edge_end")  # 将 prompt 传输到 edge
+        comm_simulator.transfer(prefix, None, "edge_end")  # 首轮 prompt 上传
 
-        _tri_prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+        prompt_len = prefix.shape[1]  # B10：EOS 早停的生成段起点
+        finalized = prefix
+        billing_round = 0
+        stopped = False
 
-        while prefix.shape[1] < max_tokens:
-            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐——
-            # 计算与通信在 EOS 后立即停，时延口径跨方法可比）
-            prefix, _eos_hit = self._stop_at_eos(prefix, _tri_prompt_len)
-            if _eos_hit:
+        while finalized.shape[1] < max_tokens and not stopped:
+            # B10：循环内 EOS 早停（与 dssd/adaptive_* 已接线方法语义对齐）
+            finalized, eos_hit = self._stop_at_eos(finalized, prompt_len)
+            if eos_hit:
                 break
-            idx += 1
-            _step_start_time = time.time()  # Retain the historical timing call.
-            prefix_len = prefix.shape[1]
+            _, outer_threshold = self._select_cuhlm_stage_config(
+                stage="draft_to_target",
+                transfer_top_k=transfer_top_k,
+                uncertainty_threshold=comm_simulator.uncertainty_threshold,
+            )
 
-            # Stage 1 speculative (Little -> Draft) with rejection sampling
-            # Replaces CUHLM so Draft's distribution governs what enters Stage 2,
-            # improving distribution consistency for the Stage 2 CUHLM check.
-            x, n1, t = self._run_little_to_draft_stage(
-                prefix=prefix,
-                little_model_cache=little_model_cache,
-                draft_model_cache=draft_model_cache,
+            # Stage 1: Little -> Draft 严格内层验证（含一个必要 continuation）
+            billing_round += 1
+            comm_simulator.set_round(billing_round)
+            carried = self._cee_inner_stage(
+                prefix=finalized,
+                little_cache=little_cache,
+                draft_cache=draft_cache,
                 little_device=little_device,
                 draft_device=draft_device,
                 comm_simulator=comm_simulator,
                 transfer_top_k=transfer_top_k,
+                gamma2=gamma2,
                 stats=stats,
             )
-
-            assert n1 >= prefix_len - 1
-            prefix = x[:, : n1 + 1]
-
-            # F-CUHLM（论文口径）：Stage-1 轮末响应（edge→device）的 token
-            # 索引 negligible（§II-B）——0 字节报文，保留一次 NTT。
-            # 旧口径：INT_SIZE + token 字节 +（reject 时）二次计费的
-            # prob_bytes + 魔数 reject_overhead=6B。
+            # Stage-1 轮末响应（edge→device）：索引 negligible，0B 报文。
             _send_downlink_index_only(comm_simulator, "edge_end")
+            comm_simulator.flush_round()
 
-            prefix = torch.cat((prefix, t), dim=1)
-            new_generated_token = prefix[:, prefix_len:]
-
-            # 第二层 speculative (Draft -> Target) with CUHLM Uncertainty
-            draft_transfer_top_k, draft_uncertainty_threshold = (
-                self._select_cuhlm_stage_config(
-                    stage="draft_to_target",
-                    transfer_top_k=transfer_top_k,
-                    uncertainty_threshold=comm_simulator.uncertainty_threshold,
-                )
+            block_prefix = torch.cat(
+                (finalized, _move_token_tensor(carried.tokens, finalized.device)), dim=1
+            )
+            candidates = self._cee_block_candidates(
+                prefix=finalized, block=carried
             )
 
-            # F-CUHLM（论文口径）：首轮 prompt 上传保留（全仓一次性约定，
-            # 论文不建模 prompt）；此后逐轮的 token 同步**不再单独上行**——
-            # 新 token 索引随触发轮的上行捎带（negligible，§II-B），全跳过
-            # 轮对云端零通信（旧口径：每轮一次 token 上行 = 每轮一个 NTT）。
-            if idx == 1:
-                comm_simulator.transfer(prefix, None, "edge_cloud")
-
-            t0 = time.time()
-            x, draft_rebuilt_probs, draft_rebuilt_meta, _ = (
-                self._generate_with_optional_rebuilt_proposal(
-                    draft_model_cache,
-                    _move_token_tensor(prefix, draft_device),
-                    self.args.gamma1,
-                    proposal_top_k(draft_transfer_top_k),
-                    adapter=None,
-                    need_topk_metadata=False,
-                )
-            )
-            stats["draft_comp_time"] += time.time() - t0
-            _validate_token_range(
-                x,
-                vocab_size=self.vocab_size,
-                label="cee_cuhlm.draft_stage.proposal_x",
-            )
-
-            actual_gamma1 = x.shape[1] - prefix.shape[1]
-            total_gamma = new_generated_token.shape[1] + actual_gamma1
-
-            stats["draft_forward_times"] += actual_gamma1
-            stats["draft_generated_tokens"] += total_gamma
-
-            # Compute draft_stage_probs BEFORE the target call; only Draft is needed.
-            draft_stage_probs = stage_prob_history(
-                draft_model_cache,
-                prefix_len + new_generated_token.shape[1],
-                draft_rebuilt_probs,
-            )
-
-            # CUHLM Uncertainty Check Loop (BEFORE target call — as in the paper)
-            effective_gamma = min(
-                total_gamma,
-                draft_stage_probs.shape[1] - prefix_len,
-            )
-            reject_offset, n2, draft_accepted_this_iter = self._scan_cuhlm_uncertainty(
-                comm_simulator=comm_simulator,
-                draft_model_cache=draft_model_cache,
-                draft_stage_probs=draft_stage_probs,
-                x=x,
-                prefix_len=prefix_len,
-                effective_gamma=effective_gamma,
-                draft_uncertainty_threshold=draft_uncertainty_threshold,
+            # Stage 2: fresh Draft 预取（独立 CU-HLM 的过滤后实际采样行）
+            fresh = self._cee_fresh_stage(
+                prefix=block_prefix,
+                draft_cache=draft_cache,
+                draft_device=draft_device,
+                gamma1=gamma1,
                 stats=stats,
             )
-
-            assert n2 >= prefix_len - 1
-            prefix = x[:, : n2 + 1]
-
-            if reject_offset is not None:
-                # High uncertainty: run target model for verification
-                stats["queuing_time"] += batch_delay
-                t0 = time.time()
-                _ = target_model_cache.generate(_move_token_tensor(x, target_device), 1)
-                stats["target_comp_time"] += time.time() - t0
-                stats["target_forward_times"] += 1
-
-                verification_inputs = _prepare_legacy_verification_inputs(
-                    draft_model_cache=draft_model_cache,
-                    target_model_cache=target_model_cache,
-                    x=x,
-                    prefix_len=prefix_len,
-                    gamma=total_gamma,
-                    draft_probs_override=draft_stage_probs,
+            if fresh is not None:
+                candidates += self._cee_block_candidates(
+                    prefix=block_prefix, block=fresh
                 )
 
-                # F-CUHLM（论文口径）：触发分布已在上面的一次上行里计费
-                # （k(t)·(b_prob+b_index)），这里不再二次计费。旧口径：
-                # prob_bytes 按全行/压缩行再计一次 + reject_overhead 魔数 6B。
-                new_generated_token = prefix[:, prefix_len:]
-
-                n2, t, _ = _finalize_cuhlm_verification(
-                    proposer_cache=draft_model_cache,
-                    verifier_cache=target_model_cache,
-                    verification_inputs=verification_inputs,
-                    x=x,
-                    prefix_len=prefix_len,
-                    accepted_count=draft_accepted_this_iter,
-                    reject_offset=reject_offset,
-                    output_device=draft_device,
+            rejected = False
+            for candidate in candidates:
+                if finalized.shape[1] >= max_tokens:
+                    break
+                # 每个外层候选独立划轮：同块多 trigger 不得合成一次 RTT。
+                billing_round += 1
+                comm_simulator.set_round(billing_round)
+                if finalized.shape[1] == prompt_len:
+                    # Match standalone CUHLM: upload the original prompt once,
+                    # in the first candidate's round (even if that gate skips).
+                    comm_simulator.transfer(prefix, None, "edge_cloud")
+                finalized, rejected = self._cee_gate_candidate(
+                    prefix=finalized,
+                    candidate=candidate,
+                    comm_simulator=comm_simulator,
+                    target_cache=target_cache,
+                    target_device=target_device,
+                    threshold=outer_threshold,
+                    batch_delay=batch_delay,
+                    stats=stats,
                 )
-            else:
-                # All tokens pass CUHLM check: truly skip target model
-                # Do not increment target_forward_times: Target was not called.
-                new_generated_token = prefix[:, prefix_len:]
+                comm_simulator.flush_round()
+                finalized, eos_hit = self._stop_at_eos(finalized, prompt_len)
+                if eos_hit:
+                    stopped = True
+                    break
+                if use_early_stopping and self._check_stopping_criteria(
+                    finalized, stop_sequences
+                ):
+                    stopped = True
+                    break
+                if rejected:
+                    break
 
-                # Sample bonus token from draft model (target not available)
-                bonus_probs = draft_stage_probs[:, n2, : self.vocab_size]
-                t = sample_accept_token(bonus_probs, output_device=draft_device)
+            # 轮末响应回传设备（edge→end）：索引 negligible，0B 报文。
+            billing_round += 1
+            comm_simulator.set_round(billing_round)
+            _send_downlink_index_only(comm_simulator, "edge_end")
+            comm_simulator.flush_round()
 
-                # Rollback draft model to n2+1 for proper KVCache continuation
-                draft_model_cache.rollback(n2 + 1)
+            if rejected:
+                # 丢弃全部未消费 suffix：两位提议者回滚到拒绝前 prefix 长度；
+                # 已定稿的残差 token 尚未前向。
+                context_end = finalized.shape[1] - 1
+                _shrink_cache(little_cache, context_end)
+                _shrink_cache(draft_cache, context_end)
 
-            prefix = x[:, : n2 + 1]
-            if n2 <= little_model_cache.current_length:
-                little_model_cache.rollback(n2 + 1)
-
-            prefix = torch.cat((prefix, t), dim=1)
             _validate_token_range(
-                prefix,
+                finalized,
                 vocab_size=self.vocab_size,
-                label="cee_cuhlm.edge_cloud.prefix_after_concat",
+                label="cee_cuhlm.round.prefix",
             )
 
-            if reject_offset is not None:
-                # F-CUHLM（论文口径）：触发轮的云端响应（cloud→edge）是
-                # negligible 的 token 索引——0 字节报文，保留一次 NTT。
-                # 全跳过轮对云端零通信（旧口径：无条件 INT_SIZE+token+
-                # 二次计费的 prob_bytes + 魔数 6B，且每轮一次 NTT）。
-                _send_downlink_index_only(comm_simulator, "edge_cloud")
-            # 轮末响应回传设备（edge→end）：token 索引 negligible（§II-B），
-            # 0 字节报文，保留一次 NTT（旧口径：INT_SIZE + token 字节）。
-            _send_downlink_index_only(comm_simulator, "edge_end")
-
-            if use_early_stopping and self._check_stopping_criteria(
-                prefix, stop_sequences
-            ):
-                break
-
+        # 最后一轮的字节可能仍在合并桶里，结算必须在读数之前。
+        comm_simulator.flush_round()
         end_event.record(stream=torch.cuda.current_stream())
         torch.cuda.synchronize()
         elapsed_time = start_event.elapsed_time(end_event) / 1000.0
 
-        wall_time += elapsed_time
-        # 遵守 max_tokens：投机解码按整块追加，最后一轮可能多出若干 token
-        # （F33 契约）。参照 dist_spec 的 remaining-1 截断，这里显式截断——
-        # 否则会多拿 token，使配对质量比较与时延/吞吐统计都不公平。
-        if prefix.shape[1] > max_tokens:
-            prefix = prefix[:, :max_tokens]
-        # A budget-reaching block has no next loop entry to perform EOS cropping.
-        # Only finalized output can stop decoding, not a rejected proposal's EOS.
-        prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
-        if prefix.shape[1] > _tri_prompt_len:
-            # Keep the last output token unforwarded, discard speculative suffixes,
-            # and never extend the target cache when uncertainty skipped its work.
-            context_end = prefix.shape[1] - 1
-            for cache in (little_model_cache, draft_model_cache, target_model_cache):
-                if cache.current_length > context_end:
-                    cache.rollback(context_end)
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
-        wall_time += (
+        # 只有定稿输出能触发 EOS 截断，被拒绝提议的 EOS 不算。
+        finalized, _ = self._stop_at_eos(finalized, prompt_len)
+        if finalized.shape[1] > prompt_len:
+            # 最后一个 token 不再前向，投机后缀全部丢弃；短缓存不延长。
+            context_end = finalized.shape[1] - 1
+            for cache in (little_cache, draft_cache, target_cache):
+                _shrink_cache(cache, context_end)
+
+        generated_tokens = finalized.shape[1] - prompt_len
+        wall_time = elapsed_time + (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
         )
-
         metrics = self._finalize_cuhlm_metrics(
             stats=stats,
             comm_simulator=comm_simulator,
@@ -374,7 +386,7 @@ class CeeCuhlmMixin:
             generated_tokens=generated_tokens,
         )
 
-        return prefix, metrics
+        return finalized, metrics
 
     def _build_cuhlm_comm_simulator(
         self,
@@ -384,16 +396,19 @@ class CeeCuhlmMixin:
         use_stochastic_comm: bool,
         ntt_ms_edge_cloud: float | int,
         ntt_ms_edge_end: float | int,
+        round_trip_mode: str,
     ) -> CUHLM:
-        """Construct the per-run CUHLM billing simulator (precise or plain).
+        """Construct the per-run CU-HLM billing simulator (precise or plain).
 
         The NTT edge delays are passed through explicitly: the simulator's own
-        defaults (200/20 ms) must not silently apply to cee_cuhlm.
+        defaults (200/20 ms) must not silently apply to cee_cuhlm.  Unified
+        round trips (docs/protocol.md §3.4) come from the run's
+        ``comm_round_trip_mode``: the caller marks one round per outer
+        candidate, so ``per_round`` bills exactly one cloud round trip per
+        trigger and never merges two triggers of the same prefetch block.
         """
         if use_precise_comm_sim:
-            # B45：channel_gain/noise_power_watt 为必填参数，此前缺省导致
-            # cee_cuhlm 的精确仿真分支一进就 TypeError（对齐 1544 处
-            # uncertainty_decoding 的完整调用）
+            # B45：channel_gain/noise_power_watt 为必填参数。
             comm_simulator: CUHLM = PreciseCUHLM(
                 min_bandwidth_mbps=self.comm_env.min_bandwidth_mbps,
                 bw_model=self.comm_env.comm_bw_model,
@@ -430,20 +445,34 @@ class CeeCuhlmMixin:
                 uncertainty_threshold=comm_simulator.uncertainty_threshold,
             )
             comm_simulator.uncertainty_threshold = uncertainty_threshold
+
+        # 口径自述随 metrics 落盘（eval/utils.py 读 args.protocol_deviations），
+        # 保证本轮协议版本不被误当成旧 CEE-CUHLM 结果比较。
+        comm_simulator.coalesce_rounds = round_trip_mode == "per_round"
+        _dev = (
+            "cee_cuhlm_aligned_20261116: 每个 carried/fresh 候选独立走一次"
+            "独立 CU-HLM 门（原 q 接受、重建 qhat 残差）；target=prefix-only"
+            " 前向，无外层 bonus、无强制 reject；"
+            "round_trip=unified(1xNTT/外层候选)"
+        )
+        _devs = list(getattr(self.args, "protocol_deviations", ()) or ())
+        if _dev not in _devs:
+            self.args.protocol_deviations = tuple(_devs + [_dev])
         return comm_simulator
 
     def _acquire_cuhlm_caches(
-        self, graph_cap: int
+        self, graph_cap: int, draft_top_k: int
     ) -> tuple[KVCacheModel, KVCacheModel, KVCacheModel]:
-        """Acquire the three top_k=top_p=0 caches with graph-reuse identity.
+        """Acquire the three caches with graph-reuse identity.
 
-        The zero top-k/top-p cache config is a retained protocol constraint:
-        the transmitted top-k only shapes the rebuilt proposal rows, never
-        these caches.
+        Draft uses standalone CU-HLM's sampler configuration
+        (``draft_top_k``/``args.top_p``), because fresh candidates must be drawn
+        from that actual filtered law.  Little keeps the raw ``k=p=0`` cache so
+        its rebuilt-proposal rows stay the true sampler law of the inner stage,
+        and the target stays ``k=p=0`` (the paper's full-vocabulary P).
         """
-        # CUDA Graph：little/draft/target 都做多 token 验证前向（调度开销主体），
-        # 三个都开图；图开启时挂 self 跨样本复用（与 adaptive_tridecoding 一致）。
         _graph_kw = _graph_mode_cache_kwargs(self.args, cap=graph_cap)
+        draft_top_p = self.args.top_p
         _caches = acquire_graph_caches(
             self,
             "_cee_cuhlm_caches",
@@ -459,8 +488,8 @@ class CeeCuhlmMixin:
                 "draft": lambda: KVCacheModel(
                     self.draft_model,
                     self.args.temp,
-                    0,
-                    0,
+                    draft_top_k,
+                    draft_top_p,
                     **_graph_kw,
                 ),
                 "target": lambda: KVCacheModel(
@@ -483,8 +512,8 @@ class CeeCuhlmMixin:
                 "draft": _kv_cache_construction_key(
                     self.draft_model,
                     temperature=self.args.temp,
-                    top_k=0,
-                    top_p=0,
+                    top_k=draft_top_k,
+                    top_p=draft_top_p,
                     vocab_size=self.vocab_size,
                     **_graph_kw,
                 ),
@@ -507,202 +536,274 @@ class CeeCuhlmMixin:
         target_model_cache.vocab_size = self.vocab_size
         return little_model_cache, draft_model_cache, target_model_cache
 
-    def _run_little_to_draft_stage(
+    def _cee_inner_stage(
         self,
         *,
         prefix: torch.Tensor,
-        little_model_cache: KVCacheModel,
-        draft_model_cache: KVCacheModel,
+        little_cache: KVCacheModel,
+        draft_cache: KVCacheModel,
         little_device: torch.device,
         draft_device: torch.device,
         comm_simulator: CUHLM,
         transfer_top_k: Optional[int],
-        stats: dict[str, float | int],
-    ) -> tuple[torch.Tensor, int, torch.Tensor]:
-        """Stage 1 (Little -> Draft): proposal, paper uplink, inner rejection.
+        gamma2: int,
+        stats: _CeeRunStats,
+    ) -> _CeeBlock:
+        """Stage 1 (Little -> Draft): propose, bill the paper uplink, verify.
 
-        Retained protocol: Little candidates come from the old top-k uniform
-        tail rebuild, and the first layer accepts/corrects on raw Draft
-        probabilities — the Little uncertainty threshold is not a gate here.
-        Returns (x, n1, t) where n1 is the last accepted Little position.
+        Returns the carried candidates — the strictly accepted Little tokens
+        plus the one necessary Draft continuation — with the ``Q_D`` row and
+        probe logits that belong to each of them.
         """
         prefix_len = prefix.shape[1]
-        little_transfer_top_k, little_uncertainty_threshold = (
-            self._select_cuhlm_stage_config(
-                stage="little_to_draft",
-                transfer_top_k=transfer_top_k,
-                uncertainty_threshold=comm_simulator.uncertainty_threshold,
-            )
+        little_transfer_top_k, _ = self._select_cuhlm_stage_config(
+            stage="little_to_draft",
+            transfer_top_k=transfer_top_k,
+            uncertainty_threshold=comm_simulator.uncertainty_threshold,
         )
-        current_proposal_top_k = proposal_top_k(little_transfer_top_k)
+        # 内层阈值（small_draft_threshold）在本协议里不是 gate：内层严格
+        # accept/correct 已由 Q_D 决定，这里只保留接口与 k₁。
+        little_k = proposal_top_k(little_transfer_top_k)
 
         t0 = time.time()
-        x, little_rebuilt_probs, little_rebuilt_meta, _ = (
-            self._generate_with_optional_rebuilt_proposal(
-                little_model_cache,
-                _move_token_tensor(prefix, little_device),
-                self.args.gamma2,
-                current_proposal_top_k,
-                adapter=None,
-                need_topk_metadata=False,
-            )
+        x, rebuilt, _, _ = self._generate_with_optional_rebuilt_proposal(
+            little_cache,
+            _move_token_tensor(prefix, little_device),
+            gamma2,
+            little_k,
+            adapter=None,
+            need_topk_metadata=False,
         )
-        stats["little_comp_time"] += time.time() - t0
-
+        stats.little_comp_time += time.time() - t0
         actual_gamma2 = x.shape[1] - prefix_len
-
-        t0 = time.time()
-        _ = draft_model_cache.generate(_move_token_tensor(x, draft_device), 1)
-        stats["draft_comp_time"] += time.time() - t0
-
-        stats["little_forward_times"] += actual_gamma2
-        stats["draft_forward_times"] += 1
-        stats["little_generated_tokens"] += actual_gamma2
-
-        n1: int = prefix_len + actual_gamma2 - 1
-        little_accepted_this_iter = 0
-        little_all_accepted = True
+        _validate_token_range(
+            x, vocab_size=self.vocab_size, label="cee_cuhlm.little_stage.proposal_x"
+        )
+        stats.little_forward_times += actual_gamma2
+        stats.little_generated_tokens += actual_gamma2
 
         if actual_gamma2 > 0:
-            little_stage_probs = stage_prob_history(
-                little_model_cache,
-                prefix_len,
-                little_rebuilt_probs,
-            )
-            # F-CUHLM（论文口径）：Stage-1 上行 = 论文式 (5) 的逐位置
-            # 压缩分布——每个起草位置 k₁·(b_prob+b_index) bits
-            # （b_prob=8、b_index=⌈log₂V⌉）；k₁ 未配置时按全词表计
-            # （论文 vanilla HLM 的上行）。token 索引 negligible
-            # （§II-B）。旧口径：gamma2 × V×4B 整行 fp32 + token 字节。
+            # 论文式 (5) 的 Stage-1 上行：逐位置 k₁·(b_prob+b_index) bits。
             comm_simulator.simulate_transfer(
-                actual_gamma2
-                * cuhlm_uplink_payload_bytes(current_proposal_top_k, self.vocab_size),
+                actual_gamma2 * cuhlm_uplink_payload_bytes(little_k, self.vocab_size),
                 "edge_end",
-                topk=(int(current_proposal_top_k) if current_proposal_top_k else 0),
+                topk=(int(little_k) if little_k else 0),
                 draft_len=int(actual_gamma2),
             )
 
-            # Standard rejection sampling: Draft verifies Little's tokens
-            verification_inputs = _prepare_legacy_verification_inputs(
-                draft_model_cache=little_model_cache,
-                target_model_cache=draft_model_cache,
-                x=x,
-                prefix_len=prefix_len,
-                gamma=actual_gamma2,
-                draft_probs_override=little_stage_probs,
+        # Little 的真实采样行：重建提议 generator 直接返回的就是它；未启用
+        # 重建（k₁ 为空）时 cache 的过滤后行就是采样律本身。事后不得用 raw
+        # 行替换。
+        if actual_gamma2 <= 0:
+            sampling_rows = x.new_empty(
+                (1, 0, self.vocab_size), dtype=torch.float32
             )
-            acceptance_result = compute_acceptance_result(verification_inputs)
-            little_accepted_this_iter, n1, little_all_accepted = materialize_acceptance(
-                verification_inputs, acceptance_result
-            )
-
-            # F-CUHLM（论文口径）：accept/reject 判定不单独计费——验证
-            # 结论随轮末响应回传（索引 negligible）；reject 在验证方
-            # 基于已持有的分布重采样（论文式 17），无额外上行。
-            # 旧口径：每接受 token 8B + accept 消息（6B+NTT）；reject
-            # 再 8B + 二次计费的概率行 + reject 消息（6B+NTT）。
-            if not little_all_accepted:
-                reject_pos = little_accepted_this_iter
-
-            # Rollback and sample bonus/replacement token
-            rollback_plan = build_rollback_plan(
-                prefix_len, verification_inputs.actual_gamma, n1
-            )
-            apply_rollback(little_model_cache, draft_model_cache, rollback_plan)
-
-            if rollback_plan.all_accepted:
-                t = sample_accept_token(
-                    draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                    output_device=little_device,
-                )
-            else:
-                t = sample_reject_token(
-                    verification_inputs.target_probs_batch[:, reject_pos, :],
-                    verification_inputs.draft_probs_batch[:, reject_pos, :],
-                    output_device=little_device,
-                )
+        elif rebuilt is not None:
+            sampling_rows = rebuilt.clone()
         else:
-            t = sample_accept_token(
-                draft_model_cache.prob_history[:, -1, : self.vocab_size],
-                output_device=little_device,
-            )
+            sampling_rows = little_cache.prob_history[
+                :, prefix_len - 1 : prefix_len + actual_gamma2 - 1, :
+            ].clone()
 
-        stats["little_accepted_tokens"] += little_accepted_this_iter
+        # Draft 只做上下文前向：不采样、不产生被丢弃的样本行。
+        t0 = time.time()
+        draft_cache.forward_context(_move_token_tensor(x, draft_device))
+        stats.draft_comp_time += time.time() - t0
+        stats.draft_forward_times += actual_gamma2
 
-        return x, n1, t
+        proposal = ProposalWindow(
+            tokens=x,
+            probabilities=sampling_rows,
+            prefix_len=prefix_len,
+        )
+        window = prepare_verification_window(
+            proposal, draft_cache.prob_history[:, :, : self.vocab_size]
+        )
+        # 先验证整窗、再取一次 acceptance uniform（空窗不消耗 RNG）。
+        uniforms = (
+            torch.rand((1, proposal.count), device=sampling_rows.device)
+            if proposal.count
+            else sampling_rows.new_empty((1, 0))
+        )
+        decision = decide_verification(window, uniforms)
+        accepted = decision.accepted_count
+        stats.little_accepted_tokens += accepted
 
-    def _scan_cuhlm_uncertainty(
+        continuation = sample(decision.continuation_probs)
+        if continuation.dtype != torch.long:
+            continuation = continuation.to(torch.long)
+        continuation = continuation.to(x.device)
+
+        # 内层严格 kernel 的输出边际律是 Q_D：carried correction 也带对应
+        # Q_D row（不是条件残差）。row r 描述 token r+1，切片必须完整覆盖
+        # 最后一个候选，并且在 rollback / fresh 续前向前 clone。
+        carried_probs = window.target_rows[:, : accepted + 1, :].clone()
+        carried_logits = draft_cache.logits_history[
+            :, prefix_len - 1 : prefix_len + accepted, :
+        ].clone()
+        carried_tokens = torch.cat(
+            (x[:, prefix_len : prefix_len + accepted], continuation), dim=1
+        )
+
+        # 已接受前缀之后的缓存行只属于被拒绝的候选：提议者不得越过已定稿
+        # 前缀；continuation 尚未前向。短缓存不延长。
+        _shrink_cache(little_cache, prefix_len + accepted)
+        _shrink_cache(draft_cache, prefix_len + accepted)
+
+        stats.draft_generated_tokens += 1  # 这个必要 continuation 由 Draft 采样
+        return _CeeBlock(
+            tokens=carried_tokens,
+            probabilities=carried_probs,
+            logits=carried_logits,
+        )
+
+    def _cee_fresh_stage(
         self,
         *,
-        comm_simulator: CUHLM,
-        draft_model_cache: KVCacheModel,
-        draft_stage_probs: torch.Tensor,
-        x: torch.Tensor,
-        prefix_len: int,
-        effective_gamma: int,
-        draft_uncertainty_threshold: float,
-        stats: dict[str, float | int],
-    ) -> tuple[Optional[int], int, int]:
-        """CUHLM uncertainty gate over the Draft proposal, before any Target call.
+        prefix: torch.Tensor,
+        draft_cache: KVCacheModel,
+        draft_device: torch.device,
+        gamma1: int,
+        stats: _CeeRunStats,
+    ) -> Optional[_CeeBlock]:
+        """Draft's fresh prefetch from its own filtered sampler rows."""
+        if gamma1 <= 0:
+            return None
+        prefix_len = prefix.shape[1]
+        t0 = time.time()
+        x = draft_cache.generate(_move_token_tensor(prefix, draft_device), gamma1)
+        stats.draft_comp_time += time.time() - t0
+        _validate_token_range(
+            x[:, prefix_len:],
+            vocab_size=self.vocab_size,
+            label="cee_cuhlm.fresh_stage.proposal_x",
+        )
+        stats.draft_forward_times += gamma1
+        stats.draft_generated_tokens += gamma1
+        return _CeeBlock(
+            tokens=x[:, prefix_len:],
+            probabilities=draft_cache.prob_history[
+                :, prefix_len - 1 : prefix_len + gamma1 - 1, :
+            ].clone(),
+            logits=draft_cache.logits_history[
+                :, prefix_len - 1 : prefix_len + gamma1 - 1, :
+            ].clone(),
+        )
 
-        A skip is zero-communication; the first trigger bills one uplink of
-        k(t)·(b_prob+b_index) bits and stops the scan at that candidate.
-        Returns (reject_offset, n2, accepted_this_round); n2 keeps the cache
-        history one row shorter on the all-skip path (retained protocol).
+    def _cee_block_candidates(
+        self, *, prefix: torch.Tensor, block: _CeeBlock
+    ) -> list[_CeeCandidate]:
+        """Zip one block's tokens/laws into per-candidate single-token windows.
+
+        Candidate ``i`` is gated over ``prefix + block.tokens[:i]``; earlier
+        candidates of the same block finalize exactly one token each, so the
+        eager window prefix is the prefix that candidate will actually see.
         """
+        candidates: list[_CeeCandidate] = []
+        tokens = _move_token_tensor(block.tokens, prefix.device)
+        for index in range(tokens.shape[1]):
+            context = torch.cat((prefix, tokens[:, :index]), dim=1)
+            candidates.append(
+                _CeeCandidate(
+                    proposal=ProposalWindow(
+                        tokens=torch.cat(
+                            (context, tokens[:, index : index + 1]), dim=1
+                        ),
+                        probabilities=block.probabilities[:, index : index + 1, :],
+                        prefix_len=context.shape[1],
+                    ),
+                    logits=block.logits[:, index, :],
+                    token=int(tokens[0, index].item()),
+                )
+            )
+        return candidates
+
+    def _cee_gate_candidate(
+        self,
+        *,
+        prefix: torch.Tensor,
+        candidate: _CeeCandidate,
+        comm_simulator: CUHLM,
+        target_cache: KVCacheModel,
+        target_device: torch.device,
+        threshold: float,
+        batch_delay: float,
+        stats: _CeeRunStats,
+    ) -> tuple[torch.Tensor, bool]:
+        """Gate one candidate; return the extended prefix and whether it rejected.
+
+        Skip is zero-communication.  Trigger is one standalone CU-HLM round:
+        Eq. (5) uplink, prefix-only target forward, prepare-then-one-uniform
+        decision, one residual sample on reject, then the 0-byte downlink.
+        """
+        proposal = candidate.proposal
+        assert proposal.prefix_len == prefix.shape[1]
+        token = proposal.tokens[:, proposal.prefix_len :].to(prefix.device)
+
         original_threshold = comm_simulator.uncertainty_threshold
-        comm_simulator.uncertainty_threshold = draft_uncertainty_threshold
-        reject_offset: Optional[int] = None
-        n2 = prefix_len + effective_gamma - 1
-        accepted_this_round = 0
-        for i in range(effective_gamma):
-            logit_idx = prefix_len + i - 1
-            assert draft_model_cache.logits_history is not None, (
-                "Draft model logits history is None"
-            )
-            current_logit = draft_model_cache.logits_history[
-                :, logit_idx, : self.vocab_size
-            ]
-            current_token_id = int(x[:, prefix_len + i].item())
-
+        comm_simulator.uncertainty_threshold = threshold
+        try:
             uncertainty = comm_simulator.calculate_uncertainty(
-                current_logit, M=20, theta_max=2.0, draft_token=current_token_id
+                candidate.logits, M=20, theta_max=2.0, draft_token=candidate.token
             )
-
             should_transfer, vocab_size = comm_simulator.determine_transfer_strategy(
                 uncertainty,
-                draft_stage_probs[:, prefix_len - 1 + i, : self.vocab_size],
-                draft_token=current_token_id,
+                proposal.probabilities[0, 0, :],
+                draft_token=candidate.token,
             )
+        finally:
+            comm_simulator.uncertainty_threshold = original_threshold
 
-            if should_transfer:
-                # F-CUHLM（论文口径）：触发 = 一次上行，载荷 k(t)·(b_prob+
-                # b_index) bits（cuhlm_uplink_payload_bytes）；draft token
-                # 索引 negligible。旧口径：vocab_size×4+8 字节 + 独立
-                # reject 消息（6B + 一次 NTT）。
-                comm_simulator.simulate_transfer(
-                    cuhlm_uplink_payload_bytes(int(vocab_size), self.vocab_size),
-                    "edge_cloud",
-                    topk=int(vocab_size),
-                    draft_len=1,
-                )
-                reject_offset = i
-                n2 = prefix_len + i - 1
-                break
-            else:
-                # F-CUHLM（论文口径）：跳过 = 零通信（旧口径：8B 上行 +
-                # accept 消息 6B+NTT，把论文的"跳过=免费"变成 2 RTT/token，
-                # 在 NTT 主导场景下系统性压死该基线）。
-                accepted_this_round += 1
-                stats["draft_accepted_tokens"] += 1
-        comm_simulator.uncertainty_threshold = original_threshold
+        if not should_transfer:
+            # 机会跳过：不新增云端报文、Target 前向或排队；该 token 计入
+            # 待重同步缓冲，下次触发随上行捎带（索引 negligible）。
+            stats.draft_accepted_tokens += 1
+            stats.pending_resync += 1
+            return torch.cat((prefix, token), dim=1), False
 
-        return reject_offset, n2, accepted_this_round
+        # 触发 = 一次合并上行（一次 NTT）；载荷按论文式 (5) 的压缩形式计。
+        stats.queuing_time += batch_delay
+        comm_simulator.simulate_transfer(
+            cuhlm_uplink_payload_bytes(int(vocab_size), self.vocab_size),
+            "edge_cloud",
+            topk=int(vocab_size),
+            draft_len=stats.pending_resync + 1,
+        )
+        stats.pending_resync = 0
+
+        t0 = time.time()
+        target_cache.forward_context(_move_token_tensor(prefix, target_device))
+        stats.target_comp_time += time.time() - t0
+        stats.target_forward_times += 1
+
+        q = proposal.probabilities
+        window = prepare_cuhlm_verification(
+            proposal,
+            target_cache.prob_history[:, :, : self.vocab_size],
+            comm_simulator.compress_rebuild_probs(q, int(vocab_size)),
+        )
+        uniform = torch.rand((1, 1), device=q.device)
+        decision = decide_cuhlm_verification(window, uniform)
+
+        # 顺序是协议的一部分：接受用原 q；拒绝先采样残差，再计 0B 下行。
+        residual = None
+        if not decision.accepted:
+            residual = sample(decision.residual_probs)
+            if residual.dtype != torch.long:
+                residual = residual.to(torch.long)
+            residual = residual.to(prefix.device)
+        _send_downlink_index_only(comm_simulator, "edge_cloud")
+        if residual is None:
+            stats.draft_accepted_tokens += 1
+            return torch.cat((prefix, token), dim=1), False
+
+        stats.outer_rejections += 1
+        return torch.cat((prefix, residual), dim=1), True
 
     def _finalize_cuhlm_metrics(
         self,
         *,
-        stats: dict[str, float | int],
+        stats: _CeeRunStats,
         comm_simulator: CUHLM,
         elapsed_time: float,
         wall_time: float,
@@ -710,16 +811,20 @@ class CeeCuhlmMixin:
     ) -> DecodingMetrics:
         """Assemble the public metrics surface from the shared run tallies."""
         metrics = get_empty_metrics()
-        metrics["little_forward_times"] = stats["little_forward_times"]
-        metrics["draft_forward_times"] = stats["draft_forward_times"]
-        metrics["target_forward_times"] = stats["target_forward_times"]
+        metrics["little_forward_times"] = stats.little_forward_times
+        metrics["draft_forward_times"] = stats.draft_forward_times
+        metrics["target_forward_times"] = stats.target_forward_times
         metrics["generated_tokens"] = generated_tokens
-        metrics["little_generated_tokens"] = stats["little_generated_tokens"]
-        metrics["draft_generated_tokens"] = stats["draft_generated_tokens"]
-        metrics["little_accepted_tokens"] = stats["little_accepted_tokens"]
-        metrics["draft_accepted_tokens"] = stats["draft_accepted_tokens"]
-        metrics["queuing_time"] = stats["queuing_time"]
-        metrics["wall_time"] = wall_time + stats["queuing_time"]
+        metrics["little_generated_tokens"] = stats.little_generated_tokens
+        metrics["draft_generated_tokens"] = stats.draft_generated_tokens
+        metrics["little_accepted_tokens"] = stats.little_accepted_tokens
+        # draft_accepted_tokens = 最终被 skip/accept 定稿的候选数；
+        # generated_tokens 与它的差就是外层 reject 数（见 outer_reject_times，
+        # 与 CUHLM 同口径的生成守恒，额外键不进 get_empty_metrics）。
+        metrics["draft_accepted_tokens"] = stats.draft_accepted_tokens
+        metrics["outer_reject_times"] = stats.outer_rejections
+        metrics["queuing_time"] = stats.queuing_time
+        metrics["wall_time"] = wall_time + stats.queuing_time
         metrics["throughput"] = (
             metrics["generated_tokens"] / metrics["wall_time"]
             if metrics["wall_time"] > 0
@@ -730,10 +835,10 @@ class CeeCuhlmMixin:
             elapsed_time=elapsed_time,
             comm_time=comm_simulator.edge_cloud_comm_time
             + comm_simulator.edge_end_comm_time,
-            queuing_time=stats["queuing_time"],
-            little_comp_time=stats["little_comp_time"],
-            draft_comp_time=stats["draft_comp_time"],
-            target_comp_time=stats["target_comp_time"],
+            queuing_time=stats.queuing_time,
+            little_comp_time=stats.little_comp_time,
+            draft_comp_time=stats.draft_comp_time,
+            target_comp_time=stats.target_comp_time,
         )
         metrics["communication_time"] = (
             comm_simulator.edge_cloud_comm_time + comm_simulator.edge_end_comm_time
@@ -746,8 +851,8 @@ class CeeCuhlmMixin:
 
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
-        metrics["arp_overhead_time"] = stats["arp_overhead_time"]
-        metrics["dra_overhead_time"] = stats["dra_overhead_time"]
+        metrics["arp_overhead_time"] = stats.arp_overhead_time
+        metrics["dra_overhead_time"] = stats.dra_overhead_time
 
         # 评测（--disable_rl_update）不得写 checkpoint；统一走带守卫的入口
         dra_start = time.time()
