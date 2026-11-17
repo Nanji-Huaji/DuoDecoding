@@ -319,8 +319,8 @@
       }
     },
     "CuhlmMixin.uncertainty_decoding": {
-      "events": 90,
-      "sha256_16": "7aec9e478ae6d0cd",
+      "events": 92,
+      "sha256_16": "2ac52ad224bad771",
       "surface": {
         "boolop": {
           "And": 3,
@@ -336,6 +336,8 @@
           "PreciseCUHLM": 1,
           "ProposalWindow": 1,
           "ValueError": 1,
+          "_CuhlmDraft": 1,
+          "_CuhlmRunStats": 1,
           "_check_stopping_criteria": 2,
           "_get_current_probs": 1,
           "_graph_mode_cache_kwargs": 1,
