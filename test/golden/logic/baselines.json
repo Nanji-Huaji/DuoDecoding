@@ -406,48 +406,45 @@
       }
     },
     "TkSltMixin.tk_slt": {
-      "events": 384,
-      "sha256_16": "b4ca5ec6ccb35c2a",
+      "events": 280,
+      "sha256_16": "6c0182af026aeb02",
       "surface": {
         "boolop": {
-          "And": 7,
-          "Or": 19
+          "And": 3,
+          "Or": 8
         },
         "break": {
           "": 6
         },
         "call": {
           "CommunicationSimulator": 1,
-          "Context": 1,
-          "Decimal": 4,
           "DecodingRng": 1,
           "Event": 2,
-          "Fraction": 2,
           "KVCacheModel": 2,
           "PreciseCommunicationSimulator": 1,
           "ProposalWindow": 1,
           "TkSltProposal": 1,
           "TkSltWireRow": 1,
-          "ValueError": 47,
+          "ValueError": 30,
+          "_OdldState": 1,
+          "_TkSltRunStats": 1,
           "_check_stopping_criteria": 2,
           "_graph_mode_cache_kwargs": 1,
-          "_increasing": 3,
           "_kv_cache_construction_key": 2,
           "_last_edge_cloud_tx_seconds": 2,
-          "_move_token_tensor": 7,
+          "_move_token_tensor": 6,
           "_stop_at_eos": 2,
-          "_validate_token_range": 6,
+          "_tk_slt_commit_window": 1,
+          "_validate_token_range": 4,
           "acquire_graph_caches": 1,
           "all": 4,
           "any": 2,
-          "append": 4,
-          "apply_rollback": 2,
+          "append": 3,
           "bool": 7,
-          "build_rollback_plan": 1,
           "callable": 1,
-          "cat": 3,
+          "cat": 2,
           "clone": 1,
-          "color_print": 2,
+          "color_print": 1,
           "copy": 3,
           "cumsum": 1,
           "current_stream": 2,
@@ -455,37 +452,41 @@
           "dense": 1,
           "dense_rows": 1,
           "device": 1,
-          "dim": 12,
+          "dim": 8,
           "elapsed_time": 1,
           "empty": 1,
-          "float": 13,
+          "float": 2,
           "forward_context": 4,
-          "from_float": 3,
           "get": 3,
           "get_empty_metrics": 1,
           "get_model_input_device": 2,
-          "index": 7,
+          "index": 5,
           "int": 7,
           "is_floating_point": 1,
-          "isfinite": 9,
-          "isinstance": 11,
+          "isinstance": 9,
           "list": 2,
-          "localcontext": 1,
-          "min": 4,
+          "min": 2,
+          "note_standalone_round": 1,
           "numel": 1,
+          "observe_acceptance": 1,
+          "observe_draft": 1,
+          "observe_uplink_tx": 2,
+          "observe_verification": 1,
           "prepare_verification_window": 1,
           "range": 1,
           "record": 2,
           "reshape": 1,
+          "select": 1,
           "sort": 1,
           "sum": 3,
           "synchronize": 1,
           "time": 10,
           "tk_slt_uplink_payload_bytes": 1,
-          "to": 12,
-          "tuple": 8,
-          "unsqueeze": 6,
-          "validate_probability_rows": 3
+          "to": 10,
+          "tuple": 6,
+          "unsqueeze": 4,
+          "validate_probability_rows": 3,
+          "write_metrics": 1
         },
         "comm": {
           "flush_round": 2,
@@ -497,7 +498,7 @@
           "": 1
         },
         "except": {
-          "": 7
+          "": 5
         },
         "flag": {
           "gamma": 1,
@@ -513,20 +514,20 @@
         },
         "loop": {
           "for": 1,
-          "while": 3
+          "while": 1
         },
         "raise": {
-          "": 47
+          "": 30
         },
         "return": {
           "": 1
         },
         "rng": {
           "rand": 1,
-          "sample": 5
+          "sample": 4
         },
         "try": {
-          "": 7
+          "": 5
         }
       }
     },
@@ -1476,6 +1477,101 @@
         "rng": {
           "rand": 3,
           "sample": 2
+        }
+      }
+    },
+    "_OdldState.ready": {
+      "events": 2,
+      "sha256_16": "b828dfa3cc7cd96a",
+      "surface": {
+        "boolop": {
+          "And": 1
+        },
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "_OdldState.select": {
+      "events": 91,
+      "sha256_16": "a13853f8f6661f9c",
+      "surface": {
+        "assign_self": {
+          "last_gamma_star": 1
+        },
+        "boolop": {
+          "And": 1,
+          "Or": 11
+        },
+        "call": {
+          "Context": 1,
+          "Decimal": 4,
+          "Fraction": 2,
+          "ValueError": 15,
+          "_increasing": 3,
+          "_log": 1,
+          "float": 11,
+          "from_float": 3,
+          "index": 2,
+          "isfinite": 9,
+          "isinstance": 2,
+          "localcontext": 1,
+          "min": 2
+        },
+        "except": {
+          "": 2
+        },
+        "loop": {
+          "while": 2
+        },
+        "raise": {
+          "": 15
+        },
+        "return": {
+          "": 1
+        },
+        "try": {
+          "": 2
+        }
+      }
+    },
+    "_OdldState.write_metrics": {
+      "events": 3,
+      "sha256_16": "ded8ea796dbd8d23",
+      "surface": {
+        "boolop": {
+          "And": 2
+        },
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "TkSltMixin._tk_slt_commit_window": {
+      "events": 25,
+      "sha256_16": "98ec1da0c50f2077",
+      "surface": {
+        "call": {
+          "ValueError": 2,
+          "_move_token_tensor": 1,
+          "_validate_token_range": 2,
+          "append": 1,
+          "apply_rollback": 2,
+          "build_rollback_plan": 1,
+          "cat": 1,
+          "dim": 4,
+          "to": 2,
+          "tuple": 2,
+          "unsqueeze": 2
+        },
+        "raise": {
+          "": 2
+        },
+        "return": {
+          "": 2
+        },
+        "rng": {
+          "sample": 1
         }
       }
     }

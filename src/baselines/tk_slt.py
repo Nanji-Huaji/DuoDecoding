@@ -39,6 +39,17 @@ token was always discarded, and the draft loop advances the same way one step at
 a time.  Forward endpoints (``prefix + gamma - 1``), cache construction keys,
 graph-cache identity/reset, wire bytes and communication ordering are unchanged.
 The intended sampling change is the proposal law itself (now the FP16 wire law).
+
+Stage split (2026-11-15): the entry now reads as its real schedule.  The AS² /
+ODLD running estimates live in one private ``_OdldState``; the repeated
+target-only continuation (AS² standalone round and remaining-budget fallback)
+is a single private method; the wire-proposal build, the strict verification
+and the commit/rollback tail are private stage methods on the mixin, and the
+per-run counters sit in a private ``_TkSltRunStats``.  The uplink, downlink and
+round-flush calls stay inline in the loop so the wire protocol ordering remains
+auditable in one place.  Public signature, registration names, RNG and
+communication order, ODLD measurement windows, rollback plans and graph-cache
+identity are unchanged.
 """
 
 import time
@@ -97,6 +108,124 @@ def _sample_tk_token(
     token = _ensure_token_shape(rng.sample(probs), label=label)
     _validate_token_range(token, vocab_size=vocab_size, label=label)
     return _move_token_tensor(token, output_device)
+
+
+class _OdldState:
+    """ODLD/AS² 的在线估计状态（论文式 (5) 的运行均值）。
+
+    α = 期望接受率、b = T_V/T_LLM、c = T_SLM/T_LLM 全部按运行均值跨轮更新：
+    只有 DSD 轮喂入新估计（草稿/验证/上行的耗时与接受数），standalone 轮
+    不产生新样本（无草稿/验证）。``ready`` 把「ODLD 开启且已有估计」合成
+    一个门，调用方在门未开时继续用 ``--gamma`` 兜底。``select`` 经模块全局
+    :func:`tk_slt_select_speculative` 咨询 AS²（Algorithm 2）并把 γ* 记入
+    ``last_gamma_star``；``write_metrics`` 落盘最终估计（分析用）。
+    """
+
+    def __init__(self, *, enabled, log):
+        self.enabled = bool(enabled)
+        self._log = log
+        self.alpha_num = 0.0  # Σ 接受 token 数
+        self.alpha_den = 0.0  # Σ 草稿 token 数
+        self.t_slm_seconds = 0.0  # Σ 草稿前向耗时
+        self.t_slm_tokens = 0
+        self.t_llm_seconds = 0.0  # Σ 验证前向耗时
+        self.t_llm_runs = 0
+        self.t_v_seconds = 0.0  # Σ 上行纯发射耗时（不含 NTT，同论文 T_V 口径）
+        self.t_v_dists = 0  # Σ 已传分布数
+        self.standalone_rounds = 0
+        self.last_gamma_star = 0
+
+    @property
+    def ready(self) -> bool:
+        """AS²（论文 Algorithm 2）：有估计后才启用（首轮无估计）。"""
+        return self.enabled and self.t_llm_runs >= 1 and self.alpha_den > 0
+
+    def observe_draft(self, seconds: float, tokens: int) -> None:
+        self.t_slm_seconds += seconds
+        self.t_slm_tokens += tokens
+
+    def observe_verification(self, seconds: float) -> None:
+        self.t_llm_seconds += seconds
+        self.t_llm_runs += 1
+
+    def observe_uplink_tx(self, seconds: float, dists: int) -> None:
+        self.t_v_seconds += seconds
+        self.t_v_dists += dists
+
+    def observe_acceptance(self, accepted: int, drafted: int) -> None:
+        self.alpha_num += accepted
+        self.alpha_den += drafted
+
+    def note_standalone_round(self) -> None:
+        self.standalone_rounds += 1
+
+    def select(self, gamma_cap: int):
+        """用当前运行均值咨询 AS²，返回 ``(use_dsd, gamma_star, S*)``。"""
+        alpha_hat = self.alpha_num / self.alpha_den
+        llm_per_run = self.t_llm_seconds / self.t_llm_runs
+        b_hat = (
+            (self.t_v_seconds / self.t_v_dists) / llm_per_run
+            if self.t_v_dists > 0
+            else 0.0
+        )
+        c_hat = (
+            (self.t_slm_seconds / self.t_slm_tokens) / llm_per_run
+            if self.t_slm_tokens > 0
+            else 0.0
+        )
+        use_dsd, gamma_star, s_star = tk_slt_select_speculative(
+            alpha_hat, b_hat, c_hat, gamma_cap
+        )
+        self.last_gamma_star = gamma_star
+        self._log(
+            f"ODLD: alpha={alpha_hat:.3f} b={b_hat:.3f} c={c_hat:.3f} "
+            f"-> gamma*={gamma_star} S*={s_star:.3f}",
+            3,
+        )
+        return use_dsd, gamma_star, s_star
+
+    def write_metrics(self, metrics) -> None:
+        """落盘最终估计与 standalone 轮数（分析用）。"""
+        metrics["tk_slt_odld"] = self.enabled
+        metrics["tk_slt_standalone_rounds"] = self.standalone_rounds
+        if not self.enabled:
+            return
+        metrics["tk_slt_alpha_hat"] = (
+            self.alpha_num / self.alpha_den if self.alpha_den > 0 else 0.0
+        )
+        llm_per_run = (
+            self.t_llm_seconds / self.t_llm_runs if self.t_llm_runs > 0 else 0.0
+        )
+        metrics["tk_slt_b_hat"] = (
+            (self.t_v_seconds / self.t_v_dists) / llm_per_run
+            if self.t_v_dists > 0 and llm_per_run > 0
+            else 0.0
+        )
+        metrics["tk_slt_c_hat"] = (
+            (self.t_slm_seconds / self.t_slm_tokens) / llm_per_run
+            if self.t_slm_tokens > 0 and llm_per_run > 0
+            else 0.0
+        )
+        metrics["tk_slt_gamma_star_final"] = self.last_gamma_star
+
+
+class _TkSltRunStats:
+    """Per-run loop counters; owns no cache, simulator, model or policy.
+
+    B18：avg_top_k 只统计传输压缩 top-k，未压缩记 0，与
+    dsd/dssd/tridecoding 同名列口径一致。
+    """
+
+    draft_forward_times: int = 0
+    target_forward_times: int = 0
+    total_accepted_tokens: int = 0
+    total_drafted_tokens: int = 0
+    total_draft_steps: int = 0
+    sum_draft_len: float = 0.0
+    sum_top_k: float = 0.0
+    queuing_time: float = 0.0
+    draft_comp_time: float = 0.0
+    target_comp_time: float = 0.0
 
 
 class TkSltMixin:
@@ -163,6 +292,11 @@ class TkSltMixin:
         likewise advances one ``forward_context`` step per draft token and
         samples the reconstructed FP16 wire row; it ends at the same
         ``prefix + gamma - 1`` endpoint as the old ``generate`` did.
+
+        结构（2026-11-15 阶段拆分）：本入口只做调度与账目——AS² 咨询与
+        standalone/fallback 分派、上行/下行/轮末结算的通信序列、各阶段的
+        计数喂入；算法阶段在私有方法里（wire 提议、strict 验证、commit/
+        rollback、target-only 直出），ODLD 在线估计集中在 ``_OdldState``。
         """
         comm_simulator: CommunicationSimulator = _make_symmetric_comm_simulator(
             self.comm_env,
@@ -204,13 +338,16 @@ class TkSltMixin:
         draft_sampling_top_k = int(transfer_top_k) if topk_enabled else 0
         topk_history_val = int(transfer_top_k) if topk_enabled else 0
 
-        odld_enabled = bool(getattr(self.args, "tk_slt_odld", False))
+        odld = _OdldState(
+            enabled=bool(getattr(self.args, "tk_slt_odld", False)),
+            log=self.color_print,
+        )
 
         # CUDA Graph：草稿缓存走 γ 步循环是图收益点；target 整段前向不图化
         # （与 dist_spec 同一取舍）。ODLD 开启时 γ* 可超过 --gamma，cap 按
         # ODLD 上限取，保证验证图档位覆盖。
         default_gamma_cap = int(getattr(self.args, "gamma", 5))
-        _odld_cap = _TK_SLT_ODLD_GAMMA_CAP if odld_enabled else default_gamma_cap
+        _odld_cap = _TK_SLT_ODLD_GAMMA_CAP if odld.enabled else default_gamma_cap
         _graph_kw = _graph_mode_cache_kwargs(self.args, cap=_odld_cap + 4)
         _caches = acquire_graph_caches(
             self, "_tk_slt_caches", _graph_kw,
@@ -237,32 +374,8 @@ class TkSltMixin:
         approx_model_cache.vocab_size = self.vocab_size
         target_model_cache.vocab_size = self.vocab_size
 
-        draft_forward_times = 0
-        target_forward_times = 0
-        total_accepted_tokens = 0
-        total_drafted_tokens = 0
-        queuing_time = 0
+        stats = _TkSltRunStats()
         batch_delay = self.comm_env.batch_delay
-
-        # 追踪 top-k 和 draft length（B18：avg_top_k 只统计传输压缩 top-k，
-        # 未压缩记 0，与 dsd/dssd/tridecoding 同名列口径一致）
-        total_draft_steps = 0
-        sum_draft_len = 0.0
-        sum_top_k = 0.0
-
-        # ODLD/AS² 的在线估计（论文式 (5)：b=T_V/T_LLM、c=T_SLM/T_LLM；
-        # α=期望接受率）。运行均值跨轮更新；standalone 轮不产生新估计
-        # （无草稿/验证），只有 DSD 轮喂入。
-        alpha_num = 0.0  # Σ 接受 token 数
-        alpha_den = 0.0  # Σ 草稿 token 数
-        t_slm_seconds = 0.0  # Σ 草稿前向耗时
-        t_slm_tokens = 0
-        t_llm_seconds = 0.0  # Σ 验证前向耗时
-        t_llm_runs = 0
-        t_v_seconds = 0.0  # Σ 上行纯发射耗时（不含 NTT，同论文 T_V 口径）
-        t_v_dists = 0  # Σ 已传分布数
-        standalone_rounds = 0
-        last_gamma_star = 0
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -272,9 +385,6 @@ class TkSltMixin:
         start_event.record(stream=torch.cuda.current_stream())
 
         idx: int = 0
-
-        draft_comp_time = 0.0
-        target_comp_time = 0.0
 
         _tri_prompt_len = prefix.shape[1]  # EOS 早停的生成段起点（B10）
 
@@ -308,57 +418,24 @@ class TkSltMixin:
             # AS²（论文 Algorithm 2）：有估计后才启用；S*<=1 的轮次退回
             # standalone LLM。首轮（无估计）用 --gamma。
             base_gamma = int(self.args.gamma)
-            if odld_enabled and t_llm_runs >= 1 and alpha_den > 0:
-                alpha_hat = alpha_num / alpha_den
-                llm_per_run = t_llm_seconds / t_llm_runs
-                b_hat = (
-                    (t_v_seconds / t_v_dists) / llm_per_run if t_v_dists > 0 else 0.0
-                )
-                c_hat = (
-                    (t_slm_seconds / t_slm_tokens) / llm_per_run
-                    if t_slm_tokens > 0
-                    else 0.0
-                )
-                use_dsd, gamma_star, _s_star = tk_slt_select_speculative(
-                    alpha_hat, b_hat, c_hat, _TK_SLT_ODLD_GAMMA_CAP
-                )
-                last_gamma_star = gamma_star
-                self.color_print(
-                    f"ODLD: alpha={alpha_hat:.3f} b={b_hat:.3f} c={c_hat:.3f} "
-                    f"-> gamma*={gamma_star} S*={_s_star:.3f}",
-                    3,
+            if odld.ready:
+                use_dsd, gamma_star, _s_star = odld.select(
+                    _TK_SLT_ODLD_GAMMA_CAP
                 )
                 if not use_dsd:
                     # standalone LLM 轮（AS² 分支）：target 直出 1 token。
                     # 无草稿、无上行分布；下行响应 negligible（0 字节报文）。
                     # 1-token 前向 ≠ 验证前向，不进 T_LLM 估计。
-                    standalone_rounds += 1
-                    queuing_time += batch_delay
-                    t0 = time.time()
-                    target_model_cache.forward_context(
-                        _move_token_tensor(prefix, target_device)
-                    )
-                    target_comp_time += time.time() - t0
-                    target_forward_times += 1
-                    if self.accelerator.is_main_process:
-                        self.target_forward_times += 1
-
-                    target_row = target_model_cache.prob_history[
-                        :, -1, : self.vocab_size
-                    ]
-                    # 采样前显式校验目标行：不依赖 sampling_weights 对无效行的
-                    # one-hot 兜底（strict 契约不允许"发明"一个分布）。
-                    validate_probability_rows(target_row, "tk_slt.standalone_t")
-                    t = _sample_tk_token(
-                        rng,
-                        target_row,
-                        output_device=prefix.device,
-                        vocab_size=self.vocab_size,
+                    odld.note_standalone_round()
+                    prefix = self._tk_slt_target_only_token(
+                        prefix=prefix,
+                        target_cache=target_model_cache,
+                        rng=rng,
+                        target_device=target_device,
                         label="tk_slt.standalone_t",
+                        batch_delay=batch_delay,
+                        stats=stats,
                     )
-                    prefix = torch.cat((prefix, t), dim=1)
-                    self.num_acc_tokens.append(1)
-
                     if use_early_stopping and self._check_stopping_criteria(
                         prefix, stop_sequences
                     ):
@@ -372,59 +449,39 @@ class TkSltMixin:
             if current_gamma <= 0:
                 # 只剩 1 个 token：target 直出（与 dist_spec 的边界分支同口径，
                 # 不计通信）
-                queuing_time += batch_delay
-                t0 = time.time()
-                target_model_cache.forward_context(
-                    _move_token_tensor(prefix, target_device)
-                )
-                target_comp_time += time.time() - t0
-                target_forward_times += 1
-                if self.accelerator.is_main_process:
-                    self.target_forward_times += 1
-
-                target_row = target_model_cache.prob_history[
-                    :, -1, : self.vocab_size
-                ]
-                # 采样前显式校验目标行（同上：无无效行兜底）。
-                validate_probability_rows(target_row, "tk_slt.fallback_t")
-                t = _sample_tk_token(
-                    rng,
-                    target_row,
-                    output_device=prefix.device,
-                    vocab_size=self.vocab_size,
+                prefix = self._tk_slt_target_only_token(
+                    prefix=prefix,
+                    target_cache=target_model_cache,
+                    rng=rng,
+                    target_device=target_device,
                     label="tk_slt.fallback_t",
+                    batch_delay=batch_delay,
+                    stats=stats,
                 )
-                prefix = torch.cat((prefix, t), dim=1)
-                self.num_acc_tokens.append(1)
                 break
 
             # ---- Draft：概率-wire 提议（先选支撑/FP16 编码，再从 wire 行采样）----
             # 每步 forward_context 推进一格，编码后立即从重建的 dense-V FP16
             # 行采样；缓存端点仍是 prefix+γ-1（与旧 generate 相同），token 写入
-            # 预分配缓冲，不做逐步增长的 torch.cat。
-            t0 = time.time()
-            draft = build_draft_proposal(
-                approx_model_cache,
-                _move_token_tensor(prefix, draft_device),
-                current_gamma,
-                draft_sampling_top_k,
-                vocab_size=self.vocab_size,
-                device=draft_device,
+            # 预分配缓冲，不做逐步增长的 torch.cat。ODLD 的 T_SLM 括号覆盖
+            # 本阶段整体（build + 候选校验，与拆分前同一测量窗）。
+            _slm_t0 = time.time()
+            draft, draft_build_seconds = self._tk_slt_wire_proposal(
+                prefix=prefix,
+                approx_cache=approx_model_cache,
+                gamma=current_gamma,
+                top_k=draft_sampling_top_k,
                 rng=rng,
+                device=draft_device,
             )
-            draft_comp_time += time.time() - t0
-            x = _ensure_token_shape(draft.tokens, label="tk_slt.generated_x")
-            _validate_token_range(
-                x, vocab_size=self.vocab_size, label="tk_slt.generated_x"
-            )
-            draft_forward_times += current_gamma
-            total_drafted_tokens += current_gamma
-            t_slm_seconds += time.time() - t0
-            t_slm_tokens += current_gamma
+            odld.observe_draft(time.time() - _slm_t0, draft.count)
+            stats.draft_comp_time += draft_build_seconds
+            stats.draft_forward_times += draft.count
+            stats.total_drafted_tokens += draft.count
 
-            total_draft_steps += 1
-            sum_draft_len += current_gamma
-            sum_top_k += topk_history_val
+            stats.total_draft_steps += 1
+            stats.sum_draft_len += draft.count
+            stats.sum_top_k += topk_history_val
 
             # ---- 上行：真实稀疏 wire 值（每值 2B）+ negligible 索引 ----
             # 载荷 = γ·min(K,V) 个 FP16 值（K<=0/None ⇒ γ·V），与
@@ -445,95 +502,40 @@ class TkSltMixin:
             if not comm_simulator.coalesce_rounds:
                 _tx_seconds = _last_edge_cloud_tx_seconds(comm_simulator)
                 if _tx_seconds is not None:
-                    t_v_seconds += _tx_seconds
-                    t_v_dists += window_rows
+                    odld.observe_uplink_tx(_tx_seconds, window_rows)
 
             # ---- Verify：BS 只从已计费 payload 重建，再走 strict 契约 ----
-            queuing_time += batch_delay
-            t0 = time.time()
-            # 只推进 target 上下文，不采丢弃 token：候选窗口与 prefill/extend
-            # 端点都和旧 generate(..., 1) 的首步完全相同。
-            target_model_cache.forward_context(
-                _move_token_tensor(x, target_device)
+            stats.queuing_time += batch_delay
+            decision, verify_seconds = self._tk_slt_verify_wire_proposal(
+                prefix=prefix,
+                draft=draft,
+                target_cache=target_model_cache,
+                rng=rng,
+                target_device=target_device,
             )
-            target_comp_time += time.time() - t0
-            t_llm_seconds += time.time() - t0
-            t_llm_runs += 1
+            stats.target_comp_time += verify_seconds
+            odld.observe_verification(verify_seconds)
 
-            target_forward_times += 1
+            stats.target_forward_times += 1
             if self.accelerator.is_main_process:
-                self.draft_forward_times += current_gamma
+                self.draft_forward_times += draft.count
                 self.target_forward_times += 1
 
-            # 接收端在 target 设备上从 payload 重建 dense-V FP16 行：target
-            # 的完整 P 不会伪装成发给草稿的未计费数据；round-local wire 行是
-            # 不可变的稀疏值+索引，后续缓存写入不会改动它。
-            proposal = ProposalWindow(
-                tokens=x,
-                probabilities=draft.dense_rows(device=target_device),
-                prefix_len=prefix_len,
-            )
-            # 先验完整个窗口（维度/词表/概率质量），再取接受随机数：非法
-            # target 或 wire 行在这里响亮失败，不落到任何 fallback。
-            window = prepare_verification_window(
-                proposal,
-                target_model_cache.prob_history[:, :, : self.vocab_size],
-            )
-            acceptance_uniforms = rng.rand(
-                (1, proposal.count), device=proposal.probabilities.device
-            )
-            decision = decide_verification(window, acceptance_uniforms)
+            stats.total_accepted_tokens += decision.accepted_count
+            odld.observe_acceptance(decision.accepted_count, draft.count)
 
-            this_step_accepted_tokens = decision.accepted_count
-            n = decision.accepted_end
-            total_accepted_tokens += this_step_accepted_tokens
-            alpha_num += this_step_accepted_tokens
-            alpha_den += current_gamma
-
-            self.num_acc_tokens.append(this_step_accepted_tokens)
-
-            assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
-            prefix = x[:, : n + 1]
-            rollback_plan = build_rollback_plan(
-                prefix_len,
-                current_gamma,
-                n,
+            # ---- Commit：切到接受端点、续采、统一回滚 ----
+            prefix, budget_exhausted = self._tk_slt_commit_window(
+                prefix=prefix,
+                draft=draft,
+                decision=decision,
+                approx_cache=approx_model_cache,
+                target_cache=target_model_cache,
+                rng=rng,
+                max_tokens=max_tokens,
             )
-
-            # 检查是否还有空间添加一个 token
-            if prefix.shape[1] >= max_tokens:
-                apply_rollback(
-                    approx_model_cache,
-                    target_model_cache,
-                    rollback_plan,
-                )
+            if budget_exhausted:
                 break
-
-            # 续采：接受分支 = P_{γ+1}（target bonus 行）；拒绝分支 = strict
-            # norm((P−Q̂)+)（论文 §II-A 3b；Q̂ 即已计费的 wire 行）。两者都由
-            # prepare/decide 给出：无 legacy max_fn 兜底、无额外抽样。
-            t = _sample_tk_token(
-                rng,
-                decision.continuation_probs,
-                output_device=prefix.device,
-                vocab_size=self.vocab_size,
-                label="tk_slt.sampled_t",
-            )
-
-            apply_rollback(
-                approx_model_cache,
-                target_model_cache,
-                rollback_plan,
-            )
-
-            if prefix.shape[1] < max_tokens:
-                prefix = torch.cat((prefix, t), dim=1)
-                prefix = _ensure_token_shape(prefix, label="tk_slt.prefix_after_concat")
-                _validate_token_range(
-                    prefix,
-                    vocab_size=self.vocab_size,
-                    label="tk_slt.prefix_after_concat",
-                )
 
             if use_early_stopping and self._check_stopping_criteria(
                 prefix, stop_sequences
@@ -549,8 +551,7 @@ class TkSltMixin:
             if comm_simulator.coalesce_rounds:
                 _tx_seconds = _last_edge_cloud_tx_seconds(comm_simulator)
                 if _tx_seconds is not None:
-                    t_v_seconds += _tx_seconds
-                    t_v_dists += window_rows
+                    odld.observe_uplink_tx(_tx_seconds, window_rows)
 
         # 中途 break（max_tokens/EOS/fallback）时最后一轮字节可能仍在合并桶里，
         # 结算必须在 wall_time/communication_time 读数之前。
@@ -565,7 +566,207 @@ class TkSltMixin:
             prefix = prefix[:, :max_tokens]
         prefix, _ = self._stop_at_eos(prefix, _tri_prompt_len)
 
-        generated_tokens = prefix.shape[1] - current_tokens.shape[1]
+        return prefix, self._tk_slt_metrics(
+            prefix=prefix,
+            input_len=current_tokens.shape[1],
+            stats=stats,
+            comm_simulator=comm_simulator,
+            elapsed_time=elapsed_time,
+            odld=odld,
+        )
+
+    def _tk_slt_target_only_token(
+        self,
+        *,
+        prefix,
+        target_cache,
+        rng,
+        target_device,
+        label,
+        batch_delay,
+        stats,
+    ):
+        """One target-only continuation: forward once, keep exactly one draw.
+
+        Shared by the AS² standalone round and the remaining-budget fallback.
+        The target cache advances the current prefix by one ``forward_context``
+        (never ``generate``: no target draw is discarded), the fresh row is
+        validated before sampling (the strict contract does not invent a law
+        for an invalid row), and the single retained token is appended and
+        billed as one accepted token.  The caller decides what follows: the
+        standalone round answers with a negligible downlink and continues,
+        the fallback is the final token of the invocation.
+        """
+        stats.queuing_time += batch_delay
+        t0 = time.time()
+        target_cache.forward_context(_move_token_tensor(prefix, target_device))
+        stats.target_comp_time += time.time() - t0
+        stats.target_forward_times += 1
+        if self.accelerator.is_main_process:
+            self.target_forward_times += 1
+
+        target_row = target_cache.prob_history[:, -1, : self.vocab_size]
+        validate_probability_rows(target_row, label)
+        t = _sample_tk_token(
+            rng,
+            target_row,
+            output_device=prefix.device,
+            vocab_size=self.vocab_size,
+            label=label,
+        )
+        prefix = torch.cat((prefix, t), dim=1)
+        self.num_acc_tokens.append(1)
+        return prefix
+
+    def _tk_slt_wire_proposal(
+        self,
+        *,
+        prefix,
+        approx_cache,
+        gamma,
+        top_k,
+        rng,
+        device,
+    ):
+        """Draft the candidate window as the wire law that will be billed.
+
+        ``build_draft_proposal`` validates each model row before sampler
+        preprocessing, selects exactly ``min(K, V)`` coordinates, and samples
+        the reconstructed dense-V FP16 row one ``forward_context`` step at a
+        time; the draft cache endpoint stays ``prefix + gamma - 1`` (same as
+        the old ``generate``).  ``build_seconds`` brackets only the proposal
+        build, matching ``draft_computation_time``; the ODLD T_SLM window
+        (build plus the candidate validation below) is bracketed by the
+        caller around this whole call, as before the split.
+        """
+        t0 = time.time()
+        draft = build_draft_proposal(
+            approx_cache,
+            _move_token_tensor(prefix, device),
+            gamma,
+            top_k,
+            vocab_size=self.vocab_size,
+            device=device,
+            rng=rng,
+        )
+        build_seconds = time.time() - t0
+        x = _ensure_token_shape(draft.tokens, label="tk_slt.generated_x")
+        _validate_token_range(
+            x, vocab_size=self.vocab_size, label="tk_slt.generated_x"
+        )
+        return draft, build_seconds
+
+    def _tk_slt_verify_wire_proposal(
+        self,
+        *,
+        prefix,
+        draft,
+        target_cache,
+        rng,
+        target_device,
+    ):
+        """Verify the billed wire law on the target device, strictly.
+
+        The target cache only advances context (``forward_context`` over the
+        candidate window; the candidate window and the prefill/extend
+        endpoints match the first step of the old ``generate(..., 1)``).  The
+        receiver rebuilds the dense-V FP16 rows from the same payload that was
+        billed, so the target's full P never poses as unbilled draft data; the
+        round-local wire rows are immutable sparse values + indices, so later
+        cache writes cannot alter them.  The whole window is validated
+        (dimensions, vocabulary, probability mass) before the acceptance
+        uniforms are drawn: an invalid target or wire row fails loudly here
+        instead of falling back.  ``forward_seconds`` brackets only the target
+        forward — the ODLD T_LLM window.
+        """
+        t0 = time.time()
+        target_cache.forward_context(
+            _move_token_tensor(draft.tokens, target_device)
+        )
+        forward_seconds = time.time() - t0
+
+        proposal = ProposalWindow(
+            tokens=draft.tokens,
+            probabilities=draft.dense_rows(device=target_device),
+            prefix_len=prefix.shape[1],
+        )
+        window = prepare_verification_window(
+            proposal,
+            target_cache.prob_history[:, :, : self.vocab_size],
+        )
+        acceptance_uniforms = rng.rand(
+            (1, proposal.count), device=proposal.probabilities.device
+        )
+        return decide_verification(window, acceptance_uniforms), forward_seconds
+
+    def _tk_slt_commit_window(
+        self,
+        *,
+        prefix,
+        draft,
+        decision,
+        approx_cache,
+        target_cache,
+        rng,
+        max_tokens,
+    ):
+        """Commit the verified window and draw the continuation token.
+
+        The prefix is cut to the accepted endpoint ``n + 1``.  Unless the
+        budget is exhausted, one continuation token is drawn from the law that
+        ``prepare``/``decide`` already produced — the target bonus row on
+        acceptance, the strict ``norm((P - Q_hat)+)`` residual on rejection
+        (§II-A 3b; ``Q_hat`` is the billed wire row); there is no legacy
+        max_fn fallback and no extra draw.  The draw happens *before* the
+        rollback, so the RNG order is unchanged; both caches then roll back
+        under the same ``build_rollback_plan(prefix_len, gamma, n)`` plan.
+        Returns the new prefix and whether the budget ran out (in which case
+        no continuation was drawn and only the rollback ran).
+        """
+        accepted = decision.accepted_count
+        n = decision.accepted_end
+        prefix_len = prefix.shape[1]
+        self.num_acc_tokens.append(accepted)
+        assert n >= prefix_len - 1, f"n {n}, prefix_len {prefix_len}"
+        prefix = draft.tokens[:, : n + 1]
+        rollback_plan = build_rollback_plan(prefix_len, draft.count, n)
+
+        # 检查是否还有空间添加一个 token
+        if prefix.shape[1] >= max_tokens:
+            apply_rollback(approx_cache, target_cache, rollback_plan)
+            return prefix, True
+
+        t = _sample_tk_token(
+            rng,
+            decision.continuation_probs,
+            output_device=prefix.device,
+            vocab_size=self.vocab_size,
+            label="tk_slt.sampled_t",
+        )
+
+        apply_rollback(approx_cache, target_cache, rollback_plan)
+
+        prefix = torch.cat((prefix, t), dim=1)
+        prefix = _ensure_token_shape(prefix, label="tk_slt.prefix_after_concat")
+        _validate_token_range(
+            prefix,
+            vocab_size=self.vocab_size,
+            label="tk_slt.prefix_after_concat",
+        )
+        return prefix, False
+
+    def _tk_slt_metrics(
+        self,
+        *,
+        prefix,
+        input_len,
+        stats,
+        comm_simulator,
+        elapsed_time,
+        odld,
+    ):
+        """Assemble the public metrics from the run counters and comm ledger."""
+        generated_tokens = prefix.shape[1] - input_len
         throughput = (
             generated_tokens / (elapsed_time + comm_simulator.edge_cloud_comm_time)
             if (elapsed_time + comm_simulator.edge_cloud_comm_time) > 0
@@ -574,18 +775,22 @@ class TkSltMixin:
 
         metrics = get_empty_metrics()
         metrics["avg_top_k"] = (
-            sum_top_k / total_draft_steps if total_draft_steps > 0 else 0
+            stats.sum_top_k / stats.total_draft_steps
+            if stats.total_draft_steps > 0
+            else 0
         )
         metrics["avg_draft_len"] = (
-            sum_draft_len / total_draft_steps if total_draft_steps > 0 else 0
+            stats.sum_draft_len / stats.total_draft_steps
+            if stats.total_draft_steps > 0
+            else 0
         )
-        metrics["draft_forward_times"] = draft_forward_times
-        metrics["target_forward_times"] = target_forward_times
-        metrics["draft_computation_time"] = draft_comp_time
-        metrics["target_computation_time"] = target_comp_time
+        metrics["draft_forward_times"] = stats.draft_forward_times
+        metrics["target_forward_times"] = stats.target_forward_times
+        metrics["draft_computation_time"] = stats.draft_comp_time
+        metrics["target_computation_time"] = stats.target_comp_time
         metrics["generated_tokens"] = generated_tokens
-        metrics["draft_generated_tokens"] = total_drafted_tokens
-        metrics["draft_accepted_tokens"] = total_accepted_tokens
+        metrics["draft_generated_tokens"] = stats.total_drafted_tokens
+        metrics["draft_accepted_tokens"] = stats.total_accepted_tokens
         metrics["wall_time"] = elapsed_time + comm_simulator.edge_cloud_comm_time
         metrics["throughput"] = throughput
         metrics["communication_time"] = comm_simulator.edge_cloud_comm_time
@@ -597,9 +802,9 @@ class TkSltMixin:
         metrics["comm_energy"] = comm_simulator.total_comm_energy
         metrics["connect_times"] = comm_simulator.connect_times
 
-        metrics["queuing_time"] = queuing_time
+        metrics["queuing_time"] = stats.queuing_time
         metrics["wall_time"] = (
-            elapsed_time + queuing_time + comm_simulator.edge_cloud_comm_time
+            elapsed_time + stats.queuing_time + comm_simulator.edge_cloud_comm_time
         )
         if metrics["wall_time"] > 0:
             metrics["throughput"] = metrics["generated_tokens"] / metrics["wall_time"]
@@ -608,32 +813,13 @@ class TkSltMixin:
             metrics,
             elapsed_time=elapsed_time,
             comm_time=comm_simulator.edge_cloud_comm_time,
-            queuing_time=queuing_time,
-            draft_comp_time=draft_comp_time,
-            target_comp_time=target_comp_time,
+            queuing_time=stats.queuing_time,
+            draft_comp_time=stats.draft_comp_time,
+            target_comp_time=stats.target_comp_time,
         )
 
-        # ODLD 观测：落盘最终估计与 standalone 轮数（分析用）
-        metrics["tk_slt_odld"] = odld_enabled
-        metrics["tk_slt_standalone_rounds"] = standalone_rounds
-        if odld_enabled:
-            metrics["tk_slt_alpha_hat"] = (
-                alpha_num / alpha_den if alpha_den > 0 else 0.0
-            )
-            llm_per_run = t_llm_seconds / t_llm_runs if t_llm_runs > 0 else 0.0
-            metrics["tk_slt_b_hat"] = (
-                (t_v_seconds / t_v_dists) / llm_per_run
-                if t_v_dists > 0 and llm_per_run > 0
-                else 0.0
-            )
-            metrics["tk_slt_c_hat"] = (
-                (t_slm_seconds / t_slm_tokens) / llm_per_run
-                if t_slm_tokens > 0 and llm_per_run > 0
-                else 0.0
-            )
-            metrics["tk_slt_gamma_star_final"] = last_gamma_star
+        odld.write_metrics(metrics)
 
         # 带宽/top-k/草稿历史 + 逐消息账 + 口径标签（与其余方法同一 helper）
         _finalize_comm_metrics(metrics, comm_simulator, self.args)
-
-        return prefix, metrics
+        return metrics
