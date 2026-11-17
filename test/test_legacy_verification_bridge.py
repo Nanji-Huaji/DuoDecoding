@@ -69,21 +69,20 @@ def test_legacy_bridge_callers_are_explicit_and_bounded():
             actual.update(_calls(ROOT / relative))
     assert actual == Counter(
         {
-            ("src/baselines/cee_cuhlm.py", "CeeCuhlmMixin.cee_cuhlm", LEGACY_PREPARE): 2,
             ("src/decoding_ops.py", "verify_draft_sequence", LEGACY_PREPARE): 1,
             ("src/decoding_ops.py", "verify_draft_sequence_result", LEGACY_PREPARE): 1,
         }
     )
 
 
-def test_active_tk_slt_is_not_a_legacy_bridge_consumer():
-    """TK-SLT's active loop verifies the wire payload through the strict contract.
+def test_active_strict_baselines_are_not_legacy_bridge_consumers():
+    """Migrated TK-SLT and CEE-CUHLM do not use clipped legacy verification.
 
-    The dedicated historical FP16 bridge and the clipped legacy adapter stay
-    exported (other algorithms and the retired-codec tests still use them), but
-    the migrated TK-SLT module must not call either one.
+    Historical adapters remain exported for compatibility, but neither the
+    inner nor outer active CEE-CUHLM stage may fall back to them.
     """
-    assert _calls(ROOT / "src/baselines/tk_slt.py") == Counter()
+    for module in ("tk_slt", "cee_cuhlm"):
+        assert _calls(ROOT / f"src/baselines/{module}.py") == Counter()
 
 
 def test_old_public_name_is_only_compatibility_for_explicit_legacy_implementation():
@@ -120,6 +119,7 @@ def test_strict_modules_do_not_import_legacy_validation_or_stage_wrappers():
         "src/probability_laws.py",
         "src/cuhlm_verification.py",
         "src/baselines/cuhlm.py",
+        "src/baselines/cee_cuhlm.py",
     ):
         tree = ast.parse((ROOT / relative).read_text())
         imports = {

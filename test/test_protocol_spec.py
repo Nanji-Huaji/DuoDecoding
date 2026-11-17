@@ -293,11 +293,12 @@ class TestConsumptionTruth(unittest.TestCase):
             mode_consumption("tridecoding").accounting,
         )
 
-    def test_only_cuhlm_family_and_local_modes_do_not_consume(self):
-        """不消费计费开关的通信方法：纯本地系 + cee_cuhlm（三级变体，
-        不在主矩阵，暂未接线统一往返，docs/protocol.md §3.4）。
-        CUHLM/TK-SLT 系 2026-10-09 起消费 comm_round_trip_mode（载荷字节
-        仍按各自论文口径），别无遗漏。"""
+    def test_only_local_modes_do_not_consume_accounting(self):
+        """只有纯本地模式不消费计费开关。
+
+        CUHLM/TK-SLT 保留论文载荷，但消费 comm_round_trip_mode；
+        CEE-CUHLM 自 2026-11-16 协议对齐起同样接入。
+        """
         from src.protocols import _NO_COMM_MODES
 
         non_consumers = {
@@ -305,12 +306,12 @@ class TestConsumptionTruth(unittest.TestCase):
             for m in _STATIC_DEPTH_KEYS
             if not mode_consumption(m).consumes_accounting
         }
-        self.assertEqual(non_consumers, _NO_COMM_MODES | {"cee_cuhlm"})
+        self.assertEqual(non_consumers, _NO_COMM_MODES)
 
     def test_cuhlm_tk_slt_consume_round_trip_switch_only(self):
         """统一往返（§3.4）：两系只消费 comm_round_trip_mode，不消费
         残差计费/top-k 钳位（载荷字节按各自论文口径）。"""
-        for mode in ("cuhlm", "uncertainty_decoding", "tk_slt", "tkslt"):
+        for mode in ("cuhlm", "uncertainty_decoding", "cee_cuhlm", "tk_slt", "tkslt"):
             self.assertEqual(
                 mode_consumption(mode).accounting, ("comm_round_trip_mode",),
                 f"{mode} 应只消费 comm_round_trip_mode",
@@ -389,11 +390,11 @@ class TestEffectiveReport(unittest.TestCase):
         app = apply_protocol(args, name, list(cli), _dest_to_flags())
         return render_effective_report(args, app)
 
-    def test_cuhlm_mode_is_flagged_as_not_consuming(self):
-        """cee_cuhlm（三级变体）按决策暂未接入统一往返口径，报表必须显式
-        告警；uncertainty_decoding 本体 2026-10-09 起已消费不再告警。"""
+    def test_cuhlm_family_reports_consumed_round_trip_mode(self):
+        """两层与三级 CUHLM 都消费往返开关，深度参数仍各自保留。"""
         report = self._report("cee_cuhlm")
-        self.assertIn("不消费", report)
+        self.assertNotIn("不消费", report)
+        self.assertIn("读取键=gamma1,gamma2", report)
         report_cuhlm = self._report("cuhlm")
         self.assertNotIn("不消费", report_cuhlm)
         self.assertIn("读取键=gamma", report_cuhlm)

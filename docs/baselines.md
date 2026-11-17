@@ -3,24 +3,25 @@
 
 > [!warning] 本文档由AI生成，未经人工审阅
 
-本仓库中与“对比基线 / 组合方法”相关的解码实现集中在 `src/baselines/core.py`，核心类为 `Baselines(Decoding)`。评测脚本（例如 `eval/eval_gsm8k.py`、`eval/eval_mt_bench*.py`）会继承 `Baselines`，并通过 `args.eval_mode` 选择具体解码方法执行。
+对比基线与组合方法通过 [core.py](<../src/baselines/core.py>) 中的 `Baselines` 类组合；各算法已有独立 mixin 实现。评测脚本继承 `Baselines`，通过 `args.eval_mode` 选择注册方法。
 
-### S2 包入口（2026-11-02 WIP）
+## 当前实现导引（2026-11-16）
 
-- `src/baselines/__init__.py` 是导入兼容入口，仍支持
-  `from src.baselines import Baselines`，以及历史下划线 helper 的显式导入。
-- 实现原样迁入 `src/baselines/core.py`；仅相对 import 增加一级，不拆方法族。
-  `src/baselines_helpers.py` 不移动。S3a 仅把两个通信构造工厂迁至
-  `src/baselines/simulators.py`；方法族拆分尚未开始。
-- 替换依赖必须 patch 真实定义模块：解码方法的直接构造点用
-  `src.baselines.core.X`，S3a 通信工厂用 `src.baselines.simulators.X`。
-  `patch("src.baselines.X")` 只改兼容包对象，不会写透到任一实现模块。
-- 兼容导出通过 `getattr`/`dir`/导入可见，不保证直接查包的 `__dict__`。
-  `Baselines.__module__` 与新 pickle 路径为 `src.baselines.core`，旧全局 pickle
-  名字仍可解析；`src.baselines.__file__` 现在指向兼容入口。
-- `COMM_TRACE` 的 caller 文件名由 `baselines.py` 变为 `core.py`；**仅 S2 相对
-  包化前 5,825 行 WIP 的行号不变**。与 main 比还包含此前抽取的行号变化，
-  S3a 又使类整体前移 89 行；跨版本应按调用点归一化，不能逐字比较 caller。
+| 方法族 | 真实定义模块 |
+|---|---|
+| DSD / DSSD | [dual.py](<../src/baselines/dual.py>) |
+| CUHLM | [cuhlm.py](<../src/baselines/cuhlm.py>) |
+| TK-SLT | [tk_slt.py](<../src/baselines/tk_slt.py>) |
+| CEE-CUHLM | [cee_cuhlm.py](<../src/baselines/cee_cuhlm.py>) |
+| adaptive / CEE-SD | [adaptive.py](<../src/baselines/adaptive.py>) / [cee.py](<../src/baselines/cee.py>) |
+| CEE-DSD / CEE-DSSD | [cee_distributed.py](<../src/baselines/cee_distributed.py>) |
+
+2026-11-15 的结构拆分见 [重构汇总](<baselines_refactor_20261115.md>)。2026-11-16 又按用户要求将 CEE-CUHLM 外层对齐独立 CUHLM，见 [协议对齐说明](<cee_cuhlm_protocol_alignment_20261116.md>)；其他算法族未随之修改。
+
+- [包入口](<../src/baselines/__init__.py>) 保留 `from src.baselines import Baselines` 和历史 helper 的兼容导入。
+- monkeypatch 必须指向真实定义模块，例如 `src.baselines.cuhlm.KVCacheModel`；通信工厂在 [simulators.py](<../src/baselines/simulators.py>)。修改兼容包的属性不会写透到这些模块。
+- 兼容导出通过 `getattr`、`dir` 和导入可见，不保证包 `__dict__` 直接包含它们；`Baselines.__module__` 仍为 `src.baselines.core`。
+- 拆分会改变调用点的文件/方法/行号。跨版本比较 `COMM_TRACE` 时应归一化调用点，不能把源码位置变化当成通信协议变化。
 
 ## 入口与调用方式
 
@@ -59,11 +60,11 @@ output_ids, metrics = decoding(input_ids)
 
 > 下面的 “模型需求” 指 `load_model()` 会加载哪些模型；2 模型方法使用 `draft_model + target_model`，3 模型方法使用 `little_model + draft_model + target_model`。
 
-| eval_mode（别名） | 模型需求 | 方法名（`src/baselines/core.py`） | 核心特征（高层） |
+| eval_mode（别名） | 模型需求 | 公开方法名 | 核心特征（高层） |
 |---|---:|---|---|
 | `dssd`, `dist_split_spec` | 2 | `dist_split_spec` | DSSD：uplink 仅传 `token id + q(x)` 标量；reject 时下发整行 `P(x)` 并在端侧按 `max(P-Q,0)` 重采样 |
 | `dsd`, `dist_spec` | 2 | `dist_spec` | DSD：传 draft token 序列 +（可 top-k）draft 概率窗口，批量验证 accept/reject |
-| `cuhlm`, `uncertainty_decoding` | 2 | `uncertainty_decoding` | CUHLM：按不确定度机会传输/压缩传输概率分布（当前实现阈值固定 0.8） |
+| `cuhlm`, `uncertainty_decoding` | 2 | `uncertainty_decoding` | CUHLM：按不确定度机会传输/压缩传输概率分布（阈值默认 0.8，可配置） |
 | `tk_slt`, `tkslt` | 2 | `tk_slt` | TK-SLT（WCSP'25）：top-K 稀疏 logits 上行（FP16），按论文自身口径计费；可选 ODLD/AS² 自适应 γ |
 | `tridecoding` | 3 | `tridecoding` | Table VIII Static 消融：`adaptive_tridecoding(_ablation="static")` 的 wrapper（同验证路径，关 ARP/DRA、固定 γ/top-k） |
 | `ceesd_w/o_arp`, `ceesd_without_arp` | 3 | `ceesd_without_arp` | CEE-SD 去 ARP head 的消融：可启用 RL 仅调 top-k（不依赖 ARP） |
@@ -129,7 +130,7 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 
 ## 各方法说明（API + 行为）
 
-下面仅描述 `src/baselines/core.py` 中注册的方法；`sd`（标准 speculative decoding）位于 `src/engine.py`。
+下面描述 `Baselines` 组合的注册方法，定义模块见上面的导引；`sd`（标准 speculative decoding）位于 [engine.py](<../src/engine.py>)。
 
 ### 1) `dssd` / `dist_split_spec`（DSSD，2 模型）
 
@@ -178,10 +179,10 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 
 行为要点：
 
-- 草稿分布 = softmax 只作用于 top-K logits（草稿缓存以 `top_k=K` 构造，
-  `prob_history` 行即稀疏分布），采样自该稀疏分布
-- 上行 = 每草稿位置 K 个概率值（真实 FP16 量化 + 重归一化，验证判据与
-  计费看到同一个 q̂），γ·K·2 字节/轮；草稿 token 索引与下行响应
+- 草稿先选择 min(K,V) 个坐标并编码为实际 FP16 wire payload，再从
+  payload 重建的概率律采样；不是 raw q 采样后另用量化 q̂ 验证
+- 上行 = 每草稿位置 min(K,V) 个真实 FP16 概率值，验证判据与
+  计费看到同一个 payload，γ·min(K,V)·2 字节/轮；草稿 token 索引与下行响应
   （结果 token + 位置 j）按论文 §II-B negligible ⇒ 0 字节报文（保留 NTT）
 - K≤0/None ⇒ 全量 softmax 提议 + 整词表载荷（vanilla DSD 基线）
 - 拒绝重采样在验证方、基于稀疏 FP16 Q̂：`norm(max(0, P−Q̂))`
@@ -253,8 +254,12 @@ vs CEE 的 `resolve_stage_verification`），不是抖动；**Table VIII 必须�
 
 行为要点：
 
-- 在 CEE（两层投机）框架下，将 Draft→Target 或对应链路上的传输策略替换为 CUHLM 的“不确定度机会传输”
-- 与 `uncertainty_decoding` 一样，当前阈值固定 0.8
+- Little→Draft 保留投机加速，产生 Draft 分布下的候选；Draft→Target 按候选逐个执行与独立 CUHLM 相同的 skip/trigger 协议。
+- skip 定稿当前候选，不新增云端通信/计算；trigger 只 forward 已定稿 prefix，接受用原始 q，拒绝残差用重建 qhat，每次恰好定稿一个 token，无外层 bonus。
+- 拒绝会丢弃依赖旧候选的预取后缀并回滚 Little/Draft 缓存。内层预取与通信是三级结构的额外成本，不声称与独立 CUHLM 耗时或 RNG 序列相同。
+- 每个定稿 token 后检查 EOS，未消费后缀不再门控；`gamma1=gamma2=0` 仍产生一个经门控的 Draft 候选，预算为 1 也不旁路到 Target-only。
+- 阈值默认 0.8，可由 `uncertainty_threshold` / `draft_target_threshold` 配置；支持 `comm_round_trip_mode`，每个外层候选独立划轮。
+- 这是 2026-11-16 的语义修改，不是旧协议的等价重构，也不是目标分布无损保证。详见 [协议对齐说明](<cee_cuhlm_protocol_alignment_20261116.md>)。
 
 ### 9) `cee_dssd`（3 模型，DSSD 风格）
 

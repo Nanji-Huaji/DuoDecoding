@@ -54,8 +54,8 @@ dsd/dssd 的最优 γ 会下移（载荷 ∝ 草稿数/拒绝行数），各带�
 1. **往返合并** ✅：`comm_simulator.coalesce_rounds = (comm_round_trip_mode == "per_round")`，
    每轮边界 `set_round(idx)`、解码结束 `flush_round()`。已接线 8 处：dsd/dssd/
    tridecoding/ceesd_without_arp/adaptive_decoding/cee_dssd/cee_dsd（`src/baselines.py`）
-   + engine `speculative_decoding_with_bandwidth`。**CUHLM 系（uncertainty_decoding/
-   cee_cuhlm）不接仓库统一开关，改按 CU-HLM 论文自身的口径计费（见下方小节）**。
+   + engine `speculative_decoding_with_bandwidth`。CUHLM 系保留论文载荷，
+   只接统一往返开关（§3.4）；`cee_cuhlm` 自 2026-11-16 协议对齐起也接入。
 2. **残差计费** ✅：统一走 `reject_residual_payload_bytes`（总量式，用于 legacy
    拒绝零计费的 dsd/cee_dsd）或 `reject_tail_scalar_bytes`（补差式，用于已按压缩行
    计费的 tri 系/adaptive_decoding/cee_dssd/engine sd），二者拼合出同一统一式；
@@ -85,7 +85,7 @@ dsd/dssd 的最优 γ 会下移（载荷 ∝ 草稿数/拒绝行数），各带�
    `None`、`rebuild_topk_uniform_probs` 原样返回——这是**对齐**而非副作用：
    "top-k + 均匀尾部"的重建本身就是压缩机制的一环，原文没有。`temp=0` 下草稿
    token 取 argmax，top-300 与全量分布给出同一个 token，故 token 序列不变。
-   CUHLM 仍走它自己论文的式 (5)（`comm_accounting='paper'`），不受该项影响。
+   CUHLM 仍按论文式 (5) 计载荷，不受该项影响；当前往返标签见 §3.4。
    `transfer_top_k` 也因此从 `paper_table5` 的冻结值里移出（单个全局值表达不了
    按方法区分的取值）。
 4. **拒绝路径的载荷** ✅：统一为 `k*(4+元素大小)+元素大小` 字节/拒绝位置/链路
@@ -97,24 +97,30 @@ dsd/dssd 的最优 γ 会下移（载荷 ∝ 草稿数/拒绝行数），各带�
 新代码路径都是纯透传或不可达分支（`test_unified_comm_accounting.py` 的透传测试）。
 消费面由 `_STATIC_ACCOUNTING` 快照 + 运行时内省锁定（`test_protocol_spec.py`）。
 
-改完后，`--comm_accounting honest` 对**除 CUHLM 系外的全部方法**等于"同口径"，
-`legacy` 等于"复现 2026-09-24 前的历史数字"。CUHLM 系的口径标签在
-`eval/utils.py` 里如实记为 `paper`（论文自身口径），无通信模式记 `n/a`——
-标称值不再冒充实际行为。
+上述开关控制计费，不恢复已经替换的概率协议；尤其 `legacy` 不能恢复旧
+CEE-CUHLM 的强制拒绝行为。CUHLM 系当前标签为 `paper_rt`（论文载荷、统一
+往返），无通信模式为 `n/a`；实现见 [评测工具](<../eval/utils.py>)。
 
 ### 3.1 CUHLM 系：按 CU-HLM 论文自身的口径计费（2026-04 落地）
 
-CUHLM 系（`uncertainty_decoding`/`cuhlm`、`cee_cuhlm`）是**有原文可依的已发表
-方法**，其计费口径以论文为准，而不是仓库统一开关。落地映射
-（`src/communication.cuhlm_uplink_payload_bytes` + `src/baselines.py` 各 F-CUHLM
-标注点）。**2026-10-09 修订（§3.4）**：载荷字节仍按论文，但**往返次数**已接入
-统一开关 `comm_round_trip_mode`（标签 `paper_rt`）；本节描述的是字节口径。
+独立 CUHLM（`uncertainty_decoding`/`cuhlm`）依据 CU-HLM 论文；`cee_cuhlm`
+是仓库中的三级组合，并非论文原算法。两者的载荷都通过
+[communication.py](<../src/communication.py>) 中的 `cuhlm_uplink_payload_bytes`
+按论文计费。往返次数另由 `comm_round_trip_mode` 控制（标签 `paper_rt`）：
+独立 CUHLM 于 2026-10-09 接入，CEE-CUHLM 于 2026-11-16 接入。
+
+**2026-11-16 协议对齐**：CEE-CUHLM 保留 Little→Draft 的投机加速，但外层
+逐候选采用独立 CUHLM 的单 token 合同：skip 不调用 Target；trigger 只 forward
+已定稿 prefix，以原始提议 `q(d)` 做接受判定，拒绝才从 `normalize((P-qhat)+)`
+采样；外层不再强制拒绝，也没有 target bonus。Little→Draft 的计算和通信仍是
+三级组合的额外成本。新旧结果不能混作同一协议，详见
+[协议对齐说明](<cee_cuhlm_protocol_alignment_20261116.md>)。
 
 | 论文条目 | 论文依据 | 仓库实现 |
 |---|---|---|
 | 上行载荷 = `k·(b_prob+b_index)` bits | 式 (5)；`b_prob=8`（§V 仿真参数）、`b_index=⌈log₂V⌉`（§II-B 二进制编码） | `cuhlm_uplink_payload_bytes(k, V)`：V=32000 时 b_index=15；k=|V| 时 92000 B，正是论文摘要的 "92kB/token"；k*=30 时 86.25 B（论文 "<0.1%"） |
 | draft/响应/重同步 token 索引 negligible | §II-B "cost incurred by transmitting token indices is negligible"；§III-B Step 5 重同步 "omitted from the cost analysis" | token 索引一律 0 字节（`_send_downlink_index_only`：0 字节报文，保留一次 NTT） |
-| 跳过 = 零通信、零云端计算 | Algorithm 1 line 18-20 | 跳过分支无任何计费调用（cee_cuhlm 旧口径每跳过 token 收 8B + accept 消息 2 次 NTT，已废除） |
+| 外层跳过 = 零新增云端通信/计算 | Algorithm 1 line 18-20 | Draft→Target skip 不发 edge-cloud 消息、不调用 Target；CEE 内层成本另计，首轮 prompt 上传另计 |
 | 触发 = 一次上行 | Algorithm 1 line 10 | 一次 `simulate_transfer`（k(t) 为论文式自适应量）；cee_cuhlm 的逐轮 token 同步随触发上行捎带，不再单独上行 |
 | reject 重采样在验证方 | 式 (16)/(17) | 无额外传输（区别于仓库统一口径的 reject 残差计费） |
 
@@ -123,12 +129,16 @@ CUHLM 系（`uncertainty_decoding`/`cuhlm`、`cee_cuhlm`）是**有原文可依�
 响应 token，故下行方向有真实报文。2026-10-09 之前：每个物理报文各收一次
 NTT（每触发 2×NTT）；之后（§3.4）：per_round 下 0 字节下行并入触发的合并
 往返（每触发 1×NTT），`per_transfer` 仍可回到逐报文口径做敏感性分析。
-首轮 prompt 上传沿用全仓一次性约定（论文不建模 prompt）。
+首轮 prompt 上传沿用全仓一次性约定（论文不建模 prompt）。CEE-CUHLM 将
+原始 prompt 的 cloud 上传放入第一个候选轮：首候选 trigger 时与它合并，首候选
+skip 时仍有这一次 prompt-only 往返，不能并入后续 trigger；零生成预算不上传云端。
 
-回归锁定：`test/test_unified_comm_accounting.py::TestCUHLMPaperPayload`（公式与
-92kB 交叉验证）、`test/test_uncertainty_decoding.py`（触发上行字节 + 0 字节下行）、
-`test/test_cee_refactor.py::test_cee_cuhlm_bills_cuhlm_paper_payload`（两层完整
-字节序列）。
+回归锁定：[通信计费测试](<../test/test_unified_comm_accounting.py>) 的
+`TestCUHLMPaperPayload`（公式与 92kB 交叉验证）、
+[独立 CUHLM 测试](<../test/test_uncertainty_decoding.py>)（触发上行字节 + 0B 下行）、
+[CEE 计费测试](<../test/test_cee_refactor.py>) 的
+`test_cee_cuhlm_bills_cuhlm_paper_payload`（两层完整字节序列），以及
+[CEE 协议合同](<../test/test_cee_cuhlm_contracts.py>) 的逐候选/EOS/两种往返断言。
 
 ### 3.2 CUHLM 的不确定度阈值：从不退化的工作点（2026-04 追加）
 
@@ -215,8 +225,9 @@ tk_slt 的"上行载荷 + 0B 下行"在轮末 `flush_round()` 合并成一次往
 按触发边界同理：每次云端交互 1×NTT）。载荷字节**不变**——两系仍按各自论文
 公式计（`tk_slt_uplink_payload_bytes` / `cuhlm_uplink_payload_bytes`），变的
 只有往返次数。标签从 `paper` 升级为 **`paper_rt`**（论文载荷 + 统一往返）；
-`cee_cuhlm`（三级变体，不在主矩阵）暂未接线，保持 `paper`。敏感性分析仍可
-`--comm_round_trip_mode per_transfer` 回到逐报文口径（每轮 2×NTT）。
+`cee_cuhlm` 自 2026-11-16 起也接线：每个外层候选独立划轮，不能把一个
+预取块中的多次触发合并成一次云往返。Little→Draft 链路独立记账。
+敏感性分析仍可用 `--comm_round_trip_mode per_transfer` 回到逐报文口径。
 tk_slt 的 ODLD 读数（`_last_edge_cloud_tx_seconds`）随之按模式分流：
 per_transfer 读上行直充后的 stats 尾，per_round 读轮末 flush 后的合并单元。
 

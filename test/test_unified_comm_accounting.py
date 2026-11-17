@@ -356,17 +356,15 @@ class TestAccountingLabelTruth(unittest.TestCase):
         self.assertEqual(result["comm_accounting"], "honest")
         self.assertTrue(result["comm_accounting_consumed"])
 
-    def test_cuhlm_family_is_labeled_paper(self):
-        """CUHLM 系载荷按 CU-HLM 论文式 (5) 计费；2026-10-09 起往返接入
-        统一开关 ⇒ 标签 paper_rt（论文载荷 + 统一往返）。cee_cuhlm（三级
-        变体，未接线）保持 paper + 未消费。"""
-        for mode in ("cuhlm", "uncertainty_decoding"):
+    def test_cuhlm_family_is_labeled_paper_round_trip(self):
+        """CUHLM 系保留论文载荷，往返统一后都标记 paper_rt。
+
+        CEE-CUHLM 在 2026-11-16 的单 token 协议对齐中接入该开关。
+        """
+        for mode in ("cuhlm", "uncertainty_decoding", "cee_cuhlm"):
             result = self._label(mode)
             self.assertEqual(result["comm_accounting"], "paper_rt", mode)
             self.assertTrue(result["comm_accounting_consumed"], mode)
-        result = self._label("cee_cuhlm")
-        self.assertEqual(result["comm_accounting"], "paper")
-        self.assertFalse(result["comm_accounting_consumed"])
 
     def test_tk_slt_family_is_labeled_paper(self):
         """TK-SLT 系载荷按其论文口径（γ·K·b_prob/FP16 上行）；往返统一后
