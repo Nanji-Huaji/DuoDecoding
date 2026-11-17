@@ -69,7 +69,16 @@ def test_legacy_bridge_callers_are_explicit_and_bounded():
             actual.update(_calls(ROOT / relative))
     assert actual == Counter(
         {
-            ("src/baselines/cee_cuhlm.py", "CeeCuhlmMixin.cee_cuhlm", LEGACY_PREPARE): 2,
+            (
+                "src/baselines/cee_cuhlm.py",
+                "CeeCuhlmMixin.cee_cuhlm",
+                LEGACY_PREPARE,
+            ): 1,
+            (
+                "src/baselines/cee_cuhlm.py",
+                "CeeCuhlmMixin._run_little_to_draft_stage",
+                LEGACY_PREPARE,
+            ): 1,
             ("src/decoding_ops.py", "verify_draft_sequence", LEGACY_PREPARE): 1,
             ("src/decoding_ops.py", "verify_draft_sequence_result", LEGACY_PREPARE): 1,
         }
