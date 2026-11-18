@@ -150,7 +150,7 @@ from .cuhlm import CuhlmMixin as _CuhlmMixin
 from .dual import DualDecodingMixin as _DualDecodingMixin
 from .operations import SharedOperations as _SharedOperations
 from .operations import _uplink_prob_payload
-from .runtime import RuntimeResources as _RuntimeResources
+from . import runtime as _runtime
 from .runtime import _build_cache
 from .tk_slt import (
     _TK_SLT_ODLD_GAMMA_CAP,  # noqa: F401
@@ -159,7 +159,6 @@ from .tk_slt import (
 
 
 class Baselines(
-    _RuntimeResources,
     _AdaptiveDecodingMixin,
     _CuhlmMixin,
     _TkSltMixin,
@@ -170,14 +169,32 @@ class Baselines(
     _SharedOperations,
     Decoding,
 ):
-    """
-    用于实验的方法。
-    包含：
-    - dssd
-    - Uncertainty Decoding
-    - dsd
-    - Tridecoding
-    """
+    """A fresh run's policies, heads and sample caches over resident weights."""
+
+    _acquire_three_layer_caches = _runtime._acquire_three_layer_caches
+    _acquire_draft_target_caches = _runtime._acquire_draft_target_caches
+    build_adaptive_tridecoding_caches = _runtime.build_adaptive_tridecoding_caches
+    _save_adaptive_rl_checkpoints = _runtime._save_adaptive_rl_checkpoints
+
+    def __init__(self, args):
+        super().__init__(args)
+        _runtime._configure_ntt_trace(args)
+        self.rl_adapter, self.little_rl_adapter = _runtime._build_rl_adapters(args)
+        self.task = "unknown"
+
+    def load_model(self):
+        self.load_weights()
+        self.load_acc_head()
+
+    def load_acc_head(self):
+        """Build this run's ARP heads after weights are loaded or reattached."""
+        resources = _runtime._build_acc_head_resources(
+            self.args,
+            little_model=getattr(self, "little_model", None),
+            draft_model=getattr(self, "draft_model", None),
+        )
+        for name, value in resources.items():
+            setattr(self, name, value)
 
 
     @staticmethod

@@ -67,12 +67,12 @@ def factory(request, monkeypatch):
 
     def acquire():
         if request.param == "three":
-            return runtime.RuntimeResources._acquire_three_layer_caches(
+            return runtime._acquire_three_layer_caches(
                 holder, "_caches", graph_kw, settings.draft_top_k,
                 cache_kwargs=extra_kw,
             )
         if request.param == "pair":
-            draft, target = runtime.RuntimeResources._acquire_draft_target_caches(
+            draft, target = runtime._acquire_draft_target_caches(
                 holder, "_caches", graph_kw, settings.draft_top_k,
                 settings.target_top_k, settings.target_top_p,
             )
@@ -145,7 +145,7 @@ def test_pair_target_sampling_is_part_of_group_identity(monkeypatch, field):
     settings = {"target_top_k": 0, "target_top_p": 0.0}
 
     def acquire():
-        return runtime.RuntimeResources._acquire_draft_target_caches(
+        return runtime._acquire_draft_target_caches(
             holder, "_pair", {"use_cuda_graph": True}, 3, **settings,
         )
 
@@ -174,7 +174,7 @@ def test_three_layer_extra_capacity_and_graph_precedence(monkeypatch):
     extra = {"max_length": 64, "graph_len_budget": 999}
 
     def acquire():
-        return runtime.RuntimeResources._acquire_three_layer_caches(
+        return runtime._acquire_three_layer_caches(
             holder, "_three", {"use_cuda_graph": True, "graph_len_budget": 300},
             3, cache_kwargs=extra,
         )

@@ -21,51 +21,78 @@
   ],
   "rev": "WORKTREE",
   "entries": {
-    "RuntimeResources.__init__": {
-      "events": 93,
-      "sha256_16": "36980d1eb03d2f9d",
+    "Baselines.__init__": {
+      "events": 6,
+      "sha256_16": "3b15128cc21e643d",
       "surface": {
         "assign_self": {
-          "little_rl_adapter": 3,
-          "rl_adapter": 3,
+          "little_rl_adapter": 1,
+          "rl_adapter": 1,
           "task": 1
         },
-        "boolop": {
-          "And": 3,
-          "Or": 4
-        },
+        "call": {
+          "__init__": 1,
+          "_build_rl_adapters": 1,
+          "_configure_ntt_trace": 1
+        }
+      }
+    },
+    "_configure_ntt_trace": {
+      "events": 11,
+      "sha256_16": "65387487a0705f04",
+      "surface": {
         "break": {
           "": 1
         },
         "call": {
           "FileNotFoundError": 1,
-          "RLNetworkAdapter": 2,
-          "ValueError": 1,
-          "__init__": 1,
-          "_rl_train_paths": 2,
           "basename": 1,
-          "bool": 2,
           "configure_ntt_trace": 1,
-          "describe_path": 4,
-          "exists": 2,
-          "float": 3,
           "from_args": 1,
-          "get": 1,
-          "get_rl_agent_spec": 2,
-          "max": 2,
-          "print": 3,
-          "read_trace_file": 1,
-          "record_checkpoint": 4,
-          "resolve_legacy_rl_agent_load_path": 2,
-          "split": 1,
-          "strip": 1,
-          "summary_line": 2
+          "read_trace_file": 1
         },
         "continue": {
           "": 1
         },
         "except": {
           "": 1
+        },
+        "loop": {
+          "for": 1
+        },
+        "raise": {
+          "": 1
+        },
+        "try": {
+          "": 1
+        }
+      }
+    },
+    "_build_rl_adapters": {
+      "events": 75,
+      "sha256_16": "78aa578ad9f9c179",
+      "surface": {
+        "boolop": {
+          "And": 3,
+          "Or": 4
+        },
+        "call": {
+          "RLNetworkAdapter": 2,
+          "ValueError": 1,
+          "_rl_train_paths": 2,
+          "bool": 2,
+          "describe_path": 4,
+          "exists": 2,
+          "float": 3,
+          "get": 1,
+          "get_rl_agent_spec": 2,
+          "max": 2,
+          "print": 3,
+          "record_checkpoint": 4,
+          "resolve_legacy_rl_agent_load_path": 2,
+          "split": 1,
+          "strip": 1,
+          "summary_line": 2
         },
         "flag": {
           "draft_model": 4,
@@ -94,13 +121,49 @@
           "rl_threshold_candidates": 1,
           "use_rl_adapter": 1
         },
-        "loop": {
-          "for": 1
-        },
         "raise": {
-          "": 2
+          "": 1
         },
-        "try": {
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "_acquire_three_layer_caches": {
+      "events": 15,
+      "sha256_16": "74100fcd4edb5806",
+      "surface": {
+        "boolop": {
+          "Or": 1
+        },
+        "call": {
+          "KVCacheModel": 3,
+          "acquire_graph_caches": 1,
+          "kv_cache_construction_key": 1
+        },
+        "flag": {
+          "temp": 4,
+          "top_p": 4
+        },
+        "return": {
+          "": 1
+        }
+      }
+    },
+    "_acquire_draft_target_caches": {
+      "events": 12,
+      "sha256_16": "88e4d407a452a1c3",
+      "surface": {
+        "call": {
+          "KVCacheModel": 2,
+          "acquire_graph_caches": 1,
+          "kv_cache_construction_key": 2
+        },
+        "flag": {
+          "temp": 4,
+          "top_p": 2
+        },
+        "return": {
           "": 1
         }
       }
@@ -532,8 +595,8 @@
       }
     },
     "CeeSdMixin.tridecoding": {
-      "events": 291,
-      "sha256_16": "41081d58ab648e64",
+      "events": 278,
+      "sha256_16": "cdb8ee2a5be88c6b",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -542,7 +605,7 @@
         },
         "boolop": {
           "And": 19,
-          "Or": 11
+          "Or": 10
         },
         "break": {
           "": 2
@@ -551,13 +614,13 @@
           "CUHLM": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
-          "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
           "ValueError": 8,
           "_CeeDecodeStats": 1,
           "_CeeProposal": 1,
           "_CeeRollbackPlan": 1,
           "_CeeVerification": 1,
+          "_acquire_three_layer_caches": 1,
           "_cee_first_stage": 1,
           "_cee_propose": 2,
           "_check_stopping_criteria": 1,
@@ -569,7 +632,6 @@
           "_stop_at_eos": 2,
           "_uplink_prob_payload": 3,
           "_validate_token_range": 2,
-          "acquire_graph_caches": 1,
           "all": 2,
           "any": 3,
           "append": 2,
@@ -597,7 +659,6 @@
           "int": 24,
           "item": 7,
           "join": 2,
-          "kv_cache_construction_key": 1,
           "len": 3,
           "list": 2,
           "long": 1,
@@ -636,9 +697,7 @@
           "gamma1": 2,
           "gamma2": 2,
           "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
+          "top_k": 1
         },
         "flag_getattr": {
           "comm_trace_mode": 1,
@@ -671,8 +730,8 @@
       }
     },
     "CeeSdMixin.cee_sd_no_arp": {
-      "events": 291,
-      "sha256_16": "41081d58ab648e64",
+      "events": 278,
+      "sha256_16": "cdb8ee2a5be88c6b",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -681,7 +740,7 @@
         },
         "boolop": {
           "And": 19,
-          "Or": 11
+          "Or": 10
         },
         "break": {
           "": 2
@@ -690,13 +749,13 @@
           "CUHLM": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
-          "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
           "ValueError": 8,
           "_CeeDecodeStats": 1,
           "_CeeProposal": 1,
           "_CeeRollbackPlan": 1,
           "_CeeVerification": 1,
+          "_acquire_three_layer_caches": 1,
           "_cee_first_stage": 1,
           "_cee_propose": 2,
           "_check_stopping_criteria": 1,
@@ -708,7 +767,6 @@
           "_stop_at_eos": 2,
           "_uplink_prob_payload": 3,
           "_validate_token_range": 2,
-          "acquire_graph_caches": 1,
           "all": 2,
           "any": 3,
           "append": 2,
@@ -736,7 +794,6 @@
           "int": 24,
           "item": 7,
           "join": 2,
-          "kv_cache_construction_key": 1,
           "len": 3,
           "list": 2,
           "long": 1,
@@ -775,9 +832,7 @@
           "gamma1": 2,
           "gamma2": 2,
           "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
+          "top_k": 1
         },
         "flag_getattr": {
           "comm_trace_mode": 1,
@@ -826,8 +881,8 @@
       }
     },
     "AdaptiveDecodingMixin.adaptive_decoding": {
-      "events": 159,
-      "sha256_16": "cf5b6a6ae102b131",
+      "events": 149,
+      "sha256_16": "a8b5995bc25d8b94",
       "surface": {
         "boolop": {
           "And": 5,
@@ -840,17 +895,16 @@
           "CommunicationSimulator": 1,
           "DecodingRng": 1,
           "Event": 2,
-          "KVCacheModel": 2,
           "PreciseCommunicationSimulator": 1,
           "ValueError": 7,
           "_AdaptiveDecodeStats": 1,
           "_AdaptiveProposal": 1,
+          "_acquire_draft_target_caches": 1,
           "_check_stopping_criteria": 1,
           "_graph_mode_cache_kwargs": 1,
           "_reward_comm_s": 1,
           "_save_adaptive_rl_checkpoints": 1,
           "_stop_at_eos": 2,
-          "acquire_graph_caches": 1,
           "all": 1,
           "any": 1,
           "append": 3,
@@ -874,7 +928,6 @@
           "get_model_input_device": 2,
           "int": 9,
           "item": 1,
-          "kv_cache_construction_key": 2,
           "list": 1,
           "min": 3,
           "numel": 1,
@@ -911,9 +964,7 @@
         "flag": {
           "gamma": 1,
           "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 2
+          "top_k": 1
         },
         "flag_getattr": {
           "disable_rl_update": 2,
@@ -938,8 +989,8 @@
       }
     },
     "CeeSdMixin.adaptive_tridecoding": {
-      "events": 291,
-      "sha256_16": "2610ed2e1b3cfd22",
+      "events": 278,
+      "sha256_16": "972153e443ceb24d",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -948,7 +999,7 @@
         },
         "boolop": {
           "And": 19,
-          "Or": 11
+          "Or": 10
         },
         "break": {
           "": 2
@@ -957,13 +1008,13 @@
           "CUHLM": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
-          "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
           "ValueError": 8,
           "_CeeDecodeStats": 1,
           "_CeeProposal": 1,
           "_CeeRollbackPlan": 1,
           "_CeeVerification": 1,
+          "_acquire_three_layer_caches": 1,
           "_cee_first_stage": 1,
           "_cee_propose": 2,
           "_check_stopping_criteria": 1,
@@ -975,7 +1026,6 @@
           "_stop_at_eos": 2,
           "_uplink_prob_payload": 3,
           "_validate_token_range": 2,
-          "acquire_graph_caches": 1,
           "all": 2,
           "any": 3,
           "append": 2,
@@ -1003,7 +1053,6 @@
           "int": 24,
           "item": 7,
           "join": 2,
-          "kv_cache_construction_key": 1,
           "len": 3,
           "list": 2,
           "long": 1,
@@ -1042,9 +1091,7 @@
           "gamma1": 2,
           "gamma2": 2,
           "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
+          "top_k": 1
         },
         "flag_getattr": {
           "comm_trace_mode": 1,
@@ -1077,8 +1124,8 @@
       }
     },
     "CeeSdMixin.cee_sd_opportunistic": {
-      "events": 291,
-      "sha256_16": "41081d58ab648e64",
+      "events": 278,
+      "sha256_16": "cdb8ee2a5be88c6b",
       "surface": {
         "assign_self": {
           "_next_gamma1": 1,
@@ -1087,7 +1134,7 @@
         },
         "boolop": {
           "And": 19,
-          "Or": 11
+          "Or": 10
         },
         "break": {
           "": 2
@@ -1096,13 +1143,13 @@
           "CUHLM": 1,
           "CommunicationSimulator": 1,
           "Event": 2,
-          "KVCacheModel": 3,
           "PreciseCommunicationSimulator": 1,
           "ValueError": 8,
           "_CeeDecodeStats": 1,
           "_CeeProposal": 1,
           "_CeeRollbackPlan": 1,
           "_CeeVerification": 1,
+          "_acquire_three_layer_caches": 1,
           "_cee_first_stage": 1,
           "_cee_propose": 2,
           "_check_stopping_criteria": 1,
@@ -1114,7 +1161,6 @@
           "_stop_at_eos": 2,
           "_uplink_prob_payload": 3,
           "_validate_token_range": 2,
-          "acquire_graph_caches": 1,
           "all": 2,
           "any": 3,
           "append": 2,
@@ -1142,7 +1188,6 @@
           "int": 24,
           "item": 7,
           "join": 2,
-          "kv_cache_construction_key": 1,
           "len": 3,
           "list": 2,
           "long": 1,
@@ -1181,9 +1226,7 @@
           "gamma1": 2,
           "gamma2": 2,
           "max_tokens": 1,
-          "temp": 4,
-          "top_k": 1,
-          "top_p": 4
+          "top_k": 1
         },
         "flag_getattr": {
           "comm_trace_mode": 1,
@@ -1638,7 +1681,6 @@
     }
   },
   "entry_mapping": {
-    "Baselines.__init__": "RuntimeResources.__init__",
     "Baselines.adaptive_decoding": "AdaptiveDecodingMixin.adaptive_decoding",
     "Baselines.adaptive_tridecoding": "CeeSdMixin.adaptive_tridecoding",
     "Baselines.tridecoding": "CeeSdMixin.tridecoding",

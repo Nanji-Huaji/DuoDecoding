@@ -179,7 +179,7 @@ assert Baselines.tridecoding is cee.CeeSdMixin.tridecoding
 assert Baselines.cee_sd_opportunistic is cee.CeeSdMixin.cee_sd_opportunistic
 assert Baselines.uncertainty_decoding is cuhlm.CuhlmMixin.uncertainty_decoding
 assert Baselines.cee_cuhlm is cee_cuhlm.CeeCuhlmMixin.cee_cuhlm
-assert Baselines.__init__ is runtime.RuntimeResources.__init__
+assert all(base.__module__ != runtime.__name__ for base in Baselines.__mro__)
 assert Baselines.speculative_decoding_with_bandwidth is bandwidth_sd.speculative_decoding_with_bandwidth
 assert Baselines.autoregressive_sampling is autoregressive.autoregressive_sampling
 assert Baselines._stop_at_eos is operations.SharedOperations._stop_at_eos
@@ -220,9 +220,8 @@ def test_moved_families_use_their_real_module_globals():
         (Baselines.adaptive_tridecoding, cee, "CeeSdMixin"),
         (Baselines._cee_verify_proposal, cee, "CeeSdMixin"),
         (Baselines.cee_sd_opportunistic, cee, "CeeSdMixin"),
-        (Baselines.__init__, runtime, "RuntimeResources"),
-        (Baselines._acquire_three_layer_caches, runtime, "RuntimeResources"),
-        (Baselines.load_acc_head, runtime, "RuntimeResources"),
+        (Baselines.__init__, core, "Baselines"),
+        (Baselines.load_acc_head, core, "Baselines"),
         (Baselines._stop_at_eos, operations, "SharedOperations"),
         (
             Baselines._generate_with_optional_rebuilt_proposal,
