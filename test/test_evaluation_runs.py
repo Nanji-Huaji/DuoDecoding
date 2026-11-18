@@ -222,3 +222,112 @@ def test_grouping_depends_on_used_weights_not_the_benchmark():
     assert model_key(common) != model_key(dict(common, target_model="other"))
     assert model_key(common) != model_key(dict(common, target_quantization="4bit"))
     assert model_key(common) != model_key(dict(common, eval_mode="adaptive_decoding"))
+
+
+def test_matrix_groups_compatible_jobs_and_recovers_from_worker_death(
+    tmp_path, monkeypatch
+):
+    import exp
+    from src.experiments import scheduler, workers
+
+    launches = []
+
+    class Worker:
+        alive = True
+
+        def __init__(self, devices):
+            assert devices == "0"
+            self.jobs = []
+            launches.append(self.jobs)
+
+        def run(self, config, log_dir):
+            self.jobs.append(config["exp_name"])
+            if config["exp_name"] == "crash":
+                self.alive = False
+            status = "failed" if config["exp_name"] in {"crash", "bad"} else "success"
+            return {
+                "status": status,
+                "exp_name": config["exp_name"],
+                "result": {},
+                "log_file": "",
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(scheduler, "get_available_gpus", lambda: [0])
+    monkeypatch.setattr(workers, "_WorkerHandle", Worker)
+    base = dict(
+        eval_mode="large",
+        little_model="unused-70b",
+        target_model="one",
+        draft_model="tiny",
+    )
+    configs = [
+        dict(base, exp_name="a"),
+        dict(base, exp_name="big", target_model="70b"),
+        dict(base, exp_name="b", target_model="two"),
+        dict(base, exp_name="bad", eval_mode="unknown"),
+        dict(base, exp_name="c", gamma=3),
+        dict(base, exp_name="crash"),
+        dict(base, exp_name="d"),
+    ]
+    summary = tmp_path / "matrix.json"
+    results = exp.run_experiments_parallel(
+        configs, max_workers=1, summary_file=str(summary)
+    )
+    assert launches == [["a", "c", "crash"], ["d"], ["b"], ["bad"]]
+    assert {r["exp_name"] for r in results if r["status"] == "failed"} == {
+        "crash",
+        "bad",
+    }
+    assert len(results) == len(configs)
+    skipped = next(r for r in results if r["status"] == "skipped_capacity_mismatch")
+    # Skips must still be identifiable for a retry/merge.
+    assert skipped["config"]["target_model"] == "70b"
+    assert all("CUDA_VISIBLE_DEVICES" not in c for c in configs)
+    assert json.loads(summary.read_text()) == results
+
+
+def test_standalone_runs_keep_only_one_worker_per_gpu(monkeypatch):
+    from src.experiments import workers
+
+    spawn = Mock(side_effect=lambda devices: Mock(alive=True))
+    monkeypatch.setattr(workers, "_WorkerHandle", spawn)
+    pool = workers._WorkerPool()
+    with pool.acquire({"CUDA_VISIBLE_DEVICES": "0,1", "target_model": "A"}) as first:
+        pass
+    with pool.acquire({"CUDA_VISIBLE_DEVICES": "0,1", "target_model": "B"}) as second:
+        assert (
+            second is first
+        )  # The worker swaps weights; do not spawn on the same cards.
+    with pool.acquire({"CUDA_VISIBLE_DEVICES": "1"}) as other:
+        first.close.assert_called_once_with()
+        assert other is not first
+    pool.shutdown()
+    other.close.assert_called_once_with()
+    assert spawn.call_count == 2
+
+
+def test_worker_reports_this_runs_failure_not_an_old_summary(
+    args, local_models, tmp_path, monkeypatch
+):
+    import datasets
+
+    from eval.worker import _run_job
+    from src import utils
+
+    monkeypatch.setattr(utils, "parse_arguments", lambda argv: args)
+    config = {
+        "eval_mode": "large",
+        "exp_name": "retry",
+        "eval_dataset": "eval/eval_gsm8k.py",
+    }
+    stale = tmp_path / "large_gsm8k_metrics.json"
+    stale.write_text('{"accuracy":1}')
+    monkeypatch.setattr(datasets, "load_dataset", lambda *a, **kw: [])
+    result = _run_job({"config": config}, local_models[0], tmp_path)
+    assert result["status"] == "failed" and result["exp_name"] == "retry"
+    assert "no evaluation samples" in result["result"]["error"]
+    assert json.loads(stale.read_text()) == {"accuracy": 1}
+    assert not (tmp_path / "large_gsm8k.jsonl").exists()
