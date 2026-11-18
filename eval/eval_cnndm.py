@@ -1,74 +1,46 @@
+"""CNN/DailyMail 摘要评测。
+
+运行循环（warmup、多样本种子、异常剔除、ROUGE、落盘）与 XSum 共用
+``eval.summarization``；本入口只保留 CNN/DM 特有的 prompt、输出后处理、
+摘要 token 预算与解码停串。
+"""
+
 import os
 import sys
 
-sys.path.append(os.path.join(sys.path[0], "../"))
-import json
-import random
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import re
-import time
-from functools import partial
 
-import shortuuid
-import torch
-import tqdm
 from fastchat.model import get_conversation_template
-from few_shot_examples import get_few_shot_prompt
-from rouge_score import rouge_scorer
 
-from src.baselines import Baselines
-from src.metrics import accumulate_metrics, get_empty_metrics
-from eval.model_ids import determine_model_id
-from src.utils import parse_arguments, seed_everything
-
-from utils import ExpPrint, select_eval_data
-
-decoding_metrics = get_empty_metrics()
+from eval.few_shot_examples import get_few_shot_prompt  # noqa: E402
+from eval.runner import Evaluation  # noqa: E402
+from eval.summarization import SummarizationTask  # noqa: E402
+from src.utils import parse_arguments  # noqa: E402
 
 
-class EvalCNNDM(Baselines):
-    WARMUP_ARTICLE_TOKENS = 256
-    EVAL_ARTICLE_TOKENS = 1024
-    SUMMARY_MAX_TOKENS = 160
-    STOP_SEQUENCES = ["\nArticle:", "\nSummary:"]
-
-    def __init__(self, args):
-        super().__init__(args)
-        self.load_tokenizer()
-        self.load_model()
-        self.load_data()
-
-        self.task = "cnndm"
-
-        # D1：model_id 判定单点化（原内联链规则原样入表，task=cnndm）
-        self.model_id = determine_model_id(
-            "cnndm", self.args.draft_model, self.args.target_model
-        )
-
-    def load_data(self):
-        self.color_print("Loading CNN/DailyMail data...", 3)
-        try:
-            import datasets
-
-            dataset = datasets.load_dataset("cnn_dailymail", "3.0.0", split="test")
-            self.data = [dict(item) for item in dataset]
-
-            self.data = select_eval_data(self.data, self.args)
-
-            self.color_print(f"Loaded {len(self.data)} samples.", 3)
-        except Exception as e:
-            self.color_print(f"Error loading CNN/DailyMail data: {e}", 1)
-            self.data = []
+class CnndmTask(SummarizationTask):
+    name = "cnndm"
+    model_id_task = "cnndm"
+    doc_field = "article"
+    ref_field = "highlights"
+    # 旧入口的类常量原样保留：摘要预算 160、停串剥离开启。
+    summary_max_tokens = 160
+    stop_sequences = ["\nArticle:", "\nSummary:"]
 
     def preprocess(self, input_text):
         few_shot_prompt = get_few_shot_prompt("cnndm", self.args.num_shots)
         full_input = few_shot_prompt + "Article: " + input_text
 
         qs = (
-            "Write a concise summary of the following CNN/DailyMail news article in a few sentences. "
+            "Write a concise summary of the following CNN/DailyMail news article "
+            "in a few sentences. "
             "Write only the summary.\n\n"
             f"{full_input}\nSummary:"
         )
-        if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
+        if self.model_id in ("llama-3.1", "llama-3.2", "llama-3", "qwen"):
             messages = [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": qs},
@@ -81,7 +53,9 @@ class EvalCNNDM(Baselines):
                 self.args.draft_model
             ):
                 chat_template_kwargs["enable_thinking"] = False
-            prompt = self.tokenizer.apply_chat_template(messages, **chat_template_kwargs)
+            prompt = self.tokenizer.apply_chat_template(
+                messages, **chat_template_kwargs
+            )
         elif self.model_id == "gemma":
             messages = [
                 {"role": "user", "content": "You are a helpful assistant.\n" + qs}
@@ -110,238 +84,16 @@ class EvalCNNDM(Baselines):
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"^<think>.*", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"^</think>\s*", "", text, flags=re.IGNORECASE)
-        for stop_sequence in self.STOP_SEQUENCES:
+        for stop_sequence in self.stop_sequences:
             if stop_sequence in text:
                 text = text.split(stop_sequence, 1)[0]
         return text.strip()
 
-    def truncate_article(self, text: str, max_tokens: int) -> str:
-        token_ids = self.tokenizer.encode(text, add_special_tokens=False)
-        if len(token_ids) <= max_tokens:
-            return text
-        return self.tokenizer.decode(token_ids[:max_tokens], skip_special_tokens=True)
 
-    @torch.no_grad()
-    def eval(self, total: int | None = 80):
-        global decoding_metrics
-        decoding = self.get_decoding_method()
-
-        decoding = partial(
-            decoding,
-            transfer_top_k=self.args.transfer_top_k,
-            use_precise_comm_sim=self.args.use_precise,
-            use_stochastic_comm=self.args.use_stochastic_comm,
-            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
-            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-            # B32：此前硬编码 True，覆盖了 exp.py 传入的 --use_early_stopping。
-            # 摘要文本的 stop 序列在 postprocess 里仍会剥离，这里只恢复开关语义。
-            use_early_stopping=self.args.use_early_stopping,
-            stop_sequences=self.STOP_SEQUENCES,
-        )
-
-        original_max_tokens = self.args.max_tokens
-        self.args.max_tokens = min(self.args.max_tokens, self.SUMMARY_MAX_TOKENS)
-
-        out_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_cnndm.jsonl"
-        )
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        out_f = open(out_path, "a")
-
-        scorer = rouge_scorer.RougeScorer(
-            ["rouge1", "rouge2", "rougeL"], use_stemmer=True
-        )
-        rouge1_scores, rouge2_scores, rougeL_scores = [], [], []
-
-        # Warmup
-        print("Start warm up...")
-        n = 5
-        warmup_count = 0
-        for item in tqdm.tqdm(
-            self.data,
-            total=len(self.data),
-            disable=not self.accelerator.is_main_process,
-            ncols=50,
-        ):
-            # B29：原写法先 `n -= 1` 再 break，n=5 实际只热身 4 次。
-            if warmup_count >= n:
-                break
-            warmup_count += 1
-
-            article = self.truncate_article(
-                str(item["article"]), self.WARMUP_ARTICLE_TOKENS
-            )
-            prompt = self.preprocess(article)
-            if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                input_ids = torch.tensor(
-                    self.tokenizer([prompt], add_special_tokens=False).input_ids
-                )
-            else:
-                input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
-
-            input_ids = input_ids.to(self.accelerator.device)
-            decoding(input_ids)
-
-        total_wall_time = []
-        total_num_tokens = []
-
-        loop_index = 0
-
-        print("Start evaluation...")
-        for item in tqdm.tqdm(
-            self.data,
-            total=min(len(self.data), total) if total is not None else len(self.data),
-            disable=not self.accelerator.is_main_process,
-            ncols=50,
-        ):
-            if total is not None and loop_index >= total:
-                break
-
-            article = self.truncate_article(
-                str(item["article"]), self.EVAL_ARTICLE_TOKENS
-            )
-            reference = str(item["highlights"])
-
-            loop_index += 1
-            if total is not None and loop_index > min(len(self.data), total):
-                break
-
-            # set random seed
-            for i in range(self.args.num_samples_per_task):
-                while self.seed in self.seed_set:
-                    self.seed = random.randint(0, 1000000)
-                seed_everything(self.seed)
-                # B11：seed_set 此前从不 add，while 恒为假——-n K 时 K 份样本逐字相同。
-                # 对照 humaneval/specbench 的正确写法，入集保证跨样本唯一。
-                self.seed_set.add(self.seed)
-
-                prompt = self.preprocess(article)
-
-                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                    input_ids = torch.tensor(
-                        self.tokenizer([prompt], add_special_tokens=False).input_ids
-                    )
-                else:
-                    input_ids = torch.tensor(self.tokenizer.encode(prompt)).unsqueeze(0)
-
-                input_ids = input_ids.to(self.accelerator.device)
-
-                torch.cuda.synchronize()
-                start_time = time.time()
-                try:
-                    output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple):
-                        output_ids, metrics = output_ids[
-                            :2
-                        ]  # Handle 2 or 3 return values
-                        # B30：单点化（原实现的死键排除表互相矛盾，
-                        # 且键缺失时 else 分支潜伏 KeyError）
-                        accumulate_metrics(decoding_metrics, metrics)
-                except Exception as e:
-                    # B31：原实现异常时用单个 EOS 占位继续，随后
-                    # num_tokens = 1 - prompt_len 为负并混进 tokens/s 均值，
-                    # 空预测还会以 ROUGE=0 计入均值。异常样本整体剔除。
-                    print(f"Error during decoding: {e}")
-                    continue
-
-                torch.cuda.synchronize()
-                end_time = time.time()
-
-                # Slice generated part
-                if output_ids.shape[1] > input_ids.shape[1]:
-                    generated_ids = output_ids[0][input_ids.shape[1] :]
-                    output_text = self.tokenizer.decode(
-                        generated_ids, skip_special_tokens=True
-                    )
-                else:
-                    output_text = ""
-                output_text = self.postprocess(article, output_text)
-
-                # Calculate ROUGE
-                scores = scorer.score(reference, output_text)
-                rouge1_scores.append(scores["rouge1"].fmeasure)
-                rouge2_scores.append(scores["rouge2"].fmeasure)
-                rougeL_scores.append(scores["rougeL"].fmeasure)
-
-                wall_time = end_time - start_time
-                num_tokens = output_ids.shape[1] - input_ids.shape[1]
-                total_wall_time.append(wall_time)
-                total_num_tokens.append(num_tokens)
-
-                ans_json = {
-                    "id": item.get("id", str(shortuuid.uuid())),
-                    "reference": reference,
-                    "prediction": output_text,
-                    "rouge1": scores["rouge1"].fmeasure,
-                    "rouge2": scores["rouge2"].fmeasure,
-                    "rougeL": scores["rougeL"].fmeasure,
-                    "wall_time": wall_time,
-                    "num_tokens": num_tokens,
-                }
-
-                if self.accelerator.is_main_process:
-                    out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
-                    out_f.flush()
-
-        out_f.close()
-
-        self.accelerator.wait_for_everyone()
-
-        if self.accelerator.is_main_process:
-            avg_speed = (
-                sum(total_num_tokens) / sum(total_wall_time)
-                if sum(total_wall_time) > 0
-                else 0
-            )
-            avg_r1 = (
-                sum(rouge1_scores) / len(rouge1_scores) if len(rouge1_scores) > 0 else 0
-            )
-            avg_r2 = (
-                sum(rouge2_scores) / len(rouge2_scores) if len(rouge2_scores) > 0 else 0
-            )
-            avg_rl = (
-                sum(rougeL_scores) / len(rougeL_scores) if len(rougeL_scores) > 0 else 0
-            )
-
-            self.color_print(f"Eval Mode: {self.args.eval_mode}", 0)
-            self.color_print(f"Average Generation Speed: {avg_speed:.2f} tokens/s", 2)
-            self.color_print(f"Average ROUGE-1: {avg_r1:.4f}", 2)
-            self.color_print(f"Average ROUGE-2: {avg_r2:.4f}", 2)
-            self.color_print(f"Average ROUGE-L: {avg_rl:.4f}", 2)
-
-            decoding_metrics["accuracy"] = {
-                "rouge1": avg_r1,
-                "rouge2": avg_r2,
-                "rougeL": avg_rl,
-            }
-
-            if decoding_metrics["wall_time"] != 0:
-                decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-                )
-            else:
-                decoding_metrics["throughput"] = 0.0
-
-            print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
-
-            # Save summaries
-            assert self.metrics_dumper is not None, "Metrics dumper is not initialized"
-            eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-            eval_result["accuracy"] = decoding_metrics["accuracy"]
-
-            decoding_metrics_path = os.path.join(
-                self.args.exp_name, f"{self.args.eval_mode}_cnndm_metrics.json"
-            )
-            os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-            with open(decoding_metrics_path, "w") as f:
-                json.dump(eval_result, f, indent=4)
-            self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
-
-        self.args.max_tokens = original_max_tokens
+class EvalCNNDM(Evaluation):
+    task_type = CnndmTask
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    alg = EvalCNNDM(args)
-    alg.eval(args.eval_data_num)
+    EvalCNNDM(args).eval(args.eval_data_num)

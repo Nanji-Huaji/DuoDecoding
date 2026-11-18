@@ -1,194 +1,117 @@
+"""混合任务 RL rollout 入口（旧 CLI：``python eval/eval_mixed.py -e <exp> ...``）。
+
+一个 decoder 上按样本切换任务与网络课程：每个 step 随机抽任务、抽样本，
+把 ``decoder.task`` 设为该任务（RL one-hot 依赖它），再按 curriculum 采样
+带宽/时延并调用 ``run.generate``。数据加载、metrics 累加、输出文件位置与
+计时都在 ``eval.runner``，本模块只保留混合循环特有的采样、prompt 构造、
+dump 输出和供外部脚本解析的日志行。
+"""
+
 import hashlib
 import json
 import os
 import random
 import sys
 import time
+import traceback
+
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-from datasets import load_dataset
 from fastchat.model import get_conversation_template
 
-# 添加父目录到路径，确保能导入 src 模块
-sys.path.append(os.path.join(sys.path[0], "../"))
-from functools import partial
-
-from few_shot_examples import get_few_shot_prompt
-
-from src.baselines import Baselines
+from eval.data import load_task_data
+from eval.few_shot_examples import get_few_shot_prompt
 from eval.model_ids import determine_model_id_mixed
+from eval.runner import Evaluation
+from src.rl_adapter import KNOWN_TASKS
 from src.utils import (
     parse_arguments,
     parse_range_spec,
     sample_curriculum_condition,
     seed_everything,
 )
-from utils import select_eval_data
-
-# 同步 rl_adapter.py 中的定义
-KNOWN_TASKS = ["mt_bench", "gsm8k", "cnndm", "xsum", "humaneval"]
 
 
-class EvalMixed(Baselines):
+class MixedTask:
+    """多任务混合训练循环；数据保持 ``{task: [sample, ...]}`` 的 dict。
+
+    ``save_metrics=False``：本任务不写 metrics JSONL（旧脚本也只打印逐样本
+    指标并落 ``--dump_outputs``），因此 runner 不会生成额外的 summary 文件。
+    """
+
+    name = "mixed"
+    save_metrics = False
+
     # B34：preprocess_prompt 里会走 chat template（模板自带 BOS）的 model_id 集合。
     # 该集合必须与下面 preprocess_prompt 的模板分支保持一致。
     CHAT_TEMPLATE_MODEL_IDS = ("llama-3.1", "qwen")
 
-    def _uses_chat_template(self) -> bool:
-        return self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
-
-    def __init__(self, args):
-        super().__init__(args)
-        self.device = self.accelerator.device  # 显式定义 device 属性
-        self.load_tokenizer()
-        self.load_model()
+    def __init__(self, args, tokenizer):
+        self.args = args
+        self.tokenizer = tokenizer
+        # D1：判定逻辑单点化到 eval.model_ids（mixed 链规则原样保留）。
+        self.model_id = determine_model_id_mixed(args.draft_model, args.target_model)
 
         # 边界必须覆盖 tokenizer 能产出的全部 id：Qwen 系的
         # tokenizer.vocab_size=151643 只数基础词表，不含 added specials
-        # （如  id=151643 会合法出现在 3-shot 提示里），用它做安全
-        # 校验会把整样本判成 Invalid token ids 而静默丢弃。eval 引擎
+        # （如 <|endoftext|> id=151643 会合法出现在 3-shot 提示里），用它做
+        # 安全校验会把整样本判成 Invalid token ids 而静默丢弃。eval 引擎
         # （src/engine.py）一直用 max(len, vocab_size)，此处对齐。
-        actual_vocab_size = max(
-            len(self.tokenizer), self.tokenizer.vocab_size
-        )
-        print(f"[Token Safety] Using tokenizer vocab_size: {actual_vocab_size}")
-
-        self.vocab_size = actual_vocab_size
+        self.vocab_size = max(len(tokenizer), tokenizer.vocab_size)
         self.pad_token_id = (
-            self.tokenizer.pad_token_id
-            if self.tokenizer.pad_token_id is not None
-            else 0
+            tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
         )
+        print(f"[Token Safety] Using tokenizer vocab_size: {self.vocab_size}")
         print(
-            f"[Token Safety] Final vocab_size: {self.vocab_size}, pad_token_id: {self.pad_token_id}"
+            f"[Token Safety] Final vocab_size: {self.vocab_size}, "
+            f"pad_token_id: {self.pad_token_id}"
         )
 
-        self.all_data = {}
-        self.load_data()  # 改为调用抽象方法
-        self.model_id = self._determine_model_id()
-        self.color_print(f"Using Model ID: {self.model_id}", 2)
+    def load_data(self):
+        """每个任务单独走共享 loader；任一任务失败都直接报错，不静默降级。"""
+        print(">>> Loading datasets...")
+        all_data = {}
+        for task in KNOWN_TASKS:
+            try:
+                samples = load_task_data(task, self.args)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[eval_mixed] failed to load task {task!r}: {exc}"
+                ) from exc
+            all_data[task] = samples
+            print(f"Loaded {len(samples)} samples for {task}.")
+        return all_data
 
     def clamp_token_ids(self, input_ids):
-        """将超出vocab_size范围的token ID钳位到pad_token_id。
-
-        Args:
-            input_ids: torch.Tensor, shape (batch_size, seq_len)
-
-        Returns:
-            torch.Tensor: 钳位后的token IDs
-        """
-        # 检查是否有越界的token
+        """将超出 vocab_size 范围的 token id 钳位到 pad_token_id。"""
         max_id = input_ids.max().item()
         min_id = input_ids.min().item()
 
         if max_id >= self.vocab_size or min_id < 0:
             print(
-                f"⚠️  [Token Clamp Warning] Found out-of-range token IDs! min={min_id}, max={max_id}, vocab_size={self.vocab_size}"
+                "⚠️  [Token Clamp Warning] Found out-of-range token IDs! "
+                f"min={min_id}, max={max_id}, vocab_size={self.vocab_size}"
             )
-            # 将越界的token替换为pad_token
             input_ids = torch.where(
                 (input_ids >= 0) & (input_ids < self.vocab_size),
                 input_ids,
                 torch.full_like(input_ids, self.pad_token_id),
             )
             print(
-                f"   Replaced with pad_token_id={self.pad_token_id}. New range: min={input_ids.min().item()}, max={input_ids.max().item()}"
+                f"   Replaced with pad_token_id={self.pad_token_id}. "
+                f"New range: min={input_ids.min().item()}, "
+                f"max={input_ids.max().item()}"
             )
 
         return input_ids
 
-    def _determine_model_id(self):
-        # D1：判定逻辑单点化到 eval.model_ids（mixed 链规则原样保留，
-        # base/chat 区分的理由见该函数内注释）
-        return determine_model_id_mixed(
-            self.args.draft_model, self.args.target_model
-        )
-
-    def load_data(self):
-        """实现抽象方法：一次性加载所有任务的数据集"""
-        print(">>> Loading datasets...")
-        # 1. MT-Bench
-        try:
-            mt_data = []
-            mt_path = os.path.join(self.args.data_path, "mt_bench.jsonl")
-            if os.path.exists(mt_path):
-                with open(mt_path) as f:
-                    for line in f:
-                        mt_data.append(json.loads(line))
-            mt_data = select_eval_data(mt_data, self.args)
-            self.all_data["mt_bench"] = mt_data
-            self.color_print(f"Loaded {len(mt_data)} MT-Bench samples.", 2)
-        except Exception as e:
-            self.color_print(f"Error loading MT-Bench: {e}", 1)
-            self.all_data["mt_bench"] = []
-
-        # 2. GSM8K
-        print(">>> Loading GSM8K (this may take a while if downloading)...")
-        try:
-            ds = load_dataset("gsm8k", "main", split="test")
-            gsm8k_data = [dict(item) for item in ds]
-            gsm8k_data = select_eval_data(gsm8k_data, self.args)
-            self.all_data["gsm8k"] = gsm8k_data
-            self.color_print(f"Loaded {len(self.all_data['gsm8k'])} GSM8K samples.", 2)
-        except Exception as e:
-            self.color_print(f"Error loading GSM8K: {e}", 1)
-            self.all_data["gsm8k"] = []
-
-        # 3. CNN/DM
-        try:
-            ds = load_dataset("cnn_dailymail", "3.0.0", split="test")
-            cnndm_data = [dict(item) for item in ds]
-            cnndm_data = select_eval_data(cnndm_data, self.args)
-            self.all_data["cnndm"] = cnndm_data
-            self.color_print(f"Loaded {len(self.all_data['cnndm'])} CNN/DM samples.", 2)
-        except Exception as e:
-            self.color_print(f"Error loading CNN/DM: {e}", 1)
-            self.all_data["cnndm"] = []
-
-        # 4. XSum
-        try:
-            ds = load_dataset("xsum", split="test")
-            xsum_data = [dict(item) for item in ds]
-            xsum_data = select_eval_data(xsum_data, self.args)
-            self.all_data["xsum"] = xsum_data
-            self.color_print(f"Loaded {len(self.all_data['xsum'])} XSum samples.", 2)
-        except Exception as e:
-            self.color_print(f"Error loading XSum: {e}", 1)
-            self.all_data["xsum"] = []
-
-        # 5. HumanEval
-        try:
-            ds = load_dataset("openai_humaneval", split="test")
-            humaneval_data = [dict(item) for item in ds]
-            humaneval_data = select_eval_data(humaneval_data, self.args)
-            self.all_data["humaneval"] = humaneval_data
-            self.color_print(
-                f"Loaded {len(self.all_data['humaneval'])} HumanEval samples.", 2
-            )
-        except Exception as e:
-            self.color_print(f"Error loading HumanEval: {e}", 1)
-            self.all_data["humaneval"] = []
-
-        # 构建扁平化的样本池，以便真正随机地抽取样本
-        self.flattened_data = []
-        for task_name, samples in self.all_data.items():
-            for sample in samples:
-                self.flattened_data.append((task_name, sample))
-
-        self.color_print(
-            f"Total global sample pool size: {len(self.flattened_data)}", 3
-        )
-
-    def preprocess(self, input_text):
-        """实现抽象方法"""
-        pass
-
-    def postprocess(self, input_text, output_text):
-        """实现抽象方法"""
-        pass
+    def _uses_chat_template(self) -> bool:
+        return self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
 
     def preprocess_prompt(self, task, item):
-        """为不同任务构建合适的 Prompt"""
+        """为不同任务构建合适的 prompt。"""
         few_shot_prompt = get_few_shot_prompt(task, self.args.num_shots)
 
         if task == "mt_bench":
@@ -196,17 +119,21 @@ class EvalMixed(Baselines):
         elif task == "gsm8k":
             prompt_text = (
                 few_shot_prompt
-                + f"Question: {item['question']}\nSolve the following math problem step by step and end your answer with 'The answer is <number>'.\nAnswer:"
+                + f"Question: {item['question']}\nSolve the following math problem "
+                "step by step and end your answer with 'The answer is <number>'.\n"
+                "Answer:"
             )
         elif task == "cnndm":
             prompt_text = (
                 few_shot_prompt
-                + f"Article: {item['article']}\nSummarize the following article in a few sentences:\nSummary:"
+                + f"Article: {item['article']}\nSummarize the following article "
+                "in a few sentences:\nSummary:"
             )
         elif task == "xsum":
             prompt_text = (
                 few_shot_prompt
-                + f"Article: {item['document']}\nSummarize the following news article in one sentence:\nSummary:"
+                + f"Article: {item['document']}\nSummarize the following news "
+                "article in one sentence:\nSummary:"
             )
         elif task == "humaneval":
             prompt_text = few_shot_prompt + item["prompt"]
@@ -223,52 +150,118 @@ class EvalMixed(Baselines):
             # Chat 模型使用 conversation template
             conv = get_conversation_template(self.model_id)
             conv.append_message(conv.roles[0], prompt_text)
-            conv.append_message(conv.roles[1], None)  # type: ignore
+            conv.append_message(conv.roles[1], None)
             return conv.get_prompt()
         else:
-            # Base 模型（如 llama-2）使用简单格式，避免对话标记导致的格式冲突
+            # Base 模型（如 llama-2）使用简单格式，避免对话标记导致格式冲突
             return prompt_text
 
-    @torch.no_grad()
-    def eval(self):
-        # 训练轮数
-        total_steps = self.args.eval_data_num if self.args.eval_data_num else 500
-        # 解码模式可切换：默认仍是三级流水线（历史行为），但 target_only 是论文
-        # 缺失的"不投机"对照行，也是无损性检验的基准（temp=0 下两者必须逐 token 相同）。
-        mode = getattr(self.args, "eval_mode", None) or "adaptive_tridecoding"
-        if not hasattr(self, mode):
-            self.color_print(
-                f"Unknown eval_mode {mode!r}, falling back to adaptive_tridecoding", 1
+    def _dump_outputs(
+        self, run, *, step, task, mode, input_ids, output_ids, item, bw, ntt
+    ):
+        """落盘生成结果（无损性检验与离线质量评测依赖该 schema）。"""
+        dump_path = getattr(run.args, "dump_outputs", None)
+        if not dump_path or not run.is_main_process:
+            return
+        try:
+            prompt_len = int(input_ids.shape[1])
+            gen_ids = output_ids[:, prompt_len:].tolist()
+            # prompt 指纹：恒等检验必须先排除"两次运行输入不同"这一解释
+            prompt_sha = hashlib.sha1(
+                input_ids[0].tolist().__str__().encode()
+            ).hexdigest()[:12]
+            record = {
+                "step": step,
+                "task": task,
+                "prompt_sha": prompt_sha,
+                "eval_mode": mode,
+                "seed": getattr(run.args, "seed", None),
+                "prompt_len": prompt_len,
+                "gen_ids": gen_ids[0] if gen_ids else [],
+                "text": self.tokenizer.decode(
+                    output_ids[0, prompt_len:], skip_special_tokens=True
+                ),
+                "item": item,
+                "bw_mbps": float(bw),
+                "ntt_ms": float(ntt),
+            }
+            with open(dump_path, "a") as dump_fh:
+                dump_fh.write(json.dumps(record, default=str) + "\n")
+        except Exception as dump_err:  # 落盘失败不应中断评测
+            print(f"dump_outputs failed: {dump_err}")
+
+    @staticmethod
+    def _print_metrics(metrics):
+        """逐样本日志；字段与顺序被 scripts/ 下的日志解析器精确匹配。"""
+        tps = metrics.get("throughput", 0)
+        acc = metrics.get("draft_accepted_tokens", 0) / (
+            metrics.get("draft_generated_tokens", 1) + 1e-6
+        )
+        # 与 auto_train_manager.py 的正则保持一致
+        print(f"Average Generation Speed: {tps:.2f} tokens/s")
+        print(
+            f"   -> Result: Latency={metrics.get('wall_time', 0):.2f}s | "
+            f"Speed={tps:.2f} tokens/s | Acc={acc:.1%}"
+        )
+        # Deterministic, machine-load-independent policy metrics: the simulated
+        # communication time / transferred bytes / round-trips depend only on
+        # the policy's actions and the configured link, not on how busy this
+        # host is. `compute` (wall - comm) is printed precisely so that host
+        # contention stays visible instead of silently polluting throughput.
+        try:
+            comm = float(metrics.get("communication_time", 0.0))
+            wall = float(metrics.get("wall_time", 0.0))
+            connects = metrics.get("connect_times", {})
+            connects_str = (
+                "/".join(f"{k}:{int(v)}" for k, v in connects.items())
+                if isinstance(connects, dict)
+                else str(connects)
             )
-            mode = "adaptive_tridecoding"
+            print(
+                f"   -> Metrics: comm={comm:.4f}s "
+                f"bytes={int(metrics.get('edge_cloud_data_bytes', 0))} "
+                f"connects={connects_str} "
+                f"energy={float(metrics.get('comm_energy', 0.0)):.3e} "
+                f"compute={max(wall - comm, 0.0):.4f}s "
+                f"gen={int(metrics.get('generated_tokens', 0))} "
+                f"draft_gen={int(metrics.get('draft_generated_tokens', 0))} "
+                f"draft_acc={int(metrics.get('draft_accepted_tokens', 0))} "
+                f"fwd={int(metrics.get('little_forward_times', 0))}/"
+                f"{int(metrics.get('draft_forward_times', 0))}/"
+                f"{int(metrics.get('target_forward_times', 0))} "
+                f"comp_time={float(metrics.get('draft_computation_time', 0.0)):.3f}/"
+                f"{float(metrics.get('target_computation_time', 0.0)):.3f}s"
+            )
+        except Exception as metric_err:  # never let logging break the run
+            print(f"   -> [Metrics Error]: {metric_err}")
+
+    def run(self, run, data):
+        args = run.args
+        # 训练轮数
+        total_steps = args.eval_data_num if args.eval_data_num else 500
+        # runner 已按 args.eval_mode 取到解码函数；未知模式在进入本流程前就会报错。
+        mode = args.eval_mode
 
         # 获取所有有数据的任务列表
-        available_tasks = [
-            t for t in KNOWN_TASKS if t in self.all_data and self.all_data[t]
-        ]
-
+        available_tasks = [name for name in KNOWN_TASKS if data.get(name)]
         if not available_tasks:
-            self.color_print("Critical: No data loaded for any task!", 1)
-            return
+            raise ValueError("[eval_mixed] no task has any loaded samples")
 
-        self.color_print(
-            f"\n>>> Starting Mixed Multi-Task Training Loop ({total_steps} total steps) <<<\n",
-            3,
+        print(
+            f"\n>>> Starting Mixed Multi-Task Training Loop "
+            f"({total_steps} total steps) <<<\n"
         )
-        self.color_print(
-            "Sampling Strategy: [Random Task] -> [Random Sample in Task]", 3
-        )
-        self.color_print(f"Available Tasks: {available_tasks}", 3)
+        print("Sampling Strategy: [Random Task] -> [Random Sample in Task]")
+        print(f"Available Tasks: {available_tasks}")
 
         # 解析课程式环境参数（带宽/延迟范围随训练进度从易到难插值）
-        bw_start = parse_range_spec(self.args.curriculum_bw_start)
-        bw_end = parse_range_spec(self.args.curriculum_bw_end)
-        ntt_start = parse_range_spec(self.args.curriculum_ntt_start)
-        ntt_end = parse_range_spec(self.args.curriculum_ntt_end)
-        self.color_print(
+        bw_start = parse_range_spec(args.curriculum_bw_start)
+        bw_end = parse_range_spec(args.curriculum_bw_end)
+        ntt_start = parse_range_spec(args.curriculum_ntt_start)
+        ntt_end = parse_range_spec(args.curriculum_ntt_end)
+        print(
             f"Curriculum: bw {bw_start} -> {bw_end} Mbps, "
-            f"ntt {ntt_start} -> {ntt_end} ms, sampling={self.args.curriculum_sampling}",
-            3,
+            f"ntt {ntt_start} -> {ntt_end} ms, sampling={args.curriculum_sampling}"
         )
 
         # 失败可见性：单样本异常原先只打印 traceback 就被静默跳过，既不计数
@@ -279,13 +272,10 @@ class EvalMixed(Baselines):
             # 1. 先随机选择一个任务种类
             task = random.choice(available_tasks)
             # 2. 再从该任务的数据集中随机抽取一个样本
-            item = random.choice(self.all_data[task])
+            item = random.choice(data[task])
 
-            # 3. 正确设置 self.task 保证 RL Adapter 的 One-Hot 向量正确
-            self.task = task
-
-            # 4. 模式固定为 tridecoding
-            decoding_fn = getattr(self, mode)
+            # 3. 设置 RL 当前任务（One-Hot 向量依赖 decoder.task）
+            run.decoder.task = task
 
             # 4. 环境参数课程式采样：带宽/延迟范围随训练进度从易到难扩展
             bw_mbps, ntt_ms = sample_curriculum_condition(
@@ -295,11 +285,11 @@ class EvalMixed(Baselines):
                 bw_end,
                 ntt_start,
                 ntt_end,
-                sampling=self.args.curriculum_sampling,
+                sampling=args.curriculum_sampling,
             )
-            self.args.edge_cloud_bandwidth = bw_mbps
-            self.args.ntt_ms_edge_cloud = ntt_ms
-            self.args.edge_end_bandwidth = random.uniform(300.0, 800.0)  # 300-800 Mbps
+            args.edge_cloud_bandwidth = bw_mbps
+            args.ntt_ms_edge_cloud = ntt_ms
+            args.edge_end_bandwidth = random.uniform(300.0, 800.0)  # 300-800 Mbps
 
             # 5. 构建输入
             prompt = self.preprocess_prompt(task, item)
@@ -310,121 +300,54 @@ class EvalMixed(Baselines):
                 prompt,
                 return_tensors="pt",
                 add_special_tokens=not self._uses_chat_template(),
-            ).input_ids.to(self.device)
+            ).input_ids.to(run.device)
 
-            # 钳位token IDs，防止越界
+            # 钳位 token IDs，防止越界
             input_ids = self.clamp_token_ids(input_ids)
 
-            # 6. 执行解码 (此过程会触发 RL RLNetworkAdapter 的 select_config 和 update)
+            # 6. 执行解码（触发 RL 适配器的 select_config 和 update）
             print(
-                f"[{step + 1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20} | bw={bw_mbps:.2f}Mbps ntt={ntt_ms:.1f}ms"
-            )
-
-            fn = partial(
-                decoding_fn,
-                transfer_top_k=self.args.transfer_top_k,
-                use_precise_comm_sim=self.args.use_precise,
-                use_stochastic_comm=self.args.use_stochastic_comm,
-                ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
-                ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-                # 项目自带 `_check_stopping_criteria`（EOS 检查），但它一直挂在
-                # `use_early_stopping` 开关后面而这个开关**从未被传入**，于是混合
-                # 评测永远跑满 max_tokens（gsm8k 的 "#### 答案" 不出现、humaneval
-                # 被截断，质量无法评测）。这里显式启用。
-                use_early_stopping=not getattr(self.args, "disable_eos_stop", False),
+                f"[{step + 1}/{total_steps}] Task: {task:<10} | Mode: {mode:<20} "
+                f"| bw={bw_mbps:.2f}Mbps ntt={ntt_ms:.1f}ms"
             )
 
             try:
-                # 运行解码
-                output_ids, metrics = fn(input_ids)
-
-                # 落盘生成结果：无损性检验（temp=0 下投机流水线必须与 target_only
-                # 逐 token 相同）和离线的任务质量评测都依赖它。
-                # eval/eval_mixed.py 原本只打印速度/接受率，不保存文本，
-                # 因此"输出质量是否不变"在这套评测里从未被测量过。
-                dump_path = getattr(self.args, "dump_outputs", None)
-                if dump_path:
-                    try:
-                        prompt_len = int(input_ids.shape[1])
-                        gen_ids = output_ids[:, prompt_len:].tolist()
-                        # prompt 指纹：恒等检验必须先排除"两次运行输入不同"这一解释
-                        prompt_sha = hashlib.sha1(
-                            input_ids[0].tolist().__str__().encode()
-                        ).hexdigest()[:12]
-                        record = {
-                            "step": step,
-                            "task": task,
-                            "prompt_sha": prompt_sha,
-                            "eval_mode": mode,
-                            "seed": getattr(self.args, "seed", None),
-                            "prompt_len": prompt_len,
-                            "gen_ids": gen_ids[0] if gen_ids else [],
-                            "text": self.tokenizer.decode(
-                                output_ids[0, prompt_len:], skip_special_tokens=True
-                            ),
-                            "item": item,
-                            "bw_mbps": float(bw_mbps),
-                            "ntt_ms": float(ntt_ms),
-                        }
-                        with open(dump_path, "a") as dump_fh:
-                            dump_fh.write(json.dumps(record, default=str) + "\n")
-                    except Exception as dump_err:  # 落盘失败不应中断评测
-                        self.color_print(f"dump_outputs failed: {dump_err}", 1)
-
-                # 打印单步结果
-                tps = metrics.get("throughput", 0)
-                acc = metrics.get("draft_accepted_tokens", 0) / (
-                    metrics.get("draft_generated_tokens", 1) + 1e-6
+                output_ids, metrics, _elapsed = run.generate(
+                    input_ids,
+                    # 项目自带 `_check_stopping_criteria`（EOS 检查），但它一直挂在
+                    # `use_early_stopping` 开关后面而这个开关**从未被传入**，于是混合
+                    # 评测永远跑满 max_tokens（gsm8k 的 "#### 答案" 不出现、humaneval
+                    # 被截断，质量无法评测）。这里显式启用。
+                    use_early_stopping=not getattr(args, "disable_eos_stop", False),
                 )
-                # 修改这里的输出格式，以匹配 auto_train_manager.py 中的正则表达式
-                print(f"Average Generation Speed: {tps:.2f} tokens/s")
-                print(
-                    f"   -> Result: Latency={metrics.get('wall_time', 0):.2f}s | Speed={tps:.2f} tokens/s | Acc={acc:.1%}"
+
+                self._dump_outputs(
+                    run,
+                    step=step,
+                    task=task,
+                    mode=mode,
+                    input_ids=input_ids,
+                    output_ids=output_ids,
+                    item=item,
+                    bw=bw_mbps,
+                    ntt=ntt_ms,
                 )
-                # Deterministic, machine-load-independent policy metrics: the simulated
-                # communication time / transferred bytes / round-trips depend only on the
-                # policy's actions and the configured link, not on how busy this host is.
-                # `compute` (wall - comm) is printed precisely so that host contention
-                # stays visible instead of silently polluting the throughput numbers.
-                try:
-                    comm = float(metrics.get("communication_time", 0.0))
-                    wall = float(metrics.get("wall_time", 0.0))
-                    connects = metrics.get("connect_times", {})
-                    connects_str = (
-                        "/".join(f"{k}:{int(v)}" for k, v in connects.items())
-                        if isinstance(connects, dict)
-                        else str(connects)
-                    )
-                    print(
-                        f"   -> Metrics: comm={comm:.4f}s bytes={int(metrics.get('edge_cloud_data_bytes', 0))} "
-                        f"connects={connects_str} "
-                        f"energy={float(metrics.get('comm_energy', 0.0)):.3e} "
-                        f"compute={max(wall - comm, 0.0):.4f}s "
-                        f"gen={int(metrics.get('generated_tokens', 0))} "
-                        f"draft_gen={int(metrics.get('draft_generated_tokens', 0))} "
-                        f"draft_acc={int(metrics.get('draft_accepted_tokens', 0))} "
-                        f"fwd={int(metrics.get('little_forward_times', 0))}/"
-                        f"{int(metrics.get('draft_forward_times', 0))}/"
-                        f"{int(metrics.get('target_forward_times', 0))} "
-                        f"comp_time={float(metrics.get('draft_computation_time', 0.0)):.3f}/"
-                        f"{float(metrics.get('target_computation_time', 0.0)):.3f}s"
-                    )
-                except Exception as metric_err:  # never let logging break the run
-                    print(f"   -> [Metrics Error]: {metric_err}")
+                self._print_metrics(metrics)
             except Exception as e:
                 step_errors += 1
                 print(f"   -> [Step Error]: {e}")
-                import traceback
-
                 traceback.print_exc()
 
         if step_errors:
-            self.color_print(
+            print(
                 f"[eval_mixed] {step_errors}/{total_steps} 个样本在解码或记账阶段"
-                "抛错并被跳过（不计入任何指标）。若非预期，请检查上方 traceback。",
-                1,
+                "抛错并被跳过（不计入任何指标）。若非预期，请检查上方 traceback。"
             )
-        self.color_print("\n>>> Mixed Training Finished! <<<", 3)
+        print("\n>>> Mixed Training Finished! <<<")
+
+
+class EvalMixed(Evaluation):
+    task_type = MixedTask
 
 
 if __name__ == "__main__":
@@ -437,5 +360,4 @@ if __name__ == "__main__":
         seed_everything(new_seed)
         args.seed = new_seed
 
-    evaluator = EvalMixed(args)
-    evaluator.eval()
+    EvalMixed(args).eval()

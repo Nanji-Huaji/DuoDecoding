@@ -1,62 +1,86 @@
+"""MT-Bench：生成多轮回答并调用 judge 评分。
+
+本入口只额外提供判分；对话、解码、速度与 IO 全部复用
+``eval.mt_bench_common``。openai 为可选依赖，只在真正需要判分时导入，
+因此 ``eval.eval_mt_bench_noeval`` 不接触 API/凭证。
+"""
+
 import os
 import sys
 
-sys.path.append(os.path.join(sys.path[0], "../"))
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
-import inspect
-import json
-import random
 import re
-import time
-from functools import partial
-from typing import List, cast
 
-import shortuuid
-import torch
-import tqdm
-from fastchat.model import get_conversation_template
-from few_shot_examples import get_few_shot_prompt
-from openai import AsyncOpenAI
+from eval.mt_bench_common import (  # noqa: E402, F401
+    MTBenchTaskBase,
+    read_results,  # 兼容旧的 ``eval.eval_mt_bench.read_results`` 导入
+)
+from eval.runner import Evaluation  # noqa: E402
+from src.utils import parse_arguments  # noqa: E402
 
-from src.baselines import Baselines
-from src.metrics import accumulate_metrics, get_empty_metrics
-from eval.model_ids import determine_model_id
-from src.utils import parse_arguments, seed_everything
-from utils import select_eval_data
+# 可选依赖占位：测试/调用方可以显式替换；只有真正判分时才填充。
+AsyncOpenAI = None
 
 
-_MT_BENCH_GRADE_FAILURES = {"api": 0, "unparsed": 0}
+def _load_async_openai():
+    """延迟导入可选判分依赖，导入本模块本身不要求安装/配置 openai。"""
+    global AsyncOpenAI
+    if AsyncOpenAI is None:
+        from openai import AsyncOpenAI as client_cls
+
+        AsyncOpenAI = client_cls
+    return AsyncOpenAI
 
 
 async def grade_mt_bench_async(
-    question, answer, judge_model="gpt-4", api_key=None, api_base=None
+    question,
+    answer,
+    judge_model="gpt-4",
+    api_key=None,
+    api_base=None,
+    failures=None,
 ):
+    """给一个 turn 打分；``failures`` 是调用方持有的 run-local 计数字典。
+
+    判分失败仍按 0 分计入（与旧口径一致），但失败次数只落在显式传入的
+    ``failures`` 上，不再使用模块级全局字典。
+    """
     if not api_key:
         return 0
 
-    client = AsyncOpenAI(api_key=api_key, base_url=api_base)
-
-    prompt_template = """
-[Instruction]
-Please act as an impartial judge and evaluate the quality of the response provided by an AI assistant to the user question displayed below. Your evaluation should consider factors such as helpfulness, relevance, accuracy, depth, creativity, and level of detail. Begin your evaluation by providing a short explanation. Be as objective as possible. After providing your explanation, you must rate the response on a scale of 1 to 10 by strictly following this format: "[[rating]]", for example: "Rating: [[5]]".
-
-[Question]
-{question}
-
-[The Start of Assistant's Answer]
-{answer}
-[The End of Assistant's Answer]
-"""
+    prompt_template = (
+        "\n[Instruction]\n"
+        "Please act as an impartial judge and evaluate the quality of the "
+        "response provided by an AI assistant to the user question displayed "
+        "below. Your evaluation should consider factors such as helpfulness, "
+        "relevance, accuracy, depth, creativity, and level of detail. Begin "
+        "your evaluation by providing a short explanation. Be as objective as "
+        "possible. After providing your explanation, you must rate the "
+        "response on a scale of 1 to 10 by strictly following this format: "
+        '"[[rating]]", for example: "Rating: [[5]]".\n'
+        "\n[Question]\n"
+        "{question}\n"
+        "\n[The Start of Assistant's Answer]\n"
+        "{answer}\n"
+        "[The End of Assistant's Answer]\n"
+    )
 
     prompt = prompt_template.format(question=question, answer=answer)
 
     try:
+        client = _load_async_openai()(api_key=api_key, base_url=api_base)
         response = await client.chat.completions.create(
             model=judge_model,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a helpful and precise assistant for checking the quality of the answer.",
+                    "content": (
+                        "You are a helpful and precise assistant for checking "
+                        "the quality of the answer."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -67,480 +91,63 @@ Please act as an impartial judge and evaluate the quality of the response provid
         match = re.search(r"\[\[(\d+)\]\]", content if content is not None else "")
         if match:
             return float(match.group(1))
-        else:
-            # 判分失败与"评分为 0"必须可区分：原先两者都静默 return 0，一旦
-            # judge API 限流/超时，指标会把基础设施故障显示成"模型答得差"。
-            # 这里不改口径（仍按 0 分计入），只把失败次数统计出来在结束时提示。
-            _MT_BENCH_GRADE_FAILURES["unparsed"] += 1
-            return 0
+
+        # 判分失败与"评分为 0"必须可区分：否则 judge API 限流/超时会把
+        # 基础设施故障显示成"模型答得差"。口径不变，只统计次数。
+        if failures is not None:
+            failures["unparsed"] = failures.get("unparsed", 0) + 1
+        return 0
     except Exception as e:
-        _MT_BENCH_GRADE_FAILURES["api"] += 1
+        if failures is not None:
+            failures["api"] = failures.get("api", 0) + 1
         print(f"Error in grading: {e}")
         return 0
 
 
-decoding_metrics = get_empty_metrics()
+async def _gather_scores(grading_tasks):
+    return await asyncio.gather(*grading_tasks)
 
 
-def get_class_methods(cls) -> List[str]:
-    """获取类中定义的所有方法（不包括继承的方法和__init__）"""
-    methods = []
-    for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
-        # 检查方法是否在当前类中定义（而非继承）
-        if name in cls.__dict__ and name != "__init__":
-            methods.append(name)
-    return methods
+class MTBenchTask(MTBenchTaskBase):
+    """judge 入口：与 noeval 相同流程，额外对每个 choice 判分。"""
 
+    name = "mt_bench"
+    record_name = "mt_bench"
+    model_id_task = "mt_bench"
+    # 旧 judge warmup：10 个问题，每个问题按数据的全部轮数生成。
+    warmup_questions = 10
+    warmup_turns = None
+    enable_judge = True
 
-def read_results(file_path, skip_lines=0):
-    """只解析本次运行追加的行（skip_lines = 运行前文件已有的行数）。
+    def _grade_choices(self, run, question, choices, scores, failures) -> None:
+        args = run.args
+        if not getattr(args, "openai_api_key", None):
+            return
+        judge_model = getattr(args, "judge_model", "gpt-4")
+        api_base = getattr(args, "openai_api_base", None)
 
-    B35：此前 append 写 jsonl、却用本函数读全文件重算速度，重跑时旧数据会混进
-    tokens/s（而 accuracy 只算本次），两者口径不一致。skip_lines 让统计只覆盖
-    本次写入的样本。
-    """
-    with open(file_path) as f:
-        lines = f.readlines()[skip_lines:]
-    data = [json.loads(line) for line in lines]
-    record = {}
-    for item in data:
-        if item["category"] not in record:
-            record[item["category"]] = {"wall_time": [], "num_token": []}
-        for choice in item["choices"]:
-            record[item["category"]]["wall_time"].extend(choice["wall_time"])
-            record[item["category"]]["num_token"].extend(choice["num_token"])
-    return record
-
-
-class EvalMTBench(Baselines):
-    def __init__(self, args):
-        super().__init__(args)
-        # load relative resources
-
-        self.load_tokenizer()
-        self.load_model()
-
-        self.load_data()
-
-        self.task = "mt_bench"
-
-        print(self.args.target_model)
-
-        # D1：model_id 判定单点化（原内联链规则原样入表，task=mt_bench+硬失败兜底）
-        self.model_id = determine_model_id(
-            "mt_bench", self.args.draft_model, self.args.target_model
-        )
-
-    def load_data(self):
-        # * load evaluation data
-        self.color_print("Loading MT-bench data...", 3)
-        data = []
-        with open(os.path.join(self.args.data_path, "mt_bench.jsonl")) as f:
-            for line in f.readlines():
-                datum = json.loads(line)
-                data.append(datum)
-        self.data = select_eval_data(data, self.args)
-
-    def preprocess(self, input_text):
-        pass
-
-    def postprocess(self, input_text, output_text):
-        pass
-
-    @torch.inference_mode()
-    def eval(self):
-        global decoding_metrics
-        decoding = self.get_decoding_method()
-
-        decoding = partial(
-            decoding,
-            transfer_top_k=self.args.transfer_top_k,
-            use_precise_comm_sim=self.args.use_precise,
-            use_stochastic_comm=self.args.use_stochastic_comm,
-            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
-            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-            use_early_stopping=self.args.use_early_stopping,
-        )
-
-        out_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_mt_bench.jsonl"
-        )
-        # B35：记录本次运行前的行数，速度统计只覆盖本次追加的行。
-        existing_lines = 0
-        if os.path.exists(out_path):
-            with open(out_path) as f:
-                existing_lines = sum(1 for _ in f)
-        out_f = open(out_path, "a")
-
-        # warmup
-        print("Start warm up...")
-        n = 10
-        warmup_count = 0
-        for question in tqdm.tqdm(
-            self.data,
-            total=len(self.data),
-            disable=not self.accelerator.is_main_process,
-            ncols=50,
-        ):
-            # B29：原写法先 `n -= 1` 再 break，n=10 实际只热身 9 次。
-            if warmup_count >= n:
-                break
-            warmup_count += 1
-            choices = []
-            # set random seed. Ensure each experiment runs with a unique random seed.
-            for i in range(1):
-                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
-                        },
-                    ]
-                elif self.model_id == "gemma":
-                    messages = []
-                else:
-                    conv = get_conversation_template(self.model_id)
-                    if self.model_id == "llama-2-chat":
-                        sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
-                        conv.system_message = sys_p
-
-                turns = []
-                wall_time = []
-                num_token = []
-                for turn_idx in range(len(question["turns"])):
-                    qs = question["turns"][turn_idx]
-                    if turn_idx == 0 and self.args.num_shots > 0:
-                        few_shot_prompt = get_few_shot_prompt(
-                            "mt_bench", self.args.num_shots
-                        )
-                        qs = few_shot_prompt + qs
-
-                    if self.model_id in [
-                        "llama-3.1",
-                        "llama-3.2",
-                        "llama-3",
-                        "qwen",
-                        "gemma",
-                    ]:
-                        content = qs
-                        if self.model_id == "gemma" and turn_idx == 0:
-                            content = (
-                                "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
-                                + "\n"
-                                + qs
-                            )
-                        messages.append({"role": "user", "content": content})
-                        prompt = self.tokenizer.apply_chat_template(
-                            messages,
-                            tokenize=False,
-                            add_generation_prompt=True,
-                        )
-                        input_ids = torch.tensor(
-                            self.tokenizer(
-                                [prompt],
-                                add_special_tokens=False,
-                            ).input_ids
-                        )
-
-                    else:
-                        conv.append_message(conv.roles[0], qs)
-                        conv.append_message(conv.roles[1], None)  # type: ignore
-                        prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
-
-                    self.validate_input_ids(
-                        input_ids, f"mt_bench.warmup.turn_{turn_idx}"
-                    )
-
-                    torch.cuda.synchronize()
-                    start_time = time.time()
-                    output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
-                        output_ids, _ = output_ids
-                    torch.cuda.synchronize()
-                    end_time = time.time()
-
-                    generated_ids = output_ids[0][input_ids.shape[1] :]
-                    output_text = self.tokenizer.decode(
-                        generated_ids, spaces_between_special_tokens=False
-                    )
-
-                    for special_token in self.tokenizer.special_tokens_map.values():
-                        if isinstance(special_token, list):
-                            for special_tok in special_token:
-                                output_text = output_text.replace(special_tok, "")
-                        else:
-                            output_text = output_text.replace(special_token, "")
-                    output_text = output_text.strip()
-                    if (
-                        self.model_id == "llama-3.1"
-                        or self.model_id == "qwen"
-                        or self.model_id == "gemma"
-                    ):
-                        messages.append({"role": "assistant", "content": output_text})
-                    else:
-                        conv.messages[-1][-1] = output_text
-                    turns.append(output_text)
-
-        for question in tqdm.tqdm(
-            self.data,
-            total=len(self.data),
-            disable=not self.accelerator.is_main_process,
-            ncols=50,
-        ):
-            choices = []
-            # set random seed. Ensure each experiment runs with a unique random seed.
-            for i in range(self.args.num_samples_per_task):
-                while self.seed in self.seed_set:
-                    self.seed = random.randint(0, 1000000)
-                seed_everything(self.seed)
-                # B11：seed_set 此前从不 add，while 恒为假——-n K 时 K 份样本逐字相同。
-                # 对照 humaneval/specbench 的正确写法，入集保证跨样本唯一。
-                self.seed_set.add(self.seed)
-
-                if self.model_id in ["llama-3.1", "llama-3.2", "llama-3", "qwen"]:
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.",
-                        },
-                    ]
-                elif self.model_id == "gemma":
-                    messages = []
-                else:
-                    conv = get_conversation_template(self.model_id)
-                    if self.model_id == "llama-2-chat":
-                        sys_p = "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
-                        conv.system_message = sys_p
-
-                turns = []
-                wall_time = []
-                num_token = []
-                for turn_idx in range(len(question["turns"])):
-                    qs = question["turns"][turn_idx]
-
-                    if self.model_id in [
-                        "llama-3.1",
-                        "llama-3.2",
-                        "llama-3",
-                        "qwen",
-                        "gemma",
-                    ]:
-                        content = qs
-                        if self.model_id == "gemma" and turn_idx == 0:
-                            content = (
-                                "You are a helpful, respectful and honest assistant. Always answer as helpfully as possible, while being safe.  Your answers should not include any harmful, unethical, racist, sexist, toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
-                                + "\n"
-                                + qs
-                            )
-                        messages.append({"role": "user", "content": content})
-                        prompt = self.tokenizer.apply_chat_template(
-                            messages,
-                            tokenize=False,
-                            add_generation_prompt=True,
-                        )
-                        input_ids = torch.tensor(
-                            self.tokenizer(
-                                [prompt],
-                                add_special_tokens=False,
-                            ).input_ids
-                        )
-
-                    else:
-                        conv.append_message(conv.roles[0], qs)
-                        # Package uses wrong type hint
-                        conv.append_message(conv.roles[1], cast(str, None))  # type: ignore
-                        prompt = conv.get_prompt() + " "
-                        input_ids = torch.tensor(
-                            self.tokenizer.encode(prompt)
-                        ).unsqueeze(0)
-
-                    self.validate_input_ids(
-                        input_ids, f"mt_bench.eval.turn_{turn_idx}"
-                    )
-
-                    torch.cuda.synchronize()
-                    start_time = time.time()
-                    output_ids = decoding(input_ids)
-                    if isinstance(output_ids, tuple) and len(output_ids) == 2:
-                        output_ids, metrics = output_ids
-                        # B30：单点化（原实现的死键排除表互相矛盾，
-                        # 且键缺失时 else 分支潜伏 KeyError）
-                        accumulate_metrics(decoding_metrics, metrics)
-                    output_ids = cast(torch.Tensor, output_ids)
-
-                    torch.cuda.synchronize()
-                    end_time = time.time()
-
-                    generated_ids = output_ids[0][input_ids.shape[1] :]
-                    output_text = self.tokenizer.decode(
-                        generated_ids, spaces_between_special_tokens=False
-                    )
-
-                    for special_token in self.tokenizer.special_tokens_map.values():
-                        if isinstance(special_token, list):
-                            for special_tok in special_token:
-                                output_text = output_text.replace(special_tok, "")
-                        else:
-                            output_text = output_text.replace(special_token, "")
-                    output_text = output_text.strip()
-                    if self.model_id in [
-                        "llama-3.1",
-                        "llama-3.2",
-                        "llama-3",
-                        "qwen",
-                        "gemma",
-                    ]:
-                        messages.append({"role": "assistant", "content": output_text})
-                    else:
-                        conv.messages[-1][-1] = output_text
-                    turns.append(output_text)
-                    wall_time.append(end_time - start_time)
-                    num_token.append(output_ids.shape[1] - input_ids.shape[1])
-                choices.append(
-                    {
-                        "index": i,
-                        "wall_time": wall_time,
-                        "num_token": num_token,
-                        "turns": turns,
-                    }
+        for choice in choices:
+            grading_tasks = [
+                grade_mt_bench_async(
+                    question["turns"][turn_idx],
+                    turn,
+                    judge_model,
+                    args.openai_api_key,
+                    api_base,
+                    failures=failures,
                 )
+                for turn_idx, turn in enumerate(choice["turns"])
+            ]
 
-            ans_json = {
-                "question_id": question["question_id"],
-                "category": question["category"],
-                "answer_id": shortuuid.uuid(),
-                "model_id": self.model_id,
-                "choices": choices,
-                "tstamp": time.time(),
-            }
-            if self.accelerator.is_main_process:
-                # Calculate Score
-                if self.args.openai_api_key:
-                    for choice in choices:
-                        # Create async tasks for all turns
-                        tasks = []
-                        for idx, turn in enumerate(choice["turns"]):
-                            qs = question["turns"][idx]
-                            tasks.append(
-                                grade_mt_bench_async(
-                                    qs,
-                                    turn,
-                                    self.args.judge_model,
-                                    self.args.openai_api_key,
-                                    self.args.openai_api_base,
-                                )
-                            )
+            turn_scores = asyncio.run(_gather_scores(grading_tasks))
+            choice["score"] = sum(turn_scores) / len(turn_scores) if turn_scores else 0
+            scores.append(choice["score"])
 
-                        # Run tasks concurrently
-                        async def run_grading_tasks():
-                            return await asyncio.gather(*tasks)
 
-                        scores = asyncio.run(run_grading_tasks())
-                        choice["score"] = sum(scores) / len(scores) if scores else 0
-
-                        # update metrics
-                        if (
-                            "accuracy" not in decoding_metrics
-                            or decoding_metrics["accuracy"] == 0
-                        ):
-                            decoding_metrics["accuracy"] = []
-                        assert decoding_metrics["accuracy"] is not None, (
-                            "decoding_metrics['accuracy'] should not be None"
-                        )
-                        decoding_metrics["accuracy"].append(choice["score"])
-
-                out_f.write(json.dumps(ans_json, ensure_ascii=False) + "\n")
-                out_f.flush()
-        out_f.close()
-
-        # 判分失败可见化：API 故障/输出不可解析的 turn 都被按 0 分计入
-        # accuracy（口径未变），此前无任何迹象表明低分来自判分而非模型。
-        api_fail = _MT_BENCH_GRADE_FAILURES["api"]
-        unparsed = _MT_BENCH_GRADE_FAILURES["unparsed"]
-        if api_fail or unparsed:
-            self.color_print(
-                f"[mt_bench] 判分未成功：API/网络错误 {api_fail} 次、判分输出无法"
-                f"解析 {unparsed} 次；这些 turn 按 0 分计入 accuracy。若数量可观，"
-                "请勿把 accuracy 读作模型质量（判分服务可能限流/超时）。",
-                1,
-            )
-
-        self.color_print(f"current eval mode: {self.args.eval_mode}", 0)
-
-        # B35：只统计本次运行写入的行，避免重跑时旧数据混入速度。
-        record = read_results(out_path, skip_lines=existing_lines)
-
-        total_num_token, total_wall_time = [], []
-
-        for k in record:
-            num_tokens = torch.tensor(record[k]["num_token"])
-            wall_times = torch.tensor(record[k]["wall_time"])
-            total_num_token.extend(record[k]["num_token"])
-            total_wall_time.extend(record[k]["wall_time"])
-
-            speed = torch.sum(num_tokens) / torch.sum(wall_times)
-            speed_std = torch.std(num_tokens / wall_times)
-            self.color_print(
-                f"Generating speed of category {k}: {speed.float().item():.2f} with std {speed_std.float().item()} token / second",
-                2,
-            )
-
-        total_speed = torch.sum(torch.tensor(total_num_token)) / torch.sum(
-            torch.tensor(total_wall_time)
-        )
-        total_speed_std = torch.std(
-            torch.tensor(total_num_token) / torch.tensor(total_wall_time)
-        )
-        self.color_print(
-            f"Average generating speed: {total_speed.float().item():.2f} with std {total_speed_std.float().item()} token / second",
-            2,
-        )
-
-        # Print debug information
-        self.color_print(
-            f"wall_time: {torch.sum(torch.tensor(total_wall_time))}, num_token: {torch.sum(torch.tensor(total_num_token))}",
-            2,
-        )
-
-        if (
-            self.accelerator.is_main_process
-            and "accuracy" in decoding_metrics
-            and isinstance(decoding_metrics["accuracy"], list)
-            and len(decoding_metrics["accuracy"]) > 0
-        ):
-            avg_score = sum(decoding_metrics["accuracy"]) / len(
-                decoding_metrics["accuracy"]
-            )
-            decoding_metrics["accuracy"] = avg_score
-            self.color_print(f"MT-Bench Average Score: {avg_score:.2f}", 2)
-
-        if decoding_metrics["wall_time"] != 0:
-            decoding_metrics["throughput"] = (
-                decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-            )
-        else:
-            decoding_metrics["throughput"] = 0.0
-
-        # 过滤掉历史数据字段以避免打印过长
-
-        print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
-
-        eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-        decoding_metrics_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_mt_bench_metrics.json"
-        )
-        os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-        with open(decoding_metrics_path, "w") as f:
-            json.dump(eval_result, f, indent=4)
-        self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
-
-        self.accelerator.wait_for_everyone()
+class EvalMTBench(Evaluation):
+    task_type = MTBenchTask
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    alg = EvalMTBench(args)
-    alg.eval()
+    EvalMTBench(args).eval()
