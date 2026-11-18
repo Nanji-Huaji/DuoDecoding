@@ -1,65 +1,60 @@
+"""SpecBench：按 sub_domain 读本地 JSONL 的多域评测。
+
+任务只负责数据、prompt 构造与逐样本生成；warmup、decoder 组装与结果
+落盘由 ``eval.runner`` 负责。JSONL 文件名带 sub_domain（record_name），
+metrics 汇总文件仍用任务名。
+"""
+
 import os
 import sys
+from collections import Counter
+from statistics import stdev
 
-sys.path.append(os.path.join(sys.path[0], "../"))
-import json
-import random
-import time
-from functools import partial
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import tqdm
 from fastchat.model import get_conversation_template
-from few_shot_examples import get_few_shot_prompt
 
-from src.engine import Decoding
-from eval.model_ids import determine_model_id
-from src.utils import parse_arguments, seed_everything
-from utils import select_eval_data
+from eval.data import load_task_data  # noqa: E402
+from eval.eval_humaneval import postprocess_completion  # noqa: E402
+from eval.few_shot_examples import get_few_shot_prompt  # noqa: E402
+from eval.model_ids import determine_model_id  # noqa: E402
+from eval.runner import Evaluation  # noqa: E402
+from src.utils import parse_arguments  # noqa: E402
 
 
-class EvalSpecbench(Decoding):
-    def __init__(self, args):
-        super().__init__(args)
+class SpecbenchTask:
+    name = "specbench"
 
-        # load relative resources
-        self.load_tokenizer()
-        self.load_model()
-
-        self.task = "specbench"
-
+    def __init__(self, args, tokenizer):
+        self.args = args
+        self.tokenizer = tokenizer
         # D1：model_id 判定单点化（原内联链规则原样入表，task=specbench）
         self.model_id = determine_model_id(
-            "specbench", self.args.draft_model, self.args.target_model
+            "specbench", args.draft_model, args.target_model
         )
-
-        self.load_data()
-
-        self.draft_time = []
-        self.target_time = []
-        self.acc_num = []
+        # JSONL 记录名带 sub_domain；metrics 汇总文件仍用任务名。
+        self.record_name = f"specbench_{args.sub_domain}"
 
     def load_data(self):
-        # load evaluation data
-        self.color_print(f"Loading SpecBench/{self.args.sub_domain} data...", 3)
         data = []
-        with open(
-            os.path.join(self.args.data_path, f"{self.args.sub_domain}.jsonl")
-        ) as f:
-            for line in f.readlines():
-                datum = json.loads(line)
-                datum["input_text"] = self.preprocess(datum["turns"][0])
-                encode_special_token_flag = not (
-                    "Llama-3.1" in self.args.draft_model
-                    and "Llama-3.1" in self.args.target_model
-                )
-                # print(datum["input_text"])
-                input_ids = self.tokenizer.encode(
-                    datum["input_text"], add_special_tokens=encode_special_token_flag
-                )
-                datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
-                data.append(datum)
-        self.data = select_eval_data(data, self.args)
+        for datum in load_task_data("specbench", self.args):
+            datum["input_text"] = self.preprocess(datum["turns"][0])
+            # 与 humaneval 的 B34 同因（chat template 自带 BOS），但旧入口
+            # 只豁免 draft/target 同为 Llama-3.1 的组合——原样保留，不与
+            # _uses_chat_template 的集合统一。
+            encode_special_token_flag = not (
+                "Llama-3.1" in self.args.draft_model
+                and "Llama-3.1" in self.args.target_model
+            )
+            input_ids = self.tokenizer.encode(
+                datum["input_text"], add_special_tokens=encode_special_token_flag
+            )
+            datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
+            data.append(datum)
+        return data
 
     def preprocess(self, input_text):
         task_map = {
@@ -127,191 +122,115 @@ class EvalSpecbench(Decoding):
                 prompt = (few_shot_prompt + input_text).strip()
         return prompt
 
-    def postprocess(self, input_text, output_text):
-        bos_token = self.tokenizer.bos_token
-        if bos_token and output_text.startswith(bos_token):
-            generation = output_text[
-                len(input_text) + len(bos_token) + 1 :
-            ]  # tokenizer will add a '<s> ' at the beginning of the text.
-        else:
-            generation = output_text[len(input_text) :]
-        stop_words = [
-            "\nclass",
-            "\ndef",
-            "\n#",
-            "\n@",
-            "\nprint",
-            "\nif",
-            "\n```",
-        ]
-        if self.tokenizer.eos_token:
-            stop_words.append(self.tokenizer.eos_token)
+    def _warmup(self, run, data):
+        count = min(10, len(data))
+        if count <= 0:
+            return
+        print("Start warm up...")
+        for datum in tqdm.tqdm(
+            data[:count], total=count, disable=not run.is_main_process, ncols=50
+        ):
+            run.generate(datum["input_ids"], record=False, use_early_stopping=False)
 
-        for stop_word in stop_words:
-            if stop_word in generation:
-                next_line = generation.index(stop_word)
-                generation = generation[:next_line].strip()
-        output_text = input_text + "\n    " + generation
-        output_text = output_text.replace("\t", "    ")
+    def run(self, run, data):
+        wall_times = {"time": [], "num_tokens": []}
+        # Only retain the scalars needed for mean_*; token histories are already
+        # aggregated by the runner and can be much larger than the samples.
+        sums, counts = Counter(), Counter()
+        num_samples = int(getattr(run.args, "num_samples_per_task", 1) or 1)
+        for _ in range(num_samples):
+            # next_seed 同时负责 seed_everything 与跨样本种子去重
+            # （旧实现的 seed_set 循环）。
+            run.next_seed()
 
-        return output_text
+            self._warmup(run, data)
 
-    @torch.inference_mode()
-    def eval(self):
-        decoding = self.get_decoding_method()
-
-        decoding = partial(
-            decoding,
-            transfer_top_k=self.args.transfer_top_k,
-            use_precise_comm_sim=self.args.use_precise,
-            use_stochastic_comm=self.args.use_stochastic_comm,
-            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
-            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-        )
-
-        out_path = os.path.join(
-            self.args.exp_name,
-            f"{self.args.eval_mode}_specbench_{self.args.sub_domain}.jsonl",
-        )
-        out_f = open(out_path, "a")
-        wall_times = {"time": [], "num_tokens": [], "ttft": []}
-        for _ in range(self.args.num_samples_per_task):
-            # set random seed. Ensure each experiment runs with a unique random seed.
-            while self.seed in self.seed_set:
-                self.seed = random.randint(0, 1000000)
-            seed_everything(self.seed)
-            self.seed_set.add(self.seed)
-
-            # warm up
-            n = 10
-            print("Start warm up...")
-            for datum in tqdm.tqdm(
-                self.data,
-                total=len(self.data),
-                disable=not self.accelerator.is_main_process,
-                ncols=50,
-            ):
-                input_ids = datum["input_ids"]
-                generate_ids = decoding(input_ids)
-                # engine 所有注册解码方法都返回 (prefix, metrics) 元组
-                if isinstance(generate_ids, tuple):
-                    generate_ids, _ = generate_ids
-                n = n - 1
-                if n == 0:
-                    break
-
-            self.draft_forward_times = 0
-            self.target_forward_times = 0
-            self.num_acc_tokens = []
-            self.prob_with_flag = []  # draft每个token的prob与他是否被接收
-            decoded_metrics = []
+            # 每轮重复重置运行计数器，只统计末轮——旧口径。
+            decoder = run.decoder
+            decoder.draft_forward_times = 0
+            decoder.target_forward_times = 0
+            decoder.num_acc_tokens = []
 
             for datum in tqdm.tqdm(
-                self.data,
-                total=len(self.data),
-                disable=not self.accelerator.is_main_process,
-                ncols=50,
+                data, total=len(data), disable=not run.is_main_process, ncols=50
             ):
-                input_ids = datum["input_ids"]
-                torch.cuda.synchronize()
-                start_time = time.time()
-                generate_ids = decoding(input_ids)
-                # engine 所有注册解码方法都返回 (prefix, metrics) 元组
-                if isinstance(generate_ids, tuple):
-                    generate_ids, sample_metrics = generate_ids
-                    decoded_metrics.append(sample_metrics)
-
-                torch.cuda.synchronize()
-                end_time = time.time()
-                if self.accelerator.is_main_process:
-                    wall_times["time"].append(end_time - start_time)
-                    wall_times["num_tokens"].append(
-                        generate_ids.shape[1] - input_ids.shape[1]
+                # Legacy SpecBench measures the full token budget even when the
+                # general CLI early-stop flag is present.
+                output_ids, sample_metrics, elapsed = run.generate(
+                    datum["input_ids"], use_early_stopping=False
+                )
+                if run.is_main_process:
+                    for key, value in sample_metrics.items():
+                        if isinstance(value, (int, float)) and not isinstance(
+                            value, bool
+                        ):
+                            sums[key] += value
+                            counts[key] += 1
+                    new_tokens = int(output_ids.shape[1] - datum["input_ids"].shape[1])
+                    wall_times["time"].append(elapsed)
+                    wall_times["num_tokens"].append(new_tokens)
+                    output = postprocess_completion(
+                        self.tokenizer,
+                        datum["input_text"],
+                        self.tokenizer.decode(output_ids[0, :]),
                     )
-                    output = self.postprocess(
-                        datum["input_text"], self.tokenizer.decode(generate_ids[0, :])
+                    run.write(
+                        {
+                            "question_id": datum["question_id"],
+                            "time": elapsed,
+                            "new_tokens": new_tokens,
+                            "completion": output,
+                        }
                     )
-                    out_f.write(
-                        json.dumps(
-                            {
-                                "question_id": datum["question_id"],
-                                "time": end_time - start_time,
-                                "new_tokens": generate_ids.shape[1]
-                                - input_ids.shape[1],
-                                "completion": output,
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-                out_f.flush()
-        out_f.close()
 
-        self.color_print(f"current eval mode: {self.args.eval_mode}", 0)
-        self.color_print(f"draft model forward times: {self.draft_forward_times}", 2)
+        print(f"current eval mode: {run.args.eval_mode}")
+        print(f"draft model forward times: {run.decoder.draft_forward_times}")
 
-        self.accelerator.wait_for_everyone()
-
-        if (
-            self.accelerator.num_processes == 1 and self.accelerator.is_main_process
-        ) or (
-            self.accelerator.num_processes == 2 and not self.accelerator.is_main_process
+        accelerator = run.decoder.accelerator
+        num_processes = getattr(accelerator, "num_processes", 1)
+        if (num_processes == 1 and run.is_main_process) or (
+            num_processes == 2 and not run.is_main_process
         ):
             print(
-                f"\033[92mtarget model forward times: {self.target_forward_times}\033[0m"
+                f"\033[92mtarget model forward times: "
+                f"{run.decoder.target_forward_times}\033[0m"
             )
 
-        self.accelerator.wait_for_everyone()
+        if not run.is_main_process:
+            return {}
+        speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
+        speeds = [
+            n / t
+            for n, t in zip(wall_times["num_tokens"], wall_times["time"], strict=True)
+        ]
+        speed_std = stdev(speeds) if len(speeds) > 1 else 0.0
+        print(f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}")
 
-        if self.accelerator.is_main_process:
-            speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
-            speed_std = (
-                (
-                    torch.tensor(wall_times["num_tokens"])
-                    / torch.tensor(wall_times["time"])
-                )
-                .std()
-                .item()
-            )
-            self.color_print(
-                f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}",
-                2,
-            )
+        # 逐样本 metrics 汇总（mean_*），随 runner 一并写入
+        # {eval_mode}_specbench_metrics.json。
+        summary = {
+            "speed_tokens_per_second": speed,
+            "speed_std": speed_std,
+            "num_samples": len(wall_times["time"]),
+        }
+        summary.update(
+            {f"mean_{key}": total / counts[key] for key, total in sums.items()}
+        )
 
-            # 与 humaneval 对齐：落盘解码 metrics 汇总（此前该入口不写任何
-            # _metrics.json，跑完只剩终端打印）
-            metrics_path = os.path.join(
-                self.args.exp_name, f"{self.args.eval_mode}_specbench_metrics.json"
+        try:
+            print(
+                "Mean accepted tokens: "
+                f"{sum(run.decoder.num_acc_tokens) / len(run.decoder.num_acc_tokens)}"
             )
-            os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
-            summary = {
-                "speed_tokens_per_second": speed,
-                "speed_std": speed_std,
-                "num_samples": len(wall_times["time"]),
-            }
-            for key in (decoded_metrics[0] if decoded_metrics else {}):
-                values = [
-                    m[key]
-                    for m in decoded_metrics
-                    if isinstance(m.get(key), (int, float))
-                    and not isinstance(m.get(key), bool)
-                ]
-                if values:
-                    summary[f"mean_{key}"] = sum(values) / len(values)
-            with open(metrics_path, "w") as f:
-                json.dump(summary, f, indent=4)
-            self.color_print(f"Decoding metrics saved to {metrics_path}", 2)
+        except Exception:
+            pass
+        return summary
 
-        if self.accelerator.is_main_process:
-            try:
-                self.color_print(
-                    f"Mean accepted tokens: {sum(self.num_acc_tokens) / len(self.num_acc_tokens)}"
-                )
-            except:
-                pass
+
+class EvalSpecbench(Evaluation):
+    task_type = SpecbenchTask
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    alg = EvalSpecbench(args)   # 修正：本文件定义的类名是 EvalSpecbench
-    alg.eval()
+    EvalSpecbench(args).eval()

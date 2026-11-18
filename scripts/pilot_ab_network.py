@@ -36,7 +36,6 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
-import exp as _exp  # noqa: F401,E402  import 副作用：矩阵构建 + create_config 工厂
 from exp import (  # noqa: E402
     NTT_MS_EDGE_CLOUD,
     NTT_MS_EDGE_END,

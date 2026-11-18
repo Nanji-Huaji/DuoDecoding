@@ -7,7 +7,6 @@ import torch
 import torch.distributed as dist
 import transformers
 
-from abc import ABC, abstractmethod
 from typing import Any, List, Optional, Tuple, TypedDict, Literal, cast, Protocol
 
 from accelerate import Accelerator
@@ -103,7 +102,25 @@ INT_SIZE = 4
 from .dual_decoding import SpeculativeDecodingMixin as _SpeculativeDecodingMixin
 
 
-class Decoding(_SpeculativeDecodingMixin, Register, ABC):
+# These are load-time settings, not task or decoding parameters. The evaluator
+# uses the same rules when deciding whether existing weights are compatible.
+TRI_HIDDEN_STATE_MODES = frozenset(
+    {"adaptive_tridecoding", "cee_sd", "cee_sd_opportunistic", "cee_cuhlm"}
+)
+
+
+def tokenizer_source(mode, draft, target):
+    # The Llama-2 70B tokenizer adds a pad id the smaller models cannot embed.
+    target_name = str(target).lower()
+    if (
+        mode != "large" and "llama-2" in str(draft).lower()
+        and "llama-2" in target_name and "70b" in target_name
+    ):
+        return draft
+    return target
+
+
+class Decoding(_SpeculativeDecodingMixin, Register):
     def __init__(
         self,
         args,
@@ -115,7 +132,7 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
             metrics_dumper_factory = _load_default_metrics_dumper_factory()
         self.metrics_dumper_factory = metrics_dumper_factory
         self.metrics_dumper = self.metrics_dumper_factory(args)
-        if "RANK" in os.environ:
+        if "RANK" in os.environ and not dist.is_initialized():
             rank = int(os.environ["RANK"])
             size = int(os.environ["WORLD_SIZE"])
 
@@ -326,6 +343,10 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
         return torch.cuda.device_count()
 
     def load_model(self):
+        self.load_weights()
+
+    def load_weights(self):
+        """Load language-model weights without assembling task-specific policy heads."""
         # 真正跑评测的入口：统一降噪（原先在 import 时全局执行，见
         # configure_verbosity 的说明）。
         configure_verbosity()
@@ -514,12 +535,7 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
             )
 
         elif spec.models == "tri":
-            output_hidden_states = self.args.eval_mode in [
-                "adaptive_tridecoding",
-                "cee_sd",
-                "cee_sd_opportunistic",
-                "cee_cuhlm",
-            ]
+            output_hidden_states = self.args.eval_mode in TRI_HIDDEN_STATE_MODES
 
             little_device, draft_device, target_device, model_sizes = (
                 select_tri_model_devices(
@@ -639,26 +655,11 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
                 self.color_print("  Device: Unknown (no parameters)", 3)
 
     def load_tokenizer(self):
-        # * load tokenizers
-        tokenizer_model_name = self.args.target_model
-        draft_model_name = getattr(self.args, "draft_model", None)
-        target_name = str(self.args.target_model).lower()
-        draft_name = (
-            str(draft_model_name).lower() if draft_model_name is not None else ""
+        tokenizer_model_name = tokenizer_source(
+            self.args.eval_mode,
+            getattr(self.args, "draft_model", None),
+            self.args.target_model,
         )
-
-        # Tri-decoding shares one token space across little/draft/target. For the
-        # Llama-2 7B -> 70B path, the 70B tokenizer exposes an extra added <pad>
-        # token (id 32000) that the smaller models cannot embed, so prefer the
-        # draft tokenizer as the shared tokenizer.
-        if (
-            draft_model_name is not None
-            and self.args.eval_mode not in {"large"}
-            and "llama-2" in draft_name
-            and "llama-2" in target_name
-            and "70b" in target_name
-        ):
-            tokenizer_model_name = draft_model_name
 
         self.color_print(f"Loading tokenizer of {tokenizer_model_name}...", 3)
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -674,18 +675,6 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
                 self.tokenizer.pad_token_id = 2
             elif self.tokenizer.eos_token_id is not None:
                 self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
-
-    @abstractmethod
-    def load_data(self):
-        pass
-
-    @abstractmethod
-    def preprocess(self, input_text):
-        pass
-
-    @abstractmethod
-    def postprocess(self, input_text, output_text):
-        pass
 
     def _acquire_autoregressive_cache(
         self, attr: str, graph_kw: dict, model
@@ -1121,10 +1110,6 @@ class Decoding(_SpeculativeDecodingMixin, Register, ABC):
         )
         new_token = len(output_ids[0][len(input_ids[0]) :])
         return output_ids
-
-    @abstractmethod
-    def eval(self):
-        pass
 
     def color_print(self, content: str, color_number: int = 4) -> None:
         """Print colorized output on the main process when supported."""

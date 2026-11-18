@@ -268,8 +268,15 @@ LEGACY_EVAL_MODES: dict[str, str] = {
 }
 
 
-def parse_arguments():
-    """Specified arguments for running scripts."""
+def parse_arguments(argv: list[str] | None = None):
+    """Specified arguments for running scripts.
+
+    ``argv`` 为不含程序名的参数列表（默认 ``sys.argv[1:]``，即命令行行为
+    不变）。持久评测 worker（eval/worker.py）用它按 config 组 argv 解析，
+    避免改写全局 ``sys.argv``。
+    """
+    if argv is None:
+        argv = sys.argv[1:]
     parser = argparse.ArgumentParser(description="args for this file")
 
     # ---- 参数分组：只改变 --help 的排版，不改动任何默认值或行为 ----
@@ -1190,17 +1197,17 @@ def parse_arguments():
     # --use_rl_adapter 时才有意义，默认 --help 不展示——可见参数从 107 降到
     # 65（108 减去 RL 37 / curriculum 5 / 弃用的 --comm_accounting 1）；
     # 解析始终保留，旧脚本与 golden manifest 不受影响。
-    if "--help" in sys.argv and "--help-advanced" not in sys.argv:
+    if "--help" in argv and "--help-advanced" not in argv:
         for _group in (g_rl, g_curr):
             for _action in _group._group_actions:
                 _action.help = argparse.SUPPRESS
             parser._action_groups.remove(_group)
-    if "--help-advanced" in sys.argv:
+    if "--help-advanced" in argv:
         parser.print_help()
         raise SystemExit(0)
 
-    cli_args = sys.argv[1:]
-    args = parser.parse_args()
+    cli_args = argv
+    args = parser.parse_args(argv)
 
     _legacy_reason = LEGACY_EVAL_MODES.get(str(getattr(args, "eval_mode", "")))
     if _legacy_reason is not None:

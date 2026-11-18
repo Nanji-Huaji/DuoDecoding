@@ -1,27 +1,57 @@
+"""HumanEval：代码补全评测，子进程隔离执行测试用例判分。
+
+任务只负责数据、prompt 构造与逐样本判分（含超时熔断的 correctness
+helper，安全语义原样保留）；warmup、decoder 组装与结果落盘由
+``eval.runner`` 负责。
+"""
+
 import os
 import sys
 
-sys.path.append(os.path.join(sys.path[0], "../"))
-import json
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import multiprocessing
-import random
-import time
-from functools import partial
 
 import torch
 import tqdm
-from datasets import load_dataset
 from fastchat.model import get_conversation_template
-from few_shot_examples import get_few_shot_prompt
 
-from src.baselines import Baselines
-from src.metrics import accumulate_metrics
-from eval.model_ids import determine_model_id
-from src.metrics import get_empty_metrics
-from src.utils import parse_arguments, seed_everything
-from utils import select_eval_data
+from eval.data import load_task_data  # noqa: E402
+from eval.few_shot_examples import get_few_shot_prompt  # noqa: E402
+from eval.model_ids import determine_model_id  # noqa: E402
+from eval.runner import Evaluation  # noqa: E402
+from src.utils import parse_arguments  # noqa: E402
 
-decoding_metrics = get_empty_metrics()
+
+def postprocess_completion(tokenizer, input_text, output_text):
+    """从整段解码文本截出补全（HumanEval 与 SpecBench 的同一口径）。"""
+    bos_token = tokenizer.bos_token
+    if bos_token and output_text.startswith(bos_token):
+        generation = output_text[
+            len(input_text) + len(bos_token) + 1 :
+        ]  # tokenizer will add a '<s> ' at the beginning of the text.
+    else:
+        generation = output_text[len(input_text) :]
+    stop_words = [
+        "\nclass",
+        "\ndef",
+        "\n#",
+        "\n@",
+        "\nprint",
+        "\nif",
+        "\n```",
+    ]
+    if tokenizer.eos_token:
+        stop_words.append(tokenizer.eos_token)
+
+    for stop_word in stop_words:
+        if stop_word in generation:
+            next_line = generation.index(stop_word)
+            generation = generation[:next_line].strip()
+    output_text = input_text + "\n    " + generation
+    output_text = output_text.replace("\t", "    ")
+    return output_text
 
 
 def check_correctness_worker(check_program, result_queue):
@@ -52,74 +82,52 @@ def check_correctness(completion, test_code, entry_point, timeout=3.0):
     return 0  # Failed/Empty
 
 
-class EvalHumaneval(Baselines):
+class HumanevalTask:
+    name = "humaneval"
+
     # B34：preprocess 里会走 chat template（模板自带 BOS）的 model_id 集合。
     # 该集合必须与下面 preprocess 的模板分支保持一致。
     CHAT_TEMPLATE_MODEL_IDS = ("llama-3.1", "llama-3.2", "llama-3", "qwen", "gemma")
 
+    # 旧入口的解码停串：warmup 与评测同样绑定。
+    STOP_SEQUENCES = ["\nclass", "\ndef", "\nif", "\nprint"]
+
+    def __init__(self, args, tokenizer):
+        self.args = args
+        self.tokenizer = tokenizer
+        # D1：model_id 判定单点化（原内联链规则原样入表，task=humaneval）
+        self.model_id = determine_model_id(
+            "humaneval", args.draft_model, args.target_model
+        )
+        self.acc_num = []
+
     def _uses_chat_template(self) -> bool:
         return self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
 
-    def __init__(self, args):
-        super().__init__(args)
-
-        # load relative resources
-        self.load_tokenizer()
-        self.load_model()
-
-        self.task = "humaneval"
-
-        # D1：model_id 判定单点化（原内联链规则原样入表，task=humaneval）
-        self.model_id = determine_model_id(
-            "humaneval", self.args.draft_model, self.args.target_model
-        )
-
-        self.load_data()
-
-        self.draft_time = []
-        self.target_time = []
-        self.acc_num = []
-
     def load_data(self):
-        # * load evaluation data
-        self.color_print("Loading HumanEval data from HuggingFace...", 3)
         data = []
-        try:
-            hf_data = load_dataset("openai_humaneval", split="test")
-        except Exception as e:
-            self.color_print(f"Failed to load dataset from Hugging Face: {e}", 1)
-            raise e
-
-        for datum_item in hf_data:
+        for datum_item in load_task_data("humaneval", self.args):
             datum = dict(datum_item)
             datum["input_text"] = self.preprocess(datum["prompt"])
             # B34：走 chat template 的模型族，模板自带 BOS，encode 时必须关
-            # add_special_tokens，否则 Llama-3/3.2/gemma 会双 BOS。此前只豁免了
-            # draft 与 target 同时为 Llama-3.1 的情况。
+            # add_special_tokens，否则 Llama-3/3.2/gemma 会双 BOS。
             input_ids = self.tokenizer.encode(
-                datum["input_text"],
-                add_special_tokens=not self._uses_chat_template(),
+                datum["input_text"], add_special_tokens=not self._uses_chat_template()
             )
             datum["input_ids"] = torch.tensor(input_ids).unsqueeze(0)
             data.append(datum)
-
-        self.data = select_eval_data(data, self.args)
-        self.color_print(
-            f"Loaded {len(self.data)} items from Hugging Face openai_humaneval", 2
-        )
+        return data
 
     def preprocess(self, input_text):
         few_shot_prompt = get_few_shot_prompt("humaneval", self.args.num_shots)
         full_input = few_shot_prompt + input_text
 
-        if (
-            self.model_id in self.CHAT_TEMPLATE_MODEL_IDS
-            and self.model_id != "gemma"
-        ):
+        if self.model_id in self.CHAT_TEMPLATE_MODEL_IDS and self.model_id != "gemma":
             messages = [
                 {
                     "role": "system",
-                    "content": "You are a helpful assistant. Please complete the following python code.",
+                    "content": "You are a helpful assistant. "
+                    "Please complete the following python code.",
                 },
                 {"role": "user", "content": full_input},
             ]
@@ -154,159 +162,76 @@ class EvalHumaneval(Baselines):
         else:
             return full_input.strip()
 
-    def postprocess(self, input_text, output_text):
-        bos_token = self.tokenizer.bos_token
-        if bos_token and output_text.startswith(bos_token):
-            generation = output_text[
-                len(input_text) + len(bos_token) + 1 :
-            ]  # tokenizer will add a '<s> ' at the beginning of the text.
-        else:
-            generation = output_text[len(input_text) :]
-        stop_words = [
-            "\nclass",
-            "\ndef",
-            "\n#",
-            "\n@",
-            "\nprint",
-            "\nif",
-            "\n```",
-        ]
-        if self.tokenizer.eos_token:
-            stop_words.append(self.tokenizer.eos_token)
+    def _warmup(self, run, data):
+        count = min(10, len(data))
+        if count <= 0:
+            return
+        print("Start warm up...")
+        for datum in tqdm.tqdm(
+            data[:count], total=count, disable=not run.is_main_process, ncols=50
+        ):
+            run.generate(
+                datum["input_ids"], record=False, stop_sequences=self.STOP_SEQUENCES
+            )
 
-        for stop_word in stop_words:
-            if stop_word in generation:
-                next_line = generation.index(stop_word)
-                generation = generation[:next_line].strip()
-        output_text = input_text + "\n    " + generation
-        output_text = output_text.replace("\t", "    ")
+    def run(self, run, data):
+        wall_times = {"time": [], "num_tokens": []}
+        num_samples = int(getattr(run.args, "num_samples_per_task", 1) or 1)
+        for _ in range(num_samples):
+            # next_seed 同时负责 seed_everything 与跨样本种子去重
+            # （旧实现的 seed_set 循环）。
+            run.next_seed()
 
-        return output_text
+            self._warmup(run, data)
 
-    @torch.no_grad()
-    def eval(self, total: int | None = 80):
-        global decoding_metrics
-        decoding = self.get_decoding_method()
+            # 每轮重复重置运行计数器，只统计末轮——旧口径。
+            decoder = run.decoder
+            decoder.draft_forward_times = 0
+            decoder.target_forward_times = 0
+            decoder.num_acc_tokens = []
 
-        decoding = partial(
-            decoding,
-            transfer_top_k=self.args.transfer_top_k,
-            use_precise_comm_sim=self.args.use_precise,
-            use_stochastic_comm=self.args.use_stochastic_comm,
-            ntt_ms_edge_cloud=self.args.ntt_ms_edge_cloud,
-            ntt_ms_edge_end=self.args.ntt_ms_edge_end,
-            use_early_stopping=self.args.use_early_stopping,
-            stop_sequences=["\nclass", "\ndef", "\nif", "\nprint"],
-        )
-
-        out_path = os.path.join(
-            self.args.exp_name, f"{self.args.eval_mode}_humaneval.jsonl"
-        )
-        out_f = open(out_path, "a")
-        wall_times = {"time": [], "num_tokens": [], "ttft": []}
-        for _ in range(self.args.num_samples_per_task):
-            # set random seed. Ensure each experiment runs with a unique random seed.
-            while self.seed in self.seed_set:
-                self.seed = random.randint(0, 1000000)
-            seed_everything(self.seed)
-            self.seed_set.add(self.seed)
-
-            # warm up
-            n = 10
-            all_time = 0
-            print("Start warm up...")
-            for datum in tqdm.tqdm(
-                self.data,
-                total=len(self.data),
-                disable=not self.accelerator.is_main_process,
-                ncols=50,
-            ):
-                input_ids = datum["input_ids"]
-                if self.args.eval_mode == "para_sd_hybrid":
-                    generate_ids = decoding(input_ids)
-                else:
-                    generate_ids = decoding(input_ids)
-                if isinstance(generate_ids, tuple):
-                    generate_ids, _ = generate_ids
-                t = 0
-                all_time += max(0, t)
-                n = n - 1
-                if n == 0:
-                    break
-
-            self.draft_forward_times = 0
-            self.target_forward_times = 0
-            self.num_acc_tokens = []
-            self.prob_with_flag = []  # draft每个token的prob与他是否被接收
-
-            eval_data = self.data
-            if total is not None:
-                eval_data = self.data[:total]
-
-            for datum in tqdm.tqdm(
-                eval_data,
-                disable=not self.accelerator.is_main_process,
-                ncols=50,
-            ):
-                input_ids = datum["input_ids"]
-                torch.cuda.synchronize()
-                start_time = time.time()
-                generate_ids = decoding(input_ids)
-                if isinstance(generate_ids, tuple):
-                    generate_ids, metrics = generate_ids
-                    # B30：单点化（原实现无键检查——metrics 缺键即 KeyError）
-                    accumulate_metrics(decoding_metrics, metrics)
-                t = 0
-                torch.cuda.synchronize()
-                end_time = time.time()
-                if self.accelerator.is_main_process:
-                    wall_times["time"].append(end_time - start_time)
-                    wall_times["num_tokens"].append(
-                        generate_ids.shape[1] - input_ids.shape[1]
-                    )
-                    output = self.postprocess(
-                        datum["input_text"], self.tokenizer.decode(generate_ids[0, :])
+            for datum in tqdm.tqdm(data, disable=not run.is_main_process, ncols=50):
+                output_ids, _, elapsed = run.generate(
+                    datum["input_ids"], stop_sequences=self.STOP_SEQUENCES
+                )
+                if run.is_main_process:
+                    new_tokens = int(output_ids.shape[1] - datum["input_ids"].shape[1])
+                    wall_times["time"].append(elapsed)
+                    wall_times["num_tokens"].append(new_tokens)
+                    output = postprocess_completion(
+                        self.tokenizer,
+                        datum["input_text"],
+                        self.tokenizer.decode(output_ids[0, :]),
                     )
                     passed = check_correctness(
                         output, datum["test"], datum["entry_point"]
                     )
                     self.acc_num.append(passed)
-                    out_f.write(
-                        json.dumps(
-                            {
-                                "task_id": datum["task_id"],
-                                "time": end_time - start_time,
-                                "new_tokens": generate_ids.shape[1]
-                                - input_ids.shape[1],
-                                "completion": output,
-                                "passed": passed,
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
+                    run.write(
+                        {
+                            "task_id": datum["task_id"],
+                            "time": elapsed,
+                            "new_tokens": new_tokens,
+                            "completion": output,
+                            "passed": passed,
+                        }
                     )
-                out_f.flush()
-            # print(all_time)
-        out_f.close()
 
-        self.color_print(f"current eval mode: {self.args.eval_mode}", 0)
-        self.color_print(f"draft model forward times: {self.draft_forward_times}", 2)
+        print(f"current eval mode: {run.args.eval_mode}")
+        print(f"draft model forward times: {run.decoder.draft_forward_times}")
 
-        self.accelerator.wait_for_everyone()
-
-        if (
-            self.accelerator.num_processes == 1 and self.accelerator.is_main_process
-        ) or (
-            self.accelerator.num_processes == 2 and not self.accelerator.is_main_process
+        accelerator = run.decoder.accelerator
+        num_processes = getattr(accelerator, "num_processes", 1)
+        if (num_processes == 1 and run.is_main_process) or (
+            num_processes == 2 and not run.is_main_process
         ):
             print(
-                f"\033[92mtarget model forward times: {self.target_forward_times}\033[0m"
+                f"\033[92mtarget model forward times: "
+                f"{run.decoder.target_forward_times}\033[0m"
             )
 
-        self.accelerator.wait_for_everyone()
-
-        if self.accelerator.is_main_process:
-            if len(wall_times["time"]) > 0 and sum(wall_times["time"]) > 0:
+        if run.is_main_process:
+            if wall_times["time"] and sum(wall_times["time"]) > 0:
                 speed = sum(wall_times["num_tokens"]) / sum(wall_times["time"])
                 speed_std = (
                     (
@@ -316,46 +241,22 @@ class EvalHumaneval(Baselines):
                     .std()
                     .item()
                 )
-                self.color_print(
-                    f"generate speed (tokens / second):  {speed:.2f} with std {speed_std}",
-                    2,
+                print(
+                    f"generate speed (tokens / second):  {speed:.2f} "
+                    f"with std {speed_std}"
                 )
             else:
-                self.color_print("No generation time recorded.", 3)
+                print("No generation time recorded.")
 
-            if len(self.acc_num) > 0:
-                decoding_metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
+            if self.acc_num:
+                run.metrics["accuracy"] = sum(self.acc_num) / len(self.acc_num)
+        return {}
 
-            if decoding_metrics["wall_time"] != 0:
-                decoding_metrics["throughput"] = (
-                    decoding_metrics["generated_tokens"] / decoding_metrics["wall_time"]
-                )
-            else:
-                decoding_metrics["throughput"] = 0.0
 
-            print(self.metrics_dumper.get_printable_metrics(decoding_metrics))
-
-            # Save summaries
-            eval_result = self.metrics_dumper.get_save_dict(decoding_metrics)
-
-            decoding_metrics_path = os.path.join(
-                self.args.exp_name, f"{self.args.eval_mode}_humaneval_metrics.json"
-            )
-            os.makedirs(os.path.dirname(decoding_metrics_path), exist_ok=True)
-            with open(decoding_metrics_path, "w") as f:
-                json.dump(eval_result, f, indent=4)
-            self.color_print(f"Decoding metrics saved to {decoding_metrics_path}", 2)
-
-        # if self.accelerator.is_main_process:
-        #     try:
-        #         self.color_print(
-        #             f"Mean accepted tokens: {sum(self.num_acc_tokens) / len(self.num_acc_tokens)}"
-        #         )
-        #     except:
-        #         pass
+class EvalHumaneval(Evaluation):
+    task_type = HumanevalTask
 
 
 if __name__ == "__main__":
     args = parse_arguments()
-    alg = EvalHumaneval(args)
-    alg.eval(args.eval_data_num)
+    EvalHumaneval(args).eval(args.eval_data_num)

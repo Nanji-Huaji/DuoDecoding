@@ -327,23 +327,22 @@ For more details, see `docs/rl_agent_checkpoints.md`.
 
 ### Batch Experiments via `exp.py`
 
-`exp.py` is a batch runner, not a generic CLI wrapper. It does the following:
-
-- builds `config_to_run` in Python
-- detects idle GPUs with NVML
-- launches experiments in parallel
-- writes per-run logs to `exp_logs/`
-- writes a summary JSON to the repository root as `experiment_summary_<timestamp>.json`
-
-Run it with:
+Preview the default Table V matrix (135 configurations) before allocating GPUs:
 
 ```bash
-python exp.py
+python exp.py --dry-run
+python exp.py --extra-modes=tridecoding --only-modes tridecoding --dry-run
+python exp.py --only-modes dsd,dssd --max-workers 2 --summary-file experiment_results/current.json
 ```
 
-Before doing that, edit the `create_config(...)` calls near the bottom of `exp.py` to match the experiments you actually want to run.
+The scheduler groups jobs by the weights they actually load. Each group runs serially in a persistent `eval.worker` process on its assigned GPUs; independent groups can run in parallel. Each completed job gets its own log under `exp_logs/` and is checkpointed to the batch summary. To retry only unfinished configurations and merge the results:
 
-Current caveat: `exp.py` launches `accelerate` through the hard-coded path `/home/tiantianyi/code/DuoDecoding/.venv/bin/accelerate`. If your environment is different, update `cmd_temp` in `exp.py` first.
+```bash
+python exp.py --only-modes dsd,dssd --resume-from experiment_results/current.json \
+    --merge-from experiment_results/current.json --merged-output experiment_results/merged.json
+```
+
+For a custom sweep, `from exp import create_config, run_experiments_parallel` and pass a list of configurations. Importing the module does not parse arguments or materialize the matrix. `build_matrix()` returns a fresh list; the old `config_to_run` name remains available on request. Edit [matrix.py](src/experiments/matrix.py) to change Table V, not the CLI. Per-task evaluation is documented in the [evaluation guide](eval/README.md).
 
 ### Debug Checks
 
@@ -364,7 +363,7 @@ Leave both variables unset for normal benchmarking.
 
 - Single-run outputs are written under `exp/<exp_name>/`.
 - Batch logs are written under `exp_logs/`.
-- Batch summaries are written as `experiment_summary_<timestamp>.json`.
+- By default, batch summaries are written to `experiment_results/experiment_summary_<timestamp>.json`.
 - `notebooks/table_generator_ver2.ipynb` can be pointed to a summary JSON for result aggregation.
 
 ### Bash Scripts and vLLM Test Scripts
