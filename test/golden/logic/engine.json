@@ -1,7 +1,8 @@
 {
   "path": "src/engine.py",
   "include": [
-    "src/dual_decoding.py"
+    "src/dual_decoding.py",
+    "src/legacy/bandwidth_sd.py"
   ],
   "rev": "WORKTREE",
   "entries": {
@@ -74,7 +75,7 @@
         }
       }
     },
-    "Decoding.speculative_decoding_with_bandwidth": {
+    "speculative_decoding_with_bandwidth": {
       "events": 71,
       "sha256_16": "813d9d4c820391a1",
       "surface": {
@@ -141,6 +142,7 @@
     }
   },
   "entry_mapping": {
-    "Decoding.speculative_decoding": "SpeculativeDecodingMixin.speculative_decoding"
+    "Decoding.speculative_decoding": "SpeculativeDecodingMixin.speculative_decoding",
+    "Decoding.speculative_decoding_with_bandwidth": "speculative_decoding_with_bandwidth"
   }
 }

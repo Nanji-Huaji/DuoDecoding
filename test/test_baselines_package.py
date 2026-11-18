@@ -51,12 +51,10 @@ EXPECTED_REGISTRATIONS = {
     "dist_split_spec": "DualDecodingMixin.dist_split_spec",
     "dsd": "DualDecodingMixin.dist_spec",
     "dssd": "DualDecodingMixin.dist_split_spec",
-    "large": "Decoding.autoregressive_sampling",
+    "large": "autoregressive_sampling",
     "sd": "SpeculativeDecodingMixin.speculative_decoding",
-    "small": "Decoding.autoregressive_sampling",
-    "speculative_decoding_with_bandwidth": (
-        "Decoding.speculative_decoding_with_bandwidth"
-    ),
+    "small": "autoregressive_sampling",
+    "speculative_decoding_with_bandwidth": "speculative_decoding_with_bandwidth",
     "target_only": "Baselines.target_only",
     "tk_slt": "TkSltMixin.tk_slt",
     "tkslt": "TkSltMixin.tk_slt",
@@ -166,6 +164,8 @@ from src.baselines import (
     simulators,
     _make_comm_simulator,
 )
+from src import autoregressive
+from src.legacy import bandwidth_sd
 from src.register import Register
 assert Baselines is core.Baselines
 assert _make_comm_simulator is core._make_comm_simulator
@@ -180,6 +180,8 @@ assert Baselines.cee_sd_opportunistic is cee.CeeSdMixin.cee_sd_opportunistic
 assert Baselines.uncertainty_decoding is cuhlm.CuhlmMixin.uncertainty_decoding
 assert Baselines.cee_cuhlm is cee_cuhlm.CeeCuhlmMixin.cee_cuhlm
 assert Baselines.__init__ is runtime.RuntimeResources.__init__
+assert Baselines.speculative_decoding_with_bandwidth is bandwidth_sd.speculative_decoding_with_bandwidth
+assert Baselines.autoregressive_sampling is autoregressive.autoregressive_sampling
 assert Baselines._stop_at_eos is operations.SharedOperations._stop_at_eos
 registry = Register._DECODING_REGISTRY
 for left, right in (
@@ -312,6 +314,8 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
         )
     ] + [
         Path(__file__).resolve().parents[1] / "src" / "engine.py",
+        Path(__file__).resolve().parents[1] / "src" / "autoregressive.py",
+        Path(__file__).resolve().parents[1] / "src" / "legacy" / "bandwidth_sd.py",
         Path(__file__).resolve().parents[1] / "src" / "dual_decoding.py",
     ]
     definitions: dict[str, list[str]] = {}
@@ -321,6 +325,9 @@ def test_each_family_method_is_defined_in_exactly_one_real_module():
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 definitions.setdefault(node.name, []).append(path.name)
     moved = (
+        "autoregressive_sampling",
+        "lookahead_forward",
+        "speculative_decoding_with_bandwidth",
         "speculative_decoding",
         "dist_spec",
         "dist_split_spec",
