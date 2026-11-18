@@ -12,7 +12,7 @@ import torch
 from eval.data import load_task_data
 from eval.decoder import ModelStore, model_key
 from eval.eval_gsm8k import EvalGSM8K
-from src import engine
+from src import engine, model_runtime
 from src.register import Register
 
 
@@ -33,7 +33,7 @@ def local_models(monkeypatch):
             return str(int(ids[-1]))
 
     monkeypatch.setattr(
-        engine.AutoTokenizer, "from_pretrained", lambda *a, **kw: Tokenizer()
+        model_runtime.AutoTokenizer, "from_pretrained", lambda *a, **kw: Tokenizer()
     )
     monkeypatch.setattr(
         engine,
@@ -49,7 +49,7 @@ def local_models(monkeypatch):
         get_input_embeddings=lambda: SimpleNamespace(weight=torch.empty(8, 1)),
     )
     load = Mock(return_value=model)
-    monkeypatch.setattr(engine, "load_causal_lm", load)
+    monkeypatch.setattr(model_runtime, "load_causal_lm", load)
     store = ModelStore()
     try:
         yield store, load, model

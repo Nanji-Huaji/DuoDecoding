@@ -37,11 +37,13 @@ def _load_dsd_models(*, keep_target_on_single_gpu: bool):
         return None
 
     with (
+        # 加载逻辑迁入 src.model_runtime 后，patch 目标随之移动；
+        # GPU 数仍经 Decoding._get_available_gpu_count 注入。行为断言不变。
         patch.object(Decoding, "_get_available_gpu_count", return_value=2),
-        patch("src.engine.build_quant_config", return_value=None),
-        patch("src.engine.load_causal_lm", side_effect=load_causal_lm),
+        patch("src.model_runtime.build_quant_config", return_value=None),
+        patch("src.model_runtime.load_causal_lm", side_effect=load_causal_lm),
         patch(
-            "src.engine.build_sharded_target_device_map",
+            "src.model_runtime.build_sharded_target_device_map",
             return_value=("auto", {0: "20GiB", 1: "17GiB"}),
         ) as build_sharded_target_device_map,
     ):
