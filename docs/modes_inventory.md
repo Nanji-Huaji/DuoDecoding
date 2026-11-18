@@ -87,7 +87,7 @@
 | `--gamma1/--gamma2` | CEE-SD 三级 | draft→target / little→draft 窗口**初值**（topk_thr 下 agent 不控窗口，γ1 固定生效） |
 | `rl_gamma_candidates` | 仅 topk_thr_gamma | γ 作为动作（实验动作空间） |
 
-主表 γ* 分档（exp.py `GAMMA_BY_MODE_BANDWIDTH`，2026-10-10 曲线验证）：
+主表 γ* 分档（[矩阵设置 `GAMMA_BY_MODE_BANDWIDTH`](<../src/experiments/matrix.py>)，2026-10-10 曲线验证）：
 dsd {46:3, 10:1, 5:1}，dssd/tk_slt 8，cuhlm 3（γ 盲），cee_sD γ1=γ2=5。
 **已知问题**：训练用 γ1=γ2=16、评测 5（历史配方沿用）；有效深度实际由
 ARP 阈值早停决定（见 docs 内 ceesd_gamma_threshold_probe.md）。

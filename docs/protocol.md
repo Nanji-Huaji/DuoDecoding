@@ -304,7 +304,7 @@ edge_cloud（矩阵基线只用它）。回归锁定：
 用统一 γ=3（"前向数与论文对齐"的复现口径，DSD 4113 vs 3980）。γ 扫描
 （`experiment_results/gamma_sweep_dsd-dssd-cuhlm-tk_slt_llama_gsm8k.json`，
 80 样本/格）+ fluid 口径跨带宽预览（解码侧量与带宽无关，重放推断）给出
-各方法自己的 γ*，`exp.py:GAMMA_BY_MODE_BANDWIDTH` 落地：
+各方法自己的 γ*，取值见[主矩阵的 `GAMMA_BY_MODE_BANDWIDTH`](<../src/experiments/matrix.py>)：
 
 | 方法 | 46 Mbps | 10 Mbps | 5 Mbps | 依据 |
 |---|---|---|---|---|
