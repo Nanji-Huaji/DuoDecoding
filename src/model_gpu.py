@@ -1,6 +1,10 @@
+from collections.abc import Iterator, Sequence
+from typing import Any, Optional, Protocol, TypeAlias, TypeGuard, cast
+
 import torch
 from transformers.cache_utils import DynamicCache
 
+from .decoding_types import TopKProposalHistory
 from .proposal_utils import (
     build_topk_proposal_history_step,
     concat_topk_proposal_history,
@@ -12,10 +16,6 @@ from .utils import (
     rebuild_topk_uniform_probs,
     sample,
 )
-
-from collections.abc import Sequence
-from typing import Any, Protocol, Iterator, TypeAlias, TypeGuard, cast, Optional
-
 
 KVPair: TypeAlias = tuple[torch.Tensor, torch.Tensor]
 LegacyPastKeyValues: TypeAlias = tuple[KVPair, ...]
@@ -46,6 +46,15 @@ def _is_cache_like(value: PastKeyValues) -> TypeGuard[CacheLike]:
 
 def _is_legacy_past(value: PastKeyValues) -> TypeGuard[LegacyPastKeyValues]:
     return isinstance(value, tuple)
+
+
+def _past_length(past: PastKeyValues) -> int:
+    if past is None:
+        return 0
+    if _is_cache_like(past):
+        return past.get_seq_length()
+    assert _is_legacy_past(past)
+    return past[0][0].shape[2] if past else 0
 
 
 class CausalModel(Protocol):
@@ -140,69 +149,35 @@ class KVCacheModel:
     def _new_dynamic_cache(self) -> DynamicCache:
         return DynamicCache(config=self._model.config)
 
-    def _build_model_inputs(self, input_ids: torch.Tensor, *, use_cache: bool) -> dict:
-        model_inputs: dict[str, object] = {
-            "input_ids": input_ids,
-            "use_cache": use_cache,
-        }
-
-        seq_len = input_ids.shape[1]
-        device = input_ids.device
-        past_seen_tokens = self.current_length if self._past_key_values is not None else 0
-        attention_len = past_seen_tokens + seq_len if use_cache else seq_len
-        attention_mask = torch.ones(
-            (input_ids.shape[0], attention_len), dtype=torch.long, device=device
-        )
-        model_inputs["attention_mask"] = attention_mask
-
-        return model_inputs
-
     def _prepare_generation_inputs(
         self,
         input_ids: torch.Tensor,
         *,
         past_key_values: PastKeyValues,
     ) -> dict[str, object]:
-        batch_size, seq_len = input_ids.shape
-        cache_start = 0
-        if past_key_values is not None and _is_cache_like(past_key_values):
-            cache_start = past_key_values.get_seq_length()
-
-        # 图模式下缓存是预分配的 StaticCache，它的内部计数**不会随我们的回滚后退**
-        # （回滚只改 runner.nnz，旧槽位等后续写入覆盖）。如果这里仍以它为权威，
-        # 回滚之后的 eager 回退（new_len > 1 的短后缀）就会把 KV 写到错位的偏移上，
-        # 表现为 prob_history 越界（曾观测到 n1=358 而 len=341，差 17 = gamma2+1）。
-        # 因此图模式下以 Python 侧的 _current_seq_len 为准。
-        if self._graph_runner is not None:
-            cache_start = self._current_seq_len
-
-        attention_mask = torch.ones(
-            (batch_size, cache_start + seq_len),
-            dtype=torch.long,
-            device=input_ids.device,
+        # StaticCache 的物理槽位不会随 rollback 缩短；回退到 eager 时仍从逻辑端点写。
+        start = (
+            self._current_seq_len
+            if self._graph_runner is not None
+            else _past_length(past_key_values)
         )
-        cache_position = torch.arange(
-            cache_start,
-            cache_start + seq_len,
-            dtype=torch.long,
-            device=input_ids.device,
-        )
-
+        batch, count = input_ids.shape
+        end = start + count
+        kwargs = {
+            "past_key_values": past_key_values,
+            "attention_mask": torch.ones(
+                (batch, end), device=input_ids.device, dtype=torch.long
+            ),
+            "cache_position": torch.arange(
+                start, end, device=input_ids.device, dtype=torch.long
+            ),
+            "use_cache": True,
+        }
         if hasattr(self._model, "prepare_inputs_for_generation"):
-            prepared_inputs = self._model.prepare_inputs_for_generation(
-                input_ids,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                cache_position=cache_position,
-                use_cache=True,
-            )
-            prepared_inputs["use_cache"] = True
-            return cast(dict[str, object], prepared_inputs)
-
-        model_inputs = self._build_model_inputs(input_ids, use_cache=True)
-        model_inputs["past_key_values"] = past_key_values
-        model_inputs["cache_position"] = cache_position
-        return model_inputs
+            prepared = self._model.prepare_inputs_for_generation(input_ids, **kwargs)
+            prepared["use_cache"] = True
+            return cast(dict[str, object], prepared)
+        return {"input_ids": input_ids, **kwargs}
 
     @property
     def last_entropy(self) -> float | None:
@@ -249,58 +224,40 @@ class KVCacheModel:
     def _ensure_buffer_size(
         self, batch_size: int, seq_len: int, device: torch.device, dtype: torch.dtype
     ):
-        # Dynamically resize buffers to prevent OOM on large context while maintaining contiguous memory access
-        if self._prob_buffer is None:
-            if not self._has_explicit_max_length:
-                self.max_length = max(2048, seq_len + 1024)
-            elif seq_len > self.max_length:
-                self.max_length = max(self.max_length * 2, seq_len + 1024)
-            self._prob_buffer = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
-            self._logits_buffer = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
-            )
+        if self._prob_buffer is not None and seq_len <= self.max_length:
             return
 
-        if seq_len > self.max_length:
-            old_len = self.max_length
-            self.max_length = max(self.max_length * 2, seq_len + 1024)
-
-            runner = getattr(self, "_graph_runner", None)
-            if (
-                runner is not None
-                and runner.graph is not None
-                and getattr(runner, "capture_post", False)
-            ):
-                # 图内 index_copy_ 冻结了旧缓冲地址；扩容换址 = 图回放写野地址。
-                # 图模式桶长公式保证 end_pos < 缓冲长度，走到这里说明不变量被破坏。
-                raise RuntimeError(
-                    "前后处理进图模式下历史缓冲不允许扩容（图冻结了旧地址）；"
-                    f"seq_len={seq_len} > max_length={old_len}，"
-                    "请增大图缓存桶长（graph_len_budget）"
-                )
-
-            new_prob = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
+        runner = self._graph_runner
+        if runner is not None and runner.graph is not None and runner.capture_post:
+            # 图内的 index_copy_ 仍指向原地址，不能换缓冲，也不能先改容量。
+            raise RuntimeError(
+                "前后处理进图模式下历史缓冲不允许扩容（图冻结了旧地址）；"
+                f"seq_len={seq_len} > max_length={self.max_length}，"
+                "请增大图缓存桶长（graph_len_budget）"
             )
-            new_prob[:, :old_len, :] = self._prob_buffer
-            self._prob_buffer = new_prob
 
-            new_logits = torch.empty(
-                (batch_size, self.max_length, self.vocab_size),
-                device=device,
-                dtype=dtype,
+        capacity = self.max_length
+        if self._prob_buffer is None and runner is not None:
+            # Runner 的静态桶已定好：捕获前按同一桶分配，不能再套 eager 的余量公式。
+            capacity = runner.max_len
+        elif self._prob_buffer is None and not self._has_explicit_max_length:
+            capacity = max(2048, seq_len + 1024)
+        elif seq_len > capacity:
+            capacity = max(2 * capacity, seq_len + 1024)
+
+        def allocate(old: torch.Tensor | None) -> torch.Tensor:
+            buf = torch.empty(
+                (batch_size, capacity, self.vocab_size), device=device, dtype=dtype
             )
-            if self._logits_buffer is not None:
-                new_logits[:, :old_len, :] = self._logits_buffer
-            self._logits_buffer = new_logits
+            if old is not None:
+                n = self._current_seq_len
+                buf[:, :n].copy_(old[:, :n])
+            return buf
+
+        # 一次替换一个大缓冲；只保留逻辑前缀，不复制已回滚或未初始化的行。
+        self._prob_buffer = allocate(self._prob_buffer)
+        self._logits_buffer = allocate(self._logits_buffer)
+        self.max_length = capacity
 
     def _raise_if_invalid_probs(self, probs: torch.Tensor, label: str) -> None:
         if not numeric_debug_checks_enabled():
@@ -318,6 +275,58 @@ class KVCacheModel:
             f"shape={tuple(probs.shape)}, row_sum_min={float(row_sums.min().item())}, "
             f"row_sum_max={float(row_sums.max().item())}"
         )
+
+    def _publish_forward_history(
+        self,
+        logits: torch.Tensor,
+        *,
+        start: int,
+        count: int,
+        prob_label: str,
+        validate_last_row_only: bool = False,
+    ) -> torch.Tensor:
+        """把一段前向的原始 logits 发布进历史并归一化，返回下一 token 概率行。
+
+        切片到词表 → logits 历史 → 原始 logits 熵 → norm_logits → 数值校验 →
+        prob 历史。四个入口（eager prefill / 图 prefill / decode 的 eager 回退
+        与未捕获图回放）共用这一条链，保证历史、熵与返回值语义逐位一致。
+
+        返回 **norm_logits 的原样输出**（temp=0 时是 float32）：历史缓冲按
+        自身 dtype 存（写入隐式转型），返回值不随历史降精度 —— 既有语义，
+        调用方不得改成从历史切片返回。capture_post 的图回放不走这里（历史
+        已由图内 index_copy_ 写好，再写一遍会破坏 pad 行的回滚语义）。
+        """
+        end = start + count
+        sliced_logits = logits[..., : self.vocab_size]
+        assert self._logits_buffer is not None and self._prob_buffer is not None
+        self._logits_buffer[:, start:end, :] = sliced_logits
+        self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
+        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
+        log_prob_tensor_if_invalid(
+            probs[:, -1, :] if validate_last_row_only else probs,
+            prob_label,
+        )
+        self._prob_buffer[:, start:end, :] = probs
+        self._current_seq_len = end
+        return probs[:, -1, :]
+
+    def _check_static_cache_capacity(self, end_pos: int) -> None:
+        """图模式下 eager 回退写 StaticCache 前的容量护栏。
+
+        eager 回退与图共用同一个定长 StaticCache：写入超出桶容量是静默显存
+        越界（CUDA assert 或更糟）。检查必须在 eager 前向**之前** —— 前向一旦
+        越界，坏数据已经写进静态槽位，事后报错于事无补。管线里桶 = prompt +
+        max_tokens + 余量，正常不可达；测试/特殊配置需要显式失败。
+        """
+        runner = self._graph_runner
+        if runner is None or runner.graph is None:
+            return
+        if end_pos > runner.max_len:
+            raise RuntimeError(
+                f"图模式 eager 回退超出 StaticCache 容量：end_pos={end_pos} > "
+                f"max_len={runner.max_len}。增大 max_length 或 "
+                "graph_len_budget（= max_tokens + 余量）"
+            )
 
     @torch.inference_mode()
     def _prefill(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -342,30 +351,16 @@ class KVCacheModel:
             raise RuntimeError("Model returned logits=None in prefill")
 
         self._ensure_buffer_size(batch_size, seq_length, logits.device, logits.dtype)
-        sliced_logits = logits[..., : self.vocab_size]
-        assert self._logits_buffer is not None, (
-            "Logits buffer should not be None after ensuring buffer size"
+        next_probs = self._publish_forward_history(
+            logits,
+            start=0,
+            count=seq_length,
+            prob_label="KVCacheModel._forward_with_kvcache.initial_probs",
+            validate_last_row_only=True,
         )
-        self._logits_buffer[:, :seq_length, :] = sliced_logits
-
-        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征；GPU 张量不同步）
-        with torch.no_grad():
-            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
-        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
-        log_prob_tensor_if_invalid(
-            probs[:, -1, :],
-            "KVCacheModel._forward_with_kvcache.initial_probs",
-        )
-
-        assert self._prob_buffer is not None, (
-            "Probability buffer should not be None after ensuring buffer size"
-        )
-        self._prob_buffer[:, :seq_length, :] = probs
-        self._current_seq_len = seq_length
         self._past_key_values = outputs.past_key_values
         self.hidden_states = outputs.hidden_states
-
-        return probs[:, -1, :]
+        return next_probs
 
     def _graph_bucket_len(self, seq_length: int) -> int:
         """图缓存桶长：prompt + 生成预算 + 余量，按 256 取整、512 下限。
@@ -460,30 +455,25 @@ class KVCacheModel:
             # temp>0 的 top-k/top-p 分支保守留在图外（回退旧行为）。
             capture_post=(self._temperature == 0),
         )
-        raw_logits = runner.prefill(input_ids)
+        runner.prefill(input_ids)
 
-        full_logits = self._graph_runner.prefill_logits
+        full_logits = runner.prefill_logits
         assert full_logits is not None
-        # 历史缓冲已在捕获前创建（见上）；prefill 的整段 logits 走 eager 写入
-        sliced_logits = full_logits[..., : self.vocab_size]
-        assert self._logits_buffer is not None
-        self._logits_buffer[:, :seq_length, :] = sliced_logits
-
-        with torch.no_grad():
-            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
-        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
-        log_prob_tensor_if_invalid(
-            probs[:, -1, :], "KVCacheModel._prefill_graph.initial_probs"
+        # 历史缓冲已在捕获前创建（见上）；prefill 的整段 logits 走与 eager
+        # _prefill 相同的后处理链写入（prefill 本身是变长的，不进图）
+        next_probs = self._publish_forward_history(
+            full_logits,
+            start=0,
+            count=seq_length,
+            prob_label="KVCacheModel._prefill_graph.initial_probs",
+            validate_last_row_only=True,
         )
-        assert self._prob_buffer is not None
-        self._prob_buffer[:, :seq_length, :] = probs
 
-        self._current_seq_len = seq_length
         self._past_key_values = runner.cache
         self.hidden_states = (
             (runner.hidden_buf,) if runner.hidden_buf is not None else None
         )
-        return probs[:, -1, :]
+        return next_probs
 
     # @torch.compile()
     @torch.inference_mode()
@@ -507,6 +497,7 @@ class KVCacheModel:
 
         batch_size = last_input_id.shape[0]
         new_len = last_input_id.shape[1]
+        end_pos = self._current_seq_len + new_len
 
         # 图模式路由：
         #   new_len == 1 → 单步图（(1,1)）
@@ -515,12 +506,9 @@ class KVCacheModel:
         #   batch > 1    → 一律 eager（管线是 bs=1，仅防御）。
         graph_used = False
         hidden_last: torch.Tensor | None = None
-        if (
-            self._graph_runner is not None
-            and self._graph_runner.graph is not None
-            and batch_size == 1
-        ):
-            runner = self._graph_runner
+        logits: torch.Tensor | None = None
+        runner = self._graph_runner
+        if runner is not None and runner.graph is not None and batch_size == 1:
             if new_len == 1:
                 # runner.step 返回的已经是最后一个位置的 (1, V)；下游统一按
                 # (batch, new_len, V) 处理，这里补回序列维（view，不复制）
@@ -533,22 +521,25 @@ class KVCacheModel:
                     # (1, k, V) 的前 k 行真实 logits；hidden 取最后一个真实行
                     logits, hidden_last = vout
                     graph_used = True
+
+        new_past_key_values: PastKeyValues = None
         if graph_used:
             # 图内缓存是 prefill 用的那个 StaticCache，地址不变，无需替换
-            new_past_key_values = None
             self.hidden_states = (hidden_last,) if hidden_last is not None else None
             if runner.capture_post:
                 # 前后处理已编进图：logits/prob 历史与每行熵都由图内写入
                 # （pad 行落在 current_seq_len 之外，读端不可见）。这里只剩
-                # 切视图 + 按真实 k 行求熵均值 —— 零 kernel 派发。
-                end_pos = self._current_seq_len + new_len
+                # 切视图 + 按真实 k 行求熵均值 —— 零 kernel 派发；也**不能**
+                # 再走 _publish_forward_history，那会把历史写第二遍。
                 ent_rows = runner.last_entropy_rows
                 if ent_rows is not None:
                     self._last_entropy_t = ent_rows[:, :new_len].mean()
                 self._current_seq_len = end_pos
-                q = self.prob_history[:, end_pos - 1, :]
-                return q
+                return self.prob_history[:, end_pos - 1, :]
         else:
+            # 容量护栏必须先于 eager 前向：StaticCache 的越界写入无法撤销，
+            # 事后报错时坏数据已经落进静态槽位（见 _check_static_cache_capacity）。
+            self._check_static_cache_capacity(end_pos)
             outputs = self._model(
                 **self._prepare_generation_inputs(
                     last_input_id,
@@ -562,55 +553,34 @@ class KVCacheModel:
 
             new_past_key_values = outputs.past_key_values
             if new_past_key_values is None:
-                raise RuntimeError("Model returned past_key_values=None in decode step")
+                raise RuntimeError(
+                    "Model returned past_key_values=None in decode step"
+                )
 
-        end_pos = self._current_seq_len + new_len
-
-        if (
-            not graph_used
-            and self._graph_runner is not None
-            and self._graph_runner.graph is not None
-            and end_pos > self._graph_runner.max_len
-        ):
-            # eager 回退与图共用同一个定长 StaticCache：写入超出桶容量是
-            # 静默显存越界（CUDA assert 或更糟）。管线里桶 = prompt +
-            # max_tokens + 余量，正常不可达；测试/特殊配置需要显式失败。
-            raise RuntimeError(
-                f"图模式 eager 回退超出 StaticCache 容量：end_pos={end_pos} > "
-                f"max_len={self._graph_runner.max_len}。增大 max_length 或 "
-                "graph_len_budget（= max_tokens + 余量）"
-            )
-
+        assert logits is not None
         self._ensure_buffer_size(batch_size, end_pos, logits.device, logits.dtype)
 
-        sliced_logits = logits[..., : self.vocab_size]
-        if self._logits_buffer is not None:
-            self._logits_buffer[:, self._current_seq_len : end_pos, :] = sliced_logits
-
-        # 原始 logits 下的熵（温度 1，供 RL 控制器作状态特征；GPU 张量不同步）
-        with torch.no_grad():
-            self._last_entropy_t = self._compute_entropy_tensor(sliced_logits)
-        probs = norm_logits(sliced_logits, self._temperature, self._top_k, self._top_p)
-        log_prob_tensor_if_invalid(
-            probs,
-            "KVCacheModel._forward_with_kvcache.cached_probs",
+        # eager 回退（含图模式的 eager 回退）与未捕获回放（capture_post=False）
+        # 共用同一条图外后处理链：切片/熵/norm/历史写入与 prefill 逐位一致。
+        next_probs = self._publish_forward_history(
+            logits,
+            start=self._current_seq_len,
+            count=new_len,
+            prob_label="KVCacheModel._forward_with_kvcache.cached_probs",
         )
-        if self._prob_buffer is not None:
-            self._prob_buffer[:, self._current_seq_len : end_pos, :] = probs
 
-        self._current_seq_len = end_pos
         if not graph_used:
             self._past_key_values = new_past_key_values
             self.hidden_states = outputs.hidden_states
-            if self._graph_runner is not None:
+            if runner is not None:
                 # 不变量：runner.nnz 必须恒等于 _current_seq_len。
                 # 图内回放由 runner.step() 自己推进，但这条 eager 回退（new_len > 1 的
                 # 短后缀）不会动 nnz —— 如果不对齐，下一轮 current_length 偏小，
                 # _generate_with_kvcache 会把已经在缓存里的 token 重新喂一遍，
                 # 表现为 prob_history 越界（曾观测 n1=354 而 len=341，差 gamma2+1）。
-                self._graph_runner.nnz = end_pos
+                runner.nnz = end_pos
 
-        return probs[:, -1, :]
+        return next_probs
 
     def _validate_input_ids(self, input_ids: torch.Tensor) -> None:
         if input_ids.numel() == 0:
@@ -1056,12 +1026,7 @@ class KVCacheModel:
     def current_length(self) -> int:
         if self._graph_runner is not None and self._graph_runner.graph is not None:
             return self._graph_runner.nnz
-        if self._past_key_values is None:
-            return 0
-        if _is_cache_like(self._past_key_values):
-            return self._past_key_values.get_seq_length()
-        assert _is_legacy_past(self._past_key_values)
-        return self._past_key_values[0][0].shape[2]
+        return _past_length(self._past_key_values)
 
     def debug_state(self) -> dict[str, int]:
         prob_history_len = 0 if self._prob_buffer is None else self._current_seq_len
