@@ -6,8 +6,7 @@
 （或 ``_comm = self.comm_config`` 局部别名）；本测试防止回退。
 
 扫描注册解码方法所在的全部真实模块，包含新迁出的 CUHLM、dual 与 TK-SLT，
-与 ``src/engine.py``（历史方法 ``speculative_decoding_with_bandwidth`` 曾漏审，
-2026-10-19 补入；A2 拆分后新模块同样在扫描范围内）。同时守 ``CommEnv`` 的 9 个
+以及引擎的自回归和旧带宽 SD 实现（迁出基类后仍需扫描）。同时守 ``CommEnv`` 的 9 个
 通信数值键：迁移前它们在 ~20 处构造点各自 ``getattr(self.args, ..., 默认)``，
 现在只许经 ``self.comm_env``。``src/utils.py`` 里 ``--prob_payload_bits`` 的 CLI
 合法性校验（B15 模式门）不是解码期读取，必须保留。
@@ -38,9 +37,7 @@ SWITCHES = {
 }
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-# 所有注册解码方法所在文件：Baselines 一族（core + A2 迁出的真实模块）与
-# engine.py 的历史方法（speculative_decoding_with_bandwidth 曾漏在审计外，
-# 2026-10-19 补上）。迁移后仍扫描真实定义模块，不因拆分放宽约束。
+# 迁移后仍扫描真实定义模块，不因拆分放宽约束。
 SOURCES = (
     SRC / "baselines" / "core.py",
     SRC / "baselines" / "runtime.py",
@@ -51,6 +48,8 @@ SOURCES = (
     SRC / "baselines" / "tk_slt.py",
     SRC / "baselines" / "operations.py",
     SRC / "engine.py",
+    SRC / "autoregressive.py",
+    SRC / "legacy" / "bandwidth_sd.py",
     SRC / "dual_decoding.py",
     SRC / "baselines" / "dual.py",
 )

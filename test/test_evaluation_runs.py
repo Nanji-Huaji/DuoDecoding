@@ -12,7 +12,7 @@ import torch
 from eval.data import load_task_data
 from eval.decoder import ModelStore, model_key
 from eval.eval_gsm8k import EvalGSM8K
-from src import engine
+from src import engine, model_runtime
 from src.register import Register
 
 
@@ -33,7 +33,7 @@ def local_models(monkeypatch):
             return str(int(ids[-1]))
 
     monkeypatch.setattr(
-        engine.AutoTokenizer, "from_pretrained", lambda *a, **kw: Tokenizer()
+        model_runtime.AutoTokenizer, "from_pretrained", lambda *a, **kw: Tokenizer()
     )
     monkeypatch.setattr(
         engine,
@@ -49,7 +49,7 @@ def local_models(monkeypatch):
         get_input_embeddings=lambda: SimpleNamespace(weight=torch.empty(8, 1)),
     )
     load = Mock(return_value=model)
-    monkeypatch.setattr(engine, "load_causal_lm", load)
+    monkeypatch.setattr(model_runtime, "load_causal_lm", load)
     store = ModelStore()
     try:
         yield store, load, model
@@ -121,6 +121,38 @@ def test_reused_weights_do_not_reuse_run_state(
     load.side_effect = None
     evaluator.eval()
     assert load.call_count == 3
+
+
+def test_reused_adaptive_weights_get_this_runs_rl_and_arp(
+    args, local_models, monkeypatch
+):
+    from src.baselines import runtime
+
+    store, load, _ = local_models
+    args.eval_mode = "adaptive_decoding"
+    args.use_rl_adapter = True
+    args.acc_head_path = "first-head"
+    args.draft_target_threshold = 0.2
+    second_args = Namespace(**vars(args))
+    second_args.use_rl_adapter = False
+    second_args.acc_head_path = "second-head"
+    second_args.draft_target_threshold = 0.8
+    load_head = Mock(side_effect=lambda path: torch.nn.Linear(1, 2))
+    monkeypatch.setattr(runtime, "load_acceptance_prediction_head", load_head)
+    monkeypatch.setattr(runtime, "RLNetworkAdapter", lambda *a, **kw: object())
+
+    first = store.new_decoder(args, "first")
+    second = store.new_decoder(second_args, "second")
+
+    assert load.call_count == 2  # One load per language-model role, not per run.
+    assert second.draft_model is first.draft_model
+    assert first.rl_adapter is not None and second.rl_adapter is None
+    assert [call.args[0] for call in load_head.call_args_list] == [
+        "first-head",
+        "second-head",
+    ]
+    assert first.adapter.acc_head is not second.adapter.acc_head
+    assert (first.adapter.threshold, second.adapter.threshold) == (0.2, 0.8)
 
 
 def test_specbench_counts_all_repetitions_but_not_warmup(
