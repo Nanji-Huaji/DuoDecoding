@@ -608,25 +608,29 @@ class GraphDecodeRunner:
             raise RuntimeError("Model returned logits=None in graph prefill")
 
         self.prefill_logits = logits  # (1, seq, V) 完整 prefill logits，供调用方写历史缓冲
-        if self.logits_buf is None:
-            self.logits_buf = torch.empty(
-                (1, logits.shape[-1]), dtype=logits.dtype, device=logits.device
-            )
         hs = getattr(outputs, "hidden_states", None)
-        if self.capture_hidden and hs is not None:
-            if self.hidden_buf is None:
-                self.hidden_buf = torch.empty(
-                    (1, 1, hs[-1].shape[-1]), dtype=hs[-1].dtype, device=hs[-1].device
-                )
-            self.hidden_buf.copy_(hs[-1][:, -1:, :])
+        last_hidden = (
+            hs[-1][:, -1:, :] if self.capture_hidden and hs is not None else None
+        )
+        if last_hidden is not None and self.hidden_buf is None:
+            self.hidden_buf = torch.empty_like(last_hidden)
 
         self.nnz = seq
-        if reuse:
-            return logits[:, -1].clone()
+        if not reuse:
+            self._capture_decode_graphs(seq, logits)
+        # 单步热身也会写 hidden_buf。捕获完成后才发布 prompt 的最后一行，
+        # 以免首次 prefill 返回热身 token 的隐藏态，而跨样本复用却返回正确值。
+        if last_hidden is not None:
+            assert self.hidden_buf is not None
+            self.hidden_buf.copy_(last_hidden)
+        return logits[:, -1].clone()
 
-        # ── 首次：捕获全部图（单步 + 各验证尺寸）─────────────────────────
-        vocab_w = int(logits.shape[-1])
-        for size in self.verify_sizes:
+    def _capture_decode_graphs(self, seq: int, logits: torch.Tensor) -> None:
+        """在已有 prompt 之后热身并捕获能放进静态桶的单步/验证图。"""
+        vocab_w = logits.shape[-1]
+        self.logits_buf = logits.new_empty((1, vocab_w))
+        sizes = [size for size in self.verify_sizes if seq + size <= self.max_len]
+        for size in sizes:
             self.verify_ids[size] = torch.zeros(
                 (1, size), dtype=torch.long, device=self.device
             )
@@ -636,11 +640,9 @@ class GraphDecodeRunner:
             self.verify_logits[size] = torch.zeros(
                 (1, size, vocab_w), dtype=logits.dtype, device=logits.device
             )
-            if self.capture_hidden and hs is not None:
-                self.verify_hidden[size] = torch.zeros(
-                    (1, size, hs[-1].shape[-1]),
-                    dtype=hs[-1].dtype,
-                    device=hs[-1].device,
+            if self.hidden_buf is not None:
+                self.verify_hidden[size] = self.hidden_buf.new_zeros(
+                    (1, size, self.hidden_buf.shape[-1])
                 )
 
         torch.cuda.synchronize(self.device)
@@ -650,9 +652,7 @@ class GraphDecodeRunner:
             self._set_step_inputs(None, seq)
             for _ in range(3):
                 self._forward_step()
-            for size in self.verify_sizes:
-                if seq + size > self.max_len:
-                    continue  # 该档位放不下（max_len 太紧），跳过并靠回退
+            for size in sizes:
                 self._set_verify_inputs(size, None, seq)
                 for _ in range(2):
                     self._forward_verify(size)
@@ -668,9 +668,7 @@ class GraphDecodeRunner:
         self.capture_count += 1
 
         # 捕获各档位验证图
-        for size in self.verify_sizes:
-            if seq + size > self.max_len:
-                continue
+        for size in sizes:
             self.verify_ids[size].zero_()
             self._set_verify_inputs(size, None, seq)
             graph = torch.cuda.CUDAGraph()
@@ -680,8 +678,6 @@ class GraphDecodeRunner:
             self.verify_graphs[size] = graph
             self.capture_count += 1
         torch.cuda.synchronize(self.device)
-
-        return logits[:, -1].clone()
 
     @torch.inference_mode()
     def begin_new_sequence(self) -> None:

@@ -19,7 +19,7 @@ from transformers import (
     BitsAndBytesConfig,
 )
 
-from .mode_features import get_mode_spec
+from .mode_features import ModeSpec, get_mode_spec
 from .model_loading import (
     build_quant_config,
     build_sharded_target_device_map,
@@ -127,6 +127,29 @@ def _sharded_target_with_draft_reserve(
     return build_sharded_target_device_map(num_gpus, reserve_last_gpu_gib=reserve_gib)
 
 
+def _place_target(
+    args: Any,
+    spec: ModeSpec,
+    num_gpus: int,
+    device: str,
+    quant_config: BitsAndBytesConfig | None,
+) -> tuple[str, dict[int | str, str] | None]:
+    """Resolve the target map *after* quantization is known, before loading it."""
+    placement = None
+    if device == "auto" and (spec.models == "tri" or spec.uses_main_rl):
+        placement = build_sharded_target_device_map(num_gpus)
+    elif (
+        spec.models == "dual"
+        and quant_config is None
+        and num_gpus >= 2
+        and (spec.uses_main_rl or not getattr(args, "keep_target_on_single_gpu", False))
+    ):
+        placement = _sharded_target_with_draft_reserve(
+            num_gpus, args.draft_model, getattr(args, "draft_quantization", "auto")
+        )
+    return placement if placement is not None else (device, None)
+
+
 def load_model_weights(
     args: Any,
     *,
@@ -168,32 +191,27 @@ def load_model_weights(
 
     models: dict[str, Any] = {}
 
-    if spec.models == "small":
-        device_map = "cuda:0"
-        draft_quant = _announce_model_load(
+    def load_role(role: str, device: str, *, hidden_states: bool | None = None) -> None:
+        key = f"{role}_model"
+        name = getattr(args, key)
+        quant = _announce_model_load(
             print_fn,
-            args.draft_model,
-            device_map,
-            getattr(args, "draft_quantization", "auto"),
+            name,
+            device,
+            getattr(args, f"{role}_quantization", "auto"),
             model_dtype,
         )
-        models["draft_model"] = load_causal_lm(
-            loader, args.draft_model, device_map, quant_config=draft_quant
-        )
+        kwargs: dict[str, Any] = {"quant_config": quant}
+        if hidden_states is not None:
+            kwargs["output_hidden_states"] = hidden_states
+        if role == "target" and spec.models in {"dual", "tri"}:
+            device, kwargs["max_memory"] = _place_target(
+                args, spec, num_gpus, device, quant
+            )
+        models[key] = load_causal_lm(loader, name, device, **kwargs)
 
-    elif spec.models == "large":
-        device_map = "cuda:0"
-        target_quant = _announce_model_load(
-            print_fn,
-            args.target_model,
-            device_map,
-            getattr(args, "target_quantization", "auto"),
-            model_dtype,
-        )
-        models["target_model"] = load_causal_lm(
-            loader, args.target_model, device_map, quant_config=target_quant
-        )
-
+    if spec.models in {"small", "large"}:
+        load_role("draft" if spec.models == "small" else "target", "cuda:0")
     elif spec.models == "dual":
         draft_device, target_device = select_dual_model_devices(
             args.draft_model, args.target_model, num_gpus
@@ -206,69 +224,10 @@ def load_model_weights(
             target_device,
         )
 
-        draft_quant = _announce_model_load(
-            print_fn,
-            args.draft_model,
-            draft_device,
-            getattr(args, "draft_quantization", "auto"),
-            model_dtype,
+        load_role(
+            "draft", draft_device, hidden_states=True if spec.uses_main_rl else None
         )
-        if spec.uses_main_rl:
-            # RL 主线（adaptive_decoding）的草稿模型要向 adapter 输出 hidden states。
-            models["draft_model"] = load_causal_lm(
-                loader,
-                args.draft_model,
-                draft_device,
-                output_hidden_states=True,
-                quant_config=draft_quant,
-            )
-        else:
-            models["draft_model"] = load_causal_lm(
-                loader, args.draft_model, draft_device, quant_config=draft_quant
-            )
-        target_quant = _announce_model_load(
-            print_fn,
-            args.target_model,
-            target_device,
-            getattr(args, "target_quantization", "auto"),
-            model_dtype,
-        )
-        target_max_memory = None
-        if spec.uses_main_rl:
-            # RL 主线保持历史条件：device_map 为 auto 时直接跨卡，否则仅在
-            # 未量化且多卡时给 draft 留显存（此分支无 keep_target 开关）。
-            if target_device == "auto":
-                sharded_target = build_sharded_target_device_map(num_gpus)
-                if sharded_target is not None:
-                    target_device, target_max_memory = sharded_target
-            elif target_quant is None and num_gpus >= 2:
-                sharded_target = _sharded_target_with_draft_reserve(
-                    num_gpus,
-                    args.draft_model,
-                    getattr(args, "draft_quantization", "auto"),
-                )
-                if sharded_target is not None:
-                    target_device, target_max_memory = sharded_target
-        elif (
-            target_quant is None
-            and num_gpus >= 2
-            and not getattr(args, "keep_target_on_single_gpu", False)
-        ):
-            # DSD 放置开关：要求 target 留在单卡时跳过自动跨卡。
-            sharded_target = _sharded_target_with_draft_reserve(
-                num_gpus,
-                args.draft_model,
-                getattr(args, "draft_quantization", "auto"),
-            )
-            if sharded_target is not None:
-                target_device, target_max_memory = sharded_target
-        models["target_model"] = load_causal_lm(
-            loader,
-            args.target_model,
-            target_device,
-            quant_config=target_quant,
-            max_memory=target_max_memory,
-        )
+        load_role("target", target_device)
 
     elif spec.models == "tri":
         output_hidden_states = args.eval_mode in TRI_HIDDEN_STATE_MODES
@@ -290,53 +249,9 @@ def load_model_weights(
             num_gpus,
         )
 
-        little_quant = _announce_model_load(
-            print_fn,
-            args.little_model,
-            little_device,
-            getattr(args, "little_quantization", "auto"),
-            model_dtype,
-        )
-        models["little_model"] = load_causal_lm(
-            loader,
-            args.little_model,
-            little_device,
-            output_hidden_states=output_hidden_states,
-            quant_config=little_quant,
-        )
-        draft_quant = _announce_model_load(
-            print_fn,
-            args.draft_model,
-            draft_device,
-            getattr(args, "draft_quantization", "auto"),
-            model_dtype,
-        )
-        models["draft_model"] = load_causal_lm(
-            loader,
-            args.draft_model,
-            draft_device,
-            output_hidden_states=output_hidden_states,
-            quant_config=draft_quant,
-        )
-        target_quant = _announce_model_load(
-            print_fn,
-            args.target_model,
-            target_device,
-            getattr(args, "target_quantization", "auto"),
-            model_dtype,
-        )
-        target_max_memory = None
-        if target_device == "auto":
-            sharded_target = build_sharded_target_device_map(num_gpus)
-            if sharded_target is not None:
-                target_device, target_max_memory = sharded_target
-        models["target_model"] = load_causal_lm(
-            loader,
-            args.target_model,
-            target_device,
-            quant_config=target_quant,
-            max_memory=target_max_memory,
-        )
+        load_role("little", little_device, hidden_states=output_hidden_states)
+        load_role("draft", draft_device, hidden_states=output_hidden_states)
+        load_role("target", target_device)
 
     return models
 
