@@ -84,6 +84,49 @@ def test_humaneval_chat_template_detection(model_id, expected):
     assert _stub(HumanevalTask, model_id)._uses_chat_template() is expected
 
 
+@pytest.mark.parametrize("speed_only", [True, False])
+def test_humaneval_speed_only_never_executes_completions(monkeypatch, speed_only):
+    import torch
+
+    args = types.SimpleNamespace(
+        draft_model="draft",
+        target_model="target",
+        eval_mode="large",
+        humaneval_generate_only=speed_only,
+    )
+    tokenizer = types.SimpleNamespace(
+        bos_token=None, eos_token=None, decode=lambda _: "xy"
+    )
+    task = HumanevalTask(args, tokenizer)
+    rows = []
+    run = types.SimpleNamespace(
+        args=args,
+        decoder=types.SimpleNamespace(accelerator=None),
+        next_seed=lambda: None,
+        generate=lambda *a, **kw: (torch.tensor([[1, 2]]), None, 0.25),
+        write=rows.append,
+        metrics={},
+        is_main_process=True,
+    )
+
+    def fake_grade(*_):
+        if speed_only:
+            pytest.fail("Speed matrix executed a model-generated program")
+        return 1
+
+    monkeypatch.setattr("eval.eval_humaneval.check_correctness", fake_grade)
+    item = dict(
+        input_ids=torch.tensor([[1]]),
+        input_text="x",
+        test="",
+        entry_point="",
+        task_id="id",
+    )
+    task.run(run, [item, item])
+    assert [row["passed"] for row in rows] == [None if speed_only else 1] * 2
+    assert run.metrics.get("accuracy") == (None if speed_only else 1)
+
+
 @pytest.mark.parametrize(
     "model_id,expected",
     [

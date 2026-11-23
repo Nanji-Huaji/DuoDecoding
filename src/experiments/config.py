@@ -32,7 +32,21 @@ class EvalMode(str, Enum):
     adaptive_decoding = "adaptive_decoding"
 
 
-class ExpConfig(TypedDict):
+class _ExplicitProtocol(TypedDict, total=False):
+    """Extra CLI settings pinned by the current-code paper rerun, not old sweeps."""
+
+    protocol: str
+    seed: int
+    model_source: str
+    model_dtype: str
+    little_quantization: str
+    draft_quantization: str
+    target_quantization: str
+    comm_trace_mode: str
+    humaneval_generate_only: bool
+
+
+class ExpConfig(_ExplicitProtocol):
     CUDA_VISIBLE_DEVICES: str | int
     eval_mode: str | EvalMode
     edge_end_bandwidth: int | float

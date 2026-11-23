@@ -1,4 +1,4 @@
-"""Table V experiment matrix. Importing this module does not build any configs."""
+"""Historical Table V sweep and staged, current-code paper rerun (both lazy)."""
 
 import os
 from itertools import product
@@ -33,11 +33,12 @@ batch_delay_values = [50e-3]  # seconds per cloud request
 NTT_MS_EDGE_CLOUD = 50
 NTT_MS_EDGE_END = 0.317
 
-# The comparison is at comparable accuracy; 0.08 is CUHLM's Llama/GSM8K frontier.
+# Pick the speed sweep's CUHLM operating point. Check quality separately:
+# a Llama/GSM8K threshold sweep is not evidence of accuracy parity on all tasks.
 UNCERTAINTY_THRESHOLD_CUHLM = 0.08
 UNCERTAINTY_THRESHOLD_DEFAULT = 0.8
 # DSD and DSSD transmit full rows. TK-SLT uses its Fig. 4 optimum; Static uses
-# the fixed top-k of Table VIII. CUHLM does not consume this config field.
+# the fixed top-k of Table VIII. CUHLM filters the draft with it; wire k* is separate.
 TRANSFER_TOP_K_PAPER = 0
 TRANSFER_TOP_K_OURS = 300
 TRANSFER_TOP_K_TKSLT = 320
@@ -132,61 +133,183 @@ def _matrix_modes(extra_modes: str | None) -> list[EvalMode]:
     return modes
 
 
+def _matrix_cell(series, dataset, mode, bw, delay, gamma, windows) -> ExpConfig:
+    little, middle, target = series
+    return create_config(
+        eval_mode=mode,
+        eval_dataset=dataset,
+        little_model=little,
+        draft_model=middle if mode in _USE_MIDDLE_DRAFT else little,
+        target_model=target,
+        gamma=gamma,
+        gamma1=windows[0],
+        gamma2=windows[1],
+        transfer_top_k=_TOP_K_BY_MODE.get(mode, TRANSFER_TOP_K_PAPER),
+        uncertainty_threshold=(
+            UNCERTAINTY_THRESHOLD_CUHLM
+            if mode == EvalMode.cuhlm
+            else UNCERTAINTY_THRESHOLD_DEFAULT
+        ),
+        small_draft_threshold=0.6,
+        draft_target_threshold=0.7,
+        use_rl_adapter=mode == EvalMode.ceesd,
+        disable_rl_update=mode == EvalMode.ceesd,
+        ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
+        ntt_ms_edge_end=NTT_MS_EDGE_END,
+        batch_delay=delay,
+        edge_end_bandwidth=563,
+        edge_cloud_bandwidth=bw,
+        cloud_end_bandwidth=bw,
+        min_bandwidth_mbps=max(0.5, bw / 10),
+        comm_bw_model="fluid",
+        use_stochastic_comm=True,
+        use_precise=False,
+        max_tokens=128,
+        num_shots=3,
+        eval_data_num=80,
+        run_full_dataset=False,
+        random_sample=True,
+        sample_seed=1234,
+        use_early_stopping=False,
+        use_cuda_graph=True,
+    )
+
+
 def build_matrix(extra_modes: str | None = None) -> list[ExpConfig]:
-    """Build fresh Table V configs in paper order, appending any requested methods."""
+    """Historical, environment-tunable sweep; not the staged rerun entry point."""
     modes = _matrix_modes(extra_modes)
     configs = []
-    for little, middle, target in paper_table5_series:
-        tri_windows = _tri_windows(target)
+    for series in paper_table5_series:
+        tri_windows = _tri_windows(series[-1])
         for dataset, mode, bw, delay in product(
             paper_table5_datasets, modes, edge_cloud_bandwidth, batch_delay_values
         ):
-            # The Table VIII Static ablation has the same two windows as CEE-SD,
-            # but only CEE-SD uses the (frozen) RL adapter (protocol §2, item 12).
-            gamma1, gamma2 = (
+            windows = (
                 tri_windows
                 if mode in (EvalMode.ceesd, EvalMode.tridecoding)
                 else (GAMMA_SINGLE, GAMMA_SINGLE)
             )
             configs.append(
-                create_config(
-                    eval_mode=mode,
-                    eval_dataset=dataset,
-                    little_model=little,
-                    draft_model=middle if mode in _USE_MIDDLE_DRAFT else little,
-                    target_model=target,
-                    gamma=gamma_for_matrix(mode.value, bw),
-                    gamma1=gamma1,
-                    gamma2=gamma2,
-                    transfer_top_k=_TOP_K_BY_MODE.get(mode, TRANSFER_TOP_K_PAPER),
-                    uncertainty_threshold=UNCERTAINTY_THRESHOLD_CUHLM
-                    if mode == EvalMode.cuhlm
-                    else UNCERTAINTY_THRESHOLD_DEFAULT,
-                    small_draft_threshold=0.6,
-                    draft_target_threshold=0.7,
-                    use_rl_adapter=mode == EvalMode.ceesd,
-                    disable_rl_update=mode == EvalMode.ceesd,
-                    ntt_ms_edge_cloud=NTT_MS_EDGE_CLOUD,
-                    ntt_ms_edge_end=NTT_MS_EDGE_END,
-                    batch_delay=delay,
-                    edge_end_bandwidth=563,
-                    edge_cloud_bandwidth=bw,
-                    cloud_end_bandwidth=bw,
-                    # Scale the trace floor so low-bandwidth cells retain fluctuations.
-                    min_bandwidth_mbps=max(0.5, bw / 10),
-                    comm_bw_model="fluid",
-                    use_stochastic_comm=True,
-                    use_precise=False,
-                    max_tokens=128,
-                    num_shots=3,
-                    eval_data_num=80,
-                    run_full_dataset=False,
-                    random_sample=True,
-                    sample_seed=1234,
-                    use_early_stopping=False,
-                    use_cuda_graph=True,
+                _matrix_cell(
+                    series,
+                    dataset,
+                    mode,
+                    bw,
+                    delay,
+                    gamma_for_matrix(mode.value, bw),
+                    windows,
                 )
             )
+    return configs
+
+
+# Stages are increments, not whole tables. In particular VI reuses 12 Llama
+# controls from V; VIII reuses V's nine full configurations (or three at cap 5).
+_FAMILY_CAP = {llama_series: 16, qwen_1_5_series: 5, qwen_series: 16}
+# New VI design, not recovered settings: in the two block protocols the WAN
+# proposal contains <= gamma2 accepted Little + one continuation + gamma1 fresh
+# Draft tokens. Match the native maximum of 3 (DSD) / 8 (DSSD) at 46 Mbps.
+# CUHLM gates *one token at a time*: these 1/1 caps change only prefetching.
+_CEE_PLUS_WINDOWS = {
+    EvalMode.cee_dsd: (1, 1),
+    EvalMode.cee_dssd: (4, 3),
+    EvalMode.cee_cuhlm: (1, 1),
+}
+_QUALITY_MODES = (
+    EvalMode.autoregression,
+    EvalMode.cuhlm,
+    EvalMode.cee_cuhlm,
+    EvalMode.ceesd,
+)
+_RERUN_AXES = {  # families, tasks, methods, WAN Mbps
+    "main46": (paper_table5_series, paper_table5_datasets, paper_table5_modes, (46,)),
+    "cee-plus46": (
+        (llama_series,),
+        paper_table5_datasets,
+        tuple(_CEE_PLUS_WINDOWS),
+        (46,),
+    ),
+    "static46": (
+        paper_table5_series,
+        paper_table5_datasets,
+        (EvalMode.tridecoding,),
+        (46,),
+    ),
+    "static5": (  # optional replacement for static46; overlaps in Qwen1.5 only
+        paper_table5_series,
+        paper_table5_datasets,
+        (EvalMode.tridecoding,),
+        (46,),
+    ),
+    "full5": (
+        (llama_series, qwen_series),
+        paper_table5_datasets,
+        (EvalMode.ceesd,),
+        (46,),
+    ),
+    "lowbw": (paper_table5_series, paper_table5_datasets, paper_table5_modes, (10, 5)),
+    "quality": (
+        paper_table5_series,
+        (EvalDataset.gsm8k, EvalDataset.cnndm),
+        _QUALITY_MODES,
+        (46,),
+    ),
+}
+_CORE = ("main46", "cee-plus46", "static46")
+_RERUN_BUNDLES = {"core": _CORE, "performance": (*_CORE, "lowbw")}
+RERUN_STAGES = (*_RERUN_AXES, *_RERUN_BUNDLES)
+
+
+def build_rerun_matrix(stage: str = "core") -> list[ExpConfig]:
+    """Proposed current-code measurements. No EXP_*/CEESD_* environment overrides."""
+    if stage not in RERUN_STAGES:
+        raise ValueError(f"Unknown rerun stage {stage!r}; choose from {RERUN_STAGES}")
+    configs = []
+    for part in _RERUN_BUNDLES.get(stage, (stage,)):
+        for series, dataset, mode, bw in product(*_RERUN_AXES[part]):
+            gamma = GAMMA_BY_MODE_BANDWIDTH.get(mode.value, {}).get(bw, GAMMA_SINGLE)
+            if part in ("static5", "full5"):
+                windows = (5, 5)  # original Static recipe and its matched full control
+            elif mode in (EvalMode.ceesd, EvalMode.tridecoding):
+                windows = (_FAMILY_CAP[series],) * 2
+            else:
+                windows = _CEE_PLUS_WINDOWS.get(mode, (GAMMA_SINGLE, GAMMA_SINGLE))
+            cfg = _matrix_cell(series, dataset, mode, float(bw), 0.05, gamma, windows)
+            cfg.update(
+                protocol="paper_table5",
+                seed=1234,
+                comm_trace_mode="static",
+                model_source="local",
+                model_dtype="bf16",
+                little_quantization="none",
+                draft_quantization="none",
+                target_quantization="none",
+            )
+            if dataset == EvalDataset.humaneval:
+                cfg["humaneval_generate_only"] = True
+            if mode == EvalMode.ceesd:
+                # The runtime prefers best if it exists. Both names must resolve
+                # to the v3 latest actually loaded in the 2026-10-12 logs.
+                cfg["main_rl_best_path"] = cfg["main_rl_path"]
+                cfg["little_rl_best_path"] = cfg["little_rl_path"]
+            if mode == EvalMode.cee_cuhlm:
+                # The active outer gate reads draft_target_threshold, NOT just
+                # uncertainty_threshold. Match native draft filtering as well.
+                cfg.update(
+                    transfer_top_k=_TOP_K_BY_MODE[EvalMode.cuhlm],
+                    uncertainty_threshold=UNCERTAINTY_THRESHOLD_CUHLM,
+                    draft_target_threshold=UNCERTAINTY_THRESHOLD_CUHLM,
+                )
+            if part == "quality":
+                # Proposed paired Table VII, NOT speed metrics or the old May
+                # protocol. In particular large only checks EOS if early stop is on.
+                cfg.update(
+                    protocol="honest",
+                    eval_data_num=500,
+                    max_tokens=1024 if dataset == EvalDataset.gsm8k else 160,
+                    use_early_stopping=True,
+                )
+            configs.append(cfg)
     return configs
 
 

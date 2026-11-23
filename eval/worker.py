@@ -32,7 +32,7 @@ def build_argv(config: dict) -> list[str]:
     """Use exactly the CLI parser's protocol, defaults, and alias resolution."""
     argv = [
         "--protocol",
-        "paper_table5",
+        config.get("protocol", "paper_table5"),
         "--comm_accounting",
         "honest",
         "--temp",
@@ -41,7 +41,7 @@ def build_argv(config: dict) -> list[str]:
     # The remaining ExpConfig fields are CLI options. Placement is the worker's
     # environment; the dataset chooses the entry point, not a parser option.
     for key, value in config.items():
-        if key in {"eval_dataset", "CUDA_VISIBLE_DEVICES"}:
+        if key in {"protocol", "eval_dataset", "CUDA_VISIBLE_DEVICES"}:
             continue
         if key == "eval_data_num" and value is None:
             if not config.get("run_full_dataset"):

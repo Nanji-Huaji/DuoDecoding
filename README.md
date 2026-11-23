@@ -309,15 +309,15 @@ TARGET_MODEL="Llama-2-13b" \
 bash cmds/train_rl_mixed.sh
 ```
 
-### Batch Experiments via `exp.py`
+### Paper Reruns and Batch Experiments
 
-For the **current-code paper rerun**, use a checkout containing `src.experiments.paper_rerun` (the development working tree includes it; commit `7074264` does not). The 46 Mbps main table is 45 configurations, not the whole 135-cell bandwidth sweep. Preview the 63 distinct core performance configurations without starting a worker:
+The staged paper runner separates the 45 configurations in the 46 Mbps main table from the full bandwidth sweep. From the repository root, preview the 63 core configurations without GPUs, model weights, or dataset caches:
 
 ```bash
 python -m src.experiments.paper_rerun --stage core --dry-run
 ```
 
-After `--preflight`, run with `--execute`, a fresh `--run-id`, and the physical `nvidia-smi` indices of the idle GPUs you have reserved. `--gpus 0` uses one card. `--gpus 0,1` exposes both cards to one worker and leaves placement to the model loader. To run two configurations in parallel on one card each, use `--gpus 0 --gpus 1` instead. GPU groups cannot overlap. No particular GPU model or minimum VRAM is required; 48 GB is a sizing reference, not a fit check.
+Before executing, repeat the command with `--preflight` instead of `--dry-run` to check the local models, checkpoints, network trace, and datasets without starting GPU jobs. Once it passes, run with `--execute`, a fresh `--run-id`, and the physical `nvidia-smi` indices of the idle GPUs you have reserved. `--gpus 0` uses one card. `--gpus 0,1` exposes both cards to one worker and leaves placement to the model loader. To run two configurations in parallel on one card each, use `--gpus 0 --gpus 1` instead. GPU groups cannot overlap. No particular GPU model or minimum VRAM is required; 48 GB is a sizing reference, not a fit check.
 
 **Comparing performance:** GPU model, device order, interconnect, and cross-GPU transfers can change measured throughput and latency even when the simulated link settings are identical. Compare methods using the same hardware and placement, or report layouts separately. The manifest records the GPUs visible to each configuration; check the worker log for loading decisions. Visibility does not guarantee every GPU is used.
 

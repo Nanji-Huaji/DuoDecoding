@@ -324,6 +324,11 @@ def parse_arguments(argv: list[str] | None = None):
         "默认 --help 只展示日常口径；训练/RL 专项参数归档在 --help-advanced。",
     )
 
+    g_out.add_argument(
+        "--humaneval_generate_only",
+        action="store_true",
+        help="HumanEval speed only: save completions without executing or grading them.",
+    )
     g_sample.add_argument(
         "--data_path",
         type=str,
