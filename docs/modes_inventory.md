@@ -8,7 +8,7 @@
 
 | 层 | 轴数 | 一句话 |
 |---|---|---|
-| L0 解码方法 | 1（24 个注册名 / 17 个函数） | 跑哪个算法 |
+| L0 解码方法 | 1（含后增的 SpecEdge：25 个注册名 / 18 个函数） | 跑哪个算法 |
 | L1 通信数值 | ~6 | 链路多快、多抖 |
 | L2 计费口径 | 4（捆绑成 4 协议） | 字节/时间怎么记账 |
 | L3 方法内参数 | ~6 | γ、top-k、阈值、ODLD |
@@ -53,8 +53,7 @@
 
 ## 3. L0 解码方法（`@Register.register_decoding`）
 
-2026-10-31 按注册表实测重写：**24 个注册名 / 17 个函数**（旧版只列了 9 个，
-漏了 CEE+ 组合与 `adaptive_decoding`）。`status` 是语义定位，不是代码成熟度：
+2026-10-31 快照有 24 个注册名 / 17 个函数。后增 `specedge` 各计一项，未加入论文主表。`status` 是语义定位，不是代码成熟度：
 
 | 函数 | 注册名 / 别名 | status | 主表 | 备注 |
 |---|---|---|---|---|
@@ -62,6 +61,7 @@
 | `dist_split_spec` | `dssd`, `dist_split_spec` | baseline | ✓ | top_k=0 |
 | `uncertainty_decoding` | `cuhlm`, `uncertainty_decoding` | baseline | ✓ | top_k=300；工作点阈值 0.08（`exp.py` 常量） |
 | `tk_slt` | `tkslt`, `tk_slt` | baseline | ✓ | top_k=**320**；`--tk_slt_odld`（实验性） |
+| `specedge` | `specedge` | baseline | — | 后增的单请求链式基线；双向只传 token ID，可用 `--extra-modes specedge` 单独运行 |
 | `adaptive_tridecoding` | `cee_sd`, `adaptive_tridecoding` | **core** | ✓（CEE-SD） | top_k=300；γ1/γ2 见 §4 |
 | `target_only` | `target_only` | reference | 对照 | 纯目标模型 |
 | `cee_cuhlm` | `cee_cuhlm` | combination（Table VI CEE+） | — | 经 `--extra-modes` 附载 |

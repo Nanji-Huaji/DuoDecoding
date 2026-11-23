@@ -152,6 +152,7 @@ from .operations import SharedOperations as _SharedOperations
 from .operations import _uplink_prob_payload
 from . import runtime as _runtime
 from .runtime import _build_cache
+from .specedge import SpecEdgeMixin as _SpecEdgeMixin
 from .tk_slt import (
     _TK_SLT_ODLD_GAMMA_CAP,  # noqa: F401
     TkSltMixin as _TkSltMixin,
@@ -166,6 +167,7 @@ class Baselines(
     _CeeCuhlmMixin,
     _CeeDistributedMixin,
     _DualDecodingMixin,
+    _SpecEdgeMixin,
     _SharedOperations,
     Decoding,
 ):

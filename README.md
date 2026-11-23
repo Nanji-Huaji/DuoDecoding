@@ -206,6 +206,7 @@ The currently registered decoding modes are:
 - `large`
 - `dist_spec` / `dsd`
 - `dist_split_spec` / `dssd`
+- `specedge` — [SpecEdge, single-request chain variant](docs/baselines.md#specedge): token-only verification with proactive edge drafting.
 - `uncertainty_decoding` / `cuhlm`
 - `tridecoding`（Table VIII Static 消融：`adaptive_tridecoding(_ablation="static")` 的 wrapper，固定 γ/top-k、无 RL/ARP）
 - `adaptive_decoding`（独立方法：2 模型 + ARP）
@@ -224,6 +225,7 @@ The common arguments are defined in `src/utils.py::parse_arguments()`.
 | `--target_model` | Target model used for verification or autoregressive baseline. |
 | `--little_model` | The smallest model used by tri-decoding style methods. |
 | `--gamma` | Draft length for two-model speculative decoding. |
+| `--specedge_lookahead` | SpecEdge only: how many next-round candidates to draft ahead of the reply, after predicting the bonus token (default: `gamma`; `0` disables proactive drafting). |
 | `--gamma1`, `--gamma2` | Draft lengths for the two stages in tri-decoding. |
 | `--max_tokens` | Maximum number of generated tokens. |
 | `--num_shots` | Few-shot examples for supported tasks. |

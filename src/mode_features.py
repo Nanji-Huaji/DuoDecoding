@@ -36,6 +36,13 @@ class ModeSpec:
     supports_prob_bits: bool = False
 
 
+def specedge_candidate_limit(gamma: int, lookahead: int | None) -> int:
+    """Next-round candidates to precompute, excluding the predicted bonus."""
+    if gamma < 0 or (lookahead is not None and lookahead < 0):
+        raise ValueError("SpecEdge gamma and specedge_lookahead must be non-negative")
+    return gamma if lookahead is None else min(gamma, lookahead)
+
+
 _TRI_RL_NO_HEAD = dict(models="tri", uses_main_rl=True, uses_little_rl=True)
 _TRI_RL_BOTH_HEADS = dict(
     models="tri", uses_main_rl=True, uses_little_rl=True, acc_head="both"
@@ -60,6 +67,9 @@ MODE_FEATURES = {
             # 论文用 68M 草稿 + 7B 验证（端侧小模型当草稿，同 dsd/cuhlm 拓扑）。
             "tk_slt",
             "tkslt",
+            # SpecEdge（NeurIPS'25）：可选的单请求 token-only 边云链，
+            # 不做概率压缩、不挂 RL/验收头，也不进入论文默认方法表。
+            "specedge",
             "speculative_decoding_with_bandwidth",
             # 已删除 "speculative_decoding_with_bandwidth_full_prob"（幽灵模式）：
             # 该名字从未有任何解码实现注册，能通过能力表校验却会在

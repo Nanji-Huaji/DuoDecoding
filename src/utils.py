@@ -549,6 +549,16 @@ def parse_arguments(argv: list[str] | None = None):
             "首轮无估计，用 --gamma 兜底。"
         ),
     )
+    g_method.add_argument(
+        "--specedge_lookahead",
+        type=int,
+        default=None,
+        help=(
+            "SpecEdge（--eval_mode specedge）预起草长度：等待云端验证回复时，"
+            "边缘侧先预测 bonus，再预起草最多这么多个下一轮候选（不超过 gamma）。默认使用 "
+            "--gamma；0 关闭预起草（仍保留同一验证/通信协议）；负数拒绝。"
+        ),
+    )
     g_comm.add_argument(
         "--transfer_top_k",
         type=int,
@@ -1251,6 +1261,13 @@ def parse_arguments(argv: list[str] | None = None):
                 f"{args.eval_mode!r} 的上行载荷不参与位宽压缩，"
                 f"如需全宽传输请使用默认值 16"
             )
+
+    # SpecEdge 预起草长度：None=gamma，0=关闭；负数没有语义，直接拒绝。
+    _specedge_lookahead = getattr(args, "specedge_lookahead", None)
+    if _specedge_lookahead is not None and _specedge_lookahead < 0:
+        parser.error(
+            "--specedge_lookahead 必须 >= 0（默认 None=gamma，0 关闭预起草）"
+        )
 
     # L1 口径收敛：显式给出 --comm_accounting 时统一覆盖三个子开关。
     # 解决 Table V 对齐时发现的"口径不可辨"问题：以后每个 run 的口径都有唯一标签。

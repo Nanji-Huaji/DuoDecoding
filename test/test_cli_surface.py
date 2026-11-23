@@ -1,6 +1,6 @@
 """CLI 参数面冻结：只允许有意识地增删。
 
-EXPECTED 冻结 src/utils.py 的 add_argument 字面量（115 个选项字符串 / 112 个参数，
+EXPECTED 冻结 src/utils.py 的 add_argument 字面量（116 个选项字符串 / 113 个参数，
 含 HumanEval 仅生成开关；RL/curriculum 默认不出现在 --help）。任何新增或删除都会让 test_surface_is_frozen 红；
 更新 EXPECTED 必须与参数改动放在同一个提交里，并在提交信息写明原因。
 
@@ -113,6 +113,7 @@ EXPECTED = (
     '--seed',
     '--small_draft_acc_head_path',
     '--small_draft_threshold',
+    '--specedge_lookahead',
     '--state_bw_scaling',
     '--state_latency_scaling',
     '--stochastic_ntt',

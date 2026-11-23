@@ -54,6 +54,7 @@ EXPECTED_REGISTRATIONS = {
     "large": "autoregressive_sampling",
     "sd": "SpeculativeDecodingMixin.speculative_decoding",
     "small": "autoregressive_sampling",
+    "specedge": "SpecEdgeMixin.specedge",
     "speculative_decoding_with_bandwidth": "speculative_decoding_with_bandwidth",
     "target_only": "Baselines.target_only",
     "tk_slt": "TkSltMixin.tk_slt",

@@ -34,7 +34,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.mode_features import MODE_FEATURES
+from src.mode_features import MODE_FEATURES, specedge_candidate_limit
 
 #: 通信计费开关（只有 tri 系 adaptive 协议消费，见 mode_consumption）
 ACCOUNTING_SWITCHES: tuple[str, ...] = (
@@ -91,6 +91,9 @@ _STATIC_ACCOUNTING: dict[str, tuple[str, ...]] = {
     "uncertainty_decoding": ("comm_round_trip_mode",),
     "tk_slt": ("comm_round_trip_mode",),
     "tkslt": ("comm_round_trip_mode",),
+    # SpecEdge（可选基线）：双向只传 token ID，没有概率载荷/拒绝残差，
+    # 因此只接入统一往返开关。
+    "specedge": ("comm_round_trip_mode",),
 }
 
 #: 消费至少一个计费开关的注册名（由 _STATIC_ACCOUNTING 派生；报表文案用）
@@ -115,6 +118,10 @@ _CUHLM_MODES: frozenset[str] = frozenset(
 #: 2026-10-09 起往返口径接入统一开关（§3.4）。
 _TK_SLT_MODES: frozenset[str] = frozenset({"tk_slt", "tkslt"})
 
+#: SpecEdge：可选单请求边云链，双向只传 token ID（无 logits/概率/残差/KV），
+#: 所以计费只消费 comm_round_trip_mode，深度只读 gamma。
+_TOKEN_ONLY_MODES: frozenset[str] = frozenset({"specedge"})
+
 #: eval_mode → 投机深度读取键（运行时内省的快照，测试保证不漂移）
 _STATIC_DEPTH_KEYS: dict[str, tuple[str, ...]] = {
     # 纯自回归基线：不读任何深度键
@@ -132,6 +139,7 @@ _STATIC_DEPTH_KEYS: dict[str, tuple[str, ...]] = {
     "cuhlm": ("gamma",),
     "tk_slt": ("gamma",),
     "tkslt": ("gamma",),
+    "specedge": ("gamma",),
     "speculative_decoding_with_bandwidth": ("gamma",),
     # 三级族：只读 gamma1/gamma2
     "tridecoding": ("gamma1", "gamma2"),
@@ -483,6 +491,15 @@ def render_effective_report(
                 f"    ⚠ 当前 eval_mode={mode!r} [不消费] 上述计费开关，"
                 "本 run 的实际字节/往返由该方法内联实现决定"
             )
+    if mode in _TOKEN_ONLY_MODES:
+        lookahead = getattr(args, "specedge_lookahead", None)
+        effective_lookahead = specedge_candidate_limit(args.gamma, lookahead)
+        lines.append(
+            f"    · eval_mode={mode!r} token-only 协议：双向只传 token ID"
+            "（无 logits/概率/残差/KV），只消费 comm_round_trip_mode；"
+            f"预起草 lookahead={_fmt(effective_lookahead)}"
+            f"（原始值 {_fmt(lookahead)}，None=gamma、0=关闭）"
+        )
 
     # 投机深度
     depth = consumption.depth_keys

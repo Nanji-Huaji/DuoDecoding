@@ -101,6 +101,8 @@ dsd/dssd 的最优 γ 会下移（载荷 ∝ 草稿数/拒绝行数），各带�
 CEE-CUHLM 的强制拒绝行为。CUHLM 系当前标签为 `paper_rt`（论文载荷、统一
 往返），无通信模式为 `n/a`；实现见 [评测工具](<../eval/utils.py>)。
 
+可选基线 [SpecEdge](baselines.md#specedge) 的首个请求附带 prompt，后续上行只有新候选，下行是已匹配的 ID 和修正或 bonus ID。按张量元素大小计字节，无概率或 KV；不计官方 gRPC 树结构、序列化和包头。只消费统一计费开关中的 `comm_round_trip_mode`，不改变 Table V。启用提前起草时，换链路须重跑：逐轮重叠量会变，`scripts/rebill.py` 不能仅替换总通信时间。
+
 ### 3.1 CUHLM 系：按 CU-HLM 论文自身的口径计费（2026-04 落地）
 
 独立 CUHLM（`uncertainty_decoding`/`cuhlm`）依据 CU-HLM 论文；`cee_cuhlm`

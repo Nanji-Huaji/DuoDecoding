@@ -10,6 +10,7 @@
 | 方法族 | 真实定义模块 |
 |---|---|
 | DSD / DSSD | [dual.py](<../src/baselines/dual.py>) |
+| SpecEdge（单请求、链式） | [specedge.py](<../src/baselines/specedge.py>) |
 | CUHLM | [cuhlm.py](<../src/baselines/cuhlm.py>) |
 | TK-SLT | [tk_slt.py](<../src/baselines/tk_slt.py>) |
 | CEE-CUHLM | [cee_cuhlm.py](<../src/baselines/cee_cuhlm.py>) |
@@ -66,6 +67,7 @@ output_ids, metrics = decoding(input_ids)
 | `dsd`, `dist_spec` | 2 | `dist_spec` | DSD：传 draft token 序列 +（可 top-k）draft 概率窗口，批量验证 accept/reject |
 | `cuhlm`, `uncertainty_decoding` | 2 | `uncertainty_decoding` | CUHLM：按不确定度机会传输/压缩传输概率分布（阈值默认 0.8，可配置） |
 | `tk_slt`, `tkslt` | 2 | `tk_slt` | TK-SLT（WCSP'25）：top-K 稀疏 logits 上行（FP16），按论文自身口径计费；可选 ODLD/AS² 自适应 γ |
+| `specedge` | 2 | `specedge` | 只上传候选 token ID；等待验证时沿当前链预起草，返回路径完全对齐才复用 |
 | `tridecoding` | 3 | `tridecoding` | Table VIII Static 消融：`adaptive_tridecoding(_ablation="static")` 的 wrapper（同验证路径，关 ARP/DRA、固定 γ/top-k） |
 | `ceesd_w/o_arp`, `ceesd_without_arp` | 3 | `ceesd_without_arp` | CEE-SD 去 ARP head 的消融：可启用 RL 仅调 top-k（不依赖 ARP） |
 | `adaptive_decoding` | 2 | `adaptive_decoding` | 2 模型 + ARP head：草稿侧每步可提前 stop（自适应 draft 长度） |
@@ -131,6 +133,27 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 ## 各方法说明（API + 行为）
 
 下面描述 `Baselines` 组合的注册方法，定义模块见上面的导引；`sd`（标准 speculative decoding）位于 [engine.py](<../src/engine.py>)。
+
+### SpecEdge
+
+`--eval_mode specedge` 运行 [SpecEdge 论文](https://arxiv.org/abs/2505.17052) §4.1–4.2 的单请求解码协议。这里选用单条候选链（论文附录 B.3 也评测了非树形方案），不是主实验中的 SpecExec 候选树，也不是逐项复刻附录的采样器。Draft 与 Target 需要共享 token ID 空间。
+
+- 边缘侧向云端提交最多 `--gamma` 个候选。服务端一次前向计算各位置的 target 分布，按 target 选出的 token 逐位匹配；返回匹配前缀以及首次不匹配的修正 token，全部匹配时则多返回一个 bonus token。只有服务端确认的 token 能进入输出。两端不交换 logits、概率或 KV 缓存。
+- 等待回复时，边缘侧沿已提交的链继续预测 bonus 和下一轮候选。即使整条链被接受，只要 bonus 没有猜中，后续候选和对应缓存也必须丢弃。`--specedge_lookahead 0` 只关闭这项提前起草，保留同一个验证和通信协议。
+- `--specedge_lookahead N` 是预测 bonus **之后**可提前起草的下一轮候选上限，默认等于 `gamma`，超过 `gamma` 没有额外效果。`metrics.specedge.proactive_tokens` 包含猜测的 bonus 和丢弃的工作，`reused_tokens` 只数下轮实际提交的提前候选。
+- 本仓库在单请求中串行执行两个模型；每轮固定窗口，不根据返回时刻中断 GPU 工作。模拟延迟 `wall_time = computation_time + communication_time + queuing_time − specedge.overlap_time`；每轮最多扣除提前起草时间与本轮网络、排队、验证时间之和中的较小值。`computation_time` 是未扣重叠的串行解码耗时。这里没有实测 RPC，也不模拟 §4.3 的多客户端调度或集群吞吐。
+
+从仓库根目录运行（模型别名也可换成本地路径）：
+
+```bash
+python eval/eval_mt_bench_noeval.py --eval_mode specedge \
+    --draft_model tiny-llama-1.1b --target_model llama-2-13b \
+    --gamma 3 --specedge_lookahead 3 --max_tokens 32 --temp 0 \
+    --ntt_ms_edge_cloud 14 --comm_round_trip_mode per_round \
+    --eval_data_num 1 --num_shots 0 --exp_name specedge_smoke
+```
+
+可用 `python exp.py --extra-modes specedge --only-modes specedge --dry-run` 预览批量配置。默认论文矩阵不含 SpecEdge。
 
 ### 1) `dssd` / `dist_split_spec`（DSSD，2 模型）
 
