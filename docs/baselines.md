@@ -143,17 +143,29 @@ ARP head（`AcceptancePredictionHead`）用于根据 hidden states 预测“是�
 - `--specedge_lookahead N` 是预测 bonus **之后**可提前起草的下一轮候选上限，默认等于 `gamma`，超过 `gamma` 没有额外效果。`metrics.specedge.proactive_tokens` 包含猜测的 bonus 和丢弃的工作，`reused_tokens` 只数下轮实际提交的提前候选。
 - 本仓库在单请求中串行执行两个模型；每轮固定窗口，不根据返回时刻中断 GPU 工作。模拟延迟 `wall_time = computation_time + communication_time + queuing_time − specedge.overlap_time`；每轮最多扣除提前起草时间与本轮网络、排队、验证时间之和中的较小值。`computation_time` 是未扣重叠的串行解码耗时。这里没有实测 RPC，也不模拟 §4.3 的多客户端调度或集群吞吐。
 
-从仓库根目录运行（模型别名也可换成本地路径）：
+单卡示例（`CUDA_VISIBLE_DEVICES` 选空闲卡，模型也可换成本地路径）：
 
 ```bash
+CUDA_VISIBLE_DEVICES=0 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 python eval/eval_mt_bench_noeval.py --eval_mode specedge \
-    --draft_model tiny-llama-1.1b --target_model llama-2-13b \
-    --gamma 3 --specedge_lookahead 3 --max_tokens 32 --temp 0 \
-    --ntt_ms_edge_cloud 14 --comm_round_trip_mode per_round \
+    --draft_model Qwen/Qwen3-0.6B --target_model Qwen/Qwen3-1.7B \
+    --model_source hub --model_dtype fp16 --draft_quantization none --target_quantization none \
+    --gamma 3 --max_tokens 64 --temp 0 --disable_eos_stop \
+    --edge_cloud_bandwidth 46 --ntt_ms_edge_cloud 14 --batch_delay 0 --comm_round_trip_mode per_round \
     --eval_data_num 1 --num_shots 0 --exp_name specedge_smoke
 ```
 
-可用 `python exp.py --extra-modes specedge --only-modes specedge --dry-run` 预览批量配置。默认论文矩阵不含 SpecEdge。
+关闭提前起草时加 `--specedge_lookahead 0`；纯 target 对照用 `--eval_mode large`。三次运行请用不同的 `--exp_name`。`python exp.py --extra-modes specedge --only-modes specedge --dry-run` 可预览批量配置；默认论文矩阵不含 SpecEdge。
+
+**单卡验证（实现提交 `9f94736`）。** 一张 RTX 4090、PyTorch 2.6.0+cu124、Transformers 4.57.6；本地 HF 快照为 `c1899de`（0.6B）和 `70d244c`（1.7B）。使用以上参数，MT-Bench 首题的两轮各生成 64 个 token，不调用 judge。表中实测耗时是两轮生成计时之和，不含加载和预热；模拟耗时是评测工件的 `wall_time`。
+
+| 方式 | 与 target 相同的生成 ID | Draft / Target 前向 | 实测耗时 | 模拟耗时 |
+|---|---:|---:|---:|---:|
+| `large` | 128/128（参照） | 0 / 128 | 2.941 s | 2.940 s |
+| `specedge`，提前起草关 | 128/128 | 115 / 40 | 3.690 s | 4.250 s |
+| `specedge`，提前起草开 | 128/128 | 189 / 40 | 5.039 s | 4.115 s |
+
+两组各提交 115 个候选，接受 88 个；两轮合计上行 3,800 B（360 个 prompt ID + 115 个候选），下行 1,024 B（128 个确认 ID）。开启组提前生成 144 个 token，其中 70 个候选在下一轮提交。逐轮可重叠时间合计 1.484 s：相对关闭组，模拟耗时少 3.2%，单卡实测耗时却多 36.5%。这是覆盖接受和拒绝路径的正确性检查，不是加速或质量评测。
 
 ### 1) `dssd` / `dist_split_spec`（DSSD，2 模型）
 
