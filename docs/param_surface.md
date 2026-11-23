@@ -1,9 +1,9 @@
-# CLI 参数面快照（2026-10-22，111 个；默认 --help 可见 66 个）
+# CLI 参数面快照（112 个；默认 --help 可见 67 个）
 
 > 生成方式：AST 解析 `src/utils.py::parse_arguments` 的 `add_argument`，
 > 再按 `args.<dest>` / `getattr(args, "<dest>")` 扫描 `exp.py` + `src/` +
 > `eval/` + `tools/`（排除 `SpecDec_pp/` 与 `test/`）。
-> 冻结测试：`test/test_cli_surface.py`（111 个选项字符串，只允许有意识地增删）。
+> 冻结测试：`test/test_cli_surface.py`（115 个选项字符串，含 3 个短别名，只允许有意识地增删）。
 > 2026-10-19：RL（37）与 curriculum（5）归档到 `--help-advanced`；
 > 弃用的 `--comm_accounting` 也从 `--help` 隐藏（仍解析）。默认可见 65 项。
 
@@ -30,7 +30,7 @@
 | ⑥ RL adapter | 39 | RL adapter（仅 --use_rl_adapter 时有效） |
 | ⑦ 部署、精度与显存 | 7 | 换机器时动 |
 | ⑧ curriculum | 5 | 训练 curriculum |
-| ⑨ 输出与裁判 | 4 | 输出与裁判 |
+| ⑨ 输出与裁判 | 5 | 输出与裁判 |
 | ⑩ 帮助 | 1 | `--help-advanced`（查看归档的 ⑥/⑧） |
 
 ## 2. 完整台账
@@ -110,6 +110,7 @@
 | `--prob_payload_bits` | `16` | ③ | 2 | src/baselines.py, src/utils.py |
 | `--charge_residual_payload` | `True` | ③ | 7 | eval/utils.py, src/baselines.py, src/engine.py … |
 | `--dump_outputs` | `None` | ⑨ | 1 | eval/eval_mixed.py |
+| `--humaneval_generate_only` | `False` | ⑨ | 1 | [HumanEval](../eval/eval_humaneval.py)：保留补全，不在测试机执行生成的代码；速度矩阵开启。 |
 | `--arp_stop_mode` | `'cumulative'` | ⑤ | 3 | src/baselines.py |
 | `--rl_force_topk` | `None` | ⑥ | 1 | src/baselines.py |
 | `--rl_force_threshold` | `None` | ⑥ | 2 | src/baselines.py, src/rl_adapter.py |

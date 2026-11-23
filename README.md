@@ -37,16 +37,11 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Do not edit `requirements.txt` by hand. Regenerate it from the lock with the
-frozen/offline command documented in
-[docs/cpu_validation.md](docs/cpu_validation.md). That page also explains why
-hashes are kept and the offline limitations.
+Do not edit `requirements.txt` by hand. Run `python tools/export_locked_requirements.py --write` to regenerate the hash-checked export from the frozen lock.
 
 Development tools are deliberately separate: `requirements-dev.txt` pins
 `pytest==9.1.1` and `ruff==0.15.4`, but the production `uv.lock` does not contain
-those tools, so it is a direct pin list rather than a resolved dev lock. See
-[docs/cpu_validation.md](docs/cpu_validation.md) for the isolated install and
-CPU-only evidence boundary.
+those tools, so it is a direct pin list rather than a resolved dev lock.
 
 ### Git LFS
 
@@ -146,16 +141,13 @@ are downloaded by `scripts/download_models.py --checkpoints`.
 
 ## Validation
 
-CPU-only contract and dependency checks are documented in
-[docs/cpu_validation.md](docs/cpu_validation.md). They cover the offline pytest
-gate, the requirements/lock contract, and the CPU-vs-GPU evidence boundary; they
-do not replace GPU or real-model acceptance.
+In a development environment, run `python -m pytest -q test/test_dependency_contract.py` to check the dependency lock. CPU checks do not test GPU compatibility or real-model throughput.
 
 ## Usage
 
 There are two main ways to use this repository:
 
-1. Run a single evaluation script in `eval/` with `accelerate launch`.
+1. Run a single evaluation script in `eval/` with `python`.
 2. Run a batch of predefined experiments through `exp.py`.
 
 Model names can be passed as:
@@ -166,15 +158,12 @@ Model names can be passed as:
 
 ### Run a Single Evaluation
 
-The most direct workflow is to launch one task script under `eval/`.
+Run a single task script directly with `python`. Keep the GPU mask assigned by your scheduler. On a workstation, expose only the GPU(s) you intend to use. The model loader decides placement across the visible devices.
 
 Example: MT-Bench without judge:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 accelerate launch \
-    --num_processes 1 \
-    --main_process_port 29051 \
-    eval/eval_mt_bench_noeval.py \
+python eval/eval_mt_bench_noeval.py \
     --eval_mode dist_spec \
     --draft_model tiny-llama-1.1b \
     --target_model llama-2-13b \
@@ -188,10 +177,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch \
 Example: GSM8K with communication simulation:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 accelerate launch \
-    --num_processes 1 \
-    --main_process_port 29052 \
-    eval/eval_gsm8k.py \
+python eval/eval_gsm8k.py \
     --eval_mode dist_split_spec \
     --draft_model tiny-llama-1.1b \
     --target_model llama-2-13b \
@@ -323,11 +309,19 @@ TARGET_MODEL="Llama-2-13b" \
 bash cmds/train_rl_mixed.sh
 ```
 
-For more details, see `docs/rl_agent_checkpoints.md`.
+### Paper Reruns and Batch Experiments
 
-### Batch Experiments via `exp.py`
+The staged paper runner separates the 45 configurations in the 46 Mbps main table from the full bandwidth sweep. From the repository root, preview the 63 core configurations without GPUs, model weights, or dataset caches:
 
-Preview the default Table V matrix (135 configurations) before allocating GPUs:
+```bash
+python -m src.experiments.paper_rerun --stage core --dry-run
+```
+
+Before executing, repeat the command with `--preflight` instead of `--dry-run` to check the local models, checkpoints, network trace, and datasets without starting GPU jobs. Once it passes, run with `--execute`, a fresh `--run-id`, and the physical `nvidia-smi` indices of the idle GPUs you have reserved. `--gpus 0` uses one card. `--gpus 0,1` exposes both cards to one worker and leaves placement to the model loader. To run two configurations in parallel on one card each, use `--gpus 0 --gpus 1` instead. GPU groups cannot overlap. No particular GPU model or minimum VRAM is required; 48 GB is a sizing reference, not a fit check.
+
+**Comparing performance:** GPU model, device order, interconnect, and cross-GPU transfers can change measured throughput and latency even when the simulated link settings are identical. Compare methods using the same hardware and placement, or report layouts separately. The manifest records the GPUs visible to each configuration; check the worker log for loading decisions. Visibility does not guarantee every GPU is used.
+
+For the **legacy, environment-tunable sweep**, preview the default Table V matrix (135 configurations) before allocating GPUs:
 
 ```bash
 python exp.py --dry-run
@@ -342,7 +336,7 @@ python exp.py --only-modes dsd,dssd --resume-from experiment_results/current.jso
     --merge-from experiment_results/current.json --merged-output experiment_results/merged.json
 ```
 
-For a custom sweep, `from exp import create_config, run_experiments_parallel` and pass a list of configurations. Importing the module does not parse arguments or materialize the matrix. `build_matrix()` returns a fresh list; the old `config_to_run` name remains available on request. Edit [matrix.py](src/experiments/matrix.py) to change Table V, not the CLI. Per-task evaluation is documented in the [evaluation guide](eval/README.md).
+For a custom sweep, `from exp import create_config, run_experiments_parallel` and pass a list of configurations. Importing the module does not parse arguments or materialize the matrix. `build_matrix()` returns a fresh list; the old `config_to_run` name remains available on request. Edit [matrix.py](src/experiments/matrix.py) to change Table V, not the CLI.
 
 ### Debug Checks
 
@@ -369,4 +363,4 @@ Leave both variables unset for normal benchmarking.
 ### Bash Scripts and vLLM Test Scripts
 
 - `cmds/` contains project-specific shell scripts such as `cmds/test.sh` and `cmds/train_rl.sh`.
-- `test/` contains separate vLLM-based evaluation utilities. See `test/README.md` and `test/QUICKSTART.md` if you want a lightweight benchmarking path outside the main `eval/` pipeline.
+- For a separate GSM8K benchmark, run `python test/eval_gsm8k_vllm.py --help` in a vLLM environment.

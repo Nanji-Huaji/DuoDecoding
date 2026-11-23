@@ -203,10 +203,14 @@ class HumanevalTask:
                         datum["input_text"],
                         self.tokenizer.decode(output_ids[0, :]),
                     )
-                    passed = check_correctness(
-                        output, datum["test"], datum["entry_point"]
-                    )
-                    self.acc_num.append(passed)
+                    # Timing jobs need the decoded text, not execution of an
+                    # untrusted completion on the machine holding the weights.
+                    passed = None
+                    if not getattr(run.args, "humaneval_generate_only", False):
+                        passed = check_correctness(
+                            output, datum["test"], datum["entry_point"]
+                        )
+                        self.acc_num.append(passed)
                     run.write(
                         {
                             "task_id": datum["task_id"],
