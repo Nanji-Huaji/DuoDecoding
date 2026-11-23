@@ -1,7 +1,6 @@
 # 验证闸门：重构前后到底能断言什么
 
-配套计划：`docs/refactor_baselines_plan.md`。本文只回答一个问题——
-**改完之后，凭什么说行为没变。**
+这份说明用于判断：重构后，哪些行为可以证明没有改变？
 
 > 2026-11-06 补充：两模型 `adaptive_decoding` 以逻辑不变量验收，
 > 轨迹差分作为辅助；最新规则和有意修正见 §12。历史章节保留当时的验收目标。
@@ -358,8 +357,7 @@ Driver 39 个 CPU 用例、比较器 43 个用例，均经独立缺陷审阅并�
 不启 RL/head、不更新 checkpoint；不动占用中的 GPU3，也不动 0/2。
 完整运行记录与最终全量数字见 `docs/nightly_refactor_20261103.md`。
 
-第一层验证接口设计见 `docs/adaptive_first_stage_design.md`，尚未引入新类型或
-改变验证返回形状；若继续实现，要先补特征测试并评审新增指纹事件。
+当时的[第一层验证接口设计](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/adaptive_first_stage_design.md>)没有引入新类型或改变验证返回形状；后续实现与验收口径见 §13。
 
 ## 12. 2026-11-06：逻辑契约优先的 adaptive_decoding
 
@@ -383,7 +381,7 @@ Driver 39 个 CPU 用例、比较器 43 个用例，均经独立缺陷审阅并�
 
 ## 13. 2026-11-07：CEE-SD 完整本体与正确性门禁
 
-本轮基点 `b72a854`，对象为三模型 `adaptive_tridecoding`/`cee_sd`。当前用户授权已覆盖 §11 所链接的[历史第一层窄方案](<adaptive_first_stage_design.md>)；历史“第一层 EOS 可以无 target 验证就结束”“wall time 先读、最后再 flush”等行为不再是当前算法合同。旧采集器/旧版本的历史验收记录保留，不据此要求新算法重现已确认错误。
+本轮基点 `b72a854`，对象为三模型 `adaptive_tridecoding`/`cee_sd`。本轮取代了 §11 的第一层设计；历史“第一层 EOS 可以无 target 验证就结束”“wall time 先读、最后再 flush”等行为不再是当前算法合同。旧采集器/旧版本的历史验收记录保留，不据此要求新算法重现已确认错误。
 
 当前门禁由[独立正确性契约](<../test/test_cee_sd_contracts.py>)和[编排/oracle 测试](<../test/test_cee_sd_orchestration.py>)共同承担：target 确认 EOS；第一层前缀在 gamma1=0 时仍验证；skip 携带 little q、正常校正携带 raw draft 行；严格接受边界、对齐 bonus/forwarded cache；终止回复/下行计费；最后 flush 先于所有派生时间。`charge_residual_payload` 只影响补计费；bits<16 时同一 wire-qhat 同时用于接受与残差，明确属于有损近似协议，不宣称无偏 target 采样。
 

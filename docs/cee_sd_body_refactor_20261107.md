@@ -4,7 +4,7 @@
 
 ## 1. 当前授权与历史设计的关系
 
-用户本轮要求实质性拆分 CEE-SD 本体，允许为逻辑正确性改变随机流、调用帧和旧错误行为。[第一层历史设计](<adaptive_first_stage_design.md>)保留其日期、基点坐标和当时的狭窄方案；其中“只抽 V4”“通信必须留在原方法”“第一层 EOS 立即停止”“末轮 flush 前读 wall time”等限制，不是本轮验收规范。
+用户本轮要求实质性拆分 CEE-SD 本体，允许为逻辑正确性改变随机流、调用帧和旧错误行为。[第一层设计的历史版本](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/adaptive_first_stage_design.md>)保留其日期、基点坐标和当时的狭窄方案；其中“只抽 V4”“通信必须留在原方法”“第一层 EOS 立即停止”“末轮 flush 前读 wall time”等限制，不是本轮验收规范。
 
 本轮仍拒绝通用解码骨架、god-context 和只搬参数的浅 wrapper。公开入口保留两层拓扑、实际配置读取、策略更新、reward 切点、提交与停止顺序。
 

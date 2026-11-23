@@ -133,7 +133,7 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B tools/run_cpu_gate.py \
 ### 2026-11-11 后续记录
 
 - 阶段 A 已通过 [PR #31](https://github.com/Nanji-Huaji/DuoDecoding/pull/31) 合并，提交为 `58034cd7ce8063ca1046c41c79fcb6c1456e07ef`。
-- CUHLM 首批真实迁移及三项决策修复已通过 [PR #32](https://github.com/Nanji-Huaji/DuoDecoding/pull/32) 合并；其双模式 CPU 结果各为 1385 passed，见[批次记录](<cuhlm_refactor_20261111.md>)。
+- CUHLM 首批真实迁移及三项决策修复已通过 [PR #32](https://github.com/Nanji-Huaji/DuoDecoding/pull/32) 合并；其双模式 CPU 结果各为 1385 passed，见[当时的批次记录](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/cuhlm_refactor_20261111.md>)。
 - 远端初次干净克隆得到 18 项资源/路径相关失败，未将其记作通过。后续修复测试可移植性，并在全新依赖环境验证：两模式各 1386 passed、21 skipped、163 subtests；14 项缺失权重明确跳过，严格模式则如期失败。本机完整资产严格门禁各 1400 passed、7 skipped、163 subtests。安装过程、源码哈希核对及结果见[可移植性记录](<cpu_portability_20261111.md>)。
 
 ### GPU 门槛

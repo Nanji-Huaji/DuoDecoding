@@ -260,8 +260,8 @@ Local evidence: [integration summary](<../.refactor/native-validation-20261114/i
 [independent review](<../.refactor/native-validation-20261114/independent-review.md>).
 The prior two remote source snapshots and 144 package versions remained unchanged;
 prior Graph code/tests/report and user HTML were preserved. No install, upgrade,
-commit or push was performed. CEE-CUHLM coverage is CPU-only and documented in
-[its separate report](<cee_cuhlm_refactor_20261114.md>).
+commit or push was performed. CEE-CUHLM coverage in that run was CPU-only; see
+[the report for that revision](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/cee_cuhlm_refactor_20261114.md>).
 
 ## 2026-11-15 A6000 single-device experiment
 

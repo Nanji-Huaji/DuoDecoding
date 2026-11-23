@@ -16,7 +16,7 @@ S3a 后 core 5,736 行（−89），新工厂模块 107 行；整类 `Baselines`
 增加了 import/docstring，不把物理移走等同逻辑删除。105 个旧可读名字、79 个
 星号名字、24 注册项和别名身份保留，六种冷启动顺序有持久测试。
 
-第一层验证设计另见 `docs/adaptive_first_stage_design.md`：已完成合同与接口候选，
+当夜的[第一层验证设计](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/adaptive_first_stage_design.md>)已完成合同与接口候选，
 但没有实现 `StageVerification` 或 `_verify_first_stage`，没有移动 reward/EOS/comm。
 
 ## 本地门禁
