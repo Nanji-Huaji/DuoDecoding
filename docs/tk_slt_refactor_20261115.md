@@ -32,6 +32,6 @@ Lead 用 [冻结测试](<../test/test_logic_fingerprint.py>)相同的完整 incl
 - 解析器不展开局部对象 `odld.select()`，也不展开含早退的 commit helper；入口事件减少不代表运行时少采样或少回滚。
 - [冻结台账](<../test/golden/logic/baselines.json>)新增 `_OdldState.ready`、`select`、`write_metrics` 与 `TkSltMixin._tk_slt_commit_window` 四项，覆盖已移出入口指纹的关键门控、策略和定稿分支。不改解析器、不刷新无关条目。
 
-子任务命令见 [测试记录](<../.refactor/tk-slt-20261115/test-results.md>)；最终合并态验证见 [汇总](<baselines_refactor_20261115.md>)。
+子任务命令见 [测试记录](<../.refactor/tk-slt-20261115/test-results.md>)；当次合并结果见[历史汇总](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/baselines_refactor_20261115.md>)。
 
 **边界：**本轮 TK-SLT 证据为 CPU；未跑真实 Qwen、GPU/NTT 或质量基准。commit 的预算已耗尽防御分支保留，但当前 γ 钳制使其不可达，不宣称现有测试覆盖了该分支。

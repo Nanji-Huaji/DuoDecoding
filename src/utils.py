@@ -280,7 +280,7 @@ def parse_arguments(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="args for this file")
 
     # ---- 参数分组：只改变 --help 的排版，不改动任何默认值或行为 ----
-    # 分层依据见 docs/param_inventory.md；L0 通信/计费口径见 docs/protocol.md。
+    # 参数分组见 docs/param_surface.md；L0 通信/计费口径见 docs/protocol.md。
     g_daily = parser.add_argument_group(
         "① 日常出表（这些就够）",
         "跑任何一次评测都要定的：模型、模式、深度、生成长度、与命名协议。",
@@ -472,7 +472,7 @@ def parse_arguments(argv: list[str] | None = None):
 
     # for lookahead / for rest 段已整段删除：--level --guess --window
     # --max-token-span --num-draft --datastore-path --task_name 全仓无
-    # `args.<name>` 消费者（见 docs/param_inventory.md §2）。--task_name 尤其
+    # `args.<name>` 消费者（删除记录见 docs/param_ledger.md §4）。--task_name 尤其
     # 有误导性：exp.py 每条命令都推导并传入、15 个脚本也传，但无人读取；
     # RL adapter 的 task one-hot 实际由各评测类硬编码 self.task 提供
     # （src/baselines.py:578 + eval/eval_*.py）。

@@ -16,7 +16,7 @@
 | adaptive / CEE-SD | [adaptive.py](<../src/baselines/adaptive.py>) / [cee.py](<../src/baselines/cee.py>) |
 | CEE-DSD / CEE-DSSD | [cee_distributed.py](<../src/baselines/cee_distributed.py>) |
 
-2026-11-15 的结构拆分见 [重构汇总](<baselines_refactor_20261115.md>)。2026-11-16 又按用户要求将 CEE-CUHLM 外层对齐独立 CUHLM，见 [协议对齐说明](<cee_cuhlm_protocol_alignment_20261116.md>)；其他算法族未随之修改。
+CEE-CUHLM 的外层验证遵循独立 CUHLM，内层保留 Little→Draft。接受、拒绝及通信计费的区别见[协议对齐说明](<cee_cuhlm_protocol_alignment_20261116.md>)。
 
 - [包入口](<../src/baselines/__init__.py>) 保留 `from src.baselines import Baselines` 和历史 helper 的兼容导入。
 - monkeypatch 必须指向真实定义模块，例如 `src.baselines.cuhlm.KVCacheModel`；通信工厂在 [simulators.py](<../src/baselines/simulators.py>)。修改兼容包的属性不会写透到这些模块。

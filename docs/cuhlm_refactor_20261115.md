@@ -31,6 +31,6 @@
 
 [完整 include 语料的指纹](<../test/golden/logic/baselines.json>)由 Lead 复算：`CuhlmMixin.uncertainty_decoding` **90 → 92 events**，`7aec9e478ae6d0cd → 2ac52ad224bad771`。新增事件为两个值对象构造；旧序列保持原顺序。子任务最初给出的 85→87 只装载本模块，不能代替完整冻结条目。
 
-子任务日志见 [.refactor 记录](<../.refactor/cuhlm-20261115/tests-after.log>)；最终合并态验证见 [汇总](<baselines_refactor_20261115.md>)。
+子任务日志见 [.refactor 记录](<../.refactor/cuhlm-20261115/tests-after.log>)；当次合并结果见[历史汇总](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/baselines_refactor_20261115.md>)。
 
 **边界：**本方法本轮仅 CPU 验证，不声称独立 CUHLM 已获 CUDA Graph 实机、Qwen 或质量基准验收。

@@ -249,7 +249,7 @@ LOCKED 零漂移、tokens 逐位一致**。
 
 ## 8. 后续（2026-10-31）
 
-- H5 细化设计见 `docs/h5_cee_core_design.md`：顶层 93.5% 相同，但验证/payload/prefix 更新分叉，不能机械抽取；建议按钩子分阶段重构，并用 enine 同机 A/B 替代指纹门禁。
+- 见当时的 [H5 设计](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/h5_cee_core_design.md>)：顶层 93.5% 相同，但验证/payload/prefix 更新分叉，不能机械抽取；建议按钩子分阶段重构，并用 enine 同机 A/B 替代指纹门禁。
 
 ## 9. 2026-10-31 进展
 
@@ -470,7 +470,7 @@ S2 只完成包入口与实现迁移；S3a 后续见 §14，方法族与完整 l
 本地回归与指纹见 `docs/verification_gates.md` §11；夜间提交、双轴审阅和真实
 模型实验的最终范围以 `docs/nightly_refactor_20261103.md` 为准。
 
-另已完成 `docs/adaptive_first_stage_design.md`：只设计验证接缝，不把通信、reward、
+当时的[第一层设计](<https://github.com/Nanji-Huaji/DuoDecoding/blob/43026d08210f3456d4e49710e698108388a9c70b/docs/adaptive_first_stage_design.md>)只设计验证接缝，不把通信、reward、
 EOS 或 `_comm` 消费隐藏进大 context。独审纠正了二次位宽量化、跨轮 top-k、
 cache 预热/行索引和残差计费条件等合同；`StageVerification` 尚未实现，是否接受
 新增返回类型/指纹事件仍需确认。下一步先补特征测试，不能直接宣称整层可搬。

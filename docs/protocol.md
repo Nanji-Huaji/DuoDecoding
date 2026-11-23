@@ -317,10 +317,7 @@ edge_cloud（矩阵基线只用它）。回归锁定：
 γ 进 `RUN_IDENTITY_FIELDS`：分档前后的 run 身份不互撞。改 γ 的动机是
 "每个基线取自己的最强设置"（strongest-baseline 惯例）。
 
-**注意：分档表默认不启用。** 本重构分支只做口径/参数收口，不改变既有
-矩阵的数字；`gamma_for_matrix` 缺省走 `GAMMA_SINGLE=3`（与重构前矩阵
-逐位一致），要跑分档表需显式设 `EXP_GAMMA_SCHEDULE=by_mode`
-（`docs/refactor_baselines_plan.md` §Phase 3 的"不改数字"约束）。
+**`exp.py` 的旧矩阵默认不启用分档。** [`gamma_for_matrix`](<../src/experiments/matrix.py>) 默认返回 `GAMMA_SINGLE=3`；要使用上面的分档表，显式设置 `EXP_GAMMA_SCHEDULE=by_mode`。
 
 ## 5. 强制机制（Step 1 已落地，不改动任何数字）
 
@@ -367,7 +364,7 @@ edge_cloud（矩阵基线只用它）。回归锁定：
   `cmds/train_rl.sh`）却零处读取，全部一并清掉——留着定义而清 call site，
   或清定义而留 call site，都会让跑批当场报错或继续误导。
 
-CLI 现有 103 个参数。参数按"谁消费它"的分层清单见 `docs/param_inventory.md`。
+这轮清理结束时，CLI 剩下 103 个参数。当前的参数分组、默认值和读取位置见 [CLI 参数面快照](<param_surface.md>)。
 
 ## 7. 现在就能用的命令（已符合 §2 的第 1-5、9、11、13 条）
 

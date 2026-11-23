@@ -650,7 +650,7 @@ class TestHelpGrouping(unittest.TestCase):
         """第 ① 组必须就是文档承诺的 16 个，不多不少。
 
         它是"参数太多"这个问题的答案：出一次表只改这一组。若有人往里塞参数或挪走，
-        这个测试会失败，迫使显式更新文档（docs/param_inventory.md §1）。
+        这个测试会失败，迫使显式更新文档（docs/param_surface.md §1）。
         """
         g = _argument_groups()
         daily = g.get("g_daily")

@@ -158,8 +158,7 @@ one-hot 的是 `self.task`，由各评测类硬编码（`src/baselines.py:578` +
 
 这也暴露了我先前扫描方法的漏洞：用模糊的 `\btask_name\b` 匹配时，`eval/eval_mixed.py`
 的局部变量、`src/rl_adapter.py` 的函数形参都会被误当成消费者。改用精确的
-`args.<dest>` / `getattr(args, "<dest>")` 模式后才查实（复现脚本见
-`docs/param_inventory.md` 开头的生成方式）。
+`args.<dest>` / `getattr(args, "<dest>")` 模式后才查实。按读取点盘点参数的方法见 [CLI 参数面快照](<param_surface.md>)。
 
 设置它们不会有任何效果，也不会报错。15 个全部删除；CLI 现有 **103** 个参数。
 删除时一并清掉了 `--task_name` 的 17 处 call site——否则那些命令会直接
