@@ -44,7 +44,11 @@ class ModelTimeComposition:
             return self.__add__(other)
 
 
-class DecodingMetrics(TypedDict):
+class _ModeMetrics(TypedDict, total=False):
+    specedge: dict[str, int | float]
+
+
+class DecodingMetrics(_ModeMetrics):
     """
     TypedDict class that defines metrics for tracking decoding performance and resource usage.
 
@@ -169,6 +173,10 @@ def accumulate_metrics(target: DecodingMetrics, incoming: dict) -> None:
     - dict 值做子键合并（如 connect_times）；其余要求可加
       （hasattr __add__），缺失键静默跳过
     """
+    # Mode-specific additive counters use the same sub-key merge without
+    # introducing empty SpecEdge metrics into any other mode's artifacts.
+    if "specedge" in incoming:
+        target.setdefault("specedge", {})
     skip = ("throughput", "accuracy")
     for key in list(target.keys()):
         if key in skip or key not in incoming:
@@ -183,3 +191,11 @@ def accumulate_metrics(target: DecodingMetrics, incoming: dict) -> None:
                     sub_target[sub_key] = sub_value
         elif hasattr(value, "__add__"):
             target[key] = target[key] + value
+
+    if "specedge" in incoming:
+        # Window lengths are means across rounds, not sums of per-sample means.
+        proposed = target["draft_generated_tokens"]
+        target["each_loop_draft_tokens"] = proposed / max(1, target["loop_times"])
+        target["avg_draft_len"] = proposed / max(
+            1, target["specedge"]["proposal_rounds"]
+        )

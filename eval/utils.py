@@ -1,5 +1,6 @@
 from src.metrics import DecodingMetrics
 from src.metrics_dumper import ArgsLike
+from src.mode_features import specedge_candidate_limit
 import json
 import os
 import random
@@ -140,6 +141,8 @@ class ExpPrint:
         # 输入，带宽/NTT/口径敏感性不再占 GPU。与 dump_network_stats 的
         # 聚合历史不同，它是重放的完备输入，必须默认落盘。
         key_to_dump += ["comm_trace_edge_cloud"]
+        if "specedge" in metrics:
+            key_to_dump.append("specedge")
         dump_dict = {key: metrics.get(key) for key in key_to_dump}
         return dump_dict
 
@@ -164,6 +167,11 @@ class ExpPrint:
         eval_result["gamma"] = self.args.gamma if self.args.gamma is not None else -1
         eval_result["gamma1"] = self.args.gamma1 if self.args.gamma1 is not None else -1
         eval_result["gamma2"] = self.args.gamma2 if self.args.gamma2 is not None else -1
+        if str(getattr(self.args, "eval_mode", "")) == "specedge":
+            lookahead = getattr(self.args, "specedge_lookahead", None)
+            eval_result["specedge_lookahead"] = specedge_candidate_limit(
+                self.args.gamma, lookahead
+            )
         # L1 口径收敛：每个结果工件自带通信计费口径与动态链路统计（可复现性）。
         # 2026-04 全表解钳：honest/legacy 只由计费两开关区分（残差 + 往返）；
         # transfer_top_k_cap 不再属于口径预设（cap=16 原是 ours 的方法设计），
@@ -212,6 +220,7 @@ class ExpPrint:
                 _CUHLM_MODES,
                 _NO_COMM_MODES,
                 _TK_SLT_MODES,
+                _TOKEN_ONLY_MODES,
                 mode_consumption,
             )
 
@@ -226,12 +235,17 @@ class ExpPrint:
             if (
                 _cons.consumes_accounting
                 and _cons.accounting == ("comm_round_trip_mode",)
-                and (_mode in _CUHLM_MODES or _mode in _TK_SLT_MODES)
+                and (
+                    _mode in _CUHLM_MODES
+                    or _mode in _TK_SLT_MODES
+                    or _mode in _TOKEN_ONLY_MODES
+                )
             ):
                 # 2026-10-09 统一往返（docs/protocol.md §3.4）：CUHLM/TK-SLT
                 # 系载荷字节按各自论文口径，但往返次数接入 comm_round_trip_mode
-                # （per_round = 每次云端交互 1×NTT）。标 honest 会overclaim
-                # 残差计费，标 paper 会漏掉往返统一——专用标签 paper_rt。
+                # （per_round = 每次云端交互 1×NTT）。SpecEdge 是 token-only
+                # 载荷，同样只接统一往返。标 honest 会 overclaim 残差计费，
+                # 标 paper 会漏掉往返统一——专用标签 paper_rt。
                 label = "paper_rt"
             elif not _cons.consumes_accounting:
                 if _mode in _NO_COMM_MODES:

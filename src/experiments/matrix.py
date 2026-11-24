@@ -49,9 +49,10 @@ _TOP_K_BY_MODE = {
     EvalMode.tk_slt: TRANSFER_TOP_K_TKSLT,
     EvalMode.tridecoding: TRANSFER_TOP_K_STATIC,
 }
-# DSD/CUHLM/TK-SLT draft on the end device. DSSD and CEE use the middle model.
+# DSD/CUHLM/TK-SLT draft on the end device. DSSD, SpecEdge and CEE use the middle model.
 _USE_MIDDLE_DRAFT = {
     EvalMode.dssd,
+    EvalMode.specedge,
     EvalMode.ceesd,
     EvalMode.tridecoding,
     EvalMode.adaptive_decoding,

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from src.acc_head_registry import resolve_acc_head_path
+from src.mode_features import specedge_candidate_limit
 from src.rl_agent_registry import ROLE_LITTLE, ROLE_MAIN, resolve_rl_agent_paths
 
 
@@ -24,6 +25,7 @@ class EvalMode(str, Enum):
     dsd = "dist_spec"
     cuhlm = "uncertainty_decoding"
     tk_slt = "tk_slt"
+    specedge = "specedge"
     tridecoding = "tridecoding"
     ceesd = "adaptive_tridecoding"
     cee_cuhlm = "cee_cuhlm"
@@ -44,6 +46,7 @@ class _ExplicitProtocol(TypedDict, total=False):
     target_quantization: str
     comm_trace_mode: str
     humaneval_generate_only: bool
+    specedge_lookahead: int
 
 
 class ExpConfig(_ExplicitProtocol):
@@ -140,6 +143,7 @@ def create_config(
     little_rl_best_path: str | None = None,
     dump_network_stats: bool = False,
     use_cuda_graph: bool = False,
+    specedge_lookahead: int | None = None,
 ) -> ExpConfig:
     """Normalize a config for JSON/logging; only resolve resources its mode can use."""
     mode = eval_mode.value if isinstance(eval_mode, EvalMode) else eval_mode
@@ -202,6 +206,11 @@ def create_config(
         dump_network_stats=dump_network_stats,
         use_cuda_graph=use_cuda_graph,
     )
+
+    if mode == EvalMode.specedge:
+        config["specedge_lookahead"] = specedge_candidate_limit(
+            gamma, specedge_lookahead
+        )
 
     paired = mode in (
         EvalMode.ceesd,

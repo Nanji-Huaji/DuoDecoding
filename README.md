@@ -132,6 +132,7 @@ The following groups cover the commonly used `--eval_mode` values. The mode regi
 | --- | --- |
 | `small`; `large` | Draft only; target only, respectively. The CLI still requires both model arguments. |
 | `sd`; `dsd` / `dist_spec`; `dssd` / `dist_split_spec`; `cuhlm` / `uncertainty_decoding`; `tk_slt` / `tkslt` | Draft and target; no acceptance heads or RL agents. |
+| [`specedge`](docs/baselines.md#specedge) | Draft and target only. This single-request baseline exchanges token IDs. `--specedge_lookahead` caps the next-round candidates drafted after predicting the bonus; it defaults to `--gamma`. Set it to `0` to disable proactive drafting. |
 | `adaptive_decoding` | Draft and target, plus one draft→target head. |
 | `adaptive_tridecoding` / `cee_sd`; `cee_sd_opportunistic`; `cee_dsd`, `cee_dssd`, `cee_cuhlm` | Little, draft, and target; both little→draft and draft→target heads. |
 | `tridecoding`; `cee_sd_no_arp` | Three models, no heads. The former is the fixed-window Static control without RL; the latter is the current no-ARP ablation, not Static. |

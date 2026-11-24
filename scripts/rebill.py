@@ -25,7 +25,8 @@
 局限: ① 只重放 edge_cloud 链路（矩阵基线只用它）；② 有通信反馈的方法
 （RL 适配器开着的 CEE-SD、ODLD 开着的 tk_slt）解码依赖网络，重放只是
 "同一动作序列在新网络下的成本"近似，不是真重跑；③ γ/数据集/模型变了
-记录就失效（那是解码参数，不是网络参数）。
+记录就失效（那是解码参数，不是网络参数）；④ SpecEdge 提前起草与当轮验证及链路
+有时间重叠，开启提前起草时必须重跑，不能替换总通信时间。
 """
 
 from __future__ import annotations
@@ -121,6 +122,10 @@ def rebill_artifact(path: Path, cfg: dict, batch_delay_ms: float) -> dict | None
     trace = m.get("comm_trace_edge_cloud")
     if not trace:
         return None
+    if m.get("eval_mode") == "specedge" and m.get("specedge_lookahead") != 0:
+        # Its critical path uses max(proactive draft, server + link) per round;
+        # replacing the aggregate comm term would leave the old overlap in place.
+        raise ValueError("SpecEdge with proactive drafting must be rerun for the new link")
     sim = replay_comm(trace, cfg)
 
     old_comm = m["communication_time"]

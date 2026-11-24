@@ -614,14 +614,15 @@ def _argument_groups() -> dict[str, list[str]]:
 
 
 class TestHelpGrouping(unittest.TestCase):
-    """`--help` 分组：112 个参数全部归类，① 组恰好是那 16 个。
+    """`--help` 分组：113 个参数全部归类，① 组恰好是那 16 个。
 
     参数总数历史：103 → 104（--tk_slt_odld，g_method）→ 105
     （2026-10-09 --comm_bw_model，g_comm，统一口径 §3.4）→ 107
     （2026-10-10 --rl_comm_cost_mode / --rl_threshold_candidates，
     g_rl，CEE-SD 阈值学偏修复：奖励通信口径 + 动作格扩格）→ 108
     （2026-10-19 --help-advanced，g_meta）→ 109（--rl_output_dir，g_rl）→ 110（--rl_track_best_tps，g_rl）→ 111（--model_source，g_deploy）
-    → 112（--humaneval_generate_only，g_out：性能矩阵不执行生成代码）。
+    → 112（--humaneval_generate_only，g_out：性能矩阵不执行生成代码）
+    → 113（--specedge_lookahead，g_method：可选 SpecEdge 预起草长度）。
 
     2026-10-19：`-e/-n/-s` 改为 help 隐藏的兼容别名（仍解析），可见参数
     面仍是 108（默认 help 可见 65）；`--comm_accounting` 同样隐藏但仍计入。"""
@@ -634,7 +635,7 @@ class TestHelpGrouping(unittest.TestCase):
             f"这些参数还挂在扁平 parser 上，未进任何分组: {g['_ungrouped']}",
         )
         total = sum(len(v) for k, v in g.items() if k != "_ungrouped")
-        self.assertEqual(total, 112)
+        self.assertEqual(total, 113)
         self.assertIn("humaneval_generate_only", g["g_out"])
 
     def test_no_argument_is_in_two_groups(self):

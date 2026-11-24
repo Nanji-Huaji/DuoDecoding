@@ -6,6 +6,8 @@ from itertools import chain
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
+from src.mode_features import specedge_candidate_limit
+
 from .config import ExpConfig
 
 # An experiment name contains a timestamp; the allocated GPU can also change on
@@ -51,11 +53,17 @@ def _identity_value(value):
 
 def run_identity(config: dict) -> tuple:
     """Historical result key, not the model compatibility key used for scheduling."""
-    return tuple(
+    key = tuple(
         (field, _identity_value(config.get(field, _ACCOUNTING_DEFAULTS.get(field))))
         for field in RUN_IDENTITY_FIELDS
         if field in config or field in _ACCOUNTING_DEFAULTS
     )
+    if config.get("eval_mode") == "specedge":
+        limit = specedge_candidate_limit(
+            config["gamma"], config.get("specedge_lookahead")
+        )
+        key += (("specedge_lookahead", limit),)
+    return key
 
 
 def load_summary(path: str | Path) -> list[dict]:
